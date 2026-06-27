@@ -12,11 +12,11 @@ resource "aws_sfn_state_machine" "pipeline_orchestrator" {
         Parameters = {
           JobName = aws_glue_job.bronze_to_silver.name
         }
-        Next  = "ProcessSilverToGold"
+        Next = "ProcessSilverToGold"
         Catch = [
           {
-            ErrorEquals    = ["States.ALL"]
-            Next           = "PipelineFailed"
+            ErrorEquals = ["States.ALL"]
+            Next        = "PipelineFailed"
           }
         ]
       }
@@ -26,11 +26,11 @@ resource "aws_sfn_state_machine" "pipeline_orchestrator" {
         Parameters = {
           JobName = aws_glue_job.silver_to_gold.name
         }
-        Next  = "RunGoldCrawler"
+        Next = "RunGoldCrawler"
         Catch = [
           {
-            ErrorEquals    = ["States.ALL"]
-            Next           = "PipelineFailed"
+            ErrorEquals = ["States.ALL"]
+            Next        = "PipelineFailed"
           }
         ]
       }
@@ -40,11 +40,11 @@ resource "aws_sfn_state_machine" "pipeline_orchestrator" {
         Parameters = {
           Name = aws_glue_crawler.gold_crawler.name
         }
-        Next  = "PipelineSucceeded"
+        Next = "PipelineSucceeded"
         Catch = [
           {
-            ErrorEquals    = ["States.ALL"]
-            Next           = "PipelineFailed"
+            ErrorEquals = ["States.ALL"]
+            Next        = "PipelineFailed"
           }
         ]
       }

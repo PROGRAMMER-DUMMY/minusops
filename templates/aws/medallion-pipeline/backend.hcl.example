@@ -1,0 +1,10 @@
+# Copy to backend.hcl and fill in your values, then:
+#   terraform init -backend-config=backend.hcl
+#
+# bucket : the state bucket from `terraform output tfstate_bucket` in bootstrap/aws/
+# key    : unique state path for THIS template + environment
+# region : where the state bucket lives
+
+bucket = "minus-tfstate-ACCOUNT_ID"
+key    = "medallion-pipeline/dev/terraform.tfstate"
+region = "us-east-1"

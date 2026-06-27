@@ -12,3 +12,8 @@ output "pipeline_boundary_arn" {
   description = "Permissions boundary every pipeline service role must attach"
   value       = aws_iam_policy.pipeline_boundary.arn
 }
+
+output "tfstate_bucket" {
+  description = "S3 bucket for remote Terraform state — pass as -backend-config=\"bucket=...\""
+  value       = aws_s3_bucket.tfstate.id
+}

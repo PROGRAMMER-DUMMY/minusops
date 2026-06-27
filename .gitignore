@@ -15,3 +15,6 @@ tfplan
 # Credentials / one-shot tokens (must never be committed)
 *.token
 .minus_tf/
+
+# Client-specific backend config (never commit)
+backend.hcl
