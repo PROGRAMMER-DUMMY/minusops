@@ -6,6 +6,7 @@ __pycache__/
 .idea/
 # Runtime / logs (regenerated)
 .agents/logs/
+.agents/reports/
 # Terraform
 *.tfstate
 *.tfstate.*

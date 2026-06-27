@@ -184,6 +184,14 @@ def stage_plan(dir_):
     _clear_approval()  # a new plan invalidates any prior approval
     print(f"[gate] plan saved. plan_hash = {h[:16]}...")
     _audit("plan", "OK", plan_hash=h, dir=dir_)
+
+    # Auto-generate the versioned deploy report (plan + cost + architecture).
+    # Informational — a report failure must never fail the plan.
+    try:
+        import reporter
+        reporter.generate(dir_)
+    except Exception as e:
+        print(f"[gate] (report skipped: {e})", file=sys.stderr)
     return True
 
 
