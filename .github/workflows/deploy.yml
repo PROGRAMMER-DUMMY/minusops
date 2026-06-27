@@ -1,0 +1,69 @@
+name: "Terraform Deploy Pipeline"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'aws-medallion-pipeline/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'aws-medallion-pipeline/**'
+
+jobs:
+  terraform:
+    name: "Terraform Lint, Validate & Deploy"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./aws-medallion-pipeline
+
+    steps:
+      # 1. Checkout codebase
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # 2. Setup Terraform CLI
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+
+      # 3. Check code formatting
+      - name: Terraform Format Check
+        run: terraform fmt -check
+
+      # 4. Initialize working directory
+      - name: Terraform Init
+        run: terraform init -backend=false # Runs validation without configuring live state backend
+
+      # 5. Validate HCL configuration syntax
+      - name: Terraform Validate
+        run: terraform validate
+
+      # 6. Static Analysis / Security Scan (tfsec)
+      - name: Run TFSec Security Scan
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working_directory: ./aws-medallion-pipeline
+
+      # 7. Configure AWS Credentials (only on main branch push)
+      - name: Configure AWS Credentials
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      # 8. Terraform Plan
+      - name: Terraform Plan
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform plan -out=tfplan
+
+      # 9. Terraform Apply (only on main branch push)
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve tfplan

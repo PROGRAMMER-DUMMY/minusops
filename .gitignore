@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+# IDE
+.idea/
+# Runtime / logs (regenerated)
+.agents/logs/
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+tfplan
+# Credentials / one-shot tokens (must never be committed)
+*.token
+.minus_tf/

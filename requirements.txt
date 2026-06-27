@@ -1,0 +1,5 @@
+# Python dependencies for the agent toolchain + FinOps dashboard.
+# The CLI scripts (finops_agent, budget_calculator, health_checker, approval) use
+# only the standard library + the AWS CLI. These are for the Plotly Dash console.
+dash>=2.14,<3        # 3.x/4.x renderers poll an internal 'config-version' endpoint that 500s without a callback
+plotly>=5.18

@@ -1,0 +1,210 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 550" width="100%" height="100%">
+  <!-- Definitions for Gradients and Filters -->
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="100%" stop-color="#1e2640" />
+    </linearGradient>
+
+    <!-- Node Gradients -->
+    <linearGradient id="s3-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff9900" />
+      <stop offset="100%" stop-color="#b36b00" />
+    </linearGradient>
+    <linearGradient id="glue-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#e25a24" />
+      <stop offset="100%" stop-color="#9e350d" />
+    </linearGradient>
+    <linearGradient id="sfn-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#cd2264" />
+      <stop offset="100%" stop-color="#800a35" />
+    </linearGradient>
+    <linearGradient id="eb-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff4f8b" />
+      <stop offset="100%" stop-color="#a81a4d" />
+    </linearGradient>
+    <linearGradient id="athena-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#00a1c9" />
+      <stop offset="100%" stop-color="#00657f" />
+    </linearGradient>
+
+    <!-- Arrow markers -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8e9bb0" />
+    </marker>
+    <marker id="arrow-active" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3b82f6" />
+    </marker>
+    
+    <!-- Neon Glow Filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <style>
+    .title { font-family: 'Outfit', 'Inter', sans-serif; font-size: 24px; font-weight: 700; fill: #ffffff; letter-spacing: 1px; }
+    .subtitle { font-family: 'Inter', sans-serif; font-size: 13px; fill: #8e9bb0; }
+    .label { font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600; fill: #ffffff; text-anchor: middle; }
+    .sublabel { font-family: 'Inter', sans-serif; font-size: 11px; fill: #a0aec0; text-anchor: middle; }
+    .badge { font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 700; fill: #ffffff; }
+    .flow-line { fill: none; stroke: #4a5568; stroke-width: 2; stroke-dasharray: 4,4; }
+    .flow-line-active { fill: none; stroke: #3b82f6; stroke-width: 2.5; }
+    .control-line { fill: none; stroke: #cd2264; stroke-width: 1.5; stroke-dasharray: 5,5; }
+  </style>
+
+  <!-- Background -->
+  <rect width="1000" height="550" rx="16" fill="url(#bg-grad)" />
+
+  <!-- Diagram Title -->
+  <text x="50" y="45" class="title">AWS MEDALLION BATCH DATA PIPELINE</text>
+  <text x="50" y="65" class="subtitle">Serverless Event-Driven Architecture with AWS Glue &amp; Step Functions</text>
+
+  <!-- Group: Medallion Buckets -->
+  <!-- Bronze S3 -->
+  <g transform="translate(60, 260)">
+    <rect width="160" height="100" rx="8" fill="#161b2c" stroke="#ff9900" stroke-width="2" filter="url(#glow)" />
+    <circle cx="80" cy="35" r="18" fill="url(#s3-grad)" />
+    <text x="80" y="38" class="badge" text-anchor="middle">S3</text>
+    <text x="80" y="70" class="label">Bronze Bucket</text>
+    <text x="80" y="85" class="sublabel">Raw Ingestion (JSON)</text>
+  </g>
+
+  <!-- Silver S3 -->
+  <g transform="translate(420, 260)">
+    <rect width="160" height="100" rx="8" fill="#161b2c" stroke="#ff9900" stroke-width="2" />
+    <circle cx="80" cy="35" r="18" fill="url(#s3-grad)" />
+    <text x="80" y="38" class="badge" text-anchor="middle">S3</text>
+    <text x="80" y="70" class="label">Silver Bucket</text>
+    <text x="80" y="85" class="sublabel">Cleaned / Parquet</text>
+  </g>
+
+  <!-- Gold S3 -->
+  <g transform="translate(780, 260)">
+    <rect width="160" height="100" rx="8" fill="#161b2c" stroke="#ff9900" stroke-width="2" filter="url(#glow)" />
+    <circle cx="80" cy="35" r="18" fill="url(#s3-grad)" />
+    <text x="80" y="38" class="badge" text-anchor="middle">S3</text>
+    <text x="80" y="70" class="label">Gold Bucket</text>
+    <text x="80" y="85" class="sublabel">Aggregated Metrics</text>
+  </g>
+
+  <!-- Group: Event-Driven Orchestration (Top) -->
+  <!-- EventBridge -->
+  <g transform="translate(60, 110)">
+    <rect width="160" height="80" rx="8" fill="#161b2c" stroke="#ff4f8b" stroke-width="1.5" />
+    <rect x="62" y="10" width="36" height="30" rx="4" fill="url(#eb-grad)" />
+    <text x="80" y="29" class="badge" text-anchor="middle">EB</text>
+    <text x="80" y="55" class="label">EventBridge</text>
+    <text x="80" y="68" class="sublabel">S3 ObjectCreated Rule</text>
+  </g>
+
+  <!-- Step Functions -->
+  <g transform="translate(420, 110)">
+    <rect width="160" height="80" rx="8" fill="#161b2c" stroke="#cd2264" stroke-width="2" filter="url(#glow)" />
+    <rect x="62" y="10" width="36" height="30" rx="4" fill="url(#sfn-grad)" />
+    <text x="80" y="29" class="badge" text-anchor="middle">SFN</text>
+    <text x="80" y="55" class="label">Step Functions</text>
+    <text x="80" y="68" class="sublabel">Pipeline Orchestrator</text>
+  </g>
+
+  <!-- Glue Crawler -->
+  <g transform="translate(780, 110)">
+    <rect width="160" height="80" rx="8" fill="#161b2c" stroke="#e25a24" stroke-width="1.5" />
+    <rect x="62" y="10" width="36" height="30" rx="4" fill="url(#glue-grad)" />
+    <text x="80" y="29" class="badge" text-anchor="middle">Glue</text>
+    <text x="80" y="55" class="label">Gold Crawler</text>
+    <text x="80" y="68" class="sublabel">Updates Catalog Schema</text>
+  </g>
+
+  <!-- Group: ETL Spark Jobs -->
+  <!-- Glue Job 1 -->
+  <g transform="translate(240, 270)">
+    <rect width="140" height="80" rx="6" fill="#1f293d" stroke="#e25a24" stroke-width="1.5" />
+    <text x="70" y="30" class="label">Glue Spark Job</text>
+    <text x="70" y="48" class="sublabel" font-size="10px">bronze_to_silver.py</text>
+    <text x="70" y="65" class="sublabel" font-size="10px" fill="#10b981">● PySpark 4.0</text>
+  </g>
+
+  <!-- Glue Job 2 -->
+  <g transform="translate(600, 270)">
+    <rect width="140" height="80" rx="6" fill="#1f293d" stroke="#e25a24" stroke-width="1.5" />
+    <text x="70" y="30" class="label">Glue Spark Job</text>
+    <text x="70" y="48" class="sublabel" font-size="10px">silver_to_gold.py</text>
+    <text x="70" y="65" class="sublabel" font-size="10px" fill="#10b981">● PySpark 4.0</text>
+  </g>
+
+  <!-- Consumers (Bottom) -->
+  <!-- Athena -->
+  <g transform="translate(640, 420)">
+    <rect width="140" height="80" rx="8" fill="#161b2c" stroke="#00a1c9" stroke-width="1.5" />
+    <circle cx="70" cy="25" r="14" fill="url(#athena-grad)" />
+    <text x="70" y="29" class="badge" text-anchor="middle">SQL</text>
+    <text x="70" y="52" class="label">AWS Athena</text>
+    <text x="70" y="68" class="sublabel">Ad-hoc SQL Querying</text>
+  </g>
+
+  <!-- QuickSight / Dashboard -->
+  <g transform="translate(820, 420)">
+    <rect width="140" height="80" rx="8" fill="#161b2c" stroke="#3b82f6" stroke-width="1.5" />
+    <circle cx="70" cy="25" r="14" fill="#3b82f6" />
+    <text x="70" y="29" class="badge" text-anchor="middle">BI</text>
+    <text x="70" y="52" class="label">BI Dashboard</text>
+    <text x="70" y="68" class="sublabel">Amazon QuickSight</text>
+  </g>
+
+
+  <!-- CONNECTIONS & LINES -->
+  <!-- 1. S3 Bronze to EventBridge -->
+  <path d="M 140 260 L 140 190" class="flow-line-active" stroke="#ff4f8b" marker-end="url(#arrow)" />
+  <text x="100" y="225" font-family="Inter" font-size="10px" fill="#ff4f8b">ObjectCreated</text>
+
+  <!-- 2. EventBridge to Step Functions -->
+  <path d="M 220 150 L 420 150" class="flow-line-active" stroke="#cd2264" marker-end="url(#arrow)" />
+  <text x="320" y="142" font-family="Inter" font-size="10px" fill="#cd2264" text-anchor="middle">Triggers Execution</text>
+
+  <!-- 3. SFN Control to Glue Job 1 -->
+  <path d="M 440 190 C 440 230, 310 210, 310 270" class="control-line" marker-end="url(#arrow)" />
+  <text x="380" y="220" font-family="Inter" font-size="10px" fill="#cd2264">1. Run Job</text>
+
+  <!-- 4. SFN Control to Glue Job 2 -->
+  <path d="M 520 190 C 520 230, 670 210, 670 270" class="control-line" marker-end="url(#arrow)" />
+  <text x="580" y="220" font-family="Inter" font-size="10px" fill="#cd2264">2. Run Job</text>
+
+  <!-- 5. SFN Control to Crawler -->
+  <path d="M 580 150 L 780 150" class="control-line" marker-end="url(#arrow)" />
+  <text x="680" y="142" font-family="Inter" font-size="10px" fill="#cd2264" text-anchor="middle">3. Run Crawler</text>
+
+  <!-- 6. Data Ingestion Stream -->
+  <!-- S3 Bronze -> Glue Job 1 -->
+  <path d="M 220 310 L 240 310" class="flow-line-active" marker-end="url(#arrow-active)" />
+  <!-- Glue Job 1 -> S3 Silver -->
+  <path d="M 380 310 L 420 310" class="flow-line-active" marker-end="url(#arrow-active)" />
+  <!-- S3 Silver -> Glue Job 2 -->
+  <path d="M 580 310 L 600 310" class="flow-line-active" marker-end="url(#arrow-active)" />
+  <!-- Glue Job 2 -> S3 Gold -->
+  <path d="M 740 310 L 780 310" class="flow-line-active" marker-end="url(#arrow-active)" />
+
+  <!-- 7. Crawler updates Gold Bucket Catalog Metadata -->
+  <path d="M 860 190 L 860 260" class="control-line" marker-end="url(#arrow)" />
+  
+  <!-- 8. Athena queries Gold S3 -->
+  <path d="M 830 360 C 830 380, 710 380, 710 420" class="flow-line-active" stroke="#00a1c9" marker-end="url(#arrow)" />
+  <text x="735" y="380" font-family="Inter" font-size="10px" fill="#00a1c9">Queries Data</text>
+
+  <!-- 9. QuickSight consumes Athena -->
+  <path d="M 780 460 L 820 460" class="flow-line-active" stroke="#3b82f6" marker-end="url(#arrow)" />
+
+  <!-- Status Legend -->
+  <g transform="translate(50, 480)">
+    <circle cx="10" cy="10" r="5" fill="#3b82f6" />
+    <text x="25" y="14" font-family="Inter" font-size="11px" fill="#8e9bb0">Data Flow Path</text>
+    
+    <circle cx="150" cy="10" r="5" fill="#cd2264" />
+    <text x="165" y="14" font-family="Inter" font-size="11px" fill="#8e9bb0">Orchestration Control Path</text>
+
+    <rect x="350" y="5" width="10" height="10" fill="none" stroke="#ff9900" stroke-width="1.5" />
+    <text x="370" y="14" font-family="Inter" font-size="11px" fill="#8e9bb0">AWS Managed Storage / Catalog</text>
+  </g>
+</svg>
