@@ -22,10 +22,10 @@ import time
 import datetime
 from concurrent.futures import ThreadPoolExecutor
 
-# Pull the live data layer from the FinOps agent (core/ package, one level up).
+# Talk to the active cloud only through the provider abstraction (core/ package).
 SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "core")
 sys.path.insert(0, SCRIPTS)
-from finops_agent import run_aws, get_anomalies, fetch_cost_by_service  # noqa: E402
+from providers.base import get_provider, active_cloud  # noqa: E402
 
 import dash  # noqa: E402
 from dash import dcc, html, Input, Output, State, ctx  # noqa: E402
@@ -53,15 +53,8 @@ MONO = "'JetBrains Mono', monospace"
 
 
 # ---------------------------------------------------------------------------
-# Data assembly (live AWS, via finops_agent)
+# Data assembly (live cloud, via the active CloudProvider — aws | azure | gcp)
 # ---------------------------------------------------------------------------
-def get_account():
-    ok, data, _ = run_aws(["sts", "get-caller-identity", "--output", "json"])
-    if ok and isinstance(data, dict):
-        return data.get("Account", "—"), True
-    return None, False
-
-
 def derive_severity(impact):
     if impact >= 100:
         return "CRITICAL"
@@ -70,49 +63,28 @@ def derive_severity(impact):
     return "MODERATE"
 
 
-def _owner_index():
-    """Fetch the account's resource tags ONCE and build a service-hint -> owner map,
-    instead of calling the tagging API per anomaly (which made refresh slow)."""
-    ok, data, _ = run_aws(["resourcegroupstaggingapi", "get-resources",
-                           "--tags-per-page", "100", "--output", "json"])
-    index = []
-    if ok and isinstance(data, dict):
-        for r in data.get("ResourceTagMappingList", []):
-            tags = {t["Key"]: t["Value"] for t in r.get("Tags", [])}
-            owner = tags.get("Owner") or tags.get("Team")
-            if owner:
-                index.append((r.get("ResourceARN", "").lower(), owner))
-    return index
-
-
 def _fetch():
-    """Hit AWS once, with the three independent calls running in parallel."""
+    """Hit the active cloud once, with the independent calls running in parallel."""
+    provider = get_provider()
     with ThreadPoolExecutor(max_workers=3) as ex:
-        f_acct = ex.submit(get_account)
-        f_cost = ex.submit(fetch_cost_by_service)
-        f_anom = ex.submit(get_anomalies)
-        account, connected = f_acct.result()
+        f_id = ex.submit(provider.identity)
+        f_cost = ex.submit(provider.cost_by_service)
+        f_anom = ex.submit(provider.anomalies)
+        account, connected = f_id.result()
         cost = f_cost.result()
         anomalies_raw, anom_err = f_anom.result()
 
     anomalies = []
-    if anomalies_raw:
-        owners = _owner_index()  # fetched once, reused for every anomaly
-        for a in anomalies_raw:
-            svc = (a.get("RootCauses") or [{}])[0].get("Service", "Unknown service")
-            impact = float(a.get("Impact", {}).get("TotalImpact", 0) or 0)
-            owner = next((o for arn, o in owners if svc.lower() in arn), None)
-            anomalies.append({
-                "id": a.get("AnomalyId", "-"),
-                "service": svc,
-                "date": (a.get("AnomalyStartDate", "") or "")[:10] or "-",
-                "impact": impact,
-                "severity": derive_severity(impact),
-                "owner": owner,
-            })
+    for a in (anomalies_raw or []):
+        owner = provider.owner(a["service"]) if a.get("service") else None
+        anomalies.append({
+            "id": a["id"], "service": a["service"], "date": a["date"],
+            "impact": a["impact"], "severity": derive_severity(a["impact"]),
+            "owner": owner,
+        })
 
     return {
-        "account": account, "connected": connected,
+        "account": account, "connected": connected, "cloud": provider.name,
         "cost_ok": cost["ok"], "cost_err": cost["error"], "months": cost["months"],
         "anomalies": anomalies, "anom_err": anom_err,
     }
