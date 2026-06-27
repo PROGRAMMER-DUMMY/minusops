@@ -9,12 +9,12 @@
 
 ## 1. What this repo is
 
-An **agentic AWS DevOps control plane** built around an AWS Medallion (Bronze → Silver → Gold) data pipeline. It has two halves:
+A **multi-cloud, framework-deployed ops control plane.** Each enterprise installs it and runs it against their *own* cloud with their *own* credentials — nothing is hosted by us. Two halves:
 
-1. **Infrastructure-as-Code** — real Terraform that provisions the live AWS stack, plus reference templates for other architectures.
-2. **An agent toolchain** (`.agents/`) — Python "skills" the agent invokes to deploy safely, scan for cost/security issues, estimate spend, run FinOps analysis, check health, and generate test data.
+1. **A cloud-agnostic governance core** (`core/`) — deploy gating, approval, audit, FinOps, and a **provider abstraction** (`core/providers/`) so the same engine runs on AWS, Azure, or GCP. Select the active cloud with the `MINUS_CLOUD` env var (default `aws`).
+2. **Infrastructure-as-Code** — `templates/` holds Terraform for real workloads (the AWS medallion pipeline is the first example); `bootstrap/` holds the framework's own governance IAM roles, also Terraform.
 
-The long-term goal is a **broad AWS ops copilot** driven primarily through the **AWS CLI** + **Terraform**, governed by Human-in-the-Loop (HITL) gating and audit logging. Treat the AWS CLI and Terraform as your universal hands; treat the scripts in `.agents/skills/` as pre-built capabilities you orchestrate.
+The governance core **never calls a cloud CLI directly** — only through a `CloudProvider`. Terraform + the cloud CLI are your universal hands; every change is governed by MFA-gated, plan-bound, audited deploys.
 
 ---
 
@@ -22,63 +22,65 @@ The long-term goal is a **broad AWS ops copilot** driven primarily through the *
 
 ```
 .
-├── AGENTS.md                          # ← you are here (universal agent entry point)
-├── README.md                          # human setup guide (Terraform + AWS CLI install/config)
-├── doctor.ps1                         # Windows env diagnostics (Terraform/AWS CLI/creds/keys)
+├── AGENTS.md                       # ← you are here (universal agent entry point)
+├── README.md  ·  requirements.txt
 │
-├── .agents/                           # AGENT TOOLCHAIN
-│   ├── AGENTS.md                      # agy workspace rules (HITL/safety) — subset of this file
-│   ├── dashboard_app.py               # live FinOps console (Plotly Dash): python .agents/dashboard_app.py
-│   ├── logs/                          # runtime output: audit.jsonl, health reports (created on demand)
-│   └── skills/
-│       ├── terraform-orchestrator/    # deploy safely + ops
-│       │   ├── SKILL.md
-│       │   └── scripts/
-│       │       ├── intent_dispatcher.py   # NL query → routes to the right script
-│       │       ├── audit_logger.py        # append-only audit trail (.agents/logs/audit.jsonl)
-│       │       ├── approval.py            # approval gate: gatekeeper | auto-approve (audited)
-│       │       ├── finops_agent.py        # LIVE cost intelligence (ce/cloudtrail/tags) + gated notify
-│       │       └── health_checker.py      # live AWS CLI health probes (sts/s3/glue)
-│       └── pipeline-optimizer/        # scan + optimize existing infra
-│           ├── SKILL.md
-│           └── scripts/
-│               ├── optimize_analyzer.py   # HCL scanner (SEC/COST/OBS rules) → markdown report
-│               └── budget_calculator.py   # multi-service monthly cost estimator (live + offline pricing)
+├── core/                           # CLOUD-AGNOSTIC GOVERNANCE ENGINE
+│   ├── plan_gate.py                # deploy gate: verify → plan → hash → MFA approve → apply
+│   ├── approval.py                 # approval gate: gatekeeper | auto-approve (audited)
+│   ├── audit_logger.py             # append-only audit trail (.agents/logs/audit.jsonl)
+│   ├── dispatcher.py               # NL query → routes to the right tool
+│   ├── finops_agent.py             # live cost intelligence (provider-driven) + gated notify
+│   ├── health_checker.py           # live health probes
+│   ├── optimize_analyzer.py        # HCL scanner (SEC/COST/OBS) → markdown report
+│   ├── budget_calculator.py        # cost estimator (live pricing + offline fallback)
+│   └── providers/                  # CLOUD ABSTRACTION — pick via MINUS_CLOUD
+│       ├── base.py                 # CloudProvider interface + get_provider()
+│       ├── aws.py                  # AWS impl (Cost Explorer / anomalies / tags / identity)
+│       └── azure.py · gcp.py       # scaffolds (degrade gracefully until implemented)
 │
-├── templates/aws/medallion-pipeline/            # THE LIVE TERRAFORM STACK
-│   ├── providers.tf variables.tf outputs.tf
-│   ├── s3.tf glue.tf step_functions.tf eventbridge.tf iam.tf observability.tf
-│   ├── budgets.tf cost_anomaly.tf
-│   ├── modules/iam_service_role/      # reusable least-privilege role module
-│   ├── etl_scripts/                   # Glue PySpark jobs (bronze_to_silver, silver_to_gold)
-│   ├── information_library.md         # ← CANONICAL DOC INDEX (redirect target)
-│   ├── documentation_ledger.md        # how to build direct doc/pricing URLs (no UI clicking)
-│   ├── enterprise_iam_manifest.md     # IAM security commandments + MFA gate flow
-│   └── project_plan.md                # milestones / status
+├── app/dashboard_app.py            # live FinOps console (Plotly Dash, provider-driven)
 │
-└── .github/workflows/deploy.yml       # CI: fmt → init → validate → tfsec → plan → apply (main only)
+├── templates/aws/medallion-pipeline/   # IaC WORKLOAD TEMPLATE (one example)
+│   ├── *.tf  ·  modules/iam_service_role/  ·  etl_scripts/
+│
+├── bootstrap/aws/                  # framework's own governance IAM (Terraform)
+│   └── governance.tf …             # read-only role, MFA-gated deploy role, permissions boundary
+│
+├── docs/                           # information_library · documentation_ledger
+│   │                               #   enterprise_iam_manifest · project_plan
+├── tools/doctor.ps1                # env diagnostics
+│
+├── .agents/                        # agent skill manifests + runtime logs
+│   ├── AGENTS.md                   # agy workspace rules (subset of this file)
+│   ├── skills/{terraform-orchestrator,pipeline-optimizer}/SKILL.md
+│   └── logs/                       # audit.jsonl, reports (gitignored, created on demand)
+│
+└── .github/workflows/deploy.yml    # CI: fmt → validate → tfsec → plan → apply
 ```
 
 ---
 
 ## 3. What you are capable of here
 
+All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws|azure|gcp}` (default `aws`).
+
 | Capability | How you do it | Primary tool |
 | :--- | :--- | :--- |
-| **Provision / change AWS infra** | Edit HCL in `templates/aws/medallion-pipeline/`, then run the orchestration loop (§6) | Terraform CLI |
-| **Inspect live AWS state** | `aws <service> <describe/list/get>` — read-only, safe to run freely | AWS CLI v2 |
-| **Health diagnostics** | `python .agents/skills/terraform-orchestrator/scripts/health_checker.py` | AWS CLI probes |
-| **Scan infra for issues** | `python .agents/skills/pipeline-optimizer/scripts/optimize_analyzer.py --source-dir <dir>` | HCL regex scanner |
-| **Estimate cost** | `python .agents/skills/pipeline-optimizer/scripts/budget_calculator.py` (live Pricing API + offline fallback) | AWS Pricing API |
-| **Analyze live spend / anomalies** | `python .agents/skills/terraform-orchestrator/scripts/finops_agent.py [--cost \| --anomalies \| --correlate]` | `aws ce` / `cloudtrail` / tagging |
-| **View the FinOps console (UI)** | `python .agents/dashboard_app.py` → http://127.0.0.1:8050 (`pip install -r requirements.txt` first) | Plotly Dash |
-| **Notify (Slack/Jira), gated** | `finops_agent.py --notify-slack \| --notify-jira --approval-mode {gatekeeper\|auto-approve}` | `approval.py` gate |
-| **Gate any side effect** | `python .agents/skills/terraform-orchestrator/scripts/approval.py --action <a> --details <d> --mode {gatekeeper\|auto-approve}` | HITL / auto + audit |
-| **Route a vague request** | `python .agents/skills/terraform-orchestrator/scripts/intent_dispatcher.py "<natural language>"` | keyword classifier |
-| **Audit an action** | `python .agents/skills/terraform-orchestrator/scripts/audit_logger.py --action <a> --details <d>` | append to `audit.jsonl` |
-| **Diagnose local env** | `powershell -ExecutionPolicy Bypass -File .\doctor.ps1` | PowerShell |
+| **Provision / change infra** | Edit HCL in `templates/<cloud>/<template>/`, then run the deploy gate (§6.1) | `core/plan_gate.py` + Terraform |
+| **Inspect live state** | `aws <service> <describe/list/get>` (or `az`/`gcloud`) — read-only, safe | cloud CLI |
+| **Health diagnostics** | `python core/health_checker.py` | cloud CLI probes |
+| **Scan infra for issues** | `python core/optimize_analyzer.py --source-dir <dir>` | HCL scanner |
+| **Estimate cost** | `python core/budget_calculator.py` (live pricing + offline fallback) | Pricing API |
+| **Analyze live spend / anomalies** | `python core/finops_agent.py [--cost \| --anomalies \| --correlate]` (via active provider) | `core/providers/` |
+| **View the FinOps console (UI)** | `python app/dashboard_app.py` → http://127.0.0.1:8050 (`pip install -r requirements.txt`) | Plotly Dash |
+| **Notify (Slack/Jira), gated** | `core/finops_agent.py --notify-slack \| --notify-jira --approval-mode {gatekeeper\|auto-approve}` | `approval.py` gate |
+| **Gate any side effect** | `python core/approval.py --action <a> --details <d> --mode {gatekeeper\|auto-approve}` | HITL / auto + audit |
+| **Route a vague request** | `python core/dispatcher.py "<natural language>"` | keyword classifier |
+| **Audit an action** | `python core/audit_logger.py --action <a> --details <d>` | append to `audit.jsonl` |
+| **Diagnose local env** | `powershell -ExecutionPolicy Bypass -File ./tools/doctor.ps1` | PowerShell |
 
-The **intent dispatcher** routes to five intents — `HEALTH`, `DEPLOY`, `OPTIMIZE`, `BUDGET`, `FINOPS`. As the agent you may also call any script directly when you already know the intent. Note: the dispatcher classifies by **keyword matching**, not semantics, so prefer calling scripts directly when precision matters.
+The **dispatcher** routes to five intents — `HEALTH`, `DEPLOY`, `OPTIMIZE`, `BUDGET`, `FINOPS`. You may also call any tool directly. Note: it classifies by **keyword matching**, not semantics, so prefer calling tools directly when precision matters.
 
 ---
 
@@ -137,23 +139,25 @@ These mirror [`.agents/AGENTS.md`](./.agents/AGENTS.md) and [`enterprise_iam_man
 4. **Audit every consequential action.** Log it via `audit_logger.py` to `.agents/logs/audit.jsonl` *before* proposing execution.
 5. **Pass the security scan.** Before proposing infra changes for the live stack, run `optimize_analyzer.py`; resolve `SEC-*` findings (esp. `SEC-02` wildcard IAM) to zero. No `"Resource": "*"` for S3/KMS/DynamoDB. One dedicated least-privilege role per service (use `modules/iam_service_role`).
 6. **Don't retry blindly on failure.** Extract the error, look up the doc (§4), write a troubleshooting note, and ask for help if human intervention is needed.
-7. **MFA / HITL gatekeeper is external.** The `hitl_gatekeeper.py` referenced by the orchestrator skill and IAM manifest lives **outside this workspace** (`~/.gemini/antigravity-cli/scratch/bin`). If it is absent, **stop and ask the user** rather than executing the apply yourself — do not improvise around the gate.
+7. **Deploys go through the plan-gate.** `core/plan_gate.py` enforces verify → plan → **plan-hash** → MFA approval → apply-the-exact-plan, with one-shot credentials and a full audit trail. Any `.tf` change produces a new hash, which voids the prior approval and forces fresh MFA. Use it for every infrastructure change. (A legacy external `hitl_gatekeeper.py` is still referenced by the dispatcher's `DEPLOY` route and is being replaced by `plan_gate`; prefer `plan_gate` directly.)
 8. **Verify before deleting/overwriting.** If a target's contents contradict how it was described, surface that instead of proceeding.
 
 ---
 
 ## 6. Core workflows
 
-### 6.1 Secure deployment loop (from `terraform-orchestrator` SKILL)
+### 6.1 Secure deployment loop (`core/plan_gate.py`)
 
 ```
-1. Validate   →  terraform fmt -check && terraform validate
-2. Plan       →  terraform plan -out=tfplan
-3. Scan       →  optimize_analyzer.py  (resolve SEC/COST/OBS findings)
-4. Audit      →  audit_logger.py --action ... --details ...
-5. HITL gate  →  present plan + wait for explicit APPROVED  (gatekeeper is external — see §5.7)
-6. Execute    →  terraform apply tfplan        (ONLY after approval)
-7. Verify     →  health_checker.py             (post-deploy smoke tests; alert on failure)
+1. Verify   →  plan_gate.py verify  --dir <template>   (fmt + validate + optimize_analyzer scan)
+2. Plan     →  plan_gate.py plan    --dir <template>   (terraform plan -out=tfplan + record plan-hash)
+3. Approve  →  plan_gate.py approve --dir <template> --mfa-arn <arn> [--role-arn <deploy-role>]
+                                                       (review + MFA → one-shot session bound to the hash)
+4. Apply    →  plan_gate.py apply   --dir <template>   (hash must match → apply tfplan → creds wiped)
+5. Verify   →  health_checker.py                       (post-deploy smoke tests)
+
+   Any .tf change → new plan-hash → prior approval void → fresh MFA required.
+   `plan_gate.py run …` chains all stages; `--mode auto-approve` skips the y/N (still MFA + hash-bound).
 ```
 
 ### 6.2 Optimization loop (from `pipeline-optimizer` SKILL)
@@ -196,11 +200,12 @@ infrastructure mutations — those still go through the §6.1 deployment loop.
 
 ## 7. Environment & conventions
 
-- **OS:** Windows 11. Default shell is **PowerShell**; a Bash (POSIX) tool is also available. Use the right syntax per shell.
-- **Region/defaults:** `us-east-1`, `environment = "dev"`, bucket suffix in `variables.tf`. Provider applies `default_tags` (Environment/Project/ManagedBy) — rely on those rather than re-tagging each resource.
-- **Pricing:** scripts try the live AWS Pricing API first and fall back to an offline `us-east-1` catalog; surfaced output marks which source was used (`Live AWS API` vs `Offline Cache`).
-- **Git:** this directory is **not a git repo** yet. If version control is needed, initialize on a branch — never assume a remote exists.
-- **Before touching infra:** run `doctor.ps1` to confirm Terraform, AWS CLI, and credentials are present.
+- **Active cloud:** set `MINUS_CLOUD={aws|azure|gcp}` (default `aws`). The governance core, FinOps agent, and dashboard all read it and route through `core/providers/`. AWS is fully implemented; azure/gcp are scaffolds that degrade gracefully.
+- **OS:** cross-platform (Windows / macOS / Linux). Default shell here is **PowerShell**; a Bash (POSIX) tool is also available — use the right syntax per shell.
+- **Credentials:** never handled by our code. The cloud CLI's own credential chain is used (`aws sso login` / `aws configure` / assumed role). Prefer SSO so no long-term secret lands on disk.
+- **Region/defaults:** templates default to `us-east-1`, `environment = "dev"`; the medallion stack applies `default_tags` — rely on those rather than re-tagging.
+- **Git:** this **is** a git repo. Work on a branch; commit/push only when asked.
+- **Before touching infra:** run `./tools/doctor.ps1` to confirm Terraform, the cloud CLI, and credentials are present.
 
 ---
 

@@ -10,7 +10,7 @@ werkzeug dev server; no OS-specific calls).
 
 Run:
     pip install -r requirements.txt          # (pip3 / python3 on macOS & Linux)
-    python .agents/dashboard_app.py          # then open http://127.0.0.1:8050
+    python app/dashboard_app.py          # then open http://127.0.0.1:8050
 
 Optional environment overrides:
     DASH_PORT=8060   # use a different port if 8050 is taken
@@ -457,7 +457,7 @@ if __name__ == "__main__":
 
     if _port_in_use(host, port):
         print(f"[error] Port {port} is already in use. Pick another, e.g.:\n"
-              f"        DASH_PORT=8060 python .agents/dashboard_app.py", file=sys.stderr)
+              f"        DASH_PORT=8060 python app/dashboard_app.py", file=sys.stderr)
         sys.exit(1)
 
     print(f"\n  AWS Cost Ledger  ->  http://{host}:{port}   (Ctrl+C to stop)\n")

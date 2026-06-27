@@ -51,4 +51,4 @@ Rather than executing scripts individually, operators can type vague queries. Th
    * [approval.py](/core/approval.py) approval gate with selectable `gatekeeper` / `auto-approve` modes for side effects.
    * [finops_agent.py](/core/finops_agent.py) live cost intelligence over the real account (Cost Explorer, anomalies, CloudTrail correlation).
    * [optimize_analyzer.py](/core/optimize_analyzer.py) configuration scanner.
-   * Live FinOps operator console ([dashboard_app.py](/.agents/dashboard_app.py)) — a Plotly Dash app rendering real Cost Explorer spend, monthly burn, and the anomaly ledger from `finops_agent`.
+   * Live FinOps operator console ([app/dashboard_app.py](/app/dashboard_app.py)) — a Plotly Dash app rendering real spend, monthly burn, and the anomaly ledger via the active cloud provider.
