@@ -26,7 +26,7 @@ gantt
 ---
 
 ## 🤖 Natural Language Intent Dispatcher
-We deployed a central query parsing coordinator: [intent_dispatcher.py](/.agents/skills/terraform-orchestrator/scripts/intent_dispatcher.py). 
+We deployed a central query parsing coordinator: [dispatcher.py](/core/dispatcher.py). 
 
 Rather than executing scripts individually, operators can type vague queries. The dispatcher maps the keywords to the target script:
 * **Query**: `"check if the pipeline is online"` &rarr; triggers `health_checker.py`.
@@ -47,8 +47,8 @@ Rather than executing scripts individually, operators can type vague queries. Th
    * CloudWatch Alarms targeting AWS SNS Topics to alert engineers on step failures.
 2. **`agy` Customizations & Diagnostics**:
    * Workspace Rules ([AGENTS.md](/.agents/AGENTS.md)) to enforce safety boundaries.
-   * [audit_logger.py](/.agents/skills/terraform-orchestrator/scripts/audit_logger.py) and [hitl_gatekeeper.py](/.agents/skills/terraform-orchestrator/scripts/hitl_gatekeeper.py) to audit actions and block mutating deployments.
-   * [approval.py](/.agents/skills/terraform-orchestrator/scripts/approval.py) approval gate with selectable `gatekeeper` / `auto-approve` modes for side effects.
-   * [finops_agent.py](/.agents/skills/terraform-orchestrator/scripts/finops_agent.py) live cost intelligence over the real account (Cost Explorer, anomalies, CloudTrail correlation).
-   * [optimize_analyzer.py](/.agents/skills/pipeline-optimizer/scripts/optimize_analyzer.py) configuration scanner.
+   * [audit_logger.py](/core/audit_logger.py) and [hitl_gatekeeper.py](/core/hitl_gatekeeper.py) to audit actions and block mutating deployments.
+   * [approval.py](/core/approval.py) approval gate with selectable `gatekeeper` / `auto-approve` modes for side effects.
+   * [finops_agent.py](/core/finops_agent.py) live cost intelligence over the real account (Cost Explorer, anomalies, CloudTrail correlation).
+   * [optimize_analyzer.py](/core/optimize_analyzer.py) configuration scanner.
    * Live FinOps operator console ([dashboard_app.py](/.agents/dashboard_app.py)) — a Plotly Dash app rendering real Cost Explorer spend, monthly burn, and the anomaly ledger from `finops_agent`.

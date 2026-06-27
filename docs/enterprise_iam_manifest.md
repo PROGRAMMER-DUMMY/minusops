@@ -67,6 +67,6 @@ We attach a `Deny` condition if MFA is not present. This prevents direct API acc
 ---
 
 ## 🛠️ 4. Verification & Compliance Scans
-Our security scanner ([**`optimize_analyzer.py`**](/.agents/skills/pipeline-optimizer/scripts/optimize_analyzer.py)) runs continuous security audits:
+Our security scanner ([**`optimize_analyzer.py`**](/core/optimize_analyzer.py)) runs continuous security audits:
 * **Rule `SEC-02`**: Automatically flags any IAM policy that declares `"Resource": "*"` or wildcard statements, preventing loose policy exposures.
 * **Auto-Remediation**: Before any terraform configuration is proposed to the HITL gatekeeper, it must pass the security validation check with zero warnings.

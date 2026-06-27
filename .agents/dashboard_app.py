@@ -22,9 +22,8 @@ import time
 import datetime
 from concurrent.futures import ThreadPoolExecutor
 
-# Pull the live data layer from the FinOps agent.
-SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       "skills", "terraform-orchestrator", "scripts")
+# Pull the live data layer from the FinOps agent (core/ package, one level up).
+SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "core")
 sys.path.insert(0, SCRIPTS)
 from finops_agent import run_aws, get_anomalies, fetch_cost_by_service  # noqa: E402
 

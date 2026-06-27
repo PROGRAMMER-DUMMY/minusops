@@ -68,14 +68,12 @@ def dispatch_task(intent, query):
     # Secure Out-Of-Workspace Bin folder (built with os.path so it resolves on any OS)
     secure_bin_dir = os.path.expanduser(os.path.join("~", ".gemini", "antigravity-cli", "scratch", "bin"))
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # Map paths based on where scripts reside
+
     if intent == "DEPLOY":
         # Gatekeeper is in the secure bin folder outside the workspace
         script_path = os.path.join(secure_bin_dir, config["script"])
-    elif intent in ["OPTIMIZE", "BUDGET"]:
-        script_path = os.path.join(os.getcwd(), ".agents", "skills", "pipeline-optimizer", "scripts", config["script"])
     else:
+        # All other tools live alongside the dispatcher in core/
         script_path = os.path.join(script_dir, config["script"])
 
     if not os.path.exists(script_path):

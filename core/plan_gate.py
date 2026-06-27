@@ -38,7 +38,7 @@ import subprocess
 WORKSPACE = os.getcwd()
 LOG_DIR = os.path.join(WORKSPACE, ".agents", "logs")
 PENDING = os.path.join(LOG_DIR, "pending_plan.json")
-SCAN = os.path.join(WORKSPACE, ".agents", "skills", "pipeline-optimizer", "scripts", "optimize_analyzer.py")
+SCAN = os.path.join(WORKSPACE, "core", "optimize_analyzer.py")
 
 # Credentials are stored OUTSIDE the repo so they can never be committed or scanned.
 TOKEN_DIR = os.path.expanduser(os.path.join("~", ".minus_tf"))

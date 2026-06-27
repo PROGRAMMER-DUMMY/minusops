@@ -37,9 +37,9 @@ Whenever deploying or modifying infrastructure, you must follow this 5-stage pip
   ```
 
 ### 3. Log Audit Record
-* Execute the [audit_logger.py](/.agents/skills/terraform-orchestrator/scripts/audit_logger.py) script. This script reads the planned changes and registers them in the local log file `C:\Users\operator\PycharmProjects\MinusTeraformCli\.agents\logs\audit.jsonl` to ensure all actions are fully auditable.
+* Execute the [audit_logger.py](/core/audit_logger.py) script. This script reads the planned changes and registers them in the local log file `C:\Users\operator\PycharmProjects\MinusTeraformCli\.agents\logs\audit.jsonl` to ensure all actions are fully auditable.
   ```bash
-  python .agents/skills/terraform-orchestrator/scripts/audit_logger.py --action "deploy-medallion-pipeline" --details "Deploying Bronze, Silver, Gold S3 buckets and Glue jobs"
+  python core/audit_logger.py --action "deploy-medallion-pipeline" --details "Deploying Bronze, Silver, Gold S3 buckets and Glue jobs"
   ```
 
 ### 4. Human-in-the-Loop (HITL) Gate
