@@ -3,7 +3,7 @@
 > **Audience:** Any autonomous coding/ops CLI agent working in this repo — `agy` (Antigravity), `codex`, `claude code`, or similar.
 > **Purpose:** Tell you (the agent) *what you can do here*, *which tools to reach for*, *when and how to fetch documentation*, and *the safety rules you must never break*.
 >
-> Read this file first. For `agy`-specific workspace rules see [`.agents/AGENTS.md`](./.agents/AGENTS.md). For the canonical list of doc links, see the **Documentation Redirect Rule** at the bottom and [`aws-medallion-pipeline/information_library.md`](./aws-medallion-pipeline/information_library.md).
+> Read this file first. For `agy`-specific workspace rules see [`.agents/AGENTS.md`](./.agents/AGENTS.md). For the canonical list of doc links, see the **Documentation Redirect Rule** at the bottom and [`docs/information_library.md`](./docs/information_library.md).
 
 ---
 
@@ -84,7 +84,7 @@ The **intent dispatcher** routes to five intents — `HEALTH`, `DEPLOY`, `OPTIMI
 
 ## 4. When and how to fetch documentation
 
-You are expected to **verify against official docs rather than rely on memory** for: Terraform resource arguments, AWS CLI command flags, service quotas, and live pricing. The full link catalog lives in [`information_library.md`](./aws-medallion-pipeline/information_library.md) — that is the **redirect target**; always resolve doc lookups through it.
+You are expected to **verify against official docs rather than rely on memory** for: Terraform resource arguments, AWS CLI command flags, service quotas, and live pricing. The full link catalog lives in [`information_library.md`](./docs/information_library.md) — that is the **redirect target**; always resolve doc lookups through it.
 
 ### 4.1 WHEN to fetch (triggers)
 
@@ -100,7 +100,7 @@ If you can answer confidently from a file already in this repo (e.g. an existing
 
 ### 4.2 HOW to fetch — construct direct URLs (no UI clicking)
 
-Per [`documentation_ledger.md`](./aws-medallion-pipeline/documentation_ledger.md), these portals have **predictable URL structures**. Build the URL and `WebFetch` it directly instead of crawling a sidebar:
+Per [`documentation_ledger.md`](./docs/documentation_ledger.md), these portals have **predictable URL structures**. Build the URL and `WebFetch` it directly instead of crawling a sidebar:
 
 | Need | URL formula |
 | :--- | :--- |
@@ -129,7 +129,7 @@ Need a fact about an AWS resource / CLI flag / price?
 
 ## 5. Safety rules (non-negotiable)
 
-These mirror [`.agents/AGENTS.md`](./.agents/AGENTS.md) and [`enterprise_iam_manifest.md`](./aws-medallion-pipeline/enterprise_iam_manifest.md). They are load-bearing — treat them as hard constraints.
+These mirror [`.agents/AGENTS.md`](./.agents/AGENTS.md) and [`enterprise_iam_manifest.md`](./docs/enterprise_iam_manifest.md). They are load-bearing — treat them as hard constraints.
 
 1. **No mutating actions without explicit human review.** You are forbidden from running `terraform apply`, `terraform destroy`, `terraform state <mutating>`, `terraform force-unlock`, or mutating `git` (`push`, `reset`, `rebase`) — and any mutating `aws` call (`create-*`, `delete-*`, `put-*`, `modify-*`, `terminate-*`, `run-*`) — until the user has reviewed and approved. Side effects in the agent scripts (notifications, ticket creation) must route through `approval.py` (`gatekeeper` by default; `auto-approve` only when durably authorised — see §6.4).
 2. **Read before write.** `aws describe-* / list-* / get-*`, `terraform plan`, `terraform validate`, `head-bucket`, `get-caller-identity` are safe and may be run freely to gather state.
@@ -208,9 +208,9 @@ infrastructure mutations — those still go through the §6.1 deployment loop.
 
 **Whenever you need AWS / Terraform / pricing documentation, do not search from memory or the open web first — resolve the lookup through the repo's curated index:**
 
-➡️ **[`aws-medallion-pipeline/information_library.md`](./aws-medallion-pipeline/information_library.md)** — ranked, curated catalog of every official portal (Terraform Registry & CLI, AWS CLI v2, AWS service dev guides, Pricing Calculator, Well-Architected, Glue/EMR/Databricks/Step Functions/Athena).
+➡️ **[`docs/information_library.md`](./docs/information_library.md)** — ranked, curated catalog of every official portal (Terraform Registry & CLI, AWS CLI v2, AWS service dev guides, Pricing Calculator, Well-Architected, Glue/EMR/Databricks/Step Functions/Athena).
 
-➡️ **[`aws-medallion-pipeline/documentation_ledger.md`](./aws-medallion-pipeline/documentation_ledger.md)** — the URL-construction formulas in §4.2 for jumping straight to a resource/command/price page without UI clicking.
+➡️ **[`docs/documentation_ledger.md`](./docs/documentation_ledger.md)** — the URL-construction formulas in §4.2 for jumping straight to a resource/command/price page without UI clicking.
 
 Resolution order for any doc need:
 1. **In-repo pattern** (existing `.tf` / script) → reuse it.
