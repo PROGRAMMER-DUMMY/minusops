@@ -43,15 +43,21 @@ We attach a `Deny` condition if MFA is not present. This prevents direct API acc
 }
 ```
 
-### B. Out-of-Workspace Verification & Injection
-1. The operator runs the gatekeeper with their MFA device ARN:
-   ```bash
-   python hitl_gatekeeper.py --plan-file "tfplan" --mfa-arn "arn:aws:iam::123456789012:mfa/deploy-operator"
-   ```
-2. The gatekeeper prompts `Enter 6-digit AWS MFA Code:`.
-3. It calls `aws sts get-session-token` to validate the code. If successful, AWS returns temporary session keys (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) which are valid for up to 12 hours.
-4. The gatekeeper writes these credentials securely into the `approved.token` file outside the workspace.
-5. The `terraform_wrapper.py` reads the token, injects the temporary session credentials into the environment variables, runs `terraform apply tfplan` (passing the MFA condition check), and deletes the token.
+### B. Credential model — MFA at the CLI, never in our code
+The framework **does not mint, inject, or store credentials**. MFA is enforced one level up,
+at authentication time, so by the time `terraform apply` runs the session is already MFA-backed:
+
+1. The operator authenticates their **cloud CLI** with MFA before applying — either:
+   * `aws sso login` (IAM Identity Center; no long-term secret lands on disk), or
+   * assume the **MFA-gated deploy role** from `bootstrap/aws/` (its trust policy requires
+     `aws:MultiFactorAuthPresent = true`), e.g.
+     `aws sts assume-role --role-arn <MinusDeploy> --serial-number <mfa-arn> --token-code <code>`
+     and load the returned session into the CLI profile.
+2. `python core/plan_gate.py approve` reviews the exact plan and records a **hash-bound approval**
+   (hash + caller identity + timestamp — no secrets).
+3. `python core/plan_gate.py apply` re-checks the plan hash, confirms an active session via the
+   provider's `identity()`, and runs `terraform apply tfplan` using the **ambient CLI credential
+   chain**. Any `.tf` change voids the approval and forces a fresh review.
 
 ---
 

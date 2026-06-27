@@ -9,54 +9,40 @@ This skill equips `agy` with the procedures, scripts, and policies needed to saf
 
 ## 📋 The Secure Orchestration Loop
 
-Whenever deploying or modifying infrastructure, you must follow this 5-stage pipeline:
+All infrastructure changes go through **[core/plan_gate.py](/core/plan_gate.py)** — a plan-bound deploy gate that enforces the loop in code (verify → plan → hash → approve → apply), audits every stage, and refuses to apply any plan whose hash you did not approve.
 
 ```
-  +--------------+     +------------------+     +------------------+
-  |  1. Validate | --> | 2. Generate Plan | --> | 3. Audit Logging |
-  +--------------+     +------------------+     +------------------+
-                                                         |
-                                                         v
-  +--------------+     +------------------+     +------------------+
-  |  6. Check    | <-- |   5. Execute     | <-- |   4. HITL Gate   |
-  |  Health/Logs |     |   (Tf Apply)     |     |   (User Review)  |
-  +--------------+     +------------------+     +------------------+
+  verify  -->  plan  -->  approve (review + confirm)  -->  apply (exact tfplan)
+    |           |              |                              |
+  fmt+        records       binds approval               applies ONLY the
+  validate+   plan-hash     to the plan-hash             approved hash;
+  scan                                                   re-plan voids it
 ```
 
-### 1. Validate & Lint
-* Ensure Terraform syntax is correct and formatted:
-  ```bash
-  terraform fmt -check
-  terraform validate
-  ```
+### Credential model — the gate never handles secrets
+Authenticate via the cloud CLI **before** applying — `aws sso login`, or assume the
+MFA-gated deploy role from `bootstrap/aws/` into your CLI session. MFA is enforced by
+that role's trust policy; `terraform apply` then uses the ambient CLI credential chain.
 
-### 2. Generate Plan
-* Save the plan to an execution file:
-  ```bash
-  terraform plan -out=tfplan
-  ```
+### Run it
+```bash
+# stage by stage
+python core/plan_gate.py verify  --dir templates/aws/medallion-pipeline
+python core/plan_gate.py plan    --dir templates/aws/medallion-pipeline
+python core/plan_gate.py approve --dir templates/aws/medallion-pipeline
+python core/plan_gate.py apply   --dir templates/aws/medallion-pipeline
 
-### 3. Log Audit Record
-* Execute the [audit_logger.py](/core/audit_logger.py) script. This script reads the planned changes and registers them in the local log file `C:\Users\operator\PycharmProjects\MinusTeraformCli\.agents\logs\audit.jsonl` to ensure all actions are fully auditable.
-  ```bash
-  python core/audit_logger.py --action "deploy-medallion-pipeline" --details "Deploying Bronze, Silver, Gold S3 buckets and Glue jobs"
-  ```
+# or all four in sequence (gatekeeper prompts at approve; --mode auto-approve skips the y/N)
+python core/plan_gate.py run     --dir templates/aws/medallion-pipeline
+```
 
-### 4. Human-in-the-Loop (HITL) Gate
-* Block execution and present the detailed plan changes to the user.
-* Trigger the [hitl_gatekeeper.py](/.agents/skills/terraform-orchestrator/scripts/hitl_gatekeeper.py) script to prompt the user (or system supervisor) for authorization:
-  ```bash
-  python .agents/skills/terraform-orchestrator/scripts/hitl_gatekeeper.py --plan-file "tfplan"
-  ```
+### Plan-bound guarantee
+Any `.tf` change produces a **new plan hash**, which **voids the prior approval** and
+forces a fresh review. `apply` cross-checks the current hash against the approved one and
+refuses on mismatch. Every stage is written to `.agents/logs/audit.jsonl`.
 
-### 5. Execute Action
-* Only after the gatekeeper yields `APPROVED`, run:
-  ```bash
-  terraform apply tfplan
-  ```
-
-### 6. Health & Uptime Diagnostics
-* Perform post-deployment smoke tests. Verify that the created resources are online. If any health test fails, log it and sound a rollback alert.
+### Post-deploy
+Run `python core/health_checker.py` for smoke tests; if a check fails, log it and alert.
 
 ---
 

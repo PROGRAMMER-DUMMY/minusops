@@ -14,9 +14,9 @@ INTENT_MAPPING = {
     },
     "DEPLOY": {
         "keywords": ["deploy", "apply", "build", "push", "infrastructure", "release", "provision"],
-        "script": "hitl_gatekeeper.py",
-        "default_args": ["--plan-file", "tfplan"],
-        "description": "Triggering infrastructure deployment pipeline and prompting approval gate..."
+        "script": "plan_gate.py",
+        "default_args": ["run"],
+        "description": "Running the plan-bound deploy gate (verify -> plan -> approve -> apply)..."
     },
     "OPTIMIZE": {
         "keywords": ["optimize", "bug", "security", "vulnerability", "audit", "scan", "compliance", "fault", "speed", "performance"],
@@ -65,16 +65,9 @@ def dispatch_task(intent, query):
     print(f"[DISPATCHER] Classified Intent: {intent}")
     print(f"[DISPATCHER] Action: {config['description']}")
 
-    # Secure Out-Of-Workspace Bin folder (built with os.path so it resolves on any OS)
-    secure_bin_dir = os.path.expanduser(os.path.join("~", ".gemini", "antigravity-cli", "scratch", "bin"))
+    # All tools live alongside the dispatcher in core/.
     script_dir = os.path.dirname(os.path.abspath(__file__))
-
-    if intent == "DEPLOY":
-        # Gatekeeper is in the secure bin folder outside the workspace
-        script_path = os.path.join(secure_bin_dir, config["script"])
-    else:
-        # All other tools live alongside the dispatcher in core/
-        script_path = os.path.join(script_dir, config["script"])
+    script_path = os.path.join(script_dir, config["script"])
 
     if not os.path.exists(script_path):
         print(f"[ERR] Script not found: {script_path}", file=sys.stderr)

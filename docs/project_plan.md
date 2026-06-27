@@ -33,7 +33,7 @@ Rather than executing scripts individually, operators can type vague queries. Th
 * **Query**: `"audit the code security"` &rarr; triggers `optimize_analyzer.py`.
 * **Query**: `"forecast the monthly cost"` &rarr; triggers `budget_calculator.py`.
 * **Query**: `"why did spend spike / find anomalies"` &rarr; triggers `finops_agent.py` (live AWS).
-* **Query**: `"apply the changes"` &rarr; triggers `hitl_gatekeeper.py`.
+* **Query**: `"apply the changes"` &rarr; triggers `plan_gate.py run` (the deploy gate).
 
 ---
 
@@ -47,7 +47,7 @@ Rather than executing scripts individually, operators can type vague queries. Th
    * CloudWatch Alarms targeting AWS SNS Topics to alert engineers on step failures.
 2. **`agy` Customizations & Diagnostics**:
    * Workspace Rules ([AGENTS.md](/.agents/AGENTS.md)) to enforce safety boundaries.
-   * [audit_logger.py](/core/audit_logger.py) and [hitl_gatekeeper.py](/core/hitl_gatekeeper.py) to audit actions and block mutating deployments.
+   * [audit_logger.py](/core/audit_logger.py) and [plan_gate.py](/core/plan_gate.py) to audit actions and gate mutating deployments (plan-bound, MFA via the cloud CLI).
    * [approval.py](/core/approval.py) approval gate with selectable `gatekeeper` / `auto-approve` modes for side effects.
    * [finops_agent.py](/core/finops_agent.py) live cost intelligence over the real account (Cost Explorer, anomalies, CloudTrail correlation).
    * [optimize_analyzer.py](/core/optimize_analyzer.py) configuration scanner.
