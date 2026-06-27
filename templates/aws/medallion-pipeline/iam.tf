@@ -50,6 +50,16 @@ resource "aws_iam_policy" "glue_s3_policy" {
           aws_s3_bucket.glue_assets.arn,
           "${aws_s3_bucket.glue_assets.arn}/*"
         ]
+      },
+      {
+        # Use the CMK to read/write KMS-encrypted objects in those buckets.
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+          "kms:Encrypt"
+        ]
+        Resource = [aws_kms_key.pipeline.arn]
       }
     ]
   })
@@ -89,6 +99,7 @@ resource "aws_iam_policy" "sfn_policy" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Scoped to this pipeline's two Glue jobs only (was Resource = "*").
         Effect = "Allow"
         Action = [
           "glue:StartJobRun",
@@ -96,17 +107,24 @@ resource "aws_iam_policy" "sfn_policy" {
           "glue:GetJobRuns",
           "glue:BatchStopJobRun"
         ]
-        Resource = "*"
+        Resource = [
+          aws_glue_job.bronze_to_silver.arn,
+          aws_glue_job.silver_to_gold.arn
+        ]
       },
       {
+        # Scoped to this pipeline's Gold crawler only (was Resource = "*").
         Effect = "Allow"
         Action = [
           "glue:StartCrawler",
           "glue:GetCrawler"
         ]
-        Resource = "*"
+        Resource = [aws_glue_crawler.gold_crawler.arn]
       },
       {
+        # CloudWatch Logs *delivery* APIs do not support resource-level scoping
+        # (AWS requires "*"); these are not S3/KMS/DynamoDB actions, so this is
+        # an accepted exception under the IAM manifesto.
         Effect = "Allow"
         Action = [
           "logs:CreateLogDelivery",
@@ -114,12 +132,19 @@ resource "aws_iam_policy" "sfn_policy" {
           "logs:UpdateLogDelivery",
           "logs:DeleteLogDelivery",
           "logs:ListLogDeliveries",
-          "logs:PutLogEvents",
-          "logs:PutDestination",
-          "logs:DescribeDestinations",
           "logs:DescribeLogGroups"
         ]
         Resource = "*"
+      },
+      {
+        # Log writes scoped to this pipeline's Step Functions log group.
+        Effect = "Allow"
+        Action = [
+          "logs:PutLogEvents",
+          "logs:PutDestination",
+          "logs:DescribeDestinations"
+        ]
+        Resource = ["${aws_cloudwatch_log_group.sfn_log_group.arn}:*"]
       }
     ]
   })

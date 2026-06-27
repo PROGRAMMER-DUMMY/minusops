@@ -9,8 +9,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "bronze_sse" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.pipeline.arn
     }
+    bucket_key_enabled = true
   }
 }
 
@@ -29,6 +31,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "bronze_lifecycle" {
   rule {
     id     = "archive-old-raw-data"
     status = "Enabled"
+
+    filter {} # applies to all objects in the bucket
 
     transition {
       days          = 30
@@ -58,8 +62,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "silver_sse" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.pipeline.arn
     }
+    bucket_key_enabled = true
   }
 }
 
@@ -78,6 +84,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "silver_lifecycle" {
   rule {
     id     = "archive-silver-parquet"
     status = "Enabled"
+
+    filter {} # applies to all objects in the bucket
 
     transition {
       days          = 60
@@ -103,8 +111,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "gold_sse" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.pipeline.arn
     }
+    bucket_key_enabled = true
   }
 }
 
@@ -129,8 +139,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "glue_assets_sse" 
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.pipeline.arn
     }
+    bucket_key_enabled = true
   }
 }
 
