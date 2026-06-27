@@ -5,12 +5,12 @@ on:
     branches:
       - main
     paths:
-      - 'aws-medallion-pipeline/**'
+      - 'templates/aws/medallion-pipeline/**'
   pull_request:
     branches:
       - main
     paths:
-      - 'aws-medallion-pipeline/**'
+      - 'templates/aws/medallion-pipeline/**'
 
 jobs:
   terraform:
@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./aws-medallion-pipeline
+        working-directory: ./templates/aws/medallion-pipeline
 
     steps:
       # 1. Checkout codebase
@@ -47,7 +47,7 @@ jobs:
       - name: Run TFSec Security Scan
         uses: aquasecurity/tfsec-action@v1.0.0
         with:
-          working_directory: ./aws-medallion-pipeline
+          working_directory: ./templates/aws/medallion-pipeline
 
       # 7. Configure AWS Credentials (only on main branch push)
       - name: Configure AWS Credentials

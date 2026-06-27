@@ -13,7 +13,7 @@ Action path (side effects — routed through the approval gate):
       paired with:  --approval-mode {gatekeeper, auto-approve}
 
 The Cost Anomaly Detection monitor this reads from is provisioned by
-aws-medallion-pipeline/cost_anomaly.tf. All AWS calls degrade gracefully if the
+templates/aws/medallion-pipeline/cost_anomaly.tf. All AWS calls degrade gracefully if the
 CLI is missing or credentials are not configured.
 """
 import os

@@ -21,7 +21,7 @@ INTENT_MAPPING = {
     "OPTIMIZE": {
         "keywords": ["optimize", "bug", "security", "vulnerability", "audit", "scan", "compliance", "fault", "speed", "performance"],
         "script": "optimize_analyzer.py",
-        "default_args": ["--source-dir", "./aws-medallion-pipeline"],
+        "default_args": ["--source-dir", "./templates/aws/medallion-pipeline"],
         "description": "Scanning infrastructure configurations for cost, security, and performance gaps..."
     },
     "BUDGET": {

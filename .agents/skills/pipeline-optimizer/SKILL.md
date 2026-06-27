@@ -43,7 +43,7 @@ Whenever analyzing an existing AWS data architecture, you must evaluate the foll
 ## 🚀 Execution Workflow
 1. Execute the optimizer scanner script:
    ```bash
-   python .agents/skills/pipeline-optimizer/scripts/optimize_analyzer.py --source-dir "./aws-medallion-pipeline"
+   python .agents/skills/pipeline-optimizer/scripts/optimize_analyzer.py --source-dir "./templates/aws/medallion-pipeline"
    ```
 2. Present the generated markdown recommendations report (`.agents/logs/optimization_report.md`) to the user.
 3. Once approved by the user, prepare a terraform refactoring plan (`tfplan`) applying the recommended changes.

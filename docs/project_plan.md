@@ -42,7 +42,7 @@ Rather than executing scripts individually, operators can type vague queries. Th
 1. **AWS Infrastructure (Terraform)**:
    * Event-driven Medallion S3 storage buckets with KMS encryption and public access blocks.
    * Auto-archiving S3 Lifecycle configurations (IA and Glacier transitions).
-   * PySpark ETL jobs ([bronze_to_silver.py](/aws-medallion-pipeline/etl_scripts/bronze_to_silver.py) & [silver_to_gold.py](/aws-medallion-pipeline/etl_scripts/silver_to_gold.py)).
+   * PySpark ETL jobs ([bronze_to_silver.py](/templates/aws/medallion-pipeline/etl_scripts/bronze_to_silver.py) & [silver_to_gold.py](/templates/aws/medallion-pipeline/etl_scripts/silver_to_gold.py)).
    * State Machine orchestrator, SQS Dead-Letter Queues (DLQ), and EventBridge triggers.
    * CloudWatch Alarms targeting AWS SNS Topics to alert engineers on step failures.
 2. **`agy` Customizations & Diagnostics**:

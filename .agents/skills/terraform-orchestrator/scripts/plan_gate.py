@@ -18,11 +18,11 @@ Guarantees:
 Cross-platform (Windows / macOS / Linux): os.path, list-form subprocess, no shell.
 
 Examples:
-    python plan_gate.py verify  --dir aws-medallion-pipeline
-    python plan_gate.py plan    --dir aws-medallion-pipeline
-    python plan_gate.py approve --dir aws-medallion-pipeline --mfa-arn arn:aws:iam::123:mfa/me [--role-arn arn:aws:iam::123:role/Deploy]
-    python plan_gate.py apply   --dir aws-medallion-pipeline [--mode auto-approve]
-    python plan_gate.py run     --dir aws-medallion-pipeline --mfa-arn ... [--role-arn ...] [--mode ...]
+    python plan_gate.py verify  --dir templates/aws/medallion-pipeline
+    python plan_gate.py plan    --dir templates/aws/medallion-pipeline
+    python plan_gate.py approve --dir templates/aws/medallion-pipeline --mfa-arn arn:aws:iam::123:mfa/me [--role-arn arn:aws:iam::123:role/Deploy]
+    python plan_gate.py apply   --dir templates/aws/medallion-pipeline [--mode auto-approve]
+    python plan_gate.py run     --dir templates/aws/medallion-pipeline --mfa-arn ... [--role-arn ...] [--mode ...]
 """
 import os
 import sys
@@ -296,7 +296,7 @@ def stage_run(dir_, mfa_arn, role_arn, mode):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="MFA-gated, plan-bound Terraform deploy gate")
     p.add_argument("stage", choices=["verify", "plan", "approve", "apply", "run"])
-    p.add_argument("--dir", default="aws-medallion-pipeline", help="Terraform directory")
+    p.add_argument("--dir", default="templates/aws/medallion-pipeline", help="Terraform directory")
     p.add_argument("--mfa-arn", help="MFA device ARN (required for approve/run)")
     p.add_argument("--role-arn", help="Deploy role ARN to assume (optional; else get-session-token)")
     p.add_argument("--mode", default="gatekeeper", choices=["gatekeeper", "auto-approve"])

@@ -45,7 +45,7 @@ The long-term goal is a **broad AWS ops copilot** driven primarily through the *
 │               ├── optimize_analyzer.py   # HCL scanner (SEC/COST/OBS rules) → markdown report
 │               └── budget_calculator.py   # multi-service monthly cost estimator (live + offline pricing)
 │
-├── aws-medallion-pipeline/            # THE LIVE TERRAFORM STACK
+├── templates/aws/medallion-pipeline/            # THE LIVE TERRAFORM STACK
 │   ├── providers.tf variables.tf outputs.tf
 │   ├── s3.tf glue.tf step_functions.tf eventbridge.tf iam.tf observability.tf
 │   ├── budgets.tf cost_anomaly.tf
@@ -65,7 +65,7 @@ The long-term goal is a **broad AWS ops copilot** driven primarily through the *
 
 | Capability | How you do it | Primary tool |
 | :--- | :--- | :--- |
-| **Provision / change AWS infra** | Edit HCL in `aws-medallion-pipeline/`, then run the orchestration loop (§6) | Terraform CLI |
+| **Provision / change AWS infra** | Edit HCL in `templates/aws/medallion-pipeline/`, then run the orchestration loop (§6) | Terraform CLI |
 | **Inspect live AWS state** | `aws <service> <describe/list/get>` — read-only, safe to run freely | AWS CLI v2 |
 | **Health diagnostics** | `python .agents/skills/terraform-orchestrator/scripts/health_checker.py` | AWS CLI probes |
 | **Scan infra for issues** | `python .agents/skills/pipeline-optimizer/scripts/optimize_analyzer.py --source-dir <dir>` | HCL regex scanner |
