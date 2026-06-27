@@ -1,69 +1,93 @@
-name: "Terraform Deploy Pipeline"
+name: "Terraform CI/CD"
 
+# Validate on every PR/push; deploy only from main, behind a human approval gate.
+# No long-lived AWS keys — authentication is OIDC (federated, short-lived).
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'templates/aws/medallion-pipeline/**'
   pull_request:
-    branches:
-      - main
     paths:
-      - 'templates/aws/medallion-pipeline/**'
+      - "templates/aws/medallion-pipeline/**"
+  push:
+    branches: [main]
+    paths:
+      - "templates/aws/medallion-pipeline/**"
+
+permissions:
+  contents: read
+  id-token: write # required for AWS OIDC federation
+
+env:
+  TF_DIR: templates/aws/medallion-pipeline
+  AWS_REGION: us-east-1
+  TF_VERSION: "1.10.5"
 
 jobs:
-  terraform:
-    name: "Terraform Lint, Validate & Deploy"
+  # ---------------------------------------------------------------------------
+  # Always runs (PR + push). No cloud credentials — pure static checks.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: "Validate & Scan"
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./templates/aws/medallion-pipeline
-
     steps:
-      # 1. Checkout codebase
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      # 2. Setup Terraform CLI
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
+      - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.7
+          terraform_version: ${{ env.TF_VERSION }}
 
-      # 3. Check code formatting
-      - name: Terraform Format Check
+      - name: Format check
+        working-directory: ${{ env.TF_DIR }}
         run: terraform fmt -check
 
-      # 4. Initialize working directory
-      - name: Terraform Init
-        run: terraform init -backend=false # Runs validation without configuring live state backend
+      - name: Init (providers only, no backend)
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -backend=false -input=false
 
-      # 5. Validate HCL configuration syntax
-      - name: Terraform Validate
-        run: terraform validate
+      - name: Validate
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform validate -no-color
 
-      # 6. Static Analysis / Security Scan (tfsec)
-      - name: Run TFSec Security Scan
-        uses: aquasecurity/tfsec-action@v1.0.0
+      - name: Security scan (project scanner — same rules as plan_gate)
+        run: python3 core/optimize_analyzer.py --source-dir ${{ env.TF_DIR }}
+
+  # ---------------------------------------------------------------------------
+  # Deploy only from main, AFTER validate, AND after manual approval.
+  # `environment: production` is the human gate: configure required reviewers on
+  # that environment in repo Settings → Environments. Auth is OIDC (no secrets).
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: "Plan & Apply (gated)"
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: ${{ env.TF_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
         with:
-          working_directory: ./templates/aws/medallion-pipeline
+          terraform_version: ${{ env.TF_VERSION }}
 
-      # 7. Configure AWS Credentials (only on main branch push)
-      - name: Configure AWS Credentials
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: aws-actions/configure-aws-credentials@v2
+      # OIDC: assumes the MFA-/condition-gated deploy role; no static access keys.
+      # Set repo variable AWS_DEPLOY_ROLE_ARN (the MinusDeploy role from bootstrap/aws).
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      # 8. Terraform Plan
-      - name: Terraform Plan
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      # Remote state via partial backend config (repo var TFSTATE_BUCKET).
+      - name: Init (remote state)
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" \
+            -backend-config="key=medallion-pipeline/prod/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      - name: Plan
         run: terraform plan -out=tfplan
 
-      # 9. Terraform Apply (only on main branch push)
-      - name: Terraform Apply
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: terraform apply -auto-approve tfplan
+      - name: Apply (approved plan only)
+        run: terraform apply tfplan
