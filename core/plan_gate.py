@@ -147,6 +147,12 @@ def stage_verify(dir_):
         print("[gate] terraform fmt -check failed (run `terraform fmt`).", file=sys.stderr)
         _audit("verify", "FAILED", reason="fmt", dir=dir_)
         return False
+    # Install providers (without configuring the remote backend) so validate can run.
+    rc, _, err = _tf(dir_, "init", "-backend=false", "-input=false", capture=True)
+    if rc != 0:
+        print(f"[gate] terraform init (providers) failed:\n{err}", file=sys.stderr)
+        _audit("verify", "FAILED", reason="init", dir=dir_)
+        return False
     rc, _, err = _tf(dir_, "validate", capture=True)
     if rc != 0:
         print(f"[gate] terraform validate failed:\n{err}", file=sys.stderr)
