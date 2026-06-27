@@ -196,6 +196,21 @@ Use `gatekeeper` by default. Only use `auto-approve` for low-risk, idempotent ac
 user has durably authorised (e.g. a scheduled read-only report). Never `auto-approve`
 infrastructure mutations — those still go through the §6.1 deployment loop.
 
+### 6.5 Deploy report & architecture diagram
+
+After a plan, a versioned **deploy report** is produced under `.agents/reports/<plan-hash>/`
+(plan summary of what's added/changed/destroyed, per-run + monthly cost, the architecture
+diagram, an HTML report, and a rendered PDF). The report is **keyed by plan-hash**, so each
+report is tied to exactly one plan; `git` versions the `.tf`, the plan-hash versions the report.
+
+**The architecture diagram is LLM-generated and MUST conform to the spec — this is binding:**
+- 📐 [`docs/architecture_svg_spec.md`](./docs/architecture_svg_spec.md) — the structure, tiers,
+  node schema, palette, and must-haves. **Any agent (agy, Claude, Codex) that draws the diagram
+  follows this exactly**, so the output is structurally identical across tools.
+- 🧩 [`docs/architecture_svg_skeleton.svg`](./docs/architecture_svg_skeleton.svg) — start from this
+  empty frame; inject nodes/edges/module-boxes into the fixed tier groups. Do not move bands,
+  rename ids, or change the palette. Run the §8 self-check before emitting.
+
 ---
 
 ## 7. Environment & conventions

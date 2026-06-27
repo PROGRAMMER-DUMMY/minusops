@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" width="100%" role="img">
+  <title>Architecture — TEMPLATE_NAME</title>
+  <desc>Auto-generated deploy architecture. Tiers: Sources, Storage, Compute, Orchestration, Observability; cross-cutting Security band. Conforms to architecture_svg_spec.md v1.</desc>
+
+  <defs>
+    <style>
+      :root{
+        --bg:#14110f; --panel:#1c1714; --line:rgba(217,93,57,.18);
+        --terracotta:#d95d39; --terra-soft:#e8825f; --sand:#d4a373;
+        --sage:#8da189; --gold:#cb9a3e; --text:#fbf7f4; --muted:#b09c93;
+      }
+      .title{font:600 22px 'Outfit',system-ui,sans-serif;fill:var(--text)}
+      .sub{font:500 12px 'JetBrains Mono',ui-monospace,monospace;fill:var(--muted)}
+      .tier-h{font:600 13px 'Outfit',system-ui,sans-serif;letter-spacing:.12em;fill:var(--text)}
+      .n-type{font:600 13px 'Inter',system-ui,sans-serif;fill:var(--text)}
+      .n-name{font:400 11px 'JetBrains Mono',ui-monospace,monospace;fill:var(--muted)}
+      .mod-label{font:600 11px 'JetBrains Mono',ui-monospace,monospace;fill:var(--muted)}
+      .legend{font:500 11px 'Inter',system-ui,sans-serif;fill:var(--muted)}
+      .card{fill:var(--panel)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#fbf7f4"/>
+    </marker>
+  </defs>
+
+  <!-- 1. background -->
+  <g id="bg">
+    <rect x="0" y="0" width="1280" height="760" fill="#14110f"/>
+  </g>
+
+  <!-- 2. title bar (fill TEMPLATE • CLOUD • plan-hash • timestamp) -->
+  <g id="titlebar">
+    <rect x="0" y="0" width="1280" height="64" fill="#1c1714"/>
+    <rect x="0" y="63" width="1280" height="1" fill="rgba(217,93,57,.18)"/>
+    <text class="title" x="24" y="34">TEMPLATE_NAME</text>
+    <text class="sub" x="24" y="52">CLOUD · plan a1b2c3d4 · GENERATED_AT</text>
+  </g>
+
+  <!-- 3. edges (drawn under nodes) -->
+  <g id="edges"><!-- <path d="..." stroke="#fbf7f4" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/> --></g>
+
+  <!-- 4. tier columns (header at y=76; nodes stack from y=108) -->
+  <g id="tier-sources">
+    <text class="tier-h" x="24" y="92">SOURCES</text>
+    <rect x="24" y="100" width="232" height="2" fill="#d4a373"/>
+    <!-- nodes here -->
+  </g>
+  <g id="tier-storage">
+    <text class="tier-h" x="272" y="92">STORAGE</text>
+    <rect x="272" y="100" width="232" height="2" fill="#d95d39"/>
+    <!-- nodes here -->
+  </g>
+  <g id="tier-compute">
+    <text class="tier-h" x="520" y="92">COMPUTE</text>
+    <rect x="520" y="100" width="232" height="2" fill="#e8825f"/>
+    <!-- nodes here -->
+  </g>
+  <g id="tier-orchestration">
+    <text class="tier-h" x="768" y="92">ORCHESTRATION</text>
+    <rect x="768" y="100" width="232" height="2" fill="#8da189"/>
+    <!-- nodes here -->
+  </g>
+  <g id="tier-observability">
+    <text class="tier-h" x="1016" y="92">OBSERVABILITY</text>
+    <rect x="1016" y="100" width="232" height="2" fill="#cb9a3e"/>
+    <!-- nodes here -->
+  </g>
+
+  <!-- 5. security band (cross-cutting, y 632..688) -->
+  <g id="band-security">
+    <rect x="24" y="632" width="1224" height="56" rx="10" fill="none" stroke="#b09c93" stroke-dasharray="4 4"/>
+    <text class="tier-h" x="40" y="652">SECURITY &amp; IAM</text>
+    <!-- role/policy/kms chips here -->
+  </g>
+
+  <!-- 6. legend (y 688..760) -->
+  <g id="legend">
+    <text class="legend" x="24" y="712">Tiers:</text>
+    <rect x="70" y="703" width="12" height="12" rx="3" fill="#d4a373"/><text class="legend" x="88" y="713">Sources</text>
+    <rect x="150" y="703" width="12" height="12" rx="3" fill="#d95d39"/><text class="legend" x="168" y="713">Storage</text>
+    <rect x="228" y="703" width="12" height="12" rx="3" fill="#e8825f"/><text class="legend" x="246" y="713">Compute</text>
+    <rect x="312" y="703" width="12" height="12" rx="3" fill="#8da189"/><text class="legend" x="330" y="713">Orchestration</text>
+    <rect x="430" y="703" width="12" height="12" rx="3" fill="#cb9a3e"/><text class="legend" x="448" y="713">Observability</text>
+    <text class="legend" x="24" y="740">Flow:</text>
+    <line x1="70" y1="736" x2="110" y2="736" stroke="#fbf7f4" stroke-width="1.5" marker-end="url(#arrow)"/><text class="legend" x="118" y="740">data</text>
+    <line x1="170" y1="736" x2="210" y2="736" stroke="#8da189" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrow)"/><text class="legend" x="218" y="740">trigger</text>
+    <text class="legend" x="300" y="740">Status: green=create · gold=update · terracotta=delete</text>
+  </g>
+</svg>
