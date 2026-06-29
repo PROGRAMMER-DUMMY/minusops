@@ -1,0 +1,45 @@
+name: "Release (signed wheel + SBOM)"
+
+# On a version tag, build the distribution, generate a CycloneDX SBOM, and produce a
+# cryptographic build-provenance attestation (Sigstore-backed, via GitHub OIDC — no
+# private keys to manage). Artifacts attach to the GitHub Release for client download.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write       # create/attach release assets
+  id-token: write       # OIDC for keyless signing
+  attestations: write   # build-provenance attestation
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build cyclonedx-bom
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Generate CycloneDX SBOM
+        run: cyclonedx-py environment --output-format JSON --outfile sbom.cyclonedx.json || cyclonedx-py requirements requirements.txt --output-format JSON --outfile sbom.cyclonedx.json
+
+      - name: Attest build provenance (keyless, Sigstore)
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: "dist/*"
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+            sbom.cyclonedx.json
+          fail_on_unmatched_files: true

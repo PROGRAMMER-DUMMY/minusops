@@ -4,12 +4,14 @@ This ledger describes the layout, structural patterns, and query heuristics for 
 
 ---
 
-## 🛠️ 1. Terraform Registry (AWS Provider)
-* **Website URL**: `https://registry.terraform.io/providers/hashicorp/aws/latest/docs`
+## 1. Terraform Registry (AWS Provider)
+* **Provider Browser**: `https://registry.terraform.io/browse/providers`
+* **AWS Provider URL**: `https://registry.terraform.io/providers/hashicorp/aws/latest/docs`
 * **What it Contains**: Every HCL resource block schema, required/optional parameters, return attributes, and connection details.
 * **The Manual UI Bottleneck**: The website is a Single-Page App (SPA). Finding resources manually requires expanding a nested, lazy-loaded left sidebar, scrolling through hundreds of services, and selecting target blocks.
+* **Version Check**: Read `.terraform.lock.hcl` or run `terraform providers` / `terraform version` when available. Prefer the provider version currently locked by the Terraform directory. Use `/latest/` only when no version is pinned or when checking what changed.
 
-### 🚀 Direct URL Construction Shortcuts (Bypassing Clicks)
+### Direct URL Construction Shortcuts (Bypassing Clicks)
 You can jump directly to any resource or data source by typing or requesting these path formats:
 * **Resources (Creations)**:
   `https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/<resource_type_without_aws_prefix>`
@@ -18,30 +20,41 @@ You can jump directly to any resource or data source by typing or requesting the
 * **Data Sources (Lookups)**:
   `https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/<data_source_type_without_aws_prefix>`
   * *Example (Caller ID)*: [aws_caller_identity](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/caller_identity)
+  * *Example (Pricing Product)*: [aws_pricing_product](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/pricing_product)
 
 ---
 
-## 💻 2. AWS CLI v2 Command Reference
-* **Website URL**: `https://awscli.amazonaws.com/v2/documentation/api/latest/index.html`
+## 2. AWS CLI v2 Command Reference
+* **Landing URL**: `https://docs.aws.amazon.com/cli/latest/`
+* **Static Command URL**: `https://awscli.amazonaws.com/v2/documentation/api/latest/index.html`
 * **What it Contains**: Parameter flags, argument values, and JSON schema structures for every command line action.
 * **The Manual UI Bottleneck**: The index page lists all AWS services. Finding a command manually requires clicking the service name, then searching the command list, and clicking the individual action page.
+* **Version Check**: Run `aws --version` before using command docs. If the installed version differs materially from the docs' displayed version, prefer the installed CLI's local botocore model or `aws <service> <command> help`.
 
-### 🚀 Direct URL Construction Shortcuts (Bypassing Clicks)
+### Direct URL Construction Shortcuts (Bypassing Clicks)
 AWS CLI v2 maintains a highly predictable static HTML structure. You can map any terminal command to its documentation page using this formula:
 * **Pattern**: `https://awscli.amazonaws.com/v2/documentation/api/latest/reference/<service>/<action>.html`
 * **Translation Examples**:
   * Command: `aws s3api head-bucket` &rarr; [s3api/head-bucket.html](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/s3api/head-bucket.html)
   * Command: `aws glue start-job-run` &rarr; [glue/start-job-run.html](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/glue/start-job-run.html)
   * Command: `aws stepfunctions start-execution` &rarr; [stepfunctions/start-execution.html](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/stepfunctions/start-execution.html)
+  * Command: `aws bcm-pricing-calculator create-workload-estimate` &rarr; [bcm-pricing-calculator/create-workload-estimate.html](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/bcm-pricing-calculator/create-workload-estimate.html)
 
 ---
 
-## 💵 3. AWS Pricing Calculator
+## 2.1 HashiCorp Well-Architected Framework
+* **Website URL**: `https://developer.hashicorp.com/well-architected-framework`
+* **What it Contains**: Design-level guidance for secure systems and reliable infrastructure workflows.
+* **Use When**: The user asks for architecture, ambiguous governance requirements, access boundaries, or enterprise security posture.
+
+---
+
+## 3. AWS Pricing Calculator
 * **Website URL**: `https://calculator.aws/`
 * **What it Contains**: Estimator pages where you select regions, service tiers, instance types, and durations.
 * **The Manual UI Bottleneck**: The site requires logging in anonymously, clicking "Add Service", typing search terms, selecting custom configurations, dragging sliders, and clicking "Save". This cannot be automated or crawled easily due to complex JavaScript layouts.
 
-### 🚀 Programmatic Query Alternatives (The Real Source of Truth)
+### Programmatic Query Alternatives (The Real Source of Truth)
 To extract pricing without clicking the web interface, developers can use these options:
 1. **AWS CLI Pricing Command**:
    Use the `pricing` service client in terminal commands to query exact rates for resources:

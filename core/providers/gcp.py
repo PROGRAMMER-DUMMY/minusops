@@ -12,11 +12,12 @@ gracefully instead of crashing when MINUS_CLOUD=gcp.
 """
 from .base import CloudProvider
 
-_MSG = "GCP provider not yet implemented (set MINUS_CLOUD=aws, or implement core/providers/gcp.py)."
+_MSG = "GCP provider is on the roadmap (AWS is the production-wired cloud; set MINUS_CLOUD=aws)."
 
 
 class GCPProvider(CloudProvider):
     name = "gcp"
+    status = "roadmap"
 
     def identity(self):
         return None, False

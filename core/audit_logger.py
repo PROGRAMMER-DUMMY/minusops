@@ -1,29 +1,28 @@
 import os
 import sys
-import json
 import datetime
 import argparse
 import getpass
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import audit_chain  # noqa: E402
+
 
 def log_audit_event(action, details, log_dir):
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "audit.jsonl")
 
-    # Gather system metadata
-    username = getpass.getuser()
-    timestamp = datetime.datetime.utcnow().isoformat() + "Z"
-    
     event = {
-        "timestamp": timestamp,
-        "operator": username,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "operator": getpass.getuser(),
         "action": action,
         "details": details,
-        "status": "RECORDED"
+        "status": "RECORDED",
     }
 
     try:
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event) + "\n")
+        # Append through the tamper-evident hash chain (single shared chain).
+        audit_chain.append(log_file, event)
         print(f"[AUDIT] Event successfully logged: {action}")
         return True
     except Exception as e:

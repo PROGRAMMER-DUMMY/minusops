@@ -1,0 +1,16 @@
+{
+  "_comment": "Trust policy for the MinusOps deploy role. Requires MFA at assume time, so any session that assumes this role is MFA-backed BEFORE the gate runs apply. Scope the Principal to your specific operator group/role rather than account root for production. Replace <ACCOUNT_ID>.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeOnlyWithMFA",
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::<ACCOUNT_ID>:root" },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "Bool": { "aws:MultiFactorAuthPresent": "true" },
+        "NumericLessThan": { "aws:MultiFactorAuthAge": "3600" }
+      }
+    }
+  ]
+}

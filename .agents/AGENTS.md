@@ -11,3 +11,6 @@ Whenever working on this codebase, you must adhere to the following operational 
 * **Referencing Resources**: When writing Terraform files, verify parameter defaults against hashicorp documentation schemas.
 * **Error Recovery**: If a terraform command fails due to provider constraints, missing variables, or state locking, do not retry blindly. Extract the error, write a troubleshooting entry, and request verification if human intervention is required.
 * **Skill Activation**: You must activate the `terraform-orchestrator` skill by reading its [SKILL.md](/.agents/skills/terraform-orchestrator/SKILL.md) instructions prior to any deployment operation.
+* **Ambiguity Handling**: If the user request is unclear, underspecified, too simple for the hidden infrastructure risk, or broad enough to support incompatible outcomes, activate the `resolve-ambiguity` skill before acting.
+* **Deep Plan Review**: If the user asks to be grilled, to stress-test a plan, or to resolve an architecture/product/process decision tree, activate the `grill-me` skill and ask one decision-oriented question at a time.
+

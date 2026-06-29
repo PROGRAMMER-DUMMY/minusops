@@ -9,7 +9,7 @@ This skill equips `agy` with checklists, heuristics, and scripts to scan existin
 
 ---
 
-## 🛠️ Optimization Scenarios & Auditing Checklist
+## Optimization Scenarios & Auditing Checklist
 
 Whenever analyzing an existing AWS data architecture, you must evaluate the following 6 vectors:
 
@@ -40,10 +40,11 @@ Whenever analyzing an existing AWS data architecture, you must evaluate the foll
 
 ---
 
-## 🚀 Execution Workflow
+## Execution Workflow
 1. Execute the optimizer scanner script:
    ```bash
-   python core/optimize_analyzer.py --source-dir "./templates/aws/medallion-pipeline"
+   python core/optimize_analyzer.py --source-dir "path/to/your/terraform"
    ```
 2. Present the generated markdown recommendations report (`.agents/logs/optimization_report.md`) to the user.
 3. Once approved by the user, prepare a terraform refactoring plan (`tfplan`) applying the recommended changes.
+

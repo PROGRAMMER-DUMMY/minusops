@@ -3,16 +3,45 @@ AWS implementation of CloudProvider — uses the AWS CLI credential chain (never
 handles secrets itself). Cost Explorer / Cost Anomaly Detection / STS / tagging.
 """
 import json
+import os
 import datetime
 import subprocess
 
 from .base import CloudProvider
 
 
+def classify_credentials(arn, access_key_id=None):
+    """
+    Classify the active credential posture from the caller ARN + access key id.
+
+    Returns one of: "temporary" (STS session — SSO / assumed-role / MFA session token;
+    short-lived, the safe path), "long_term" (static IAM user access keys — the risky
+    path), "root" (account root — never acceptable), or "unknown".
+
+    Access key id prefixes are authoritative: ASIA* = temporary STS creds, AKIA* =
+    long-term user keys. The ARN is the fallback signal.
+    """
+    aki = (access_key_id or "").upper()
+    if aki.startswith("ASIA"):
+        return "temporary"
+    if aki.startswith("AKIA"):
+        return "long_term"
+    a = (arn or "").lower()
+    if ":assumed-role/" in a or ":federated-user/" in a:
+        return "temporary"
+    if a.endswith(":root") or a.split("::")[-1] == "root":
+        return "root"
+    if ":user/" in a:
+        return "long_term"
+    return "unknown"
+
+
 def run_aws(args, timeout=20):
     """Run an AWS CLI command (list form, no shell). Returns (ok, parsed_json_or_text, error)."""
+    import toolpath  # lazy: core/ is on sys.path by the time any provider call runs
+    aws = toolpath.find_tool("aws") or "aws"
     try:
-        res = subprocess.run(["aws"] + args, capture_output=True, text=True, timeout=timeout)
+        res = subprocess.run([aws] + args, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
         return False, None, "AWS CLI not found. Install it and run `aws configure` / `aws sso login`."
     except subprocess.TimeoutExpired:
@@ -34,12 +63,26 @@ def _days_ago(n):
 
 class AWSProvider(CloudProvider):
     name = "aws"
+    status = "implemented"
 
     def identity(self):
         ok, data, _ = run_aws(["sts", "get-caller-identity", "--output", "json"])
         if ok and isinstance(data, dict):
             return data.get("Account"), True
         return None, False
+
+    def credential_posture(self):
+        """Report whether the active session is temporary (safe) or long-term (risky)."""
+        ok, data, err = run_aws(["sts", "get-caller-identity", "--output", "json"])
+        if not ok or not isinstance(data, dict):
+            return {"connected": False, "type": "unknown", "error": err}
+        arn = data.get("Arn", "")
+        return {
+            "connected": True,
+            "arn": arn,
+            "account": data.get("Account"),
+            "type": classify_credentials(arn, os.environ.get("AWS_ACCESS_KEY_ID")),
+        }
 
     def cost_by_service(self, months_back=6):
         start = (datetime.date.today().replace(day=1)

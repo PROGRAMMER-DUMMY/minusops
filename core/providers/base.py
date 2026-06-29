@@ -18,6 +18,8 @@ from abc import ABC, abstractmethod
 
 class CloudProvider(ABC):
     name = "base"
+    # "implemented" = production-wired; "roadmap" = honest scaffold that degrades gracefully.
+    status = "roadmap"
 
     @abstractmethod
     def identity(self):
@@ -34,6 +36,15 @@ class CloudProvider(ABC):
     @abstractmethod
     def owner(self, resource_hint):
         """Return the owning team/person for a resource hint, or None."""
+
+    def credential_posture(self):
+        """
+        Report the active credential posture: {connected, type, ...} where type is
+        "temporary" | "long_term" | "root" | "unknown". Default derives only
+        connectivity; clouds override to classify temporary vs long-term sessions.
+        """
+        account, connected = self.identity()
+        return {"connected": connected, "account": account, "type": "unknown"}
 
 
 def active_cloud():
@@ -53,3 +64,14 @@ def get_provider(name=None):
         from .gcp import GCPProvider
         return GCPProvider()
     raise ValueError(f"Unknown cloud provider: {name!r} (expected aws | azure | gcp)")
+
+
+def capabilities():
+    """Capability matrix across clouds — AWS is production-wired; others are roadmap."""
+    matrix = {}
+    for cloud in ("aws", "azure", "gcp"):
+        try:
+            matrix[cloud] = get_provider(cloud).status
+        except Exception:
+            matrix[cloud] = "unavailable"
+    return matrix

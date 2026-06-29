@@ -2,11 +2,19 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_tmp*/
+# Build / packaging artifacts
+build/
+dist/
+*.egg-info/
+sbom*.json
 # IDE
 .idea/
 # Runtime / logs (regenerated)
 .agents/logs/
 .agents/reports/
+artifacts/
+runs/
 # Terraform
 *.tfstate
 *.tfstate.*

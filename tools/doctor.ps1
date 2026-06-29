@@ -24,7 +24,7 @@ function Write-Failure ($text, $suggestion) {
 
 Write-Header "Starting Environment Diagnostics"
 Write-Host "Local Time: $(Get-Date)"
-Write-Host "OS: $((Get-WmiObject Win32_OperatingSystem).Caption)"
+Write-Host "OS: $((Get-CimInstance Win32_OperatingSystem).Caption)"
 
 # -------------------------------------------------------------
 # 1. Check Terraform Installation
@@ -93,32 +93,18 @@ if ($awsCommand) {
 }
 
 # -------------------------------------------------------------
-# 4. Check Workspace SSH Keys
+# 4. Check Python (the engine runtime)
 # -------------------------------------------------------------
-Write-Header "Checking Workspace Keys"
-$keyPath = Join-Path $PSScriptRoot "terra-key"
-$pubKeyPath = Join-Path $PSScriptRoot "terra-key.pub"
-
-if (Test-Path $keyPath) {
-    Write-Success "Private key 'terra-key' found."
-    $acl = Get-Acl $keyPath
-    $accessRules = $acl.Access | Where-Object { $_.IdentityReference -ne "NT AUTHORITY\SYSTEM" -and $_.IdentityReference -ne "BUILTIN\Administrators" -and $_.IdentityReference -ne "$env:COMPUTERNAME\$env:USERNAME" }
-    if ($accessRules) {
-        Write-WarningMsg "Private key permissions might be too open for Windows SSH client."
-        Write-Host "    Suggestion: Run the following commands to restrict permissions:" -ForegroundColor Gray
-        Write-Host "      icacls .\terra-key /reset" -ForegroundColor Gray
-        Write-Host '      icacls .\terra-key /inheritance:r /grant:r "$($env:USERNAME):(R)"' -ForegroundColor Gray
-    } else {
-        Write-Success "Private key permissions are restricted (secure)."
-    }
+Write-Header "Checking Python Runtime"
+$pyCommand = Get-Command python -ErrorAction SilentlyContinue
+if (-not $pyCommand) { $pyCommand = Get-Command python3 -ErrorAction SilentlyContinue }
+if ($pyCommand) {
+    $pyVersion = & $pyCommand.Source --version 2>&1 | Out-String
+    Write-Success "Python is installed and recognized."
+    Write-Host "    Version: $($pyVersion.Trim())" -ForegroundColor Gray
+    Write-Host "    Path: $($pyCommand.Source)" -ForegroundColor Gray
 } else {
-    Write-WarningMsg "Private key 'terra-key' not found in this folder."
-}
-
-if (Test-Path $pubKeyPath) {
-    Write-Success "Public key 'terra-key.pub' found."
-} else {
-    Write-WarningMsg "Public key 'terra-key.pub' not found in this folder."
+    Write-Failure "Python is not installed or not in PATH." "Install Python 3.10+ from https://www.python.org/downloads/"
 }
 
 Write-Header "Diagnostics Complete"

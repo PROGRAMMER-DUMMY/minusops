@@ -1,4 +1,11 @@
-# Architecture SVG Specification (v1)
+# Architecture SVG Specification (v2)
+
+> **v2 (current)** keeps every v1 hard requirement below and adds, when the data is
+> available: real node-anchored **data-flow edges** (no decorative arrows), **for_each
+> instance labels** (e.g. `bronze`/`silver`/`gold`), **encryption (lock) markers** on
+> KMS-protected nodes, and a **governance overlay** — each node carries its security/cost/
+> observability findings as a badge plus a machine-readable `data-findings` attribute, so the
+> diagram doubles as the review surface. See §9 for the v2 additions.
 
 **Purpose.** The deploy report embeds an auto-generated architecture diagram. It is
 **LLM-generated**, so different CLI agents (agy, Claude, Codex, …) must all produce the
@@ -182,3 +189,26 @@ groups. Do not move the bands, rename ids, or alter the palette.
 - [ ] only the §6 palette colors used
 - [ ] titlebar has template • cloud • short plan-hash • timestamp
 - [ ] legend has tier key + edge key
+
+---
+
+## 9. v2 additions (binding when the data is available)
+
+These extend v1; a v2 diagram still satisfies every §0 hard requirement.
+
+1. **Data-flow edges are real and node-anchored.** Edges connect actual node positions
+   (source right edge → target left edge), never a fixed decorative `y`. Solid `--text` =
+   data flow; dashed `--sage` = control/orchestration. For the standard data-pipeline
+   blueprint the medallion path is drawn: Bronze → Glue → Silver → Glue → Gold → Athena,
+   with the Step Functions → Glue control edges dashed. Generic plans connect the first node
+   of consecutive non-empty tiers. No edge may terminate in empty space.
+2. **`for_each` instance labels.** A resource addressed `...zone["bronze"]` shows `bronze`
+   as its name label, not the block name `zone`, so medallion zones are distinguishable.
+3. **Encryption markers.** When the plan contains a customer-managed KMS key, KMS-protected
+   nodes (S3, Athena, the key itself) carry a small lock glyph (top-right).
+4. **Governance overlay.** Each node renders its highest-severity finding as a badge
+   (`SEC-*`/`COST-*`/`OBS-*`, colored by severity, with `+n` for additional findings) and
+   carries a machine-readable `data-findings="<comma-separated ids>"` attribute. Security-band
+   chips tint their border by finding severity. Findings come from `optimize_analyzer`
+   (per-resource), so the diagram is also the security/cost review surface, bound to the
+   plan-hash. Tiering note: `aws_s3_object` and `aws_athena_*` map to **storage**.

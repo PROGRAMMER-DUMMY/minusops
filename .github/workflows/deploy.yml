@@ -1,93 +1,132 @@
-name: "Terraform CI/CD"
+name: "Terraform CI/CD (governed)"
 
-# Validate on every PR/push; deploy only from main, behind a human approval gate.
-# No long-lived AWS keys — authentication is OIDC (federated, short-lived).
+# Workload-agnostic pipeline: you supply WHICH Terraform directory to act on.
+# - test:     runs the engine's own pytest suite (incl. the real-terraform gate e2e).
+# - validate: static checks on the chosen dir, no cloud credentials.
+# - deploy:   gated behind a human approval (the `production` environment) AND the
+#             project's own plan-gate, so apply runs ONLY the exact reviewed plan hash.
 on:
-  pull_request:
-    paths:
-      - "templates/aws/medallion-pipeline/**"
-  push:
-    branches: [main]
-    paths:
-      - "templates/aws/medallion-pipeline/**"
+  workflow_dispatch:
+    inputs:
+      tf_dir:
+        description: "Terraform directory to validate / deploy (relative to repo root)"
+        required: true
+        type: string
+      tfstate_key:
+        description: "Remote state key for this deploy (e.g. myapp/prod/terraform.tfstate)"
+        required: true
+        type: string
+      apply:
+        description: "Run apply after plan (still gated by the production environment)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
   id-token: write # required for AWS OIDC federation
 
 env:
-  TF_DIR: templates/aws/medallion-pipeline
   AWS_REGION: us-east-1
   TF_VERSION: "1.10.5"
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Always runs (PR + push). No cloud credentials — pure static checks.
+  # Engine self-tests. Proves the gate invariants (incl. real-terraform e2e)
+  # before any infrastructure action is allowed.
+  # ---------------------------------------------------------------------------
+  test:
+    name: "Engine tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false   # tests invoke the real terraform binary
+      - name: Run test suite
+        run: python -m pytest -q
+
+  # ---------------------------------------------------------------------------
+  # Static checks on the chosen dir. No cloud credentials.
   # ---------------------------------------------------------------------------
   validate:
     name: "Validate & Scan"
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
-      - name: Format check
-        working-directory: ${{ env.TF_DIR }}
-        run: terraform fmt -check
-
-      - name: Init (providers only, no backend)
-        working-directory: ${{ env.TF_DIR }}
-        run: terraform init -backend=false -input=false
-
-      - name: Validate
-        working-directory: ${{ env.TF_DIR }}
-        run: terraform validate -no-color
-
-      - name: Security scan (project scanner — same rules as plan_gate)
-        run: python3 core/optimize_analyzer.py --source-dir ${{ env.TF_DIR }}
+      # plan_gate verify == fmt -check + init (no backend) + validate + security scan.
+      - name: Verify (gate static checks)
+        run: python core/plan_gate.py verify --dir "${{ inputs.tf_dir }}"
 
   # ---------------------------------------------------------------------------
-  # Deploy only from main, AFTER validate, AND after manual approval.
-  # `environment: production` is the human gate: configure required reviewers on
-  # that environment in repo Settings → Environments. Auth is OIDC (no secrets).
+  # Deploy only when apply=true, AFTER validate, AND after manual approval.
+  # `environment: production` is the HUMAN gate (configure required reviewers in
+  # repo Settings -> Environments). The plan-gate is the TECHNICAL gate: apply runs
+  # the exact reviewed plan hash, audited, refusing on any drift. Auth is OIDC.
   # ---------------------------------------------------------------------------
   deploy:
-    name: "Plan & Apply (gated)"
+    name: "Gated plan-bound apply"
     needs: validate
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: ${{ inputs.apply }}
     runs-on: ubuntu-latest
     environment: production
-    defaults:
-      run:
-        working-directory: ${{ env.TF_DIR }}
     steps:
       - uses: actions/checkout@v4
-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
       # OIDC: assumes the MFA-/condition-gated deploy role; no static access keys.
-      # Set repo variable AWS_DEPLOY_ROLE_ARN (the MinusDeploy role from bootstrap/aws).
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Remote state via partial backend config (repo var TFSTATE_BUCKET).
+      # Remote state via partial backend config (repo var TFSTATE_BUCKET). The gate's
+      # plan/apply reuse this initialized backend.
       - name: Init (remote state)
+        working-directory: ${{ inputs.tf_dir }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" \
-            -backend-config="key=medallion-pipeline/prod/terraform.tfstate" \
+            -backend-config="key=${{ inputs.tfstate_key }}" \
             -backend-config="region=${{ env.AWS_REGION }}"
 
-      - name: Plan
-        run: terraform plan -out=tfplan
+      # Plan -> record plan-hash + report. Approve -> hash-bound approval (the human
+      # already approved via the environment gate; auto-approve skips only the TTY
+      # prompt, never the hash binding). Apply -> re-checks the hash and applies the
+      # EXACT reviewed tfplan, or refuses. Every stage is appended to the audit log.
+      - name: Plan (record plan hash)
+        run: python core/plan_gate.py plan --dir "${{ inputs.tf_dir }}"
+      - name: Approve (hash-bound; human gate already passed)
+        run: python core/plan_gate.py approve --dir "${{ inputs.tf_dir }}" --mode auto-approve
+      - name: Apply (exact approved plan only)
+        run: python core/plan_gate.py apply --dir "${{ inputs.tf_dir }}"
 
-      - name: Apply (approved plan only)
-        run: terraform apply tfplan
+      - name: Upload audit log + deploy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-evidence
+          path: |
+            .agents/logs/audit.jsonl
+            artifacts/reports/**
+          if-no-files-found: ignore

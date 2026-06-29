@@ -7,7 +7,7 @@ description: Provides a reliable orchestration workflow for running Terraform de
 
 This skill equips `agy` with the procedures, scripts, and policies needed to safely govern live infrastructure deployments.
 
-## 📋 The Secure Orchestration Loop
+## The Secure Orchestration Loop
 
 All infrastructure changes go through **[core/plan_gate.py](/core/plan_gate.py)** — a plan-bound deploy gate that enforces the loop in code (verify → plan → hash → approve → apply), audits every stage, and refuses to apply any plan whose hash you did not approve.
 
@@ -20,20 +20,22 @@ All infrastructure changes go through **[core/plan_gate.py](/core/plan_gate.py)*
 ```
 
 ### Credential model — the gate never handles secrets
-Authenticate via the cloud CLI **before** applying — `aws sso login`, or assume the
-MFA-gated deploy role from `bootstrap/aws/` into your CLI session. MFA is enforced by
-that role's trust policy; `terraform apply` then uses the ambient CLI credential chain.
+Authenticate via the cloud CLI **before** applying — `aws sso login`, or assume your
+MFA-gated deploy role into your CLI session. MFA is enforced by that role's trust policy;
+`terraform apply` then uses the ambient CLI credential chain.
 
 ### Run it
+`--dir` is required — point it at whatever Terraform directory you're governing (this is a
+workload-agnostic engine; there is no bundled default).
 ```bash
 # stage by stage
-python core/plan_gate.py verify  --dir templates/aws/medallion-pipeline
-python core/plan_gate.py plan    --dir templates/aws/medallion-pipeline
-python core/plan_gate.py approve --dir templates/aws/medallion-pipeline
-python core/plan_gate.py apply   --dir templates/aws/medallion-pipeline
+python core/plan_gate.py verify  --dir path/to/your/terraform
+python core/plan_gate.py plan    --dir path/to/your/terraform
+python core/plan_gate.py approve --dir path/to/your/terraform
+python core/plan_gate.py apply   --dir path/to/your/terraform
 
 # or all four in sequence (gatekeeper prompts at approve; --mode auto-approve skips the y/N)
-python core/plan_gate.py run     --dir templates/aws/medallion-pipeline
+python core/plan_gate.py run     --dir path/to/your/terraform
 ```
 
 ### Plan-bound guarantee
@@ -46,6 +48,7 @@ Run `python core/health_checker.py` for smoke tests; if a check fails, log it an
 
 ---
 
-## 🛠️ Diagnostics & Lock Resolution
+## Diagnostics & Lock Resolution
 * **Lock File Exists (`.terraform.tfstate.lock.info`)**: If Terraform state is locked, do not force-unlock without running `terraform force-unlock <LOCK_ID>` inside the audit log wrapper.
 * **Partial Deployments**: If a job fails midway, check the state file, run a plan, and provide a diff of what was created vs what failed.
+

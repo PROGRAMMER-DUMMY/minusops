@@ -10,7 +10,7 @@ Enforces the secure deployment loop in code (not just docs):
 
 Credential model — we never handle secrets:
   * The operator authenticates via the cloud CLI BEFORE applying (e.g. `aws sso login`,
-    or assume the MFA-gated deploy role from bootstrap/aws into their CLI session).
+    or assume an MFA-gated deploy role into their CLI session).
   * MFA is enforced upstream by that role's trust policy — the gate does not mint or
     store tokens. terraform apply uses the ambient CLI credential chain.
 
@@ -22,12 +22,12 @@ Guarantees:
 
 Cross-platform (Windows / macOS / Linux): os.path, list-form subprocess, no shell.
 
-Examples:
-    python core/plan_gate.py verify  --dir templates/aws/medallion-pipeline
-    python core/plan_gate.py plan    --dir templates/aws/medallion-pipeline
-    python core/plan_gate.py approve --dir templates/aws/medallion-pipeline
-    python core/plan_gate.py apply   --dir templates/aws/medallion-pipeline
-    python core/plan_gate.py run     --dir templates/aws/medallion-pipeline [--mode auto-approve]
+Examples (point --dir at any Terraform directory — the engine is workload-agnostic):
+    python core/plan_gate.py verify  --dir path/to/terraform
+    python core/plan_gate.py plan    --dir path/to/terraform
+    python core/plan_gate.py approve --dir path/to/terraform
+    python core/plan_gate.py apply   --dir path/to/terraform
+    python core/plan_gate.py run     --dir path/to/terraform [--mode auto-approve]
 """
 import os
 import sys
@@ -41,11 +41,13 @@ import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from providers.base import get_provider  # noqa: E402
+import plan_inspector  # noqa: E402
+import toolpath  # noqa: E402
+import audit_chain  # noqa: E402
+import authz  # noqa: E402
 
 WORKSPACE = os.getcwd()
 LOG_DIR = os.path.join(WORKSPACE, ".agents", "logs")
-PENDING = os.path.join(LOG_DIR, "pending_plan.json")
-APPROVED = os.path.join(LOG_DIR, "approved_plan.json")   # hash + identity only, no secrets
 SCAN = os.path.join(WORKSPACE, "core", "optimize_analyzer.py")
 
 PLAN_FILE = "tfplan"          # written inside the target dir via terraform -chdir
@@ -65,14 +67,39 @@ def _audit(action, status, **extra):
            "component": "plan_gate", "action": action, "status": status}
     rec.update(extra)
     try:
-        with open(os.path.join(LOG_DIR, "audit.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec) + "\n")
+        audit_chain.append(os.path.join(LOG_DIR, "audit.jsonl"), rec)
     except Exception as e:
         print(f"[gate] WARNING: could not write audit record: {e}", file=sys.stderr)
 
 
+def _canonical_dir(dir_):
+    """Return a stable absolute directory identity for approval binding."""
+    return os.path.normcase(os.path.abspath(dir_))
+
+
+def _dir_key(dir_):
+    return hashlib.sha256(_canonical_dir(dir_).encode("utf-8")).hexdigest()[:16]
+
+
+def _state_dir(dir_):
+    return os.path.join(LOG_DIR, "plan_gate", _dir_key(dir_))
+
+
+def _pending_path(dir_):
+    return os.path.join(_state_dir(dir_), "pending_plan.json")
+
+
+def _approval_dir(dir_):
+    return os.path.join(_state_dir(dir_), "approvals")
+
+
+def _approved_path(dir_, plan_hash):
+    return os.path.join(_approval_dir(dir_), f"{plan_hash}.json")
+
+
 def _run(args, capture=False):
     """Run a command (list form, no shell). Returns (rc, stdout, stderr)."""
+    toolpath.ensure_external_tools()
     try:
         res = subprocess.run(args, text=True, capture_output=capture)
         return res.returncode, (res.stdout or ""), (res.stderr or "")
@@ -99,6 +126,33 @@ def _plan_hash(dir_):
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest(), ""
+
+
+def _source_status_for_hash(plan_hash):
+    try:
+        return plan_inspector.source_status(plan_hash[:12])
+    except Exception:
+        return {"status": "UNKNOWN", "stale": False, "reason": "source snapshot unavailable"}
+
+
+def _reject_if_source_stale(stage, dir_, plan_hash):
+    status = _source_status_for_hash(plan_hash)
+    if status.get("status") == "CURRENT":
+        return False
+    label = status.get("status") or "UNKNOWN"
+    if label == "STALE":
+        print("[gate] Terraform source changed after this plan was generated. Re-run `plan`.", file=sys.stderr)
+    else:
+        print("[gate] Terraform source provenance is unavailable for this plan. Re-run `plan`.", file=sys.stderr)
+    reason = status.get("reason") or "source_drift"
+    if reason:
+        print(f"[gate] reason: {reason}", file=sys.stderr)
+    for label in ("changed", "added", "missing"):
+        items = status.get(label, [])
+        if items:
+            print(f"[gate] {label}: {', '.join(items[:8])}", file=sys.stderr)
+    _audit(stage, "REJECTED", reason="source_drift", dir=dir_, plan_hash=plan_hash, source_status=label)
+    return True
 
 
 def _timed_input(prompt, timeout):
@@ -129,10 +183,49 @@ def _identity():
         return None, False
 
 
-def _clear_approval():
+def _credential_posture():
+    """Active credential posture for the apply session (temporary vs long-term)."""
     try:
-        if os.path.exists(APPROVED):
-            os.remove(APPROVED)
+        return get_provider().credential_posture()
+    except Exception:
+        return {"connected": False, "type": "unknown"}
+
+
+def _reject_if_weak_credentials(dir_, posture):
+    """
+    Enforce the product's MFA-gated-deploy promise: apply must run on a TEMPORARY
+    session (SSO / assumed MFA role), never long-term static keys or root. Override
+    with MINUS_ALLOW_STATIC_CREDS=1 (recorded as a downgrade in the audit trail).
+    """
+    ctype = posture.get("type")
+    if ctype not in ("long_term", "root"):
+        return False
+    allow = os.environ.get("MINUS_ALLOW_STATIC_CREDS", "").strip().lower() in ("1", "true", "yes")
+    if allow:
+        print(f"[gate] WARNING: applying with {ctype} credentials "
+              "(MINUS_ALLOW_STATIC_CREDS override).", file=sys.stderr)
+        _audit("apply", "WARN", reason="weak_credentials_override", dir=dir_, cred_type=ctype)
+        return False
+    print(f"[gate] refusing apply: this session uses {ctype} credentials. The MFA-gated "
+          "deploy guarantee requires a temporary session — authenticate with `aws sso login` "
+          "or assume your MFA-gated deploy role. (Override: MINUS_ALLOW_STATIC_CREDS=1, audited.)",
+          file=sys.stderr)
+    _audit("apply", "REJECTED", reason="weak_credentials", dir=dir_, cred_type=ctype)
+    return True
+
+
+def _clear_approvals(dir_, plan_hash=None):
+    try:
+        if plan_hash:
+            path = _approved_path(dir_, plan_hash)
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        approvals = _approval_dir(dir_)
+        if os.path.isdir(approvals):
+            for name in os.listdir(approvals):
+                if name.endswith(".json"):
+                    os.remove(os.path.join(approvals, name))
     except Exception:
         pass
 
@@ -159,8 +252,15 @@ def stage_verify(dir_):
         _audit("verify", "FAILED", reason="validate", dir=dir_)
         return False
     if os.path.exists(SCAN):
-        _run([sys.executable, SCAN, "--source-dir", dir_], capture=True)
+        rc, out, err = _run([sys.executable, SCAN, "--source-dir", dir_], capture=True)
         print(f"[gate] security scan complete -> see {os.path.join('.agents', 'logs', 'optimization_report.md')}")
+        if rc != 0:
+            if out:
+                print(out, file=sys.stderr)
+            if err:
+                print(err, file=sys.stderr)
+            _audit("verify", "FAILED", reason="scan", dir=dir_)
+            return False
     print("[gate] verify OK")
     _audit("verify", "OK", dir=dir_)
     return True
@@ -178,10 +278,15 @@ def stage_plan(dir_):
         print(f"[gate] could not hash plan: {herr}", file=sys.stderr)
         _audit("plan", "FAILED", reason="hash", dir=dir_)
         return False
-    os.makedirs(LOG_DIR, exist_ok=True)
-    with open(PENDING, "w", encoding="utf-8") as f:
-        json.dump({"plan_hash": h, "dir": dir_, "created": _now()}, f, indent=2)
-    _clear_approval()  # a new plan invalidates any prior approval
+    os.makedirs(_state_dir(dir_), exist_ok=True)
+    with open(_pending_path(dir_), "w", encoding="utf-8") as f:
+        json.dump({
+            "plan_hash": h,
+            "dir": dir_,
+            "canonical_dir": _canonical_dir(dir_),
+            "created": _now(),
+        }, f, indent=2)
+    _clear_approvals(dir_)  # a new plan for this dir invalidates prior approvals
     print(f"[gate] plan saved. plan_hash = {h[:16]}...")
     _audit("plan", "OK", plan_hash=h, dir=dir_)
 
@@ -203,20 +308,33 @@ def stage_approve(dir_, mode="gatekeeper"):
         return False
 
     pending = {}
-    if os.path.exists(PENDING):
+    pending_path = _pending_path(dir_)
+    if os.path.exists(pending_path):
         try:
-            pending = json.load(open(PENDING, encoding="utf-8"))
+            pending = json.load(open(pending_path, encoding="utf-8"))
         except Exception:
             pending = {}
-    if pending.get("plan_hash") != h:
+    if (pending.get("plan_hash") != h
+            or pending.get("canonical_dir") != _canonical_dir(dir_)):
         print("[gate] current plan does not match the last recorded plan. Re-run `plan`.", file=sys.stderr)
         _audit("approve", "REJECTED", reason="stale_plan", dir=dir_)
+        return False
+    if _reject_if_source_stale("approve", dir_, h):
+        return False
+
+    # RBAC: enforce the approver allowlist (if configured) before recording approval.
+    approver = authz.operator()
+    allowed, authz_mode, authz_reason = authz.authorize(approver, workspace=WORKSPACE)
+    if not allowed:
+        print(f"[gate] {approver} is not an authorized approver ({authz_reason}). Refusing.", file=sys.stderr)
+        _audit("approve", "DENIED_NOT_AUTHORIZED", plan_hash=h, dir=dir_, approver=approver, authz_mode=authz_mode)
         return False
 
     account, connected = _identity()
     print(f"  plan_hash : {h}")
     print(f"  dir       : {dir_}")
     print(f"  identity  : {account if connected else 'NOT AUTHENTICATED'}")
+    print(f"  approver  : {approver} ({authz_mode})")
     print(f"  mode      : {mode}")
     if not connected:
         print("[gate] WARNING: no active cloud session. Authenticate before apply "
@@ -229,37 +347,56 @@ def stage_approve(dir_, mode="gatekeeper"):
             _audit("approve", "DENIED", plan_hash=h, dir=dir_)
             return False
 
-    record = {"plan_hash": h, "dir": dir_, "identity": account, "cloud": get_provider().name,
-              "approved_by": getpass.getuser(), "approved_at": _now()}
-    os.makedirs(LOG_DIR, exist_ok=True)
-    with open(APPROVED, "w", encoding="utf-8") as f:
+    record = {
+        "plan_hash": h,
+        "dir": dir_,
+        "canonical_dir": _canonical_dir(dir_),
+        "identity": account,
+        "cloud": get_provider().name,
+        "approved_by": getpass.getuser(),
+        "approver": approver,
+        "authz_mode": authz_mode,
+        "approved_at": _now(),
+    }
+    os.makedirs(_approval_dir(dir_), exist_ok=True)
+    with open(_approved_path(dir_, h), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2)
     print("[gate] approved — bound to this plan hash. (No credentials stored.)")
-    _audit("approve", "APPROVED", plan_hash=h, dir=dir_, identity=account)
+    _audit("approve", "APPROVED", plan_hash=h, dir=dir_, identity=account, approver=approver, authz_mode=authz_mode)
     return True
 
 
 def stage_apply(dir_, mode="gatekeeper"):
     print("== apply ==")
-    if not os.path.exists(APPROVED):
-        print("[gate] no approval on record. Run `approve` first.", file=sys.stderr)
-        return False
-    try:
-        approval = json.load(open(APPROVED, encoding="utf-8"))
-    except Exception:
-        print("[gate] approval record unreadable. Re-run `approve`.", file=sys.stderr)
-        _clear_approval()
-        return False
-
     current, herr = _plan_hash(dir_)
     if not current:
         print(f"[gate] cannot read current plan ({herr}).", file=sys.stderr)
+        return False
+    if _reject_if_source_stale("apply", dir_, current):
+        return False
+    approval_path = _approved_path(dir_, current)
+    if not os.path.exists(approval_path):
+        print("[gate] no approval on record for this directory and plan hash. Run `approve` first.",
+              file=sys.stderr)
+        _audit("apply", "REJECTED", reason="no_matching_approval", dir=dir_)
+        _clear_approvals(dir_)
+        return False
+    try:
+        approval = json.load(open(approval_path, encoding="utf-8"))
+    except Exception:
+        print("[gate] approval record unreadable. Re-run `approve`.", file=sys.stderr)
+        _clear_approvals(dir_, current)
+        return False
+    if approval.get("canonical_dir") != _canonical_dir(dir_):
+        print("[gate] approval was recorded for a different Terraform directory.", file=sys.stderr)
+        _audit("apply", "REJECTED", reason="dir_mismatch", dir=dir_)
+        _clear_approvals(dir_, current)
         return False
     if current != approval.get("plan_hash"):
         print("[gate] PLAN CHANGED since approval — refusing to apply. Re-run plan + approve.",
               file=sys.stderr)
         _audit("apply", "REJECTED", reason="hash_mismatch", dir=dir_)
-        _clear_approval()
+        _clear_approvals(dir_, current)
         return False
 
     account, connected = _identity()
@@ -270,12 +407,15 @@ def stage_apply(dir_, mode="gatekeeper"):
         _audit("apply", "BLOCKED", reason="no_session", dir=dir_)
         return False  # approval kept so you can authenticate and retry
 
+    if _reject_if_weak_credentials(dir_, _credential_posture()):
+        return False  # approval kept; re-auth with a temporary session and retry
+
     print(f"[gate] applying approved plan (hash {current[:16]}...) as {account} ...")
     rc, _, _ = _tf(dir_, "apply", PLAN_FILE)   # ambient CLI credentials
     ok = rc == 0
     _audit("apply", "OK" if ok else "FAILED", plan_hash=current, dir=dir_, identity=account)
     print("[gate] apply complete." if ok else "[gate] apply FAILED.")
-    _clear_approval()  # one-shot: the approval is consumed
+    _clear_approvals(dir_, current)  # one-shot: the approval is consumed
     return ok
 
 
@@ -285,12 +425,12 @@ def stage_run(dir_, mode):
 
 
 # ---------------------------------------------------------------------------
-if __name__ == "__main__":
+def main(argv=None):
     p = argparse.ArgumentParser(description="Plan-bound Terraform deploy gate (uses the CLI credential chain)")
     p.add_argument("stage", choices=["verify", "plan", "approve", "apply", "run"])
-    p.add_argument("--dir", default="templates/aws/medallion-pipeline", help="Terraform directory")
+    p.add_argument("--dir", required=True, help="Terraform directory to deploy (no default — this is a generic engine)")
     p.add_argument("--mode", default="gatekeeper", choices=["gatekeeper", "auto-approve"])
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     if args.stage == "verify":
         ok = stage_verify(args.dir)
@@ -302,4 +442,8 @@ if __name__ == "__main__":
         ok = stage_apply(args.dir, args.mode)
     else:
         ok = stage_run(args.dir, args.mode)
-    sys.exit(0 if ok else 1)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

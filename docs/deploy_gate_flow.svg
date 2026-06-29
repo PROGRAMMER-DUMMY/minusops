@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 470" width="100%" role="img">
+<title>MinusOps deploy gate — process flow</title>
+<desc>verify, plan, approve, apply with decision gates and refusal paths; apply runs only the approved plan hash.</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#fbf7f4"/></marker><pattern id="g" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.06)" stroke-width="0.5"/></pattern><style>.t{font:600 18px Outfit,system-ui,sans-serif;fill:#fbf7f4}.pill{font:600 12px Outfit,system-ui,sans-serif;fill:#fbf7f4}.st{font:600 12px Outfit,system-ui,sans-serif;fill:#fbf7f4}.ss{font:500 9px 'JetBrains Mono',ui-monospace,monospace;fill:#b09c93}.bd{font:600 10px Inter,system-ui,sans-serif;fill:#fbf7f4}.dl{font:600 10px Outfit,system-ui,sans-serif;fill:#cb9a3e}.dsub{font:500 8px 'JetBrains Mono',ui-monospace,monospace;fill:#d4a373}.al{font:600 9px Inter,system-ui,sans-serif;fill:#b8a79e}.lg{font:500 11px Inter,system-ui,sans-serif;fill:#b09c93}</style></defs>
+<rect width="1400" height="470" fill="#14110f"/><rect width="1400" height="470" fill="url(#g)"/>
+<rect width="1400" height="54" fill="#1c1714"/><rect y="53" width="1400" height="1" fill="rgba(217,93,57,.18)"/>
+<text class="t" x="24" y="33">Deploy Gate — process flow</text>
+<g><rect x="24" y="143" width="124" height="64" rx="32" fill="#1c1714" stroke="#d4a373" stroke-width="1.7"/><text class="pill" x="86" y="182" text-anchor="middle">plan ready</text></g>
+<g><rect x="178" y="140" width="148" height="70" rx="9" fill="#1c1714" stroke="#e8825f" stroke-width="1.6"/><circle cx="178" cy="140" r="12" fill="#14110f" stroke="#e8825f" stroke-width="1.5"/><text class="bd" x="178" y="144" text-anchor="middle">1</text><text class="st" x="196" y="171">verify</text><text class="ss" x="196" y="190">fmt·validate·scan</text></g>
+<g><rect x="356" y="140" width="148" height="70" rx="9" fill="#1c1714" stroke="#e8825f" stroke-width="1.6"/><circle cx="356" cy="140" r="12" fill="#14110f" stroke="#e8825f" stroke-width="1.5"/><text class="bd" x="356" y="144" text-anchor="middle">2</text><text class="st" x="374" y="171">plan</text><text class="ss" x="374" y="190">record plan-hash</text></g>
+<g><rect x="556" y="140" width="148" height="70" rx="9" fill="#1c1714" stroke="#8da189" stroke-width="1.6"/><circle cx="556" cy="140" r="12" fill="#14110f" stroke="#8da189" stroke-width="1.5"/><text class="bd" x="556" y="144" text-anchor="middle">3</text><text class="st" x="574" y="171">approve</text><text class="ss" x="574" y="190">RBAC · review</text></g>
+<g><polygon points="800,133 842,175 800,217 758,175" fill="#1c1714" stroke="#cb9a3e" stroke-width="1.6"/><text class="dl" x="800" y="126" text-anchor="middle">approve gate</text><text class="dsub" x="800" y="232" text-anchor="middle">authorized·CURRENT·hash</text></g>
+<g><rect x="882" y="140" width="148" height="70" rx="9" fill="#1c1714" stroke="#e8825f" stroke-width="1.6"/><circle cx="882" cy="140" r="12" fill="#14110f" stroke="#e8825f" stroke-width="1.5"/><text class="bd" x="882" y="144" text-anchor="middle">4</text><text class="st" x="900" y="171">apply</text><text class="ss" x="900" y="190">exact tfplan</text></g>
+<g><polygon points="1126,133 1168,175 1126,217 1084,175" fill="#1c1714" stroke="#cb9a3e" stroke-width="1.6"/><text class="dl" x="1126" y="126" text-anchor="middle">apply gate</text><text class="dsub" x="1126" y="232" text-anchor="middle">hash==approved·MFA</text></g>
+<g><rect x="1212" y="143" width="128" height="64" rx="32" fill="#1c1714" stroke="#d4a373" stroke-width="1.7"/><text class="pill" x="1276" y="182" text-anchor="middle">APPLIED</text></g>
+<path d="M148,175 H178" stroke="#b8a79e" stroke-width="1.6" fill="none" marker-end="url(#a)"/>
+<path d="M326,175 H356" stroke="#b8a79e" stroke-width="1.6" fill="none" marker-end="url(#a)"/>
+<path d="M504,175 H556" stroke="#b8a79e" stroke-width="1.6" fill="none" marker-end="url(#a)"/>
+<path d="M704,175 H758" stroke="#b8a79e" stroke-width="1.6" fill="none" marker-end="url(#a)"/>
+<path d="M842,175 H882" stroke="#b8a79e" stroke-width="1.6" fill="none" marker-end="url(#a)"/>
+<path d="M1030,175 H1084" stroke="#b8a79e" stroke-width="1.6" fill="none" marker-end="url(#a)"/>
+<path d="M1168,175 H1212" stroke="#b8a79e" stroke-width="1.6" fill="none" marker-end="url(#a)"/>
+<text class="al" x="862" y="166" text-anchor="middle">Yes</text>
+<text class="al" x="1190" y="166" text-anchor="middle">Yes</text>
+<g><rect x="556" y="330" width="220" height="60" rx="9" fill="#1c1714" stroke="#d95d39" stroke-width="1.6"/><text class="st" x="574" y="358">REFUSED</text><text class="ss" x="574" y="376">audited · approval preserved</text></g>
+<path d="M800,217 V300 H666 V330" stroke="#d95d39" stroke-width="1.6" fill="none" marker-end="url(#a)" stroke-dasharray="6 5"/>
+<text class="al" x="816" y="280" text-anchor="middle">No</text>
+<path d="M1126,217 V360 H776" stroke="#d95d39" stroke-width="1.6" fill="none" marker-end="url(#a)" stroke-dasharray="6 5"/>
+<text class="al" x="1142" y="300" text-anchor="middle">No</text>
+<g><rect x="24" y="424" width="14" height="14" rx="7" fill="none" stroke="#d4a373" stroke-width="1.6"/><text class="lg" x="46" y="435">start/end</text><rect x="150" y="424" width="14" height="14" rx="3" fill="none" stroke="#e8825f" stroke-width="1.6"/><text class="lg" x="172" y="435">automated</text><rect x="280" y="424" width="14" height="14" rx="3" fill="none" stroke="#8da189" stroke-width="1.6"/><text class="lg" x="302" y="435">manual / review</text><polygon points="445,424 459,431 445,438 431,431" fill="none" stroke="#cb9a3e" stroke-width="1.6"/><text class="lg" x="466" y="435">decision</text><line x1="560" y1="431" x2="592" y2="431" stroke="#b8a79e" stroke-width="1.6" marker-end="url(#a)"/><text class="lg" x="598" y="435">Yes / pass</text><line x1="690" y1="431" x2="722" y2="431" stroke="#d95d39" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#a)"/><text class="lg" x="728" y="435">No / refuse</text></g>
+</svg>

@@ -1,0 +1,15 @@
+.venv/
+.idea/
+.git/
+.github/
+.pytest_cache/
+.pytest_tmp*/
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+runs/
+artifacts/
+.agents/logs/
+tests/

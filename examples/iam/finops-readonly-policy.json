@@ -1,0 +1,23 @@
+{
+  "_comment": "Least-privilege READ-ONLY policy for the MinusOps FinOps role (cost intelligence, anomalies, ownership, health, BCM lookups). Attach to a role assumed for finops_agent/dashboard/health_checker. These services expose data account-wide, so Resource is * by design; no mutating actions are granted.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FinOpsRead",
+      "Effect": "Allow",
+      "Action": [
+        "ce:GetCostAndUsage",
+        "ce:GetAnomalies",
+        "ce:GetAnomalyMonitors",
+        "ce:GetAnomalySubscriptions",
+        "tag:GetResources",
+        "sts:GetCallerIdentity",
+        "cloudtrail:LookupEvents",
+        "bcm-pricing-calculator:GetWorkloadEstimate",
+        "bcm-pricing-calculator:ListWorkloadEstimateUsage",
+        "pricing:GetProducts"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

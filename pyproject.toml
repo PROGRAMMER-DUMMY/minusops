@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minusops"
+version = "0.1.0"
+description = "MinusOps — a governed, multi-cloud Terraform control plane (plan-bound, MFA-gated, audited deploys)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "MinusOps" }]
+keywords = ["terraform", "governance", "finops", "devops", "iac", "aws"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: System :: Systems Administration",
+]
+
+# Core CLIs (gate, approval, audit, scanner, intent) use only the standard library
+# plus your cloud CLI. The dependencies below are for the optional FinOps dashboard.
+dependencies = [
+    "dash>=2.14,<3",
+    "plotly>=5.18,<6",
+]
+
+[project.optional-dependencies]
+dashboard = [
+    "dash>=2.14,<3",
+    "plotly>=5.18,<6",
+]
+dev = [
+    "pytest>=8.0,<9",
+    "build>=1.2",
+    "cyclonedx-bom>=4.0",
+]
+
+[project.scripts]
+# Pip-installable console commands — clients run `minusctl ...`, not `python core/x.py ...`.
+minusctl = "core.minusctl:main"
+minus-gate = "core.plan_gate:main"
+minus-resolve = "core.intent_resolver:main"
+minus-workflow = "core.workflow:main"
+minus-bcm = "core.bcm_pricing_calculator:main"
+minus-runs = "core.runs:main"
+minus-demo = "core.demo:main"
+
+[project.urls]
+Documentation = "https://github.com/your-org/minusops/blob/main/AGENTS.md"
+
+[tool.setuptools]
+# The engine ships as the `core` package (+ provider subpackage). Each module keeps a
+# runtime sys.path shim so the documented `python core/<tool>.py` invocations and the
+# installed console scripts both work from the same source.
+packages = ["core", "core.providers"]
+
+[tool.setuptools.package-data]
+core = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

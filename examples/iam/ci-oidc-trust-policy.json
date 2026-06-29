@@ -1,0 +1,21 @@
+{
+  "_comment": "Trust policy for the deploy role assumed by GitHub Actions via OIDC (no static keys). Restricts to your repo AND the protected 'production' environment, which is the human approval gate. Create the GitHub OIDC provider once per account. Replace <ACCOUNT_ID>, <ORG>, <REPO>.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "repo:<ORG>/<REPO>:environment:production"
+        }
+      }
+    }
+  ]
+}

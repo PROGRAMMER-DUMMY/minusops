@@ -12,11 +12,12 @@ gracefully instead of crashing when MINUS_CLOUD=azure.
 """
 from .base import CloudProvider
 
-_MSG = "Azure provider not yet implemented (set MINUS_CLOUD=aws, or implement core/providers/azure.py)."
+_MSG = "Azure provider is on the roadmap (AWS is the production-wired cloud; set MINUS_CLOUD=aws)."
 
 
 class AzureProvider(CloudProvider):
     name = "azure"
+    status = "roadmap"
 
     def identity(self):
         return None, False

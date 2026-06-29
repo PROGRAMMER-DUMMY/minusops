@@ -1,0 +1,44 @@
+name: CI
+
+# Proves the engine cross-platform: installs the package and runs the full suite
+# (including the real-terraform gate e2e) on Linux, macOS, and Windows.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: "test ${{ matrix.os }} / py${{ matrix.python }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false   # the e2e test invokes the real terraform binary
+
+      - name: Install package (validates packaging + console scripts)
+        run: python -m pip install ".[dev]"
+
+      - name: Console scripts are installed
+        run: minusctl --help
+
+      - name: Run test suite
+        run: python -m pytest -q
+
+      - name: No-cloud demo end to end (generation + report + audit chain)
+        run: |
+          minusctl demo governed-data-pipeline --owner ci --daily-data-gb 10
+          minusctl readiness
+          minusctl audit verify

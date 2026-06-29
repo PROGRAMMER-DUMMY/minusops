@@ -4,7 +4,7 @@ This manifesto defines the strict IAM boundaries, service role isolation, and se
 
 ---
 
-## 🔒 1. Core Security Commandments
+## 1. Core Security Commandments
 1. **Zero Shared Roles**: Every AWS service (Glue, Step Functions, EventBridge, SageMaker, Lambda) must have its own dedicated execution role. Service roles must never be shared.
 2. **Strict Trust Policies**: The `assume_role_policy` must only list the specific service principal (e.g. `glue.amazonaws.com`).
 3. **No Wildcard Resource Permissions**: Policies must target specific resource ARNs. The use of `"Resource": "*"` is forbidden for S3, KMS, and DynamoDB actions.
@@ -12,7 +12,7 @@ This manifesto defines the strict IAM boundaries, service role isolation, and se
 
 ---
 
-## 🔑 2. Native Multi-Factor Authentication (MFA) Enforcement
+## 2. Native Multi-Factor Authentication (MFA) Enforcement
 
 In production environments, all mutating infrastructure deployments must be authorized by a human operator using a physical MFA device. We enforce this via two layers:
 
@@ -49,7 +49,7 @@ at authentication time, so by the time `terraform apply` runs the session is alr
 
 1. The operator authenticates their **cloud CLI** with MFA before applying — either:
    * `aws sso login` (IAM Identity Center; no long-term secret lands on disk), or
-   * assume the **MFA-gated deploy role** from `bootstrap/aws/` (its trust policy requires
+   * assume your **MFA-gated deploy role** (its trust policy requires
      `aws:MultiFactorAuthPresent = true`), e.g.
      `aws sts assume-role --role-arn <MinusDeploy> --serial-number <mfa-arn> --token-code <code>`
      and load the returned session into the CLI profile.
@@ -61,7 +61,10 @@ at authentication time, so by the time `terraform apply` runs the session is alr
 
 ---
 
-## 🧭 3. Service Role Matrix & Constraints
+## 3. Service Role Matrix & Constraints
+
+> *Illustrative.* The rows below show how the principles apply to a data-pipeline workload
+> (the engine ships no bundled architecture). Map the same pattern onto your own services.
 
 | Service | Principal (Trust Policy) | Action Permissions | Resource Constraints |
 | :--- | :--- | :--- | :--- |
@@ -72,7 +75,7 @@ at authentication time, so by the time `terraform apply` runs the session is alr
 
 ---
 
-## 🛠️ 4. Verification & Compliance Scans
+## 4. Verification & Compliance Scans
 Our security scanner ([**`optimize_analyzer.py`**](/core/optimize_analyzer.py)) runs continuous security audits:
 * **Rule `SEC-02`**: Automatically flags any IAM policy that declares `"Resource": "*"` or wildcard statements, preventing loose policy exposures.
 * **Auto-Remediation**: Before any terraform configuration is proposed to the HITL gatekeeper, it must pass the security validation check with zero warnings.

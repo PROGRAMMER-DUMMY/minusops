@@ -1,0 +1,4 @@
+interface:
+  display_name: "Resolve Ambiguity"
+  short_description: "Ask the right question before uncertain work"
+  default_prompt: "Use $resolve-ambiguity to clarify an uncertain implementation or product decision."

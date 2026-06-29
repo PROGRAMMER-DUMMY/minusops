@@ -7,8 +7,12 @@ Two selectable modes:
                    In a non-interactive session (no TTY) this safely DENIES.
   - auto-approve : proceed without prompting (still fully audited).
 
-Every decision — approved, denied, or auto-approved — is appended to
-.agents/logs/audit.jsonl so there is always a record of who authorised what.
+Authorization (RBAC): in BOTH modes, if an approver allowlist is configured
+(MINUS_APPROVERS / .minus/approvers.json) the acting operator must be on it, or the
+request is denied. With no allowlist the gate runs in "open" mode (recorded as such).
+
+Every decision — approved, denied, auto-approved, or unauthorized — is appended to
+the tamper-evident hash-chained audit trail (.agents/logs/audit.jsonl).
 
 Usage as a library:
     from approval import request_approval
@@ -21,29 +25,34 @@ Usage from the CLI (for testing / scripting):
 """
 import os
 import sys
-import json
 import getpass
 import argparse
 import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import audit_chain  # noqa: E402
+import authz  # noqa: E402
 
 LOG_DIR = os.path.join(os.getcwd(), ".agents", "logs")
 VALID_MODES = ("gatekeeper", "auto-approve")
 
 
-def _audit(action, details, mode, decision):
-    """Append the approval decision to the shared audit trail."""
+def _audit(action, details, mode, decision, **extra):
+    """Append the approval decision to the shared tamper-evident audit trail."""
     os.makedirs(LOG_DIR, exist_ok=True)
     event = {
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-        "operator": getpass.getuser(),
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "operator": authz.operator(),
+        "os_user": getpass.getuser(),
+        "component": "approval",
         "action": action,
         "details": details,
         "approval_mode": mode,
         "decision": decision,
     }
+    event.update(extra)
     try:
-        with open(os.path.join(LOG_DIR, "audit.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps(event) + "\n")
+        audit_chain.append(os.path.join(LOG_DIR, "audit.jsonl"), event)
     except Exception as e:
         print(f"[APPROVAL] WARNING: could not write audit record: {e}", file=sys.stderr)
 
@@ -58,22 +67,31 @@ def request_approval(action, details, mode="gatekeeper"):
         print(f"[APPROVAL] Unknown mode '{mode}', defaulting to 'gatekeeper'.", file=sys.stderr)
         mode = "gatekeeper"
 
+    # RBAC: enforce the approver allowlist (if configured) before anything else.
+    op = authz.operator()
+    allowed, authz_mode, reason = authz.authorize(op)
+    if not allowed:
+        _audit(action, details, mode, "DENIED_NOT_AUTHORIZED", operator_checked=op, authz_mode=authz_mode, reason=reason)
+        print(f"[APPROVAL] DENIED: {op} is not an authorized approver ({reason}).", file=sys.stderr)
+        return False
+
     if mode == "auto-approve":
-        _audit(action, details, mode, "AUTO_APPROVED")
-        print(f"[APPROVAL] auto-approve mode -> proceeding: {action}")
+        _audit(action, details, mode, "AUTO_APPROVED", authz_mode=authz_mode)
+        print(f"[APPROVAL] auto-approve mode -> proceeding: {action} (approver: {op}, {authz_mode})")
         return True
 
     # gatekeeper mode — require a human in the loop
     print("=" * 60)
     print("HUMAN-IN-THE-LOOP APPROVAL REQUIRED")
     print("=" * 60)
-    print(f"  Action : {action}")
-    print(f"  Details: {details}")
+    print(f"  Action  : {action}")
+    print(f"  Details : {details}")
+    print(f"  Approver: {op} ({authz_mode})")
     print("-" * 60)
 
     if not sys.stdin or not sys.stdin.isatty():
         # No interactive terminal — fail closed.
-        _audit(action, details, mode, "DENIED_NO_TTY")
+        _audit(action, details, mode, "DENIED_NO_TTY", authz_mode=authz_mode)
         print("[APPROVAL] No interactive terminal available → DENIED (fail-closed).")
         return False
 
@@ -83,7 +101,7 @@ def request_approval(action, details, mode="gatekeeper"):
         answer = "n"
 
     approved = answer in ("y", "yes")
-    _audit(action, details, mode, "APPROVED" if approved else "DENIED")
+    _audit(action, details, mode, "APPROVED" if approved else "DENIED", authz_mode=authz_mode)
     print(f"[APPROVAL] {'APPROVED' if approved else 'DENIED'}: {action}")
     return approved
 
