@@ -1,0 +1,119 @@
+"""
+The audit trail must be tamper-evident: any edit, deletion, or reorder is detectable.
+"""
+import json
+
+import audit_chain
+
+
+def test_chain_appends_and_verifies(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    audit_chain.append(str(log), {"action": "plan", "status": "OK"})
+    audit_chain.append(str(log), {"action": "approve", "status": "APPROVED"})
+    audit_chain.append(str(log), {"action": "apply", "status": "OK"})
+
+    ok, errors = audit_chain.verify(str(log))
+    assert ok, errors
+
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["prev_hash"] == audit_chain.GENESIS
+    assert rows[1]["prev_hash"] == rows[0]["entry_hash"]
+    assert rows[2]["prev_hash"] == rows[1]["entry_hash"]
+
+
+def test_modifying_a_record_breaks_the_chain(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    audit_chain.append(str(log), {"action": "apply", "status": "OK"})
+    audit_chain.append(str(log), {"action": "apply", "status": "OK"})
+
+    rows = log.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(rows[0])
+    tampered["status"] = "DENIED"           # silently rewrite history
+    rows[0] = json.dumps(tampered)
+    log.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    ok, errors = audit_chain.verify(str(log))
+    assert not ok
+    assert any("entry_hash mismatch" in e for e in errors)
+
+
+def test_deleting_a_record_breaks_the_chain(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    audit_chain.append(str(log), {"action": "a"})
+    audit_chain.append(str(log), {"action": "b"})
+    audit_chain.append(str(log), {"action": "c"})
+
+    rows = log.read_text(encoding="utf-8").splitlines()
+    del rows[1]  # remove the middle record
+    log.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    ok, errors = audit_chain.verify(str(log))
+    assert not ok
+    assert any("prev_hash" in e for e in errors)
+
+
+def test_chain_status_tolerates_legacy_prefix(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    # Records written before chaining existed (no prev_hash/entry_hash) ...
+    with open(log, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"action": "legacy-plan", "status": "OK"}) + "\n")
+        f.write(json.dumps({"action": "legacy-apply", "status": "OK"}) + "\n")
+    # ... then chaining begins and appends link to GENESIS (last line has no entry_hash).
+    audit_chain.append(str(log), {"action": "plan", "status": "OK"})
+    audit_chain.append(str(log), {"action": "apply", "status": "OK"})
+
+    status = audit_chain.chain_status(str(log))
+    assert status["intact"] and status["ok"]
+    assert status["legacy_count"] == 2 and status["chained_count"] == 2
+
+
+def test_chain_status_flags_tampered_chained_segment(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    with open(log, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"action": "legacy"}) + "\n")
+    audit_chain.append(str(log), {"action": "a"})
+    audit_chain.append(str(log), {"action": "b"})
+
+    rows = log.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(rows[1])           # first chained record
+    tampered["action"] = "rewritten"
+    rows[1] = json.dumps(tampered)
+    log.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    status = audit_chain.chain_status(str(log))
+    assert not status["intact"]
+    assert any("entry_hash mismatch" in e for e in status["errors"])
+
+
+def test_seal_archives_legacy_log_and_starts_clean_chain(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    # A log with pre-chaining records AND an old-format chained record (bad entry_hash).
+    with open(log, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"action": "legacy-1"}) + "\n")
+        f.write(json.dumps({"action": "old-chained", "prev_hash": audit_chain.GENESIS,
+                            "entry_hash": "deadbeef"}) + "\n")
+    assert audit_chain.chain_status(str(log))["intact"] is False  # cannot verify as-is
+
+    entry = audit_chain.seal(str(log))
+    assert entry["action"] == "chain-anchor" and entry["archived_sha256"]
+    backup = tmp_path / entry["archived_path"]
+    assert backup.exists()  # old content preserved as evidence
+
+    # New chain is clean and continues to verify after further appends.
+    audit_chain.append(str(log), {"action": "plan"})
+    status = audit_chain.chain_status(str(log))
+    assert status["intact"] and status["chained_count"] == 2 and status["legacy_count"] == 0
+    ok, _ = audit_chain.verify(str(log))
+    assert ok
+
+
+def test_chain_status_flags_legacy_record_inserted_after_chaining(tmp_path):
+    log = tmp_path / "audit.jsonl"
+    audit_chain.append(str(log), {"action": "a"})
+    # An un-chained record appearing after chaining began = downgrade/insertion attempt.
+    with open(log, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"action": "smuggled", "status": "APPROVED"}) + "\n")
+
+    status = audit_chain.chain_status(str(log))
+    assert not status["intact"]
+    assert any("after chaining began" in e for e in status["errors"])
