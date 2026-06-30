@@ -12,6 +12,13 @@ gate. Nothing is hosted by anyone else; each team runs it against their own acco
 
 ## See it (offline, no cloud)
 
+**The full product tour (autoplays):** the live console tabs, the architecture diagram with
+its click-to-code service inspector, the plan and cost reports, and the resource inventory.
+
+![MinusOps full walkthrough](docs/demo/minusops-walkthrough.gif)
+
+And the CLI run that produced it — one command, then `prove` and `audit verify`:
+
 ![MinusOps offline demo](docs/demo/minusops-demo.svg)
 
 *`minusctl demo` → `prove` → `audit verify` → tests — no cloud credentials required.
