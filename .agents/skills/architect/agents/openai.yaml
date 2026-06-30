@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architect"
+  short_description: "Research services, choose the best-fit architecture, generate governed Terraform"
+  default_prompt: "Use $architect to deep-research current cloud services and reference architectures for the gathered requirements, compare candidates against the Well-Architected pillars, pick the best-fit, and synthesize governed Terraform — for any scenario, no hand-written blueprint, governed by the same plan-gate."

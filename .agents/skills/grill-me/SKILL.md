@@ -104,9 +104,11 @@ minusctl create "governed AWS data pipeline" \
   --input ingestion_mode=<batch|streaming> --input daily_data_gb=<n> --generate
 ```
 
-For a system class with no blueprint yet (e.g., a web backend), output a structured requirements
-spec (the answers from Steps 0–2, MoSCoW-prioritized) and label it a roadmap item — do not
-fabricate a generate command.
+For a system class with no existing blueprint (e.g., a web backend), **hand off to the
+[`architect`](../architect/SKILL.md) skill** with the gathered requirements: it deep-researches
+current services and reference architectures, picks the best-fit for these requirements, and
+synthesizes governed Terraform that flows through the same deploy gate — so a missing blueprint is
+not a dead end. Pass the MoSCoW-prioritized requirements spec (Steps 0–2) as its input.
 
 ## Question shape
 
