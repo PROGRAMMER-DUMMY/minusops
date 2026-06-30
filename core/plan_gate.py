@@ -107,8 +107,22 @@ def _run(args, capture=False):
         return 127, "", f"command not found: {args[0]}"
 
 
+_TERRAFORM_BIN = None
+
+
+def _terraform_bin():
+    """Resolve terraform to an absolute path so the gate runs it regardless of PATH state
+    (Windows WinGet installs often aren't on the subprocess PATH). Falls back to the bare
+    name if discovery fails, preserving the original 'command not found' behavior."""
+    global _TERRAFORM_BIN
+    if _TERRAFORM_BIN is None:
+        toolpath.ensure_external_tools()
+        _TERRAFORM_BIN = toolpath.find_tool("terraform") or "terraform"
+    return _TERRAFORM_BIN
+
+
 def _tf(dir_, *tf_args, capture=False):
-    return _run(["terraform", f"-chdir={dir_}", *tf_args], capture=capture)
+    return _run([_terraform_bin(), f"-chdir={dir_}", *tf_args], capture=capture)
 
 
 def _plan_hash(dir_):
