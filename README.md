@@ -27,15 +27,47 @@ minusctl prove          # prove the offline governance chain end-to-end (writes 
 minusctl audit verify   # confirm the tamper-evident audit trail
 ```
 
-Each run writes a versioned bundle under `runs/<run-id>/reports/<plan-hash>/`:
+Each run writes a versioned bundle under `runs/<run-id>/reports/<plan-hash>/`. The full
+walkthrough below is reproducible from that one command — no cloud needed.
+*(Same tour as a standalone page: [docs/walkthrough.md](docs/walkthrough.md).)*
 
-| Architecture diagram | Cost report — forecast vs. actual | Live FinOps console |
-|:---:|:---:|:---:|
-| [![architecture](docs/demo/architecture.png)](docs/demo/architecture.png) | [![cost report](docs/demo/cost-forecast-vs-actual.png)](docs/demo/cost-forecast-vs-actual.png) | [![dashboard](docs/demo/dashboard.png)](docs/demo/dashboard.png) |
-| data-flow + governance lanes, KMS locks, finding overlays | per-service usage, effective rate, BCM forecast vs. Cost Explorer actuals | `python app/dashboard_app.py` — live spend, anomalies, readiness |
+### The live FinOps console
 
-> 📖 **[Full visual walkthrough →](docs/walkthrough.md)** — the complete run, every dashboard
-> tab, the clickable architecture → Terraform viewer, and the plan / cost / resource reports.
+`python app/dashboard_app.py` serves a fixed-screen, tabbed console (account id redacted here):
+
+| Overview — live spend, anomalies, burn | Optimization — security/cost/observability scan |
+|:---:|:---:|
+| [![overview](docs/walkthrough/01-overview.png)](docs/walkthrough/01-overview.png) | [![optimization](docs/walkthrough/02-optimization.png)](docs/walkthrough/02-optimization.png) |
+| **Reports — every plan-hash bundle** | **Readiness — enterprise score per run** |
+| [![reports](docs/walkthrough/03-reports.png)](docs/walkthrough/03-reports.png) | [![readiness](docs/walkthrough/04-readiness.png)](docs/walkthrough/04-readiness.png) |
+
+### Architecture → Terraform (click-to-code)
+
+A real topology — runtime data flow over an orchestration & governance lane, KMS locks, and a
+deployment-posture strip:
+
+[![architecture](docs/walkthrough/05-architecture.png)](docs/walkthrough/05-architecture.png)
+
+**Click any service box** and the inspector opens the exact plan-bound Terraform that
+provisions it — syntax-highlighted — plus that resource's findings. Here the **Glue Job** box
+opens `glue.tf`. No SaaS diagram tool binds the picture to the approved plan hash like this:
+
+[![architecture click-to-code](docs/walkthrough/06-architecture-code.png)](docs/walkthrough/06-architecture-code.png)
+
+### Plan & cost reports
+
+| Plan report (review artifact, gated) | Cost report — forecast vs. actual |
+|:---:|:---:|
+| [![plan report](docs/walkthrough/09-plan-report.png)](docs/walkthrough/09-plan-report.png) | [![cost report](docs/walkthrough/10-cost-report.png)](docs/walkthrough/10-cost-report.png) |
+
+### Resources & services
+
+Every planned resource — address, type, action, mapped service, owning `.tf` file — and the
+same data grouped by service:
+
+| Resources | Services |
+|:---:|:---:|
+| [![resources](docs/walkthrough/07-resources.png)](docs/walkthrough/07-resources.png) | [![services](docs/walkthrough/08-services.png)](docs/walkthrough/08-services.png) |
 
 <sub>The cost figures shown use **illustrative sample** BCM / Cost Explorer data so the report renders offline. Real numbers come **only** from the AWS BCM Pricing Calculator (forecast) and Cost Explorer (actuals) — MinusOps never hardcodes a price. The demo terminal cast is in [`docs/demo/minusops-demo.cast`](docs/demo/minusops-demo.cast) (replay with `asciinema play`).</sub>
 
