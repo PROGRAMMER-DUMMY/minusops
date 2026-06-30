@@ -14,13 +14,14 @@ python app/dashboard_app.py        # http://127.0.0.1:8050
 
 ---
 
-## 1. The run (one command)
+## 1. Requirements, then the run
 
-`minusctl demo` resolves the request into a governed blueprint, generates Terraform, builds a
-plan, and emits a versioned, plan-hash-keyed report bundle. `prove` then confirms the offline
-governance chain end-to-end and `audit verify` checks the tamper-evident trail.
+The agent gathers requirements first (the [`grill-me`](../.agents/skills/grill-me/SKILL.md)
+skill) — who the users are, the latency SLA, volume, retention — cross-questioning
+contradictions and gaps, then maps the answers to a governed blueprint and runs
+`minusctl create`. `prove` then confirms the offline governance chain end-to-end.
 
-![CLI run](demo/minusops-demo.svg)
+![requirements to build](demo/minusops-requirements.svg)
 
 ---
 

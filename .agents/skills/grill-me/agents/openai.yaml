@@ -1,4 +1,4 @@
 interface:
   display_name: "Grill Me"
-  short_description: "Stress-test plans one decision at a time"
-  default_prompt: "Use $grill-me to interrogate this plan until every major decision is resolved."
+  short_description: "Gather requirements before building, one question at a time"
+  default_prompt: "Use $grill-me to gather complete requirements (who/what/how + latency, volume, availability, retention, security, budget) before generating any infrastructure, then map them to a blueprint."

@@ -12,30 +12,34 @@ gate. Nothing is hosted by anyone else; each team runs it against their own acco
 
 ## See it (offline, no cloud)
 
-**The full product tour (autoplays):** the live console tabs, the architecture diagram with
-its click-to-code service inspector, the plan and cost reports, and the resource inventory.
+### 1. It starts with requirements, not a template
 
-![MinusOps full walkthrough](docs/demo/minusops-walkthrough.gif)
+You tell the agent what you want; it **gathers requirements before generating anything** — who
+the end users are, the latency SLA, volume, retention — recommending a default for each,
+cross-questioning contradictions ("live dashboards" vs. hourly batch) and missing pieces (no
+cost owner), then mapping the answers to a governed blueprint and building the plan. This is the
+[`grill-me`](.agents/skills/grill-me/SKILL.md) skill.
 
-And the CLI run that produced it — one command, then `prove` and `audit verify`:
+![requirements interview to build](docs/demo/minusops-requirements.svg)
 
-![MinusOps offline demo](docs/demo/minusops-demo.svg)
+### 2. Then explore the result in the live console
 
-*`minusctl demo` → `prove` → `audit verify` → tests — no cloud credentials required.
-The demo resolves a request into a governed blueprint and emits a full, plan-hash-keyed
-report bundle from synthetic plan JSON.*
+A **real screen recording** — dashboard tabs, the architecture diagram with its click-to-code
+service inspector (click a box, see the exact Terraform), and the reports:
 
-**Try it in 30 seconds:**
+![live dashboard walkthrough](docs/demo/minusops-dashboard.gif)
+
+**Try it in 30 seconds** (the non-interactive shortcut for the same blueprint):
 
 ```bash
-pip install .
+pip install ".[dashboard]"
 minusctl demo governed-data-pipeline --owner data-platform --daily-data-gb 50
-minusctl prove          # prove the offline governance chain end-to-end (writes evidence.md)
-minusctl audit verify   # confirm the tamper-evident audit trail
+minusctl prove                 # prove the offline governance chain end-to-end (writes evidence.md)
+python app/dashboard_app.py     # the live console at http://127.0.0.1:8050
 ```
 
-Each run writes a versioned bundle under `runs/<run-id>/reports/<plan-hash>/`. The full
-walkthrough below is reproducible from that one command — no cloud needed.
+Each run writes a versioned bundle under `runs/<run-id>/reports/<plan-hash>/`. The stills below
+break the tour down screen by screen.
 *(Same tour as a standalone page: [docs/walkthrough.md](docs/walkthrough.md).)*
 
 ### The live FinOps console
@@ -76,7 +80,7 @@ same data grouped by service:
 |:---:|:---:|
 | [![resources](docs/walkthrough/07-resources.png)](docs/walkthrough/07-resources.png) | [![services](docs/walkthrough/08-services.png)](docs/walkthrough/08-services.png) |
 
-<sub>The cost figures shown use **illustrative sample** BCM / Cost Explorer data so the report renders offline. Real numbers come **only** from the AWS BCM Pricing Calculator (forecast) and Cost Explorer (actuals) — MinusOps never hardcodes a price. The demo terminal cast is in [`docs/demo/minusops-demo.cast`](docs/demo/minusops-demo.cast) (replay with `asciinema play`).</sub>
+<sub>The cost figures shown use **illustrative sample** BCM / Cost Explorer data so the report renders offline. Real numbers come **only** from the AWS BCM Pricing Calculator (forecast) and Cost Explorer (actuals) — MinusOps never hardcodes a price. The requirements-interview cast is in [`docs/demo/minusops-requirements.cast`](docs/demo/minusops-requirements.cast) (replay with `asciinema play`).</sub>
 
 ---
 

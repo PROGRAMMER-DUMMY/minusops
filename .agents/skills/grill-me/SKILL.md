@@ -1,43 +1,95 @@
 ---
 name: grill-me
-description: Interview the user relentlessly about any uncertain architecture, process, plan, product, implementation, or decision until the user and AI reach shared understanding and reliable choices. Use when the user wants to stress-test an idea, resolve ambiguity, compare options, get grilled, or mentions "grill me".
+description: Gather complete requirements before generating ANY infrastructure (data pipeline, website/app backend, event system, or anything else), and stress-test uncertain plans. Interrogate one question at a time with a recommended answer, cross-question contradictions, pin down vague terms, flag missing pieces (bugs/gaps), then map the answers to a governed MinusOps blueprint and inputs. Use when the user wants to build something, when a request is vague/too-simple/too-broad, or when they say "grill me".
 ---
 
-# Grill Me
+# Grill Me — Requirements Interrogation
 
-## Interview Protocol
+Spend the first questions clarifying, not drawing architecture. A one-line ask ("build me a
+data pipeline") is never enough: the right design changes completely with who the users are,
+how fresh the data must be, and how much of it there is. Turn the request into a complete,
+contradiction-free requirements set, then map it to a governed blueprint and the exact
+`minusctl` command. Ask **one question at a time**, each with a recommended default.
 
-Interrogate the uncertain topic until the decision tree is explicit and every meaningful branch has either been chosen, rejected, deferred with rationale, or identified as unknown.
+## Step 0 — What are we building?
 
-Ask exactly one question at a time. Make each question specific, decision-oriented, and grounded in the current state of the topic.
+Do not assume "pipeline." Establish the system class first, because the whole architecture
+hinges on it. Offer concrete options with a recommendation:
 
-For every question, include a recommended answer and the reasoning behind that recommendation. Keep the recommendation concise enough that the user can accept, reject, or modify it directly.
+- **Batch / analytics data pipeline** — S3/Glue/Athena medallion *(the supported blueprint today)*.
+- **Streaming / real-time pipeline** — sub-minute freshness.
+- **Web / app backend infra** — API + datastore + cache + CDN.
+- **Event-driven / queue system** — async fan-out, workers.
+- **Something else** — have the user describe it.
 
-When the user has not explicitly specified a branch, provide a small set of concrete options before the recommended answer. Include compatibility notes and feedback notes alongside the recommendation so the user can understand the impact quickly.
+If the chosen class has no blueprint yet, say so plainly and gather a requirements spec instead
+of pretending to generate it.
 
-## Working Method
+## The requirements frame (ask in roughly this order)
 
-Start by identifying the highest-leverage unresolved decision. Prefer questions that unblock later branches over questions that merely collect preferences. Use the skill for architecture choices, process design, product scope, implementation strategy, operational policy, and any other situation where the user is unsure and needs reliable option selection.
+Two buckets. Lead with the highest-leverage unknowns — usually **WHO** and the **latency SLA**,
+because they unblock every later decision.
 
-Resolve dependencies in order:
+### Functional — what the system must do
+- **Who** — the end users and how technical they are (a marketing analyst running SQL, an ML
+  team feeding a feature store, a product app calling an API, execs viewing dashboards). The
+  user determines the architecture more than anything else.
+- **What** — the specific data or capability (raw events, aggregated metrics, historical
+  snapshots; for a backend: which entities and operations).
+- **How** — how they access it (direct SQL, a BI tool like Tableau/PowerBI, a REST/GraphQL
+  API, a scheduled export, a live dashboard).
 
-1. Clarify goals, non-goals, users, and success criteria.
-2. Establish constraints such as time, budget, technical environment, operational limits, and risk tolerance.
-3. Explore architecture, data flow, interfaces, ownership, failure modes, and migration or rollout strategy.
-4. Test edge cases, reversibility, observability, security, privacy, performance, maintainability, and support burden.
-5. Confirm the chosen path and any explicitly deferred decisions.
+### Non-functional — how the system must behave
+- **Latency / freshness SLA** — seconds (streaming), minutes (micro-batch), or hours/days
+  (batch). This drives the entire compute choice.
+- **Volume / scale** — GB vs TB vs PB per day (or requests/sec for a backend). Decides
+  single-node tools (Pandas/Polars) vs distributed compute (Spark) and the storage layout.
+- **Availability** — tolerance for downtime; single-AZ, multi-AZ, or multi-region.
+- **Data retention** — keep forever vs archive/expire (e.g., after 90 days). Cost and compliance.
+- **Security / compliance / residency** — PII, encryption, audit, and any region constraints.
+- **Budget** — a cost ceiling; drives sizing, lifecycle, and commitment modeling.
+- **Growth** — expected 6–12 month scale, so the design isn't boxed in.
 
-After each answer, update the inferred plan silently and choose the next most important unresolved branch. Do not dump a long questionnaire.
+## Cross-question, recommend, and catch problems
 
-## Codebase Rule
+This is the value of the skill — not just collecting answers:
 
-If a question can be answered by exploring the codebase, inspect the codebase instead of asking the user. Report the discovered fact briefly only when it matters to the next question or recommendation.
+- **Recommend a default for every question** with one line of reasoning, so the user can
+  accept, reject, or tweak in a word.
+- **Catch contradictions** and surface them with a proposed resolution — e.g. "sub-second
+  latency" + "nightly batch"; "petabytes/day" + "a single Postgres"; "keep data forever" +
+  "minimize cost, no archive tier".
+- **Pin down vague terms** — "fast", "real-time", "a lot of data", "cheap" become numbers
+  (an SLA, GB/day, a dollar ceiling) before they drive a decision.
+- **Flag missing pieces (the bugs/gaps)** the user didn't mention: no auth, no retention
+  policy, no DR/backup, unbounded cost, PII without encryption, no owner for FinOps, no
+  monitoring/alerting, no idempotency/replay for a pipeline.
 
-Use local evidence for implementation details, existing patterns, dependencies, APIs, tests, and constraints. Ask the user only for intent, priorities, tradeoffs, or facts that are not reasonably discoverable.
+## Codebase rule
 
-## Question Shape
+If a question can be answered from the repo (existing blueprints, inputs, patterns, configs),
+inspect it instead of asking. Ask the user only for intent, priorities, tradeoffs, and business
+facts that are not discoverable locally. For deciding *whether* to ask at all on a borderline
+point, the companion `resolve-ambiguity` skill applies.
 
-Use this format:
+## Map to a MinusOps blueprint + inputs
+
+As answers land, map them to a governed blueprint and its required inputs. The supported
+blueprint today is **`aws-data-pipeline-standard`**, inputs:
+`environment`, `region`, `owner`, `ingestion_mode` (`batch`|`streaming`), `daily_data_gb`
+(verify against `core/blueprints.py` — it is the source of truth). When the requirements match,
+end by emitting the exact command:
+
+```bash
+minusctl create "governed AWS data pipeline" \
+  --input owner=<team> --input environment=<env> --input region=<region> \
+  --input ingestion_mode=<batch|streaming> --input daily_data_gb=<n> --generate
+```
+
+For a system class with no blueprint yet (e.g., web backend), output a structured requirements
+spec and label it a roadmap item — do not fabricate a generate command.
+
+## Question shape
 
 ```markdown
 Question: ...
@@ -53,6 +105,16 @@ Compatibility: ...
 Feedback note: ...
 ```
 
-Use two or three options only. Mark tradeoffs plainly, and keep compatibility and feedback notes specific to the current decision. Add one short rationale when the recommendation is not obvious. Avoid multi-part questions unless the parts are inseparable.
+Two or three options. Keep compatibility and feedback notes specific to the current decision.
+Avoid multi-part questions unless the parts are inseparable. When the user accepts or modifies,
+move to the next highest-leverage branch; when they reject, ask what's needed to understand
+the rejected branch.
 
-When the user accepts or modifies a recommendation, proceed to the next question. When the user rejects it, ask the next question needed to understand the rejected branch.
+## Exit criteria
+
+Stop interrogating when: the system class is chosen; functional **Who / What / How** are
+answered; each non-functional SLA (latency, volume, availability, retention, security, budget)
+has a number or an explicit, recorded deferral; every contradiction is resolved; and the
+blueprint + inputs (or a requirements spec) are confirmed. **Summarize the gathered
+requirements back to the user** and show the resulting `minusctl create` command before
+generating anything.
