@@ -34,7 +34,11 @@ BLUEPRINTS = [
         "id": "aws-data-pipeline-standard",
         "name": "AWS Data Pipeline Standard",
         "cloud": "aws",
-        "status": "design-ready",
+        # Demo/cached fixture, NOT the production path. It powers `minusctl demo` + the golden
+        # tests as a reproducible worked example. Production architecture is gathered with
+        # `grill-me` and composed from `core/modules.py` via the `architect` path — every company
+        # differs on orchestrator / pattern / data-quality / schema, so one recipe can't serve all.
+        "status": "demo-fixture",
         "aliases": [
             "data pipeline",
             "analytics pipeline",

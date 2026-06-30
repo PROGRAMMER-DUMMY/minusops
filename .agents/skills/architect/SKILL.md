@@ -46,10 +46,27 @@ rejected DynamoDB because *ad-hoc SQL by analysts* needs relational queries." No
 decision driver. Treat the user's hard constraints (cloud, region, budget, compliance) as filters
 that eliminate candidates, not as soft preferences.
 
+## Step 2.5 — Use the tooling (don't do it all by hand)
+
+Concrete tools back this skill — prefer them over free-form work:
+
+```bash
+python core/patterns.py match "<requirements>"        # reuse a prior approved composition first
+python core/modules.py  match "<requirements>"        # vetted building blocks for the requirements
+python core/discovery.py "<topic>" --resource aws_<type> --service-code <Code>   # authoritative source URLs
+python core/synthesizer.py "<requirements>" --owner <team>   # compose modules -> run workspace
+```
+
+Start by checking `patterns.py match` (reuse an approved design); then `modules.py match` to pick
+building blocks; use `discovery.py` to ground each new resource in its Registry schema; then
+`synthesizer.py` to compose a run workspace. Add a missing capability by writing a new
+`modules/<id>/main.tf` + a row in `core/modules.py`, not by forking a monolith.
+
 ## Step 3 — Synthesize governed Terraform
 
-Write the chosen architecture as Terraform into the run's terraform dir, guided by the Registry
-schemas from Step 1 (not guessed). Bake in the same controls the existing blueprint enforces, so
+`synthesizer.py` composes the selected modules and flags module-specific inputs as `REVIEW` in the
+generated `main.tf` / `COMPOSITION.md`. Complete that wiring (and any net-new resources) guided by
+the Registry schemas from Step 1 (not guessed). Bake in the same controls the modules enforce, so
 it passes the gate:
 
 - least-privilege, per-service IAM — **no `Resource: "*"`** (the `SEC-02` scanner blocks it),

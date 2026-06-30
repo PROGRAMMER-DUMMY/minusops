@@ -58,11 +58,16 @@ Use two options for simple ambiguity and three for meaningful strategy or archit
 
 ## Enterprise Product Guidance
 
-For this repo, short user intent should not force the user to write a long infrastructure spec. When a user asks for something like "create a data pipeline," prefer clarifying the product layer:
+For this repo, a build/create request ("create a data pipeline", "set up a backend", etc.) is
+**not** a low-risk, just-proceed task — it provisions cloud infrastructure. **Do not short-circuit
+it to the hardcoded blueprint and a couple of inputs.** Instead, hand it to the
+[`grill-me`](../grill-me/SKILL.md) skill to gather full functional + non-functional requirements,
+which then routes to the [`architect`](../architect/SKILL.md) skill (research → choose → compose →
+govern). The single `aws-data-pipeline-standard` blueprint is a demo/cached fixture, not the
+production path — every real company differs on orchestrator, architecture pattern, data-quality,
+and schema enforcement, so one fixed recipe can't serve them.
 
-- Intent router versus explicit template catalog.
-- Default blueprint versus custom architecture.
-- Required questions before Terraform generation.
-- Safety boundary before planning or applying infrastructure.
-
-Recommend bounded blueprints plus a small number of targeted questions unless the user explicitly wants free-form architecture design.
+Use `resolve-ambiguity` for *genuinely ambiguous* points within that flow (which cloud, which
+region, an incompatible-outcomes fork) — one targeted question with a recommendation — but the
+requirements interrogation itself belongs to `grill-me`, and it is mandatory before any
+generation.

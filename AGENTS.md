@@ -20,7 +20,8 @@ Read these skill files when their trigger applies:
 - [`.agents/skills/terraform-orchestrator/SKILL.md`](./.agents/skills/terraform-orchestrator/SKILL.md) — before any deployment, Terraform plan/apply workflow, state lock handling, or infrastructure mutation proposal.
 - [`.agents/skills/pipeline-optimizer/SKILL.md`](./.agents/skills/pipeline-optimizer/SKILL.md) — before scanning, optimizing, or proposing remediation for Terraform/data-pipeline infrastructure.
 - [`.agents/skills/resolve-ambiguity/SKILL.md`](./.agents/skills/resolve-ambiguity/SKILL.md) — when a request is unclear, underspecified, too broad, too simple for hidden risk, or supports incompatible outcomes.
-- [`.agents/skills/grill-me/SKILL.md`](./.agents/skills/grill-me/SKILL.md) — when the user asks to be grilled, stress-test a plan, compare uncertain options, or resolve a product/architecture/process decision tree.
+- [`.agents/skills/grill-me/SKILL.md`](./.agents/skills/grill-me/SKILL.md) — **the mandatory front door for any build/create request**: gather full functional + non-functional requirements (one question at a time) before generating; also when the user asks to be grilled or to resolve a decision tree.
+- [`.agents/skills/architect/SKILL.md`](./.agents/skills/architect/SKILL.md) — after requirements are gathered: research current services/reference architectures, choose the best-fit, compose vetted modules (`core/modules.py` + `core/synthesizer.py`), and govern through the deploy gate. The path for any scenario the demo blueprint doesn't fit.
 
 If your agent runtime has explicit skill auto-discovery, these files may load automatically. If not, manually read the matching `SKILL.md` before taking action.
 
@@ -124,10 +125,28 @@ The **dispatcher** routes operational requests to five tool intents — `HEALTH`
 
 Use the repo-local skills under `.agents/skills/` when the user's request is unclear or design-heavy:
 
-- **`resolve-ambiguity`** — use for unclear, underspecified, too-simple, or overly broad requests where a wrong assumption would materially change the work. Inspect the codebase first; if intent is still unclear, ask exactly one targeted question and include your recommended answer.
-- **`grill-me`** — use when the user asks to be grilled, to stress-test a plan, to compare uncertain options, or when a product/architecture/process decision tree needs deeper interrogation. Ask one decision-oriented question at a time and provide a recommended answer.
+- **`grill-me`** — **the mandatory front door for build/create requests.** Gather full functional + non-functional requirements (functional who/what/how + the ISO 25010 / FURPS+ non-functional checklist, quantified, MoSCoW-scoped), one question at a time with a recommended default; cross-question contradictions and flag missing pieces. Also use for stress-testing a plan.
+- **`architect`** — after `grill-me`, for any scenario the demo blueprint doesn't fit: research current services / reference architectures, choose the best-fit, **compose vetted modules** into governed Terraform, and run it through the deploy gate. Replaces hand-writing a blueprint per scenario.
+- **`resolve-ambiguity`** — for genuinely ambiguous points (which cloud/region, an incompatible-outcomes fork). One targeted question with a recommendation. Not a substitute for `grill-me`'s requirements interrogation.
 
-Do not use these skills to slow down clear, low-risk work. If the task is obvious and reversible, state your assumption and proceed.
+Do not use these skills to slow down clear, low-risk work — but a request to *provision infrastructure* is never low-risk, so it always starts with `grill-me`.
+
+### 3.2 Architecture synthesis (composition over monolithic blueprints)
+
+The production path is **requirements → research → compose → govern**, not a single fixed recipe
+(every company differs on orchestrator, architecture pattern, data-quality, schema enforcement):
+
+| Step | Tool |
+| :--- | :--- |
+| Gather requirements | `grill-me` skill |
+| Resolve authoritative sources for a service | `python core/discovery.py <topic> --resource <aws_type>` (Registry/CLI/pricing URLs) |
+| Match requirements to vetted modules | `python core/modules.py match "<requirements>"` |
+| Compose modules into a governed Terraform workspace | `python core/synthesizer.py "<requirements>" [--module <id>]` |
+| Govern the composed Terraform | the §6.1 deploy gate (`plan_gate verify/plan/approve/apply`) |
+| Reuse an approved composition | `python core/patterns.py match "<requirements>"`; capture after approval with `patterns.py capture` |
+
+`aws-data-pipeline-standard` (`core/blueprints.py`, `terraform_generator.py`) is the **demo/cached
+fixture** that powers `minusctl demo` and the golden tests — not the production generator.
 
 ---
 
