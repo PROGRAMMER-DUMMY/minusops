@@ -76,6 +76,10 @@ at authentication time, so by the time `terraform apply` runs the session is alr
 ---
 
 ## 4. Verification & Compliance Scans
-Our security scanner ([**`optimize_analyzer.py`**](/core/optimize_analyzer.py)) runs continuous security audits:
-* **Rule `SEC-02`**: Automatically flags any IAM policy that declares `"Resource": "*"` or wildcard statements, preventing loose policy exposures.
-* **Auto-Remediation**: Before any terraform configuration is proposed to the HITL gatekeeper, it must pass the security validation check with zero warnings.
+Our security scanner ([**`optimize_analyzer.py`**](/core/optimize_analyzer.py)) runs a
+per-resource security audit on every `plan_gate verify`:
+* **Rule `SEC-02`**: Flags any IAM policy that declares `"Resource": "*"` or wildcard statements.
+* **Blocking enforcement**: `SEC-*` findings are *blocking* — the scanner exits non-zero and
+  `plan_gate verify` fails, so a plan with open security findings cannot reach approval or apply
+  until they are resolved. (External engines via `--external`, e.g. checkov/tfsec, are advisory
+  unless promoted.) The scanner flags and blocks; it does not auto-remediate.

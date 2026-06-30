@@ -67,31 +67,28 @@ Creation requests now take a safer enterprise path through [intent_resolver.py](
 
 ---
 
-## Validation Checkpoint — 2026-06-28
+## Current Status
 
-Completed:
+What runs end to end, offline, with no cloud credentials:
 
-* Fresh governed run generated through `core/minusctl.py create ... --generate`.
-* No-cloud demo report generated under `runs/20260628-140643-aws-data-pipeline-standard/reports/4e15b11621e2`.
-* Report artifacts present: `architecture.svg`, `plan.json`, `cost.json`, `plan.html`, `cost.html`, `report.html`, `plan.pdf`, `cost.pdf`, `bcm-assumptions.json`, and BCM review payloads.
-* PDF rendering now has a built-in text fallback when Edge/Chrome DevTools rendering is unavailable.
-* Full test suite passed with a workspace-local temp directory: `39 passed`.
-* HCL optimization scanner completed successfully when writing to `artifacts/review/`.
-* Dashboard server started successfully on `http://127.0.0.1:8077/`.
-* `core/minusctl.py readiness` reports `NEEDS_EVIDENCE` with score `93/100`; the only remaining warning is missing AWS BCM Pricing Calculator evidence.
+* Governed runs generate via `core/minusctl.py create ... --generate` and the no-cloud
+  `minusctl demo`, producing the full report bundle (`architecture.svg`, `plan.json`,
+  `cost.json`, `plan.html`/`.pdf`, `cost.html`/`.pdf`, `report.html`, and BCM review payloads).
+* PDF rendering has a built-in text fallback when headless Edge/Chrome is unavailable.
+* The full test suite passes (`python -m pytest`).
+* `minusctl prove` confirms the offline governance chain (run → report artifacts → audit-chain
+  integrity → readiness) and reports the remaining AWS-gated steps.
+* Cost totals publish only from the AWS BCM Pricing Calculator; generated usage carries
+  `REVIEW_REQUIRED` placeholders until a reviewed profile is supplied, so unsupported totals are
+  never fabricated.
 
-Environment blockers:
-
-* `terraform.exe` is installed at the WinGet package path, but this session cannot execute it (`EPERM` / `WinError 5`). Because of that, `plan_gate.py verify` and `plan_gate.py plan` could not complete here. No Terraform apply was attempted.
-* AWS BCM Pricing Calculator run correctly refused execution because all generated usage lines still contain `REVIEW_REQUIRED` usageType/operation placeholders. This prevents publishing unsupported cost totals until the usage evidence is reviewed and approved.
-* Headless Edge screenshot capture failed in this session because the browser GPU process was unusable. The dashboard server and report artifacts exist, but screenshots could not be captured here.
-
-Next manual validation outside this restricted session:
+The AWS-side steps require live credentials and Terraform, and are run by the operator against
+their own account:
 
 ```powershell
-python core/plan_gate.py verify --dir runs/20260628-140643-aws-data-pipeline-standard/terraform
-python core/plan_gate.py plan --dir runs/20260628-140643-aws-data-pipeline-standard/terraform
-python core/minusctl.py readiness --run 20260628-140643-aws-data-pipeline-standard
-python core/minusctl.py package --run 20260628-140643-aws-data-pipeline-standard
+python core/plan_gate.py verify --dir runs/<run-id>/terraform
+python core/plan_gate.py plan   --dir runs/<run-id>/terraform
+python core/minusctl.py readiness --run <run-id>
+python core/minusctl.py package   --run <run-id>
 python app/dashboard_app.py
 ```
