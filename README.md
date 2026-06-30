@@ -34,6 +34,9 @@ Each run writes a versioned bundle under `runs/<run-id>/reports/<plan-hash>/`:
 | [![architecture](docs/demo/architecture.png)](docs/demo/architecture.png) | [![cost report](docs/demo/cost-forecast-vs-actual.png)](docs/demo/cost-forecast-vs-actual.png) | [![dashboard](docs/demo/dashboard.png)](docs/demo/dashboard.png) |
 | data-flow + governance lanes, KMS locks, finding overlays | per-service usage, effective rate, BCM forecast vs. Cost Explorer actuals | `python app/dashboard_app.py` — live spend, anomalies, readiness |
 
+> 📖 **[Full visual walkthrough →](docs/walkthrough.md)** — the complete run, every dashboard
+> tab, the clickable architecture → Terraform viewer, and the plan / cost / resource reports.
+
 <sub>The cost figures shown use **illustrative sample** BCM / Cost Explorer data so the report renders offline. Real numbers come **only** from the AWS BCM Pricing Calculator (forecast) and Cost Explorer (actuals) — MinusOps never hardcodes a price. The demo terminal cast is in [`docs/demo/minusops-demo.cast`](docs/demo/minusops-demo.cast) (replay with `asciinema play`).</sub>
 
 ---
