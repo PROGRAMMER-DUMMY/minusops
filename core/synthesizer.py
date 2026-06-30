@@ -11,6 +11,7 @@ import os
 import shutil
 
 import modules as module_registry
+import requirements as reqgate
 import runs
 
 # A small set of obvious cross-module wirings applied when both modules are present.
@@ -174,28 +175,55 @@ def compose(module_ids, name_prefix, out_dir, owner="", request=""):
     return {"out_dir": out_dir, "modules": [m["id"] for m in chosen], "review": review}
 
 
-def synthesize(requirements, name_prefix=None, explicit_ids=None, owner="data-platform", cloud="aws"):
-    """End-to-end: select modules -> create a run workspace -> compose Terraform into it."""
-    chosen = select_modules(requirements, explicit_ids=explicit_ids)
+def synthesize(requirements_text, spec=None, allow_incomplete=False,
+               name_prefix=None, explicit_ids=None, owner="data-platform", cloud="aws"):
+    """
+    End-to-end: enforce the requirements gate -> select modules -> create a run workspace ->
+    compose Terraform into it, and record requirements.json alongside the run.
+
+    `spec` is the structured requirements record (from grill-me). Generation is **fail-closed**:
+    without a complete record it raises requirements.RequirementsIncomplete listing what's
+    unanswered — a vague request cannot be silently turned into infrastructure. `allow_incomplete`
+    is an explicit, audited override (demo/testing only).
+    """
+    if not allow_incomplete:
+        reqgate.require(spec or {})        # raises RequirementsIncomplete(missing) -> caller surfaces it
+    chosen = select_modules(requirements_text, explicit_ids=explicit_ids)
     if not chosen:
         raise ValueError("no modules matched the requirements; refine the request or pass --module")
-    run = runs.new_run(blueprint="synthesized", request=requirements, cloud=cloud)
+    run = runs.new_run(blueprint="synthesized", request=requirements_text, cloud=cloud)
+    if spec:
+        reqgate.write(run["root"], spec, gathered_by=owner)
     prefix = name_prefix or f"{module_registry._WORD.findall(owner.lower())[0] if owner else 'app'}-dev"
-    result = compose([m["id"] for m in chosen], prefix, run["terraform_dir"], owner=owner, request=requirements)
+    result = compose([m["id"] for m in chosen], prefix, run["terraform_dir"], owner=owner, request=requirements_text)
     result["run"] = run
+    result["requirements_recorded"] = bool(spec)
     return result
 
 
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="Compose vetted modules into governed Terraform")
-    ap.add_argument("requirements", help="free-text requirements (from grill-me)")
+    ap.add_argument("requirements", help="free-text requirements summary (from grill-me)")
+    ap.add_argument("--requirements-file", default=None,
+                    help="path to the requirements.json gathered by grill-me (required unless --allow-incomplete)")
+    ap.add_argument("--allow-incomplete", action="store_true",
+                    help="audited override: synthesize without a complete requirements record (demo/testing)")
     ap.add_argument("--name", default=None, help="resource name prefix")
     ap.add_argument("--owner", default="data-platform")
     ap.add_argument("--module", action="append", default=[], help="force a specific module id (repeatable)")
     args = ap.parse_args(argv)
-    res = synthesize(args.requirements, name_prefix=args.name,
-                     explicit_ids=args.module or None, owner=args.owner)
+
+    spec = reqgate.load(args.requirements_file) if args.requirements_file else None
+    try:
+        res = synthesize(args.requirements, spec=spec, allow_incomplete=args.allow_incomplete,
+                         name_prefix=args.name, explicit_ids=args.module or None, owner=args.owner)
+    except reqgate.RequirementsIncomplete as exc:
+        print("[architect] REFUSED — requirements gate. Run grill-me first; unanswered:")
+        for m in exc.missing:
+            print(f"    - {m}")
+        print("    (or pass --requirements-file <requirements.json>, or --allow-incomplete for a demo)")
+        return 2
     print("[architect] composed modules:", ", ".join(res["modules"]))
     print("[architect] terraform     :", res["out_dir"])
     if res["review"]:

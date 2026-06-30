@@ -54,8 +54,12 @@ Concrete tools back this skill — prefer them over free-form work:
 python core/patterns.py match "<requirements>"        # reuse a prior approved composition first
 python core/modules.py  match "<requirements>"        # vetted building blocks for the requirements
 python core/discovery.py "<topic>" --resource aws_<type> --service-code <Code>   # authoritative source URLs
-python core/synthesizer.py "<requirements>" --owner <team>   # compose modules -> run workspace
+python core/synthesizer.py "<requirements>" --requirements-file requirements.json --owner <team>
 ```
+
+The synthesizer is **fail-closed on the requirements gate**: it refuses to generate without a
+complete `requirements.json` (from grill-me) and lists what's unanswered. Never pass
+`--allow-incomplete` for real work — that override is demo/testing only and is audited.
 
 Start by checking `patterns.py match` (reuse an approved design); then `modules.py match` to pick
 building blocks; use `discovery.py` to ground each new resource in its Registry schema; then

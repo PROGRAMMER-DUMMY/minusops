@@ -52,6 +52,25 @@ python core/plan_gate.py verify --dir runs/<run-id>/terraform   # govern it (sam
 python core/patterns.py match "<requirements>"                  # reuse a prior approved composition
 ```
 
+## Requirements gate (generation is bound to requirements)
+
+The same way the plan-hash gate binds *apply* to a reviewed plan, the **requirements gate** binds
+*generation* to a reviewed requirements set (`core/requirements.py`). grill-me writes a
+`requirements.json` — goal, system class, ≥1 functional capability, and each non-functional axis
+(latency, scale, availability, retention, security, budget) with a value **or an explicit
+`deferred: <reason>`**. `synthesizer` is **fail-closed**: without a complete record it refuses and
+lists what's unanswered.
+
+```bash
+python core/requirements.py template > requirements.json   # grill-me fills this
+python core/requirements.py check requirements.json        # completeness check
+python core/synthesizer.py "<summary>" --requirements-file requirements.json --owner <team>
+```
+
+So a vague request can't be silently turned into infrastructure — it's blocked until requirements
+are gathered and justified, and the record is kept beside the run as audit evidence for what was
+built and why. (`--allow-incomplete` is an audited demo/testing override.)
+
 ## Safety invariant
 
 A synthesized composition is **not trusted because the agent proposed it.** Every resource is

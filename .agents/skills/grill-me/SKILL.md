@@ -131,13 +131,24 @@ Avoid multi-part questions unless the parts are inseparable. When the user accep
 move to the next highest-leverage branch; when they reject, ask what's needed to understand the
 rejected branch.
 
-## Exit criteria
+## Exit criteria — write the requirements record (the generator is gated on it)
 
 Stop interrogating when: the goal, scope, and system class are set; the **Must-have** functional
-capabilities are listed; each relevant non-functional requirement has a **number or an explicit
-deferral**; contradictions are resolved; MoSCoW prioritization is done; and the blueprint +
-inputs (or a requirements spec) are confirmed. **Summarize the gathered requirements back to the
-user** and show the resulting `minusctl create` command before generating anything.
+capabilities are listed; each non-functional axis (latency, scale, availability, retention,
+security, budget) has a **number or an explicit `deferred: <reason>`**; contradictions are
+resolved; and MoSCoW prioritization is done. Then:
+
+1. **Summarize the gathered requirements back to the user** for confirmation.
+2. **Write the requirements record** the generator is gated on: start from
+   `python core/requirements.py template`, fill `goal`, `system_class`, `functional` (≥1
+   capability), and every `non_functional` axis (value or `deferred: …`), save it as the run's
+   `requirements.json`, and verify with `python core/requirements.py check <path>`.
+3. Hand off to [`architect`](../architect/SKILL.md), which calls the synthesizer with that record.
+
+The synthesizer is **fail-closed**: without a complete record it refuses to generate and lists
+what's unanswered. A vague request can never be silently turned into infrastructure — it's blocked
+until requirements are gathered and justified. Don't bypass with `--allow-incomplete` for real
+work (it's a demo/testing override and is audited).
 
 ## References
 
