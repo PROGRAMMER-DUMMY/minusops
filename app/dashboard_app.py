@@ -1020,32 +1020,86 @@ def optimization_panels(selected_run_id=None):
     return panels
 
 
+def _scale_curve_table(cost):
+    """The AWS-priced scale curve, rendered as RESULTS (not a command) when it exists."""
+    points = ((cost or {}).get("scale_curve") or {}).get("points") or []
+    if not points:
+        return None
+    a = (cost or {}).get("assumptions") or {}
+    try:
+        dg = float(a.get("daily_data_gb") or 0)
+        days = float(a.get("days_per_month") or 30)
+    except (TypeError, ValueError):
+        dg, days = 0, 30
+    trs = [html.Tr([html.Th(h) for h in ("Usage", "Monthly (AWS-priced)", "Cost/GB")])]
+    for p in points:
+        try:
+            total = float(p.get("total"))
+        except (TypeError, ValueError):
+            continue
+        per_gb = f"${total / (dg * days * p['factor']):,.4f}" if dg > 0 else "—"
+        trs.append(html.Tr([html.Td(f"×{p['factor']:g}"),
+                            html.Td(f"${total:,.2f}"), html.Td(per_gb)]))
+    return html.Table(className="trend-table", children=trs)
+
+
 def scenario_shortcuts_panel(selected_run_id=None):
-    """What-if & evidence commands for the selected run's latest report — the scale-curve,
-    bill-scenario, and actuals pulls that turn the static forecast into decisions."""
+    """What-if scenarios for the selected run: results first (scale curve, variance),
+    one-click buttons for the zero-input AWS-priced actions, and commands only where
+    the operator must author input (commitments JSON, custom assumptions)."""
     rows = run_inventory()
     row = _row_for_run(rows, selected_run_id)
     report = _selected_report(row)
+    cost = (report or {}).get("cost") or {}
     rd = report.get("path") if report else None
+    children = []
+
+    curve = _scale_curve_table(cost)
+    if curve:
+        children += [html.Div("Cost at scale — each point is a separate AWS BCM estimate:",
+                              className="empty-sub", style={"marginBottom": ".4rem"}), curve]
+    variance = cost.get("variance") or {}
+    if variance.get("actual_total") is not None:
+        children.append(html.Div(
+            f"Forecast ${variance.get('forecast_total', 0):,.2f} vs actual "
+            f"${variance.get('actual_total', 0):,.2f} — see the cost report for per-service variance.",
+            className="empty-sub", style={"margin": ".6rem 0"}))
+
+    if rd and cost.get("ok"):
+        children.append(html.Div(className="control-actions", children=[
+            html.Button("Price at ×1/×5/×10 usage (AWS)", id="whatif-scale-btn",
+                        n_clicks=0, className="control-button"),
+            html.Button("Pull Cost Explorer actuals", id="whatif-actuals-btn",
+                        n_clicks=0, className="control-button"),
+        ]))
+        children.append(dcc.Loading(type="default", color=C["terracotta"],
+                                    children=html.Div(id="whatif-status")))
+    elif not rd:
+        children.append(_chart_empty("No report yet",
+                                     "Generate a plan first — scenarios price a specific plan."))
+    else:
+        children.append(_chart_empty("No estimate yet",
+                                     "Scenarios need the base BCM estimate (created automatically "
+                                     "when AWS credentials are available)."))
+
     target = f'"{rd}"' if rd else "<report-dir>"
-    cmds = [
-        ("Cost at 1x/5x/10x usage (AWS-priced)",
-         f"python core/bcm_pricing_calculator.py scale-curve --report-dir {target}"),
-        ("Model Savings Plans / RI commitments",
-         f"python core/bcm_pricing_calculator.py scenario --report-dir {target} --commitments commitments.json"),
-        ("Pull Cost Explorer actuals (forecast-vs-actual)",
-         f"python core/bcm_pricing_calculator.py actuals --report-dir {target}"),
-        ("Re-price with different usage assumptions",
-         f"python core/bcm_pricing_calculator.py prepare --report-dir {target} --derive "
-         f"--assume glue_runs_per_day=48 && python core/bcm_pricing_calculator.py run --report-dir {target}"),
-    ]
-    body = html.Div(className="command-stack", children=[
-        html.Div(children=[
-            html.Div(label, className="empty-sub", style={"marginBottom": ".2rem"}),
-            _command_line(cmd),
-        ], style={"marginBottom": ".8rem"}) for label, cmd in cmds
-    ])
-    return panel("What-if scenarios & evidence", "scale, commitments, actuals — all AWS-priced", body)
+    children.append(html.Details(className="command-details", children=[
+        html.Summary("Operator-authored scenarios (run in terminal)"),
+        html.Div(className="command-stack", children=[
+            html.Div(children=[
+                html.Div(label, className="empty-sub", style={"margin": ".5rem 0 .2rem"}),
+                _command_line(cmd),
+            ]) for label, cmd in [
+                ("Model Savings Plans / RI commitments (needs your commitments JSON)",
+                 f"python core/bcm_pricing_calculator.py scenario --report-dir {target} --commitments commitments.json"),
+                ("Re-price with different usage assumptions",
+                 f"python core/bcm_pricing_calculator.py prepare --report-dir {target} --derive "
+                 f"--assume glue_runs_per_day=48 && python core/bcm_pricing_calculator.py run --report-dir {target}"),
+            ]
+        ]),
+    ]))
+    return panel("What-if scenarios & evidence", "scale, commitments, actuals — all AWS-priced",
+                 html.Div(children=children))
 
 
 def deployment_reports_panel(selected_run_id=None):
@@ -1854,6 +1908,39 @@ def _control_action(_accelerator_clicks, _save_clicks, run_id, architecture, sum
         html.Strong("Decision saved but incomplete."),
         html.Span(", ".join(result["missing"])),
     ])
+
+
+@app.callback(
+    Output("whatif-status", "children"),
+    Input("whatif-scale-btn", "n_clicks"),
+    Input("whatif-actuals-btn", "n_clicks"),
+    State("global-run-select", "value"),
+    prevent_initial_call=True,
+)
+def _whatif_action(_scale_clicks, _actuals_clicks, run_id):
+    """One-click what-ifs. Both are safe by construction: the scale curve creates
+    temporary AWS pricing estimates (deleted after reading) and the actuals pull is
+    read-only Cost Explorer. AWS produces every number; results land in the report."""
+    row = _row_for_run(run_inventory(), run_id)
+    report = _selected_report(row)
+    if not (report and report.get("path")):
+        return html.Div("No report for this run yet.", className="status-warn")
+    import bcm_pricing_calculator as bcm
+    try:
+        if ctx.triggered_id == "whatif-scale-btn":
+            res = bcm.scale_curve(report["path"])
+            pts = " · ".join(f"×{p['factor']:g} = ${float(p['total']):,.2f}/mo"
+                             for p in res["points"])
+            return html.Div(className="status-good", children=[
+                html.Strong("AWS priced the curve: "), html.Span(pts),
+                html.Span("  — hit Refresh to render the table."),
+            ])
+        res = bcm.fetch_actuals(report["path"])
+        return html.Div(
+            f"Actuals pulled for {res['month']} ({len(res['actuals'])} service(s)) — "
+            "hit Refresh for the variance view.", className="status-good")
+    except Exception as exc:
+        return html.Div(str(exc), className="status-bad")
 
 
 @app.server.before_request
