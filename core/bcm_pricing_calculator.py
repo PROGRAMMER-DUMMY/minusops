@@ -516,6 +516,87 @@ def auto_estimate(report_dir, region="us-east-1", usage_profile=None):
         return False, str(exc)
 
 
+def scale_curve(report_dir, factors=(1, 5, 10)):
+    """Price the SAME architecture at multiples of the declared usage — AWS prices every
+    point (temporary workload estimates, deleted after reading), nothing is extrapolated
+    locally. Writes bcm-scale-curve.json so the cost report can render the curve and
+    diseconomies show up before deploy, not on the first big bill.
+    """
+    paths = _report_paths(report_dir)
+    usage = _load_json(paths["usage"])
+    errors = validate_usage(usage)
+    if errors:
+        raise RuntimeError("usage payload not ready for scale curve:\n- " + "\n- ".join(errors))
+    base_estimate = _load_json(paths["estimate"]) if os.path.exists(paths["estimate"]) else {}
+    base_total = None
+    tc = (base_estimate.get("estimate") or {}).get("totalCost")
+    if isinstance(tc, dict):
+        tc = tc.get("amount")
+    try:
+        base_total = float(tc)
+    except (TypeError, ValueError):
+        pass
+
+    aws = _aws_cli()
+    cwd = os.path.abspath(report_dir)
+    manifest = _load_json(paths["manifest"]) if os.path.exists(paths["manifest"]) else {}
+    short = manifest.get("short") or os.path.basename(cwd)
+    points = []
+    for factor in factors:
+        if factor == 1 and base_total is not None:
+            points.append({"factor": 1, "total": base_total, "estimate_id": "(base estimate)"})
+            continue
+        scaled = []
+        for u in usage:
+            entry = dict(u)
+            entry["amount"] = round(float(u["amount"]) * factor, 4)
+            scaled.append(entry)
+        create_payload = {
+            "name": f"{manifest.get('template', 'terraform-plan')}-{short}-x{factor}"[:128],
+            "rateType": "BEFORE_DISCOUNTS",
+            "clientToken": f"minus-{short}-x{factor}-{secrets.token_hex(6)}",
+            "tags": {"ManagedBy": "MinusTerraformCli", "PlanHash": short, "Purpose": "ScaleCurvePoint"},
+        }
+        tmp_create = os.path.join(report_dir, f"bcm-scale-x{factor}-create.json")
+        _write_json(tmp_create, create_payload)
+        created = _run_json([aws, "bcm-pricing-calculator", "create-workload-estimate",
+                             "--cli-input-json", f"file://{os.path.basename(tmp_create)}"], cwd)
+        est_id = created["id"]
+        tmp_batch = os.path.join(report_dir, f"bcm-scale-x{factor}-usage.json")
+        _write_json(tmp_batch, {"workloadEstimateId": est_id, "usage": scaled})
+        try:
+            _run_json([aws, "bcm-pricing-calculator", "batch-create-workload-estimate-usage",
+                       "--cli-input-json", f"file://{os.path.basename(tmp_batch)}"], cwd)
+            estimate = _run_json([aws, "bcm-pricing-calculator", "get-workload-estimate",
+                                  "--identifier", est_id], cwd)
+            points.append({"factor": factor,
+                           "total": float(estimate.get("totalCost") or 0),
+                           "estimate_id": est_id})
+        finally:
+            # Curve points are point-in-time reads — don't clutter Saved estimates.
+            subprocess.run([aws, "bcm-pricing-calculator", "delete-workload-estimate",
+                            "--identifier", est_id], cwd=cwd, capture_output=True, timeout=60)
+            for tmp in (tmp_create, tmp_batch):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+    result = {
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "rate_type": "BEFORE_DISCOUNTS",
+        "points": sorted(points, key=lambda p: p["factor"]),
+        "note": "Each point is an AWS BCM-priced estimate of the same usage x factor; "
+                "no local extrapolation.",
+    }
+    _write_json(os.path.join(report_dir, "bcm-scale-curve.json"), result)
+    try:
+        import reporter
+        reporter.refresh_cost(os.path.abspath(report_dir))
+    except Exception as exc:
+        print(f"[bcm] scale curve saved; cost report refresh skipped: {exc}", file=sys.stderr)
+    return result
+
+
 def _parse_assumptions(pairs):
     out = {}
     for item in pairs or []:
@@ -652,6 +733,9 @@ def main():
     a = sub.add_parser("actuals", help="pull Cost Explorer per-service actuals for forecast-vs-actual (read-only)")
     a.add_argument("--report-dir", required=True)
     a.add_argument("--month", default="", help="YYYY-MM month to compare (default: most recent with spend)")
+    sc = sub.add_parser("scale-curve", help="AWS-price the same architecture at 1x/5x/10x usage (temporary estimates)")
+    sc.add_argument("--report-dir", required=True)
+    sc.add_argument("--factors", default="1,5,10", help="comma-separated usage multipliers")
     args = ap.parse_args()
 
     if args.cmd == "prepare":
@@ -673,6 +757,16 @@ def main():
             print(f"[bcm] {exc}", file=sys.stderr)
             return 1
         print(f"[bcm] actuals for {res['month']} written to {res['path']} ({len(res['actuals'])} services)")
+        return 0
+    if args.cmd == "scale-curve":
+        try:
+            factors = tuple(float(f) if "." in f else int(f) for f in args.factors.split(","))
+            res = scale_curve(args.report_dir, factors=factors)
+        except (RuntimeError, ValueError) as exc:
+            print(f"[bcm] {exc}", file=sys.stderr)
+            return 1
+        for p in res["points"]:
+            print(f"[bcm] x{p['factor']}: ${p['total']:,.2f}/mo")
         return 0
     return 1
 

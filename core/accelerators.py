@@ -81,10 +81,19 @@ def lakehouse_requirements(owner="data-platform", daily_data_gb=100, latency="ba
     return record
 
 
-def lakehouse_decision(requirements_file="requirements.json", streaming=False):
+def lakehouse_decision(requirements_file="requirements.json", streaming=False, daily_data_gb=0):
+    import architecture_model
+    tier = architecture_model.volume_tier(daily_data_gb)
     modules = list(LAKEHOUSE_MODULES)
     if streaming:
         modules.insert(2, "speed-layer-kinesis")
+    # Scale-tier additions (researched thresholds in docs/project_plan.md): at TB/day the
+    # small-files problem dominates -> compaction; at PB folder-level metadata stops
+    # scaling -> open table format.
+    if tier in ("tb", "pb"):
+        modules.append("compaction-glue")
+    if tier == "pb":
+        modules.append("table-format-iceberg")
     record = archdec.template(requirements_file=requirements_file)
     record.update({
         "selected_architecture": "AWS governed lakehouse accelerator",
@@ -111,6 +120,29 @@ def lakehouse_decision(requirements_file="requirements.json", streaming=False):
                 "decision": "selected" if streaming else "deferred",
                 "reason": "Enable Kinesis/Flink only when latency requirements are real-time; batch paths should avoid streaming cost and operational complexity.",
             },
+            {
+                "name": "Databricks on AWS (lakehouse platform)",
+                "decision": ("ask the client — strong candidate at this scale" if tier in ("tb", "pb")
+                             else "rejected at this scale"),
+                "reason": ("Delta/Photon, notebooks, and unified batch+streaming pay off for heavy "
+                           "Spark/ML at TB+ scale; data stays in the client's S3 and Marketplace "
+                           "billing lands in Cost Explorer. Note: DBU compute is NOT priceable via "
+                           "AWS BCM — the cost report would mark platform compute not-estimated."
+                           if tier in ("tb", "pb") else
+                           "Native serverless (Glue/Athena) economics win below ~1 TB/day, and the "
+                           "cost gate can price the whole stack via AWS BCM. Revisit at TB/day."),
+            },
+            {
+                "name": "Snowflake (warehouse platform)",
+                "decision": ("ask the client if BI concurrency / data sharing dominates" if tier in ("tb", "pb")
+                             else "rejected at this scale"),
+                "reason": ("Elastic warehouse concurrency without cluster ops suits SQL-centric, "
+                           "many-analyst workloads; credits are NOT priceable via AWS BCM, so the "
+                           "cost report would rely on post-deploy actuals."
+                           if tier in ("tb", "pb") else
+                           "Lake-first serverless keeps storage open and fully BCM-priceable at this "
+                           "volume; a warehouse adds platform cost without a concurrency need."),
+            },
         ],
         "assumptions": [
             "The client accepts AWS as the initial production cloud.",
@@ -136,7 +168,8 @@ def write_lakehouse(run, owner="data-platform", daily_data_gb=100, streaming=Fal
     if not force and (req_path.exists() or decision_path.exists()):
         raise FileExistsError("requirements.json or architecture_decision.json already exists; pass --force to overwrite")
     requirements = lakehouse_requirements(owner=owner, daily_data_gb=daily_data_gb)
-    decision = lakehouse_decision(requirements_file=str(req_path), streaming=streaming)
+    decision = lakehouse_decision(requirements_file=str(req_path), streaming=streaming,
+                                  daily_data_gb=daily_data_gb)
     reqgate.write(str(root), requirements, gathered_by=owner)
     archdec.write(str(root), decision, decided_by=owner)
     return {

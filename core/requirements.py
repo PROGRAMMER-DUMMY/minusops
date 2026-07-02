@@ -14,6 +14,7 @@ retention, security, budget.
 import datetime
 import json
 import os
+import re
 
 REQUIRED_NFR = ["latency", "scale", "availability", "retention", "security", "budget"]
 FILENAME = "requirements.json"
@@ -111,6 +112,24 @@ def validate_data_pipeline(data):
     dp = (data or {}).get("data_pipeline") or {}
     missing = [f"data_pipeline.{f}" for f in DATA_FIELDS if not str(dp.get(f, "")).strip()]
     return (not missing), missing
+
+
+_VOLUME_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(gb|tb|gigabyte|terabyte)", re.I)
+
+
+def parse_daily_gb(data):
+    """Best-effort daily volume (GB) from the data_volume answer.
+
+    Ranges like "10 to 100 GB per day" take the UPPER bound (conservative-high forecast);
+    the source text is returned so the assumption stays auditable. (0, "") when nothing
+    parseable — never a guess. Canonical here; synthesizer + conformance both consume it.
+    """
+    text = str(((data or {}).get("data_pipeline") or {}).get("data_volume") or "")
+    best = 0.0
+    for num, unit in _VOLUME_RE.findall(text):
+        gb = float(num) * (1024 if unit.lower().startswith("t") else 1)
+        best = max(best, gb)
+    return (best, text.strip()) if best > 0 else (0, "")
 
 
 def deferred_axes(data):

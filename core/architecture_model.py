@@ -181,6 +181,23 @@ def layer_coverage(resources):
     return cov
 
 
+# --- Scale tiers (researched thresholds recorded in docs/project_plan.md) ----
+def volume_tier(daily_gb):
+    """gb < 1 TB/day; tb 1–50 TB/day; pb > 50 TB/day. None when volume is undeclared —
+    tier checks then stay silent rather than guessing a scale."""
+    try:
+        daily_gb = float(daily_gb or 0)
+    except (TypeError, ValueError):
+        return None
+    if daily_gb <= 0:
+        return None
+    if daily_gb < 1024:
+        return "gb"
+    if daily_gb <= 51200:
+        return "tb"
+    return "pb"
+
+
 # --- Well-Architected + reference-architecture conformance checks -----------
 _SEV_WEIGHT = {"HIGH": 12, "MEDIUM": 6, "LOW": 2, "INFO": 0}
 
@@ -197,11 +214,13 @@ def _finding(fid, severity, title, detail, ref):
             "title": title, "detail": detail, "reference": ref}
 
 
-def conformance(plan):
+def conformance(plan, daily_data_gb=None):
     """Score a plan against the reference architecture + Well-Architected Analytics Lens.
 
     Returns a deterministic report: layer coverage, findings (each tied to a WA/ref
     principle), a 0-100 score, and a status. Everything is derived from the plan.
+    When the run declares a daily volume, tier-conditional checks apply on top —
+    what is hygiene at GB/day is an incident at TB/day (thresholds cited per finding).
     """
     resources = extract_resources(plan)
     cov = layer_coverage(resources)
@@ -272,6 +291,36 @@ def conformance(plan):
             "No SNS topic / notification target found to alert stakeholders on ETL job failures.",
             "WA Analytics Lens BP 6.3 (notify stakeholders of job failures)"))
 
+    # 4) Scale-tier checks — only when the run DECLARES a volume (never guessed).
+    tier = volume_tier(daily_data_gb)
+    if tier in ("tb", "pb"):
+        names = " ".join(r["address"].lower() for r in resources)
+        if cov.get("processing") and "compact" not in names:
+            findings.append(_finding(
+                "TIER-COMPACTION", "HIGH",
+                f"No small-file compaction at {tier.upper()}-scale volume",
+                "At >= 1 TB/day the small-files problem dominates: AWS measured 100k small "
+                "files scanning 62-88% slower with S3 throttling errors (target ~128 MB "
+                "objects). Add the compaction-glue module or table-format-native compaction.",
+                "AWS Athena performance tuning (file size / small files)"))
+        if has("athena") and not has("redshift", "snowflake", "synapse", "bigquery"):
+            findings.append(_finding(
+                "TIER-WAREHOUSE", "MEDIUM",
+                "Athena-only consumption at scale",
+                "Athena workgroups default to ~20 concurrent queries; at this volume tier "
+                "concurrent BI load typically needs a warehouse-class engine "
+                "(consumption-redshift-serverless) for dashboards.",
+                "Athena service quotas / published concurrency comparisons"))
+    if tier == "pb" and not has("glue_catalog_table", "s3tables", "iceberg", "databricks", "lakeformation"):
+        findings.append(_finding(
+            "TIER-TABLE-FORMAT", "HIGH",
+            "No open table format at PB-scale volume",
+            "Beyond ~100 TB, folder-level metadata stops scaling — file/snapshot tracking, "
+            "ACID commits, and partition indexes are why Iceberg/Delta exist (documented "
+            "migrations at 115 TB+ broke warehouse economics without one). Add the "
+            "table-format-iceberg module.",
+            "Netflix/Iceberg design rationale; TRM Labs lakehouse migration"))
+
     findings.sort(key=lambda f: (_SEV_WEIGHT.get(f["severity"], 0) * -1, f["id"]))
     score = max(0, 100 - sum(_SEV_WEIGHT.get(f["severity"], 0) for f in findings))
     status = "READY" if score >= 90 else "NEEDS_WORK" if score >= 60 else "INCOMPLETE"
@@ -279,6 +328,7 @@ def conformance(plan):
     return {
         "score": score,
         "status": status,
+        "volume_tier": tier,
         "layers": {layer: {"present": bool(cov.get(layer)), "count": len(cov.get(layer, []))}
                    for layer in CANONICAL_LAYERS},
         "other_count": len(cov.get("other", [])),

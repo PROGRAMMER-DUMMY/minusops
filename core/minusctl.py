@@ -275,7 +275,8 @@ def _report_source_status(report_path, manifest):
 
 def _conformance_for_run(run, reports=None):
     """Score the run's latest plan against the analytics reference architecture +
-    Well-Architected Analytics Lens. Returns None when there is no plan.json to analyze."""
+    Well-Architected Analytics Lens. Returns None when there is no plan.json to analyze.
+    The run's declared data volume (requirements) activates the scale-tier checks."""
     reports = reports if reports is not None else _run_reports(run)
     if not reports or not reports[0].get("has_plan_json"):
         return None
@@ -283,8 +284,14 @@ def _conformance_for_run(run, reports=None):
         plan = json.loads((Path(reports[0]["path"]) / "plan.json").read_text(encoding="utf-8"))
     except Exception:
         return None
+    daily_gb = 0
     try:
-        return architecture_model.conformance(plan)
+        spec = reqgate.load(os.path.join(run.get("root", ""), reqgate.FILENAME))
+        daily_gb, _src = reqgate.parse_daily_gb(spec or {})
+    except Exception:
+        pass
+    try:
+        return architecture_model.conformance(plan, daily_data_gb=daily_gb)
     except Exception:
         return None
 

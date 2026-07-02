@@ -74,6 +74,17 @@ def _module_args(module_id, present_ids):
         # starter state machine, so conformance is not 'unwired' and the diagram edge is solid).
         args["glue_job_names"] = f"values({_COMPUTE}.glue_job_names)"
         args["task_role_arns"] = f"{_COMPUTE}.glue_job_arns"
+    # Scale-tier modules (compaction / Iceberg / Firehose / EMR Serverless) wire onto the
+    # medallion zones when storage is present.
+    if has_storage and module_id == "compaction-glue":
+        args["script_s3_bucket"] = f'{_STORAGE}.bucket_names["bronze"]'
+        args["target_buckets"] = f"values({_STORAGE}.bucket_names)"
+    if has_storage and module_id == "table-format-iceberg":
+        args["table_bucket"] = f'{_STORAGE}.bucket_names["gold"]'
+    if has_storage and module_id == "ingest-firehose":
+        args["destination_bucket_arn"] = f'"arn:aws:s3:::${{{_STORAGE}.bucket_names["bronze"]}}"'
+    if has_storage and module_id == "compute-emr-serverless":
+        args["target_buckets"] = f"values({_STORAGE}.bucket_names)"
     return args
 
 
@@ -168,22 +179,8 @@ variable "daily_data_gb" {
 '''
 
 
-_VOLUME_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(gb|tb|gigabyte|terabyte)", re.I)
-
-
-def parse_daily_gb(spec):
-    """Best-effort daily volume (GB) from the requirements' data_volume answer.
-
-    Ranges like "10 to 100 GB per day" take the UPPER bound (conservative-high forecast);
-    the source text is recorded so the assumption is auditable. Returns (gb, source_text)
-    — (0, "") when nothing parseable, never a guess.
-    """
-    text = str(((spec or {}).get("data_pipeline") or {}).get("data_volume") or "")
-    best = 0.0
-    for num, unit in _VOLUME_RE.findall(text):
-        gb = float(num) * (1024 if unit.lower().startswith("t") else 1)
-        best = max(best, gb)
-    return (best, text.strip()) if best > 0 else (0, "")
+# Canonical volume parsing lives with the requirements schema; re-exported here for callers.
+parse_daily_gb = reqgate.parse_daily_gb
 
 
 def compose(module_ids, name_prefix, out_dir, owner="", request="",

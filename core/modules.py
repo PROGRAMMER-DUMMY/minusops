@@ -120,6 +120,51 @@ MODULES = [
         "provides": ["workgroup_name", "results_bucket"],
     },
     {
+        "id": "compaction-glue", "category": "optimization",
+        "title": "Scheduled small-file compaction (Glue)",
+        "satisfies": ["compaction", "small files", "compact", "file optimization",
+                      "optimize storage layout", "many small objects", "tb scale"],
+        "services": ["AWS Glue", "AWS IAM"],
+        "inputs": ["name_prefix", "tags", "script_s3_bucket", "target_buckets", "schedule"],
+        "provides": ["compaction_job_name"],
+    },
+    {
+        "id": "table-format-iceberg", "category": "storage",
+        "title": "Apache Iceberg table format on the curated zone",
+        "satisfies": ["iceberg", "table format", "open table format", "acid tables", "time travel",
+                      "delta format", "hudi", "petabyte", "snapshot isolation"],
+        "services": ["AWS Glue Data Catalog", "Amazon S3"],
+        "inputs": ["name_prefix", "tags", "table_bucket", "table_name", "columns"],
+        "provides": ["database_name", "table_name", "table_location"],
+    },
+    {
+        "id": "ingest-firehose", "category": "ingestion",
+        "title": "Micro-batched streaming ingestion (Kinesis Data Firehose)",
+        "satisfies": ["firehose", "streaming ingestion", "near real-time ingest", "event delivery",
+                      "micro-batch", "continuous ingest", "clickstream", "log delivery"],
+        "services": ["Amazon Kinesis Data Firehose", "Amazon S3", "AWS IAM"],
+        "inputs": ["name_prefix", "tags", "destination_bucket_arn", "buffering_size_mb"],
+        "provides": ["delivery_stream_name", "delivery_stream_arn"],
+    },
+    {
+        "id": "compute-emr-serverless", "category": "compute",
+        "title": "EMR Serverless Spark for sustained large-scale transforms",
+        "satisfies": ["emr", "emr serverless", "large scale spark", "long-running jobs",
+                      "heavy transform", "terabyte processing", "sustained compute"],
+        "services": ["Amazon EMR Serverless", "AWS IAM"],
+        "inputs": ["name_prefix", "tags", "release_label", "max_vcpu", "max_memory", "target_buckets"],
+        "provides": ["application_id", "runtime_role_arn"],
+    },
+    {
+        "id": "consumption-redshift-serverless", "category": "serving",
+        "title": "Redshift Serverless for high-concurrency BI",
+        "satisfies": ["redshift", "warehouse", "high concurrency", "many analysts",
+                      "bi at scale", "dashboards at scale", "concurrent queries"],
+        "services": ["Amazon Redshift Serverless"],
+        "inputs": ["name_prefix", "tags", "base_capacity_rpu"],
+        "provides": ["namespace_name", "workgroup_name"],
+    },
+    {
         "id": "governance-observability", "category": "governance",
         "title": "Budget guardrail + CloudWatch observability",
         "satisfies": ["budget", "cost guardrail", "monitoring", "observability", "alarms",
@@ -175,7 +220,9 @@ def match_modules(requirements, min_score=1):
         for svc in m["services"]:
             if _tokens(svc) & req_tokens:
                 score += 1
-        if score >= min_score:
+        # A selection must be explainable by a capability phrase — service-name token
+        # overlap alone ("Data", "Amazon") is noise, it only boosts a real match.
+        if matched and score >= min_score:
             scored.append({**m, "score": score, "matched": sorted(set(matched))})
     return sorted(scored, key=lambda x: x["score"], reverse=True)
 

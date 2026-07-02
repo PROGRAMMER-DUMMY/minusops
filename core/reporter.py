@@ -1555,6 +1555,7 @@ def load_bcm_estimate(report_dir):
         assumption_doc = _read("bcm-assumptions.json")
         assumptions = assumption_doc.get("derived_amount_assumptions") or {}
         not_estimated = assumption_doc.get("not_estimated_services") or []
+        scale_curve = _read("bcm-scale-curve.json") or None
         rate_type = _read("bcm-create-workload-estimate.json").get("rateType") or "BEFORE_DISCOUNTS"
         actuals = _read("bcm-actuals.json") or {}
         variance = forecast_vs_actual(line_items, actuals) if actuals else None
@@ -1567,6 +1568,7 @@ def load_bcm_estimate(report_dir):
             "assumptions": assumptions,
             "not_estimated_services": not_estimated,
             "monthly_budget_usd": _plan_budget(report_dir),
+            "scale_curve": scale_curve,
             "rate_type": rate_type,
             "priced_at": data.get("generated_at", ""),
             "actuals": actuals,
@@ -2156,6 +2158,27 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
                          "Track this per run — it is the number that tells you whether the "
                          "pipeline gets cheaper or more expensive as it scales.</p>")
 
+        # Cost at scale: AWS-priced points of the SAME architecture at usage multiples —
+        # diseconomies (or savings cliffs) show up before deploy, not on the first big bill.
+        curve_html = ""
+        curve = (cost.get("scale_curve") or {}).get("points") or []
+        if curve:
+            rows_c = ""
+            for p in curve:
+                t = _f(p.get("total"))
+                per_gb = (f"${t / (daily_gb * days * p['factor']):,.4f}/GB"
+                          if (t is not None and daily_gb > 0) else "-")
+                rows_c += (f'<tr><td class="money">x{p["factor"]:g}</td>'
+                           f'<td class="money">{("$%.2f" % t) if t is not None else "-"}</td>'
+                           f'<td class="money">{per_gb}</td></tr>')
+            curve_html = (
+                "<h2>Cost at scale</h2>"
+                "<p class=\"note\">Each point is a separate AWS BCM estimate of this architecture "
+                "at a usage multiple — no local extrapolation. A rising cost/GB signals a "
+                "diseconomy (time to change tier: compaction, table format, or engine).</p>"
+                "<table><thead><tr><th>Usage</th><th>Monthly (AWS-priced)</th><th>Cost/GB</th></tr></thead>"
+                f"<tbody>{rows_c}</tbody></table>")
+
         scenario_html = (
             "<h2>What-if scenarios (scale up / down, commitments)</h2>"
             "<p class=\"note\">Model changed usage or Savings Plans / Reserved Instances with a BCM "
@@ -2183,6 +2206,7 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
             + (f"<h2>Cost drivers</h2>{drivers}" if drivers else "")
             + budget_html
             + unit_econ
+            + curve_html
             + scenario_html
             + "<h2>Usage assumptions</h2>"
             + "<p class=\"note\">These drove the submitted usage amounts; AWS BCM Pricing Calculator priced them. "
