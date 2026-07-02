@@ -48,7 +48,7 @@ def test_compose_writes_a_governed_terraform_root(tmp_path):
     assert (out / "modules" / "storage-medallion-s3" / "main.tf").exists()
     main = (out / "main.tf").read_text(encoding="utf-8")
     assert 'module "storage_medallion_s3"' in main
-    assert 'source = "./modules/compute-glue-etl"' in main
+    assert '"./modules/compute-glue-etl"' in main   # fmt may realign 'source ='
     # obvious cross-module wiring is done automatically
     assert "module.storage_medallion_s3.kms_key_arn" in main      # athena results encryption
     assert 'module.storage_medallion_s3.bucket_names["bronze"]' in main  # glue script bucket
@@ -183,7 +183,7 @@ def test_compose_writes_tfvars_with_showback_and_volume(tmp_path):
               owner="data-platform", run_id="20260702-x", daily_data_gb=100,
               volume_source="10 to 100 GB per day")
     tfvars = (out / "terraform.tfvars").read_text(encoding="utf-8")
-    assert 'run_id      = "20260702-x"' in tfvars
+    assert '= "20260702-x"' in tfvars               # fmt realigns keys
     assert "daily_data_gb = 100" in tfvars and "10 to 100 GB per day" in tfvars
     providers = (out / "providers.tf").read_text(encoding="utf-8")
     assert "run_id     = var.run_id" in providers   # showback tag on every resource
