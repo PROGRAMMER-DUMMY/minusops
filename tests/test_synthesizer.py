@@ -164,3 +164,26 @@ def test_synthesize_refuses_unknown_decision_module(tmp_path, monkeypatch):
         synthesizer.synthesize("airflow pipeline", spec=COMPLETE_SPEC, decision=decision)
 
     assert "unknown selected module" in str(exc.value)
+
+
+def test_parse_daily_gb_takes_upper_bound_and_converts_tb():
+    import synthesizer as s
+    gb, src = s.parse_daily_gb({"data_pipeline": {"data_volume": "Large: 10 to 100 GB of sales data per day"}})
+    assert gb == 100 and "10 to 100" in src
+    gb, _ = s.parse_daily_gb({"data_pipeline": {"data_volume": "about 2 TB daily"}})
+    assert gb == 2048
+    gb, src = s.parse_daily_gb({"data_pipeline": {"data_volume": "unknown for now"}})
+    assert gb == 0 and src == ""
+
+
+def test_compose_writes_tfvars_with_showback_and_volume(tmp_path):
+    import synthesizer as s
+    out = tmp_path / "tf"
+    s.compose(["storage-medallion-s3", "governance-observability"], "acme-dev", str(out),
+              owner="data-platform", run_id="20260702-x", daily_data_gb=100,
+              volume_source="10 to 100 GB per day")
+    tfvars = (out / "terraform.tfvars").read_text(encoding="utf-8")
+    assert 'run_id      = "20260702-x"' in tfvars
+    assert "daily_data_gb = 100" in tfvars and "10 to 100 GB per day" in tfvars
+    providers = (out / "providers.tf").read_text(encoding="utf-8")
+    assert "run_id     = var.run_id" in providers   # showback tag on every resource

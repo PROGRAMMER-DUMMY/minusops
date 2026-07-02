@@ -209,6 +209,16 @@ def _generated_files(run):
     return data.get("files", [])
 
 
+def _cost_drift_pct(latest):
+    """Total forecast-vs-actual variance %, or None when no actuals were pulled."""
+    variance = ((latest or {}).get("cost") or {}).get("variance") or {}
+    f, a = variance.get("forecast_total"), variance.get("actual_total")
+    try:
+        return (float(a) - float(f)) / float(f) * 100 if f else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _latest_report_details(reports):
     if not reports:
         return {}
@@ -461,7 +471,18 @@ def _readiness(run):
             bool(latest.get("cost", {}).get("ok")),
             "warning",
             latest.get("cost", {}).get("pricing_source", "BCM Pricing Calculator API required"),
-            "Review BCM payloads, resolve REVIEW_REQUIRED usage fields, approve BCM estimate creation, then regenerate report.",
+            "Estimates are created automatically when AWS credentials with BCM access exist; "
+            "configure credentials and regenerate the report.",
+        ),
+        _check(
+            "forecast vs actuals drift",
+            _cost_drift_pct(latest) is None
+            or abs(_cost_drift_pct(latest)) < float(os.environ.get("MINUS_VARIANCE_ALERT_PCT", "20")),
+            "warning",
+            ("no actuals pulled yet — n/a" if _cost_drift_pct(latest) is None
+             else f"total variance {_cost_drift_pct(latest):+.1f}% vs forecast"),
+            "Actual spend drifted from the BCM forecast — investigate before the next run: "
+            "`python core/bcm_pricing_calculator.py actuals --report-dir <report>` refreshes actuals.",
         ),
         _check(
             "terraform configuration valid",

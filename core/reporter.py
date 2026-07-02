@@ -1484,6 +1484,31 @@ def forecast_vs_actual(line_items, actuals):
     return {"rows": rows, "forecast_total": sum(fc.values()), "actual_total": sum(ac.values())}
 
 
+def _plan_budget(report_dir):
+    """The monthly budget guardrail the plan itself provisions (aws_budgets_budget
+    limit_amount) — plan-derived, so forecast-vs-budget compares two real numbers."""
+    path = os.path.join(report_dir, "plan.json")
+    try:
+        plan = json.loads(open(path, encoding="utf-8").read())
+    except Exception:
+        return None
+
+    def walk(mod):
+        for r in (mod or {}).get("resources", []):
+            if r.get("type") == "aws_budgets_budget":
+                try:
+                    return float((r.get("values") or {}).get("limit_amount"))
+                except (TypeError, ValueError):
+                    pass
+        for child in (mod or {}).get("child_modules", []):
+            found = walk(child)
+            if found is not None:
+                return found
+        return None
+
+    return walk((plan.get("planned_values") or {}).get("root_module"))
+
+
 def load_bcm_estimate(report_dir):
     """
     Load a completed BCM estimate (written by bcm_pricing_calculator.run) into a cost dict
@@ -1541,6 +1566,7 @@ def load_bcm_estimate(report_dir):
             "commitments": commit_items,
             "assumptions": assumptions,
             "not_estimated_services": not_estimated,
+            "monthly_budget_usd": _plan_budget(report_dir),
             "rate_type": rate_type,
             "priced_at": data.get("generated_at", ""),
             "actuals": actuals,
@@ -2096,6 +2122,24 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         assume_html = (_kv_table(assumptions.items()) if assumptions
                        else "<p class=\"note\">No derived assumptions recorded (usage supplied directly).</p>")
 
+        # Budget check: the plan provisions its own guardrail (aws_budgets_budget) — hold
+        # the AWS forecast against it BEFORE deploy, not after the first bill.
+        budget_html = ""
+        budget = cost.get("monthly_budget_usd")
+        if budget and total is not None:
+            util = total / budget * 100
+            tone = "#8da189" if util <= 80 else "#cb9a3e" if util <= 100 else "#d95d39"
+            verdict = ("within budget" if util <= 80 else
+                       "approaching budget" if util <= 100 else "EXCEEDS BUDGET")
+            budget_html = (
+                "<h2>Budget check</h2>"
+                f'<p class="note">Forecast <b>${total:,.2f}/mo</b> vs the plan\'s own budget guardrail '
+                f'<b>${budget:,.2f}/mo</b> — <b style="color:{tone}">{util:.0f}% · {verdict}</b>. '
+                "Both numbers are real: the forecast is AWS BCM's, the budget is the "
+                "aws_budgets_budget this plan provisions.</p>"
+                f'<div style="background:#231d19;border-radius:6px;height:10px;margin:8px 0 14px">'
+                f'<div style="width:{min(100, max(2, util)):.0f}%;height:10px;border-radius:6px;background:{tone}"></div></div>')
+
         # Unit economics for the data domain: cost per GB processed, derived strictly from
         # the AWS total ÷ the run's own stated volume (only when the run states a volume).
         unit_econ = ""
@@ -2137,6 +2181,7 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
             + "<th>Rate $/unit</th><th>Monthly</th><th>% of total</th></tr></thead>"
             + f"<tbody>{rows}</tbody></table>"
             + (f"<h2>Cost drivers</h2>{drivers}" if drivers else "")
+            + budget_html
             + unit_econ
             + scenario_html
             + "<h2>Usage assumptions</h2>"

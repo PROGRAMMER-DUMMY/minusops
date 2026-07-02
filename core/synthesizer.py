@@ -8,6 +8,7 @@ root that wires the obvious shared inputs and flags the rest for review. The out
 shortcut. It replaces the single hardcoded blueprint with requirement-driven composition.
 """
 import os
+import re
 import json
 import shutil
 import datetime
@@ -117,8 +118,12 @@ _VERSIONS = '''terraform {
 _PROVIDERS = '''provider "aws" {
   region = var.region
   default_tags {
+    # Showback: every resource carries the owning team and the run that created it,
+    # so Cost Explorer can attribute actual spend per pipeline (FinOps allocation).
     tags = {
       managed_by = "minusops"
+      owner      = var.owner
+      run_id     = var.run_id
     }
   }
 }
@@ -148,10 +153,41 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "run_id" {
+  type        = string
+  default     = ""
+  description = "MinusOps run id stamped onto every resource for per-pipeline cost showback."
+}
+
+variable "daily_data_gb" {
+  type        = number
+  default     = 0
+  description = "Declared daily data volume in GB (from requirements). Drives the S3 usage estimate and cost-per-GB unit economics; 0 = undeclared."
+}
 '''
 
 
-def compose(module_ids, name_prefix, out_dir, owner="", request=""):
+_VOLUME_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(gb|tb|gigabyte|terabyte)", re.I)
+
+
+def parse_daily_gb(spec):
+    """Best-effort daily volume (GB) from the requirements' data_volume answer.
+
+    Ranges like "10 to 100 GB per day" take the UPPER bound (conservative-high forecast);
+    the source text is recorded so the assumption is auditable. Returns (gb, source_text)
+    — (0, "") when nothing parseable, never a guess.
+    """
+    text = str(((spec or {}).get("data_pipeline") or {}).get("data_volume") or "")
+    best = 0.0
+    for num, unit in _VOLUME_RE.findall(text):
+        gb = float(num) * (1024 if unit.lower().startswith("t") else 1)
+        best = max(best, gb)
+    return (best, text.strip()) if best > 0 else (0, "")
+
+
+def compose(module_ids, name_prefix, out_dir, owner="", request="",
+            run_id="", daily_data_gb=0, volume_source=""):
     """Write a composed Terraform root into out_dir from the selected modules."""
     chosen = [module_registry.get_module(i) for i in module_ids]
     chosen = [m for m in chosen if m]
@@ -177,6 +213,18 @@ def compose(module_ids, name_prefix, out_dir, owner="", request=""):
     _w("providers.tf", _PROVIDERS)
     _w("variables.tf", _VARIABLES)
     _w("main.tf", _render_main(chosen, present_ids))
+
+    # Resolved inputs for this run — plans work without hand-written tfvars, and the
+    # declared volume flows into cost estimation (S3 GB-months, cost/GB economics).
+    tfvars = [
+        f'name_prefix = "{name_prefix}"',
+        f'owner       = "{owner or "unknown"}"',
+        f'run_id      = "{run_id}"',
+    ]
+    if daily_data_gb:
+        tfvars.append(f"daily_data_gb = {daily_data_gb:g}"
+                      + (f'  # from requirements: "{volume_source}" (upper bound)' if volume_source else ""))
+    _w("terraform.tfvars", "\n".join(tfvars) + "\n")
 
     review = []
     for m in chosen:
@@ -282,7 +330,10 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     if decision:
         archdec.write(run["root"], decision, decided_by=owner)
     prefix = name_prefix or f"{module_registry._WORD.findall(owner.lower())[0] if owner else 'app'}-dev"
-    result = compose([m["id"] for m in chosen], prefix, run["terraform_dir"], owner=owner, request=requirements_text)
+    daily_gb, volume_source = parse_daily_gb(spec)
+    result = compose([m["id"] for m in chosen], prefix, run["terraform_dir"], owner=owner,
+                     request=requirements_text, run_id=run.get("run_id", ""),
+                     daily_data_gb=daily_gb, volume_source=volume_source)
     result["manifest"] = _write_manifest(run["terraform_dir"], result, requirements_text, decision=decision)
     result["workflow"] = _update_workflow(run, result)
     result["run"] = run

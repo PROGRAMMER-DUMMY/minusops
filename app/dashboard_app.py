@@ -998,7 +998,13 @@ def _cost_status(report):
         except (TypeError, ValueError):
             total = 0
         value = f"${total:,.2f}/mo" if total else "priced"
-        return value, "AWS BCM estimate (on-demand list price)", "sage"
+        sub, tone = "AWS BCM estimate (on-demand list price)", "sage"
+        budget = cost.get("monthly_budget_usd")
+        if budget and total:
+            util = total / float(budget) * 100
+            sub = f"{util:.0f}% of the ${float(budget):,.0f}/mo budget guardrail"
+            tone = "sage" if util <= 80 else "sand" if util <= 100 else "terracotta"
+        return value, sub, tone
     if cost.get("bcm_pricing_calculator_required") or cost.get("ok") is False:
         return "BCM required", "cost unavailable until approved AWS BCM estimate", "sand"
     return "unknown", "cost evidence unavailable", "muted"
