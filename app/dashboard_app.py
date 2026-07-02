@@ -1783,7 +1783,7 @@ def _serve_report_files(report_id):
             for item in sorted(report_dir.iterdir())
             if item.name != "source_snapshot"
         ]
-        rows.insert(0, ("Terraform directory", manifest.get("dir", "-")))
+        rows.insert(0, ("Terraform directory", os.path.normpath(manifest.get("dir", "-"))))
     except Exception:
         abort(404)
     return _table_page("Report Files", report_id, ["File", "Bytes"], rows)

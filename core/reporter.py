@@ -1165,6 +1165,15 @@ def _sanitize_svg_fragment(inner):
     return inner
 
 
+def _default_icons_dir():
+    """The opt-in local icon directory (MINUS_ARCH_ICONS_DIR or assets/architecture-icons).
+    Resolved HERE so every caller of build_dataflow_svg gets icons automatically — a
+    caller once forgot to pass icons_dir and silently shipped glyph-only diagrams."""
+    path = os.environ.get("MINUS_ARCH_ICONS_DIR") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "architecture-icons")
+    return path if os.path.isdir(path) else None
+
+
 def _df_embed_icon(rtype, uid, x, y, size, hue, icons_dir):
     """Embed a real service icon by slug from icons_dir if present; else a generic glyph.
 
@@ -1206,6 +1215,9 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
     when the plan's references confirm the wiring, and a Security & Monitoring band.
     """
     import architecture_model as am
+
+    if icons_dir is None:
+        icons_dir = _default_icons_dir()
 
     def esc(s):
         return html.escape(str(s), quote=True)
@@ -2689,14 +2701,10 @@ def _generate_report_bundle(dir_, data, template=None):
     htmldoc = build_html(template, cloud, short, ts, rows, counts, cost, svg, data, None, dir_, git_commit())
 
     # v3 lake-house data-flow diagram (additive; shares the six-layer classifier with the
-    # conformance model). Icons are opt-in via a local dir; default is on-palette glyphs.
-    icons_dir = os.environ.get("MINUS_ARCH_ICONS_DIR") or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "architecture-icons")
-    if not os.path.isdir(icons_dir):
-        icons_dir = None
+    # conformance model). Icons resolve inside the renderer (_default_icons_dir).
     try:
         dataflow_svg = build_dataflow_svg(rows, template, cloud, short, ts, findings=findings,
-                                          plan=data, region=region, icons_dir=icons_dir)
+                                          plan=data, region=region)
     except Exception:
         dataflow_svg = None
 
