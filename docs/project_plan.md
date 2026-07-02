@@ -166,3 +166,23 @@ each becomes a tier-conditional conformance check or advisory finding:
 | Streaming | micro-batch (1–2s) over pure streaming at high velocity; CDC for change-heavy sources | latency-class requirement selects ingest module (batch / Firehose / MSK+CDC) |
 | Org scale | central-team bottleneck → data mesh; per-job I/O chargeback (Uber) | multi-team requirement → multi-account/showback pattern (v2) |
 | Quality | silent data-quality failures compound at scale ($5M mispricing case) | DQ module stays mandatory at every tier ≥ TB |
+
+### Phase C addendum — the platform dimension (native AWS vs Databricks vs Snowflake)
+Scale is one axis; **platform** is the other. The Terraform registry has mature official
+providers (`databricks/databricks`, `snowflakedb/snowflake`), so the module-composition
+engine extends naturally: platform-tagged module packs behind the same six-layer model.
+
+Recommendation logic (asked in the grill phase when signals warrant, recorded in
+`architecture_decision.json` with alternatives/rejections — the schema already supports it):
+
+| Signal in requirements | Recommended platform | Why |
+| :-- | :-- | :-- |
+| GB-tier batch, SQL consumers, min ops | **Native AWS serverless** (current) | best economics at small scale; tightest BCM/Cost Explorer integration |
+| Heavy Spark/ML, notebooks, streaming+batch, TB+ | **Databricks on AWS** (ask first if already on AWS) | Delta/Photon at scale, collaboration; data stays in the customer's S3; Marketplace billing lands in Cost Explorer |
+| SQL-warehouse-centric, high BI concurrency, cross-org data sharing | **Snowflake** | elasticity + concurrency without cluster ops; data sharing |
+
+Honesty constraint: our forecast gate prices via AWS BCM only. Databricks DBUs and
+Snowflake credits are NOT BCM-priceable — for those platforms the cost report must say
+"platform compute: not estimated (vendor pricing)" and lean on post-deploy actuals
+(Databricks-on-AWS Marketplace charges DO appear in Cost Explorer). Never hardcode
+DBU/credit rates.
