@@ -248,6 +248,33 @@ def _reject_if_weak_credentials(dir_, posture, policy_mode="dev"):
     return True
 
 
+def _reject_if_nonsandbox_dev(dir_, account, policy_mode):
+    """
+    Dev-mode controls are deliberately weaker, so dev applies are only allowed into
+    known sandbox accounts. MINUS_SANDBOX_ACCOUNTS (comma-separated account ids)
+    declares them: unset -> loud audited warning (phase 1); set and the target is not
+    listed -> refuse (phase 2, enforced). Production mode has its own controls.
+    """
+    if policy_mode == "production":
+        return False
+    raw = os.environ.get("MINUS_SANDBOX_ACCOUNTS", "").strip()
+    if not raw:
+        print(f"[gate] WARNING: dev policy mode and MINUS_SANDBOX_ACCOUNTS is not set — cannot "
+              f"confirm account {account} is a sandbox. Declare your sandbox accounts "
+              "(MINUS_SANDBOX_ACCOUNTS=111111111111,222222222222) or use --policy-mode production.",
+              file=sys.stderr)
+        _audit("apply", "WARN", reason="dev_mode_sandbox_unverified", dir=dir_, account=str(account))
+        return False
+    sandboxes = {a.strip() for a in raw.split(",") if a.strip()}
+    if str(account) in sandboxes:
+        return False
+    print(f"[gate] refusing apply: dev policy mode targets account {account}, which is not in "
+          "MINUS_SANDBOX_ACCOUNTS. Governed accounts require --policy-mode production.",
+          file=sys.stderr)
+    _audit("apply", "REJECTED", reason="dev_mode_nonsandbox_account", dir=dir_, account=str(account))
+    return True
+
+
 def _clear_approvals(dir_, plan_hash=None):
     try:
         if plan_hash:
@@ -488,6 +515,9 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
 
     if _reject_if_weak_credentials(dir_, _credential_posture(), policy_mode):
         return False  # approval kept; re-auth with a temporary session and retry
+
+    if _reject_if_nonsandbox_dev(dir_, account, policy_mode):
+        return False  # approval kept; re-run with --policy-mode production
 
     print(f"[gate] applying approved plan (hash {current[:16]}...) as {account} ...")
     rc, _, _ = _tf(dir_, "apply", PLAN_FILE)   # ambient CLI credentials

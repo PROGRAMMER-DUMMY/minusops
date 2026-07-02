@@ -244,3 +244,20 @@ def test_minusctl_readiness_rejects_comment_stub_core_files(tmp_path, monkeypatc
     core = next(c for c in data["checks"] if c["name"] == "core Terraform files present")
     assert not core["ok"]
     assert "s3_extra.tf" in core["detail"] and "stub" in core["detail"]
+
+
+def test_guard_refresh_requires_acknowledgment(tmp_path, monkeypatch):
+    # Loophole #2: re-baselining generated code must be an explicit, audited act.
+    _patch_runs(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _, output = _capture(["demo", "governed-data-pipeline", "--json"])
+    run_id = json.loads(output)["run"]["run_id"]
+
+    code, _ = _capture(["guard", "refresh", "--run", run_id, "--label", "reviewed"])
+    assert code == 2                          # refused without the acknowledgment
+
+    code, _ = _capture(["guard", "refresh", "--run", run_id, "--label", "reviewed",
+                        "--ack-manual-edits", "shubh reviewed the diff; alarm fix is correct"])
+    assert code == 0
+    audit = (tmp_path / ".agents" / "logs" / "audit.jsonl").read_text(encoding="utf-8")
+    assert "guard_refresh" in audit and "alarm fix is correct" in audit

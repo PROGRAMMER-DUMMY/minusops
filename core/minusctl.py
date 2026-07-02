@@ -790,6 +790,9 @@ def main(argv=None):
     guard.add_argument("--dir", help="Terraform source directory")
     guard.add_argument("--run", default="latest", help="Run id or prefix; default latest")
     guard.add_argument("--label", default="manual", help="Baseline label for baseline/refresh")
+    guard.add_argument("--ack-manual-edits", default="",
+                       help="REQUIRED for refresh: who reviewed the manual edits and why they are "
+                            "correct — recorded in the tamper-evident audit chain")
     guard.add_argument("--json", action="store_true")
 
     reports = sub.add_parser("reports", help="inspect plan reports")
@@ -873,6 +876,34 @@ def main(argv=None):
     if args.cmd == "guard":
         tf_dir = _terraform_dir(args)
         if args.action in {"baseline", "refresh"}:
+            if args.action == "refresh":
+                # Re-baselining blesses manual edits to GENERATED code — that must be an
+                # explicit, attributable act, not a rubber stamp (an agent once stamped
+                # its own edits six times unchallenged).
+                if not args.ack_manual_edits:
+                    print("guard refresh re-baselines manual edits to generated Terraform. "
+                          "State why: --ack-manual-edits \"<who reviewed the diff and why the "
+                          "edits are correct>\". The acknowledgment lands in the audit chain.",
+                          file=sys.stderr)
+                    return 2
+                changed = source_guard.status(tf_dir)
+                try:
+                    import approval as _approval
+                    operator = _approval.authz.operator()
+                except Exception:
+                    operator = os.environ.get("USERNAME") or os.environ.get("USER") or "unknown"
+                audit_chain.append(
+                    os.path.join(os.getcwd(), ".agents", "logs", "audit.jsonl"),
+                    {
+                        "action": "guard_refresh",
+                        "operator": operator,
+                        "ack": args.ack_manual_edits,
+                        "label": args.label,
+                        "dir": tf_dir,
+                        "drift_before": changed.get("status"),
+                        "changed_files": (changed.get("changed") or [])[:50],
+                    })
+                print(f"[guard] refresh acknowledged by {operator}: {args.ack_manual_edits}")
             result = source_guard.write_baseline(tf_dir, label=args.label)
             _json_or_text(result, args.json, f"baseline written: {tf_dir}")
         elif args.action == "status":

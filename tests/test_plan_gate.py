@@ -338,3 +338,30 @@ def test_verify_passes_policy_mode_and_log_dir_to_scanner(gate_env, monkeypatch)
     assert seen["args"][seen["args"].index("--policy-mode") + 1] == "production"
     assert "--log-dir" in seen["args"]
     assert seen["args"][seen["args"].index("--log-dir") + 1] == plan_gate.LOG_DIR
+
+
+# ---- loophole #1: dev-mode applies only into declared sandbox accounts ----
+def test_dev_apply_refused_for_nonsandbox_account(monkeypatch, capsys):
+    import plan_gate
+    monkeypatch.setenv("MINUS_SANDBOX_ACCOUNTS", "111111111111")
+    assert plan_gate._reject_if_nonsandbox_dev(".", "999999999999", "dev") is True
+    assert "not in" in capsys.readouterr().err
+
+
+def test_dev_apply_allowed_for_sandbox_account(monkeypatch):
+    import plan_gate
+    monkeypatch.setenv("MINUS_SANDBOX_ACCOUNTS", "111111111111, 222222222222")
+    assert plan_gate._reject_if_nonsandbox_dev(".", "222222222222", "dev") is False
+
+
+def test_dev_apply_warns_when_sandboxes_undeclared(monkeypatch, capsys):
+    import plan_gate
+    monkeypatch.delenv("MINUS_SANDBOX_ACCOUNTS", raising=False)
+    assert plan_gate._reject_if_nonsandbox_dev(".", "999999999999", "dev") is False
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_production_mode_not_subject_to_sandbox_list(monkeypatch):
+    import plan_gate
+    monkeypatch.setenv("MINUS_SANDBOX_ACCOUNTS", "111111111111")
+    assert plan_gate._reject_if_nonsandbox_dev(".", "999999999999", "production") is False
