@@ -223,6 +223,18 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
                       + (f'  # from requirements: "{volume_source}" (upper bound)' if volume_source else ""))
     _w("terraform.tfvars", "\n".join(tfvars) + "\n")
 
+    # Emit fmt-clean output so `plan_gate verify` (terraform fmt -check) passes without a
+    # manual formatting step. Best-effort: composition still succeeds without terraform.
+    try:
+        import subprocess
+        import toolpath
+        tf_bin = toolpath.find_tool("terraform")
+        if tf_bin:
+            subprocess.run([tf_bin, "fmt", "-recursive", "."], cwd=out_dir,
+                           capture_output=True, timeout=60)
+    except Exception:
+        pass
+
     review = []
     for m in chosen:
         args = _module_args(m["id"], present_ids)

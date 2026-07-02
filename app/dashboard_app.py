@@ -677,9 +677,25 @@ def write_control_decision(run, selected_architecture="", decision_summary="", m
         alternatives.append({"name": parts[0], "decision": parts[1], "reason": parts[2]})
     if alternatives:
         data["alternatives"] = alternatives
+    # Decision versioning: every overwrite snapshots the prior record, so "why did the
+    # architecture change" is answerable from the run itself.
+    if os.path.exists(decision_path):
+        history_dir = os.path.join(run["root"], "decisions")
+        os.makedirs(history_dir, exist_ok=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+        try:
+            import shutil
+            shutil.copy2(decision_path, os.path.join(history_dir, f"architecture_decision.{stamp}.json"))
+        except OSError:
+            pass
     archdec.save(decision_path, data, decided_by=decided_by)
     ok, missing = archdec.validate(data)
-    return {"path": decision_path, "record": data, "ok": ok, "missing": missing}
+    versions = 0
+    history_dir = os.path.join(run["root"], "decisions")
+    if os.path.isdir(history_dir):
+        versions = len([n for n in os.listdir(history_dir) if n.endswith(".json")])
+    return {"path": decision_path, "record": data, "ok": ok, "missing": missing,
+            "prior_versions": versions}
 
 
 def control_editor_panel(rows, selected_run_id=None):
@@ -849,6 +865,38 @@ def control_plane_panel(selected_run_id=None):
     return panel("Control plane", "requirements -> decision -> synthesis", body)
 
 
+def _run_trend_table(rows):
+    """Cross-run trend: readiness, conformance, and unit economics per run — the numbers
+    that show whether the pipeline practice is getting better or worse over time."""
+    if not rows:
+        return None
+    trs = [html.Tr([html.Th(h) for h in
+                    ("Run", "Readiness", "Conformance", "Tier", "Forecast $/mo", "Cost/GB")])]
+    for row in rows:
+        r = row.get("readiness") or {}
+        conf = r.get("conformance") or {}
+        cost = (r.get("latest_report") or {}).get("cost") or {}
+        total = cost.get("monthly_total_usd")
+        per_gb = "—"
+        try:
+            a = cost.get("assumptions") or {}
+            dg = float(a.get("daily_data_gb") or 0)
+            days = float(a.get("days_per_month") or 30)
+            if total and dg > 0:
+                per_gb = f"${float(total) / (dg * days):,.4f}"
+        except (TypeError, ValueError):
+            pass
+        trs.append(html.Tr([
+            html.Td(row["run"].get("run_id", "—")),
+            html.Td(f"{r.get('score', 0)}/100 {r.get('status', '')}"),
+            html.Td(f"{conf.get('score', '—')}/100" if conf else "—"),
+            html.Td((conf.get("volume_tier") or "—").upper() if conf else "—"),
+            html.Td(f"${float(total):,.2f}" if total else "—"),
+            html.Td(per_gb),
+        ]))
+    return html.Table(className="trend-table", children=trs)
+
+
 def readiness_panel(selected_run_id=None):
     rows = run_inventory()
     total_runs = len(run_store.list_runs()) if os.path.isdir(os.path.join(ROOT, "runs")) else 0
@@ -873,6 +921,7 @@ def readiness_panel(selected_run_id=None):
                 children=run_readiness_card(row),
             ))
         body = html.Div(className="runs", children=[
+            _run_trend_table(rows),
             dcc.Tabs(
                 value=visible[0]["run"].get("run_id"),
                 className="run-tabs",
@@ -969,6 +1018,34 @@ def optimization_panels(selected_run_id=None):
         panels.append(panel(f"{category} findings", eyebrows.get(category, category.lower()),
                             html.Div(className="findings", children=[finding_row(f) for f in items])))
     return panels
+
+
+def scenario_shortcuts_panel(selected_run_id=None):
+    """What-if & evidence commands for the selected run's latest report — the scale-curve,
+    bill-scenario, and actuals pulls that turn the static forecast into decisions."""
+    rows = run_inventory()
+    row = _row_for_run(rows, selected_run_id)
+    report = _selected_report(row)
+    rd = report.get("path") if report else None
+    target = f'"{rd}"' if rd else "<report-dir>"
+    cmds = [
+        ("Cost at 1x/5x/10x usage (AWS-priced)",
+         f"python core/bcm_pricing_calculator.py scale-curve --report-dir {target}"),
+        ("Model Savings Plans / RI commitments",
+         f"python core/bcm_pricing_calculator.py scenario --report-dir {target} --commitments commitments.json"),
+        ("Pull Cost Explorer actuals (forecast-vs-actual)",
+         f"python core/bcm_pricing_calculator.py actuals --report-dir {target}"),
+        ("Re-price with different usage assumptions",
+         f"python core/bcm_pricing_calculator.py prepare --report-dir {target} --derive "
+         f"--assume glue_runs_per_day=48 && python core/bcm_pricing_calculator.py run --report-dir {target}"),
+    ]
+    body = html.Div(className="command-stack", children=[
+        html.Div(children=[
+            html.Div(label, className="empty-sub", style={"marginBottom": ".2rem"}),
+            _command_line(cmd),
+        ], style={"marginBottom": ".8rem"}) for label, cmd in cmds
+    ])
+    return panel("What-if scenarios & evidence", "scale, commitments, actuals — all AWS-priced", body)
 
 
 def deployment_reports_panel(selected_run_id=None):
@@ -1187,7 +1264,8 @@ def build_dynamic(d, selected_run_id=None):
                     className="main-tabs", children=[
         _tab("Overview", "overview", overview),
         _tab("Control", "control", [control_plane_panel(selected_run_id)]),
-        _tab("Optimization", "optimization", optimization_panels(selected_run_id)),
+        _tab("Optimization", "optimization", optimization_panels(selected_run_id)
+             + [scenario_shortcuts_panel(selected_run_id)]),
         _tab("Reports", "reports", [architecture_panel(selected_row, selected_report),
                                     deployment_reports_panel(selected_run_id)]),
         _tab("Readiness", "readiness", [readiness_panel(selected_run_id)]),
@@ -1875,6 +1953,10 @@ app.index_string = """<!DOCTYPE html>
 
     /* KPI strip */
     .arch-embed{width:100%;height:480px;border:0;border-radius:12px;background:var(--bg);display:block}
+    .trend-table{width:100%;border-collapse:collapse;margin-bottom:1rem;font-family:'JetBrains Mono',monospace;font-size:.78rem}
+    .trend-table th{text-align:left;color:var(--terra);font-size:.66rem;text-transform:uppercase;
+      letter-spacing:.12em;padding:.4rem .6rem;border-bottom:1px solid var(--line)}
+    .trend-table td{padding:.45rem .6rem;color:var(--muted);border-bottom:1px solid rgba(255,255,255,.05)}
     .spend-line{display:flex;align-items:baseline;gap:.55rem;font-family:var(--mono,monospace);
       font-size:.86rem;color:var(--muted);margin-bottom:.7rem;flex-wrap:wrap}
     .spend-line strong{font-size:1.25rem;color:var(--text)}
