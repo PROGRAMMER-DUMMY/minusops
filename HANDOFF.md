@@ -1,5 +1,16 @@
 # Handoff — Data-Pipeline Specialization
 
+> **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
+> Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
+> (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance
+> TIER-COMPACTION/WAREHOUSE/TABLE-FORMAT, five new tier modules all terraform-validated,
+> BCM scale-curve, Databricks/Snowflake alternatives in decisions), Phase D (scenario
+> shortcuts panel, decision versioning, cross-run trend table). Verified live with a
+> TB-tier run: 5 TB/day auto-priced at $3,495.79/mo = $0.0228/GB (vs $0.0389/GB at
+> 100 GB/day — economies of scale visible in the Readiness trend). 200 tests passing.
+> Remaining (lower): conformance/DATA-* stay advisory in production; apply not
+> cryptographically bound to approver; Databricks/Snowflake Terraform module packs.
+
 **Date:** 2026-07-02 · **Branch:** `restructure/multi-cloud-foundation` · **Status:** all work **uncommitted**, `177 tests passing`, full composed lakehouse passes `terraform validate`.
 
 ---
