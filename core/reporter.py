@@ -1218,10 +1218,21 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
         R.setdefault(c["role"], []).append(c)
     stages = sorted(R.get("stage", []), key=lambda c: (am.stage_rank(_instance_key(c["address"]), c.get("name", "")), c["address"]))
     xforms = list(R.get("transform", []))
+    # Maintenance jobs (compaction/vacuum/optimize) are NOT data-flow steps — drawing
+    # them on the spine would claim data flows THROUGH them. They render off-spine.
+    _MAINT = re.compile(r"compact|vacuum|optimi[sz]e|maintenance|reindex", re.I)
+    maintenance = [c for c in xforms
+                   if _MAINT.search(c.get("name", "") + " " + c.get("module", ""))]
+    xforms = [c for c in xforms if c not in maintenance]
     govern = R.get("catalog", [])
     consume = R.get("consume", [])
     side = R.get("store_other", [])
-    orch = R.get("orchestrate", [])
+    # Real workflow orchestrators outrank job triggers/schedulers: a compaction
+    # schedule must never displace Step Functions as "the orchestrator".
+    def _orch_rank(c):
+        t = c["type"].lower()
+        return 0 if any(k in t for k in ("sfn", "state_machine", "mwaa", "airflow", "composer")) else 1
+    orch = sorted(R.get("orchestrate", []), key=lambda c: (_orch_rank(c), c["address"]))
     band = R.get("security", []) + R.get("observability", [])
     deps = am.module_dependencies(plan) if plan else {}
 
@@ -1366,6 +1377,7 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
             P.append(f'<text x="{ax}" y="{spine_y + sz + 45}" text-anchor="middle" '
                      f'style="font:600 10px \'JetBrains Mono\',monospace;fill:{MUTED_C}">+{len(consume) - 1} more consumer(s)</text>')
 
+    side_used = []
     for sb in side:
         owner = next((c for c in used_xf + consume + stages if c["module"] == sb["module"]), None)
         ox = None
@@ -1377,8 +1389,16 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
                 ox = cons_x + cons_w // 2
         if ox is None:
             continue
+        side_used.append(ox)
         P.append(f'<line x1="{ox}" y1="{spine_y + sz + 34}" x2="{ox}" y2="{side_y - 6}" stroke="{MUTED_C}" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.7"/>')
         P.append(tnode(sb, ox, side_y, 34, MUTED_C, sub="results / output"))
+
+    # Maintenance jobs hang below the spine too — scheduled housekeeping, not data flow —
+    # placed in free slots so they never collide with the results/output buckets.
+    free_x = [x for x in range(int(proc_x + 70), int(proc_x + proc_w - 60), 130)
+              if all(abs(x - u) > 95 for u in side_used)]
+    for mc, mx in zip(maintenance[:4], free_x):
+        P.append(tnode(mc, mx, side_y, 34, SAGE_C, sub="maintenance job"))
 
     if orch:
         oc = orch[0]
@@ -1482,6 +1502,34 @@ def forecast_vs_actual(line_items, actuals):
         pct = (var / f * 100) if (var is not None and f) else None
         rows.append({"service": k, "forecast": f, "actual": a, "variance": var, "variance_pct": pct})
     return {"rows": rows, "forecast_total": sum(fc.values()), "actual_total": sum(ac.values())}
+
+
+_SIZE_LADDER = ["KB", "MB", "GB", "TB", "PB", "EB"]
+_SIZE_WORDS = {"kilobyte": "KB", "megabyte": "MB", "gigabyte": "GB",
+               "terabyte": "TB", "petabyte": "PB"}
+
+
+def humanize_quantity(amount, unit):
+    """Auto-tier size units: (153600, 'GB-Mo') -> (150.0, 'TB-Mo'); (1200, 'GB') -> (1.17, 'TB').
+
+    Only byte-size units climb the ladder (1024 steps, matching the volume parser);
+    AWS's non-size units (DPU-Hour, Requests, ...) pass through untouched. Suffixes
+    like '-Mo' are preserved. Returns (display_amount, display_unit).
+    """
+    if amount is None:
+        return None, unit or ""
+    m = re.match(r"(?i)^\s*(kilobytes?|megabytes?|gigabytes?|terabytes?|petabytes?|KB|MB|GB|TB|PB)(.*)$",
+                 str(unit or ""))
+    if not m:
+        return amount, unit or ""
+    base = _SIZE_WORDS.get(m.group(1).lower().rstrip("s"), m.group(1).upper())
+    suffix = m.group(2)
+    idx = _SIZE_LADDER.index(base)
+    value = float(amount)
+    while value >= 1024 and idx + 1 < len(_SIZE_LADDER):
+        value /= 1024.0
+        idx += 1
+    return value, _SIZE_LADDER[idx] + suffix
 
 
 def _plan_budget(report_dir):
@@ -2089,11 +2137,17 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         rows = ""
         for it in line_items:
             c, a = _f(it.get("cost")), _f(it.get("amount"))
-            unit = it.get("unit") or ""
-            usage_cell = f"{a:,.4g} {esc(unit)}" if a is not None else "-"
+            # Auto-tier size units so 153,600 GB-Mo reads as 150 TB-Mo; rate uses the
+            # SAME displayed unit so the two columns stay consistent.
+            da, du = humanize_quantity(a, it.get("unit") or "")
+            if da is None:
+                usage_cell = "-"
+            else:
+                qty = f"{da:,.0f}" if da >= 100 else f"{da:,.4g}"
+                usage_cell = f"{qty} {esc(du)}"
             # Effective $/unit = AWS's own cost ÷ AWS's own quantity — arithmetic on BCM's
             # response, never a hardcoded rate.
-            rate = f"${c / a:,.4f}/{esc(unit or 'unit')}" if (c is not None and a) else "-"
+            rate = f"${c / da:,.4f}/{esc(du or 'unit')}" if (c is not None and da) else "-"
             pct = f"{c / total * 100:.1f}%" if (c is not None and total) else "-"
             rows += (f"<tr><td>{esc(it.get('serviceCode') or it.get('service') or '-')}</td>"
                      f"<td>{esc(it.get('usageType') or '-')}</td><td>{esc(it.get('operation') or '-')}</td>"

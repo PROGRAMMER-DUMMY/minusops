@@ -479,3 +479,15 @@ def test_report_bundle_manifest_and_hash(tmp_path, monkeypatch):
     assert manifest["template"] == "aws-data-pipeline-standard"
     # cost must remain BCM-gated (never a fabricated total)
     assert manifest["cost"]["ok"] is False
+
+
+def test_humanize_quantity_tiers_size_units():
+    # The user's ask: values past ~4 digits climb to the next tier (1024 steps).
+    assert reporter.humanize_quantity(153600, "GB-Mo") == (150.0, "TB-Mo")
+    assert reporter.humanize_quantity(1200, "GB")[1] == "TB"
+    assert round(reporter.humanize_quantity(1200, "GB")[0], 2) == 1.17
+    assert reporter.humanize_quantity(2.197, "Terabytes") == (2.197, "TB")
+    assert reporter.humanize_quantity(2048 * 1024, "GB") == (2.0, "PB")
+    # Non-size units are AWS's own — never converted.
+    assert reporter.humanize_quantity(240, "DPU-Hour") == (240, "DPU-Hour")
+    assert reporter.humanize_quantity(None, "GB") == (None, "GB")
