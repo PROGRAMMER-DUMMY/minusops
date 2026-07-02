@@ -1314,7 +1314,12 @@ def build_dynamic(d, selected_run_id=None):
                        children=html.Div(className="tabpane", children=children)
                        if not isinstance(children, html.Div) else children)
 
-    tabs = dcc.Tabs(value=os.environ.get("MINUS_DASH_DEFAULT_TAB", "overview"),
+    # Empty or invalid values must never blank the page (an unset-vs-empty env var once
+    # rendered tab bars with no selected tab) — anything unknown falls back to overview.
+    default_tab = (os.environ.get("MINUS_DASH_DEFAULT_TAB") or "overview").strip().lower()
+    if default_tab not in ("overview", "control", "optimization", "reports", "readiness"):
+        default_tab = "overview"
+    tabs = dcc.Tabs(value=default_tab,
                     className="main-tabs", children=[
         _tab("Overview", "overview", overview),
         _tab("Control", "control", [control_plane_panel(selected_run_id)]),
