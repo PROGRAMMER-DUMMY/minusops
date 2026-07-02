@@ -50,7 +50,7 @@ INTENT_MAPPING = {
 def classify_intent(query):
     if resolve_intent:
         resolution = resolve_intent(query)
-        if resolution["intent"] in ("BLUEPRINT", "ASK_CLARIFICATION"):
+        if resolution["intent"] in ("REQUIREMENTS", "BLUEPRINT", "ASK_CLARIFICATION"):
             return resolution["intent"]
 
     query_clean = query.strip().lower()
@@ -73,10 +73,10 @@ def classify_intent(query):
     return "UNKNOWN"
 
 def dispatch_task(intent, query, target_dir=None):
-    if intent in ("BLUEPRINT", "ASK_CLARIFICATION"):
+    if intent in ("REQUIREMENTS", "BLUEPRINT", "ASK_CLARIFICATION"):
         resolution = resolve_intent(query)
         print(format_resolution(resolution))
-        return intent == "BLUEPRINT"
+        return intent in ("REQUIREMENTS", "BLUEPRINT")
 
     config = INTENT_MAPPING[intent]
     print(f"\n[DISPATCHER] Vague Query: \"{query}\"")

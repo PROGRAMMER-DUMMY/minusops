@@ -67,6 +67,15 @@ def latest_run():
     return runs[0] if runs else None
 
 
+def get_run(run_id=None):
+    if not run_id or run_id == "latest":
+        return latest_run()
+    for item in list_runs():
+        if item.get("run_id") == run_id or item.get("run_id", "").startswith(run_id):
+            return item
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description="Manage generated run workspaces")
     sub = ap.add_subparsers(dest="cmd", required=True)

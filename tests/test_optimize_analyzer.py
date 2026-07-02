@@ -4,11 +4,32 @@ that matters: SEC-02 must catch a wildcard resource written in HCL bareword form
 (`Resource = "*"`), not only the quoted-JSON form — the old regex missed the former.
 """
 import optimize_analyzer
+import toolpath
 
 
 def _scan(tmp_path, hcl):
     (tmp_path / "main.tf").write_text(hcl, encoding="utf-8")
     return {f["id"] for f in optimize_analyzer.scan_hcl_files(str(tmp_path))}
+
+
+def test_data01_flags_glue_job_without_bookmarks(tmp_path):
+    hcl = 'resource "aws_glue_job" "j" { name = "x"\n command { name = "glueetl" } }'
+    assert "DATA-01" in _scan(tmp_path, hcl)
+
+
+def test_data01_absent_when_bookmarks_enabled(tmp_path):
+    hcl = ('resource "aws_glue_job" "j" { name = "x"\n'
+           '  default_arguments = { "--job-bookmark-option" = "job-bookmark-enable" }\n }')
+    assert "DATA-01" not in _scan(tmp_path, hcl)
+
+
+def test_data03_flags_athena_workgroup_without_scan_cutoff(tmp_path):
+    hcl = 'resource "aws_athena_workgroup" "w" { name = "wg" }'
+    ids = _scan(tmp_path, hcl)
+    assert "DATA-03" in ids
+    hcl2 = ('resource "aws_athena_workgroup" "w" { name = "wg"\n'
+            '  configuration { bytes_scanned_cutoff_per_query = 10737418240 } }')
+    assert "DATA-03" not in _scan(tmp_path, hcl2)
 
 
 def test_sec02_detects_bareword_wildcard_resource(tmp_path):
@@ -68,6 +89,28 @@ def test_security_findings_are_blocking(tmp_path):
     blockers = optimize_analyzer.blocking_findings(findings)
 
     assert [finding["id"] for finding in blockers] == ["SEC-01"]
+
+
+def test_external_findings_are_advisory_until_production_mode():
+    findings = [{
+        "id": "CKV_AWS_1",
+        "category": "External:checkov",
+        "title": "checkov finding",
+        "description": "external policy finding",
+        "severity": "EXTERNAL",
+    }]
+
+    assert optimize_analyzer.blocking_findings(findings) == []
+    assert [f["id"] for f in optimize_analyzer.blocking_findings(findings, external_blocking=True)] == ["CKV_AWS_1"]
+
+
+def test_required_external_scanner_blocks_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(toolpath, "find_tool", lambda _name: None)
+
+    findings = optimize_analyzer.run_external_scanners(str(tmp_path), required=True)
+
+    assert [f["id"] for f in findings] == ["POLICY-EXT"]
+    assert optimize_analyzer.blocking_findings(findings, external_blocking=True)
 
 
 def test_per_resource_flags_only_uncovered_buckets(tmp_path):

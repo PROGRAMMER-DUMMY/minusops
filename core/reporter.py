@@ -243,9 +243,9 @@ def _pipeline_flow(rowmap, pos, node_h):
     return edges
 
 
-def _generic_flow(by_tier, pos, node_h, visible_tiers, cap):
+def _generic_flow(by_tier, pos, node_h, visible_tiers):
     """Fallback: connect the first node of consecutive non-empty tiers (anchored, no floaters)."""
-    firsts = [by_tier[t][:cap][0]["address"] for t in visible_tiers if by_tier[t][:cap]]
+    firsts = [by_tier[t][0]["address"] for t in visible_tiers if by_tier[t]]
     return [_flow_edge(pos[a], pos[b], node_h, "data")
             for a, b in zip(firsts, firsts[1:]) if a in pos and b in pos]
 
@@ -726,7 +726,16 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     rows = _collapse_components(rows)   # one node per service (+ its config), not a pile
     by_tier = {t: [r for r in rows if r["tier"] == t] for t in TIERS}
     visible_tiers = ["sources", "storage", "compute", "orchestration", "observability"]
-    node_h, gap, cap = 44, 8, 9
+    node_h, gap = 44, 8
+
+    # The canvas grows with the tallest tier instead of hiding overflow — a busy
+    # architecture should be scrollable/zoomable (see the pan-zoom viewer), never
+    # missing resources or crushed into illegibly short cards.
+    max_items = max((len(by_tier[t]) for t in visible_tiers), default=0)
+    content_h = max(0, max_items * (node_h + gap) - gap)
+    sec_top = max(632, 108 + content_h + 24)
+    dy = sec_top - 632
+    total_h = 760 + dy
 
     fmap = {}
     for f in (findings or []):
@@ -740,13 +749,13 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     pos, rowmap = {}, {}
     for t in visible_tiers:
         y = 108
-        for r in by_tier[t][:cap]:
+        for r in by_tier[t]:
             pos[r["address"]] = (TIER_X[t], y)
             rowmap[r["address"]] = r
             y += node_h + gap
 
     parts = [
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" width="100%" role="img">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 {total_h}" width="100%" role="img">',
         f'<title>Architecture — {esc(template)}</title>',
         f'<desc>Auto-generated deploy architecture for {esc(template)} on {esc(cloud)} '
         '(architecture_svg_spec.md v2): tiered topology with real data-flow edges, encryption '
@@ -765,8 +774,8 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         '.badge{font:600 9px Inter,system-ui,sans-serif;fill:#14110f}'
         '.legend{font:500 11px Inter,system-ui,sans-serif;fill:#b09c93}'
         '</style></defs>',
-        '<g id="bg"><rect x="0" y="0" width="1280" height="760" fill="#14110f"/>'
-        '<rect x="0" y="0" width="1280" height="760" fill="url(#grid)"/></g>',
+        f'<g id="bg"><rect x="0" y="0" width="1280" height="{total_h}" fill="#14110f"/>'
+        f'<rect x="0" y="0" width="1280" height="{total_h}" fill="url(#grid)"/></g>',
         '<g id="titlebar"><rect x="0" y="0" width="1280" height="64" fill="#1c1714"/>'
         '<rect x="0" y="63" width="1280" height="1" fill="rgba(217,93,57,.18)"/>'
         f'<text class="title" x="24" y="34">{esc(template)}</text>'
@@ -775,7 +784,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
 
     # edges — real flow anchored to node positions
     flow = (_pipeline_flow(rowmap, pos, node_h) if template == "aws-data-pipeline-standard"
-            else _generic_flow(by_tier, pos, node_h, visible_tiers, cap))
+            else _generic_flow(by_tier, pos, node_h, visible_tiers))
     edges = ['<g id="edges">']
     for x1, y1, x2, y2, kind in flow:
         mx = (x1 + x2) // 2
@@ -791,8 +800,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         x = TIER_X[t]
         parts.append(f'<g id="tier-{t}"><text class="tier-h" x="{x}" y="92">{t.upper()}</text>'
                      f'<rect x="{x}" y="100" width="232" height="2" fill="{TIER_HUE[t]}"/>')
-        items = by_tier[t][:cap]
-        hidden = max(0, len(by_tier[t]) - len(items))
+        items = by_tier[t]
         y = 108
         for r in items:
             tint = ACTION_TINT.get(r["action"], "#b09c93")
@@ -824,15 +832,13 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
             node.append('</g>')
             parts.append("".join(node))
             y += node_h + gap
-        if hidden:
-            parts.append(f'<text class="legend" x="{x}" y="{y + 12}">+{hidden} more in plan table</text>')
         parts.append('</g>')
 
     # security band — chip border tinted when the resource has a finding
     sec = by_tier["security"]
-    parts.append('<g id="band-security"><rect x="24" y="632" width="1224" height="56" rx="10" fill="none" '
+    parts.append(f'<g id="band-security"><rect x="24" y="{632 + dy}" width="1224" height="56" rx="10" fill="none" '
                  'stroke="#b09c93" stroke-dasharray="4 4"/>'
-                 '<text class="tier-h" x="40" y="654">SECURITY &amp; IAM</text>')
+                 f'<text class="tier-h" x="40" y="{654 + dy}">SECURITY &amp; IAM</text>')
     chip_cap = 6
     for i, r in enumerate(sec[:chip_cap]):
         cx = 220 + i * 168
@@ -841,34 +847,573 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         df_attr = f' data-findings="{esc(",".join(f["id"] for f in nf))}"' if nf else ""
         parts.append(
             f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}"{df_attr}>'
-            f'<rect x="{cx}" y="646" width="150" height="28" rx="8" fill="#1c1714" stroke="{stroke}" stroke-width="1"/>'
-            f'<text class="n-name" x="{cx + 8}" y="664">{esc(_fit_text(r["name"], 18))}</text></g>')
+            f'<rect x="{cx}" y="{646 + dy}" width="150" height="28" rx="8" fill="#1c1714" stroke="{stroke}" stroke-width="1"/>'
+            f'<text class="n-name" x="{cx + 8}" y="{664 + dy}">{esc(_fit_text(r["name"], 18))}</text></g>')
     if len(sec) > chip_cap:
-        parts.append(f'<text class="legend" x="1196" y="664">+{len(sec) - chip_cap}</text>')
+        parts.append(f'<text class="legend" x="1196" y="{664 + dy}">+{len(sec) - chip_cap}</text>')
     parts.append('</g>')
 
     # legend: tiers + flow + control + encryption + finding overlay + status
-    parts.append('<g id="legend"><text class="legend" x="24" y="712">Tiers:</text>')
+    parts.append(f'<g id="legend"><text class="legend" x="24" y="{712 + dy}">Tiers:</text>')
     lx = 70
     for t in visible_tiers:
-        parts.append(f'<rect x="{lx}" y="703" width="12" height="12" rx="3" fill="{TIER_HUE[t]}"/>'
-                     f'<text class="legend" x="{lx + 18}" y="713">{t.capitalize()}</text>')
+        parts.append(f'<rect x="{lx}" y="{703 + dy}" width="12" height="12" rx="3" fill="{TIER_HUE[t]}"/>'
+                     f'<text class="legend" x="{lx + 18}" y="{713 + dy}">{t.capitalize()}</text>')
         lx += 70 + len(t) * 6
     parts.append(
-        '<line x1="24" y1="736" x2="58" y2="736" stroke="#fbf7f4" stroke-width="1.6" marker-end="url(#arrow)"/>'
-        '<text class="legend" x="64" y="740">data flow</text>'
-        '<line x1="146" y1="736" x2="180" y2="736" stroke="#8da189" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
-        '<text class="legend" x="186" y="740">control</text>'
-        '<g transform="translate(252,729)">' + _LOCK + '</g>'
-        '<text class="legend" x="274" y="740">encrypted (KMS)</text>'
-        '<rect x="392" y="729" width="32" height="13" rx="6" fill="#d95d39"/>'
-        '<text class="badge" x="408" y="739" text-anchor="middle">SEC</text>'
-        '<text class="legend" x="430" y="740">finding overlay</text>'
-        '<text class="legend" x="548" y="740">create=green · update=gold · delete=red</text>')
+        f'<line x1="24" y1="{736 + dy}" x2="58" y2="{736 + dy}" stroke="#fbf7f4" stroke-width="1.6" marker-end="url(#arrow)"/>'
+        f'<text class="legend" x="64" y="{740 + dy}">data flow</text>'
+        f'<line x1="146" y1="{736 + dy}" x2="180" y2="{736 + dy}" stroke="#8da189" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
+        f'<text class="legend" x="186" y="{740 + dy}">control</text>'
+        f'<g transform="translate(252,{729 + dy})">' + _LOCK + '</g>'
+        f'<text class="legend" x="274" y="{740 + dy}">encrypted (KMS)</text>'
+        f'<rect x="392" y="{729 + dy}" width="32" height="13" rx="6" fill="#d95d39"/>'
+        f'<text class="badge" x="408" y="{739 + dy}" text-anchor="middle">SEC</text>'
+        f'<text class="legend" x="430" y="{740 + dy}">finding overlay</text>'
+        f'<text class="legend" x="548" y="{740 + dy}">create=green · update=gold · delete=red</text>')
     parts.append('</g>')
 
     parts.append('</svg>')
     return "\n".join(parts)
+
+
+def _v3_summary_cards(rows, findings):
+    """Deterministic content for the three summary cards (Services / Security / Findings)."""
+    services = [f"{label} ×{count}" for label, count in _service_summary(rows)][:6]
+    pab = any(r["type"] == "aws_s3_bucket_public_access_block" for r in rows)
+    sse = any("server_side_encryption" in r["type"] for r in rows)
+    lifecycle = any("lifecycle" in r["type"] for r in rows)
+    kms = any(r["type"].startswith("aws_kms_key") for r in rows)
+    roles = sum(1 for r in rows if r["type"] == "aws_iam_role")
+    controls = []
+    if pab:
+        controls.append("S3 public access blocked")
+    if sse:
+        controls.append("Server-side encryption")
+    if lifecycle:
+        controls.append("Lifecycle retention policies")
+    if kms:
+        controls.append("Customer-managed KMS key")
+    if roles:
+        controls.append(f"{roles} scoped IAM role(s)")
+    if not controls:
+        controls = ["No governance controls detected"]
+    cats = {}
+    for f in (findings or []):
+        cats[f.get("category", "Other")] = cats.get(f.get("category", "Other"), 0) + 1
+    finds = [f"{k}: {v}" for k, v in sorted(cats.items())] or ["No findings — passes scan"]
+    return [("Services", SAND_C, services[:6]),
+            ("Security & IAM", SAGE_C, controls[:6]),
+            ("Findings", GOLD_C, finds[:6])]
+
+
+# palette constants shared by v3 (the MinusOps warm dusk palette)
+BG_C = "#14110f"; PANEL_C = "#1c1714"; PANEL2_C = "#221a16"; TEXT_C = "#fbf7f4"
+MUTED_C = "#b09c93"; FAINT_C = "#6f635c"; TERRA_C = "#d95d39"; SAND_C = "#d4a373"
+SAGE_C = "#8da189"; GOLD_C = "#cb9a3e"
+
+# Clean display names + semantic role lines (deterministic, per resource type).
+_V3_NICE = {
+    "aws_s3_bucket": "S3 Bucket", "aws_athena_workgroup": "Athena Workgroup",
+    "aws_glue_job": "Glue Job", "aws_glue_registry": "Glue Registry",
+    "aws_glue_catalog_database": "Glue Database", "aws_sfn_state_machine": "Step Functions",
+    "aws_budgets_budget": "Budget", "aws_cloudwatch_metric_alarm": "CloudWatch Alarm",
+    "aws_cloudwatch_log_group": "Log Group", "aws_kms_key": "KMS Key",
+    "aws_iam_role": "IAM Role", "aws_iam_role_policy": "IAM Policy", "aws_lambda_function": "Lambda",
+}
+_V3_ROLE = {
+    "aws_athena_workgroup": "query engine", "aws_glue_job": "Spark ETL job",
+    "aws_glue_registry": "schema registry", "aws_glue_catalog_database": "data catalog",
+    "aws_sfn_state_machine": "workflow orchestrator", "aws_budgets_budget": "spend guardrail",
+    "aws_cloudwatch_metric_alarm": "failure alarm", "aws_kms_key": "encryption key",
+    "aws_lambda_function": "function",
+}
+# Tier-to-tier relationship verbs for the numbered flow narrative.
+_V3_REL = {
+    ("storage", "compute"): "read", ("compute", "orchestration"): "run",
+    ("orchestration", "observability"): "watch", ("storage", "orchestration"): "orchestrate",
+    ("compute", "observability"): "monitor", ("storage", "observability"): "monitor",
+    ("sources", "storage"): "ingest", ("sources", "compute"): "ingest",
+}
+
+
+def _v3_role(r):
+    """A short, deterministic role line for a node (falls back to zone key / action)."""
+    role = _V3_ROLE.get(r["type"])
+    if role:
+        return role
+    if r["type"] == "aws_s3_bucket":
+        key = _instance_key(r["address"])
+        return f"{key} zone" if key in ("bronze", "silver", "gold") else "object store"
+    cfg = r.get("config_count", 0)
+    return f"+{cfg} config" if cfg else r["action"]
+
+
+def build_svg_v3(rows, template, cloud, short_hash, ts, findings=None, plan=None, region="us-east-1"):
+    """Architecture diagram v3 (PROTOTYPE) — deterministic and plan-derived like build_svg,
+    with a richer presentation adapted from the Cocoon diagram style but in the MinusOps
+    warm palette: a dashed AWS Region containment box, three-line nodes (type / name / a
+    real accent detail), labelled data-flow edges, only non-empty tiers evenly spaced, and
+    Services / Security / Findings summary cards below the canvas.
+
+    Not wired into the report; build_svg remains the contract renderer until this is approved.
+    """
+    def esc(s):
+        return html.escape(str(s), quote=True)
+
+    fmap = {}
+    for f in (findings or []):
+        if f.get("resource"):
+            fmap.setdefault(f["resource"].split("[")[0], []).append(f)
+
+    def nfind(addr):
+        return fmap.get(addr.split("[")[0], [])
+
+    original = list(rows)
+    has_kms = any(r["type"].startswith("aws_kms_key") for r in rows)
+    comps = _collapse_components(rows)
+    order = ["sources", "storage", "compute", "orchestration", "observability"]
+    by_tier = {t: [c for c in comps if c["tier"] == t] for t in order}
+    sec = [c for c in comps if c["tier"] == "security"]
+    tiers = [t for t in order if by_tier[t]]  # only non-empty tiers
+
+    # geometry
+    node_w, node_h, vgap = 212, 68, 18
+    region_x, region_w, region_top = 40, 1200, 96
+    region_side, head_h = 30, 56
+    inner_w = region_w - 2 * region_side
+    n = max(len(tiers), 1)
+    col_gap = (inner_w - n * node_w) / (n - 1) if n > 1 else 0
+    colx = {t: region_x + region_side + int(i * (node_w + col_gap)) for i, t in enumerate(tiers)}
+    maxrows = max((len(by_tier[t]) for t in tiers), default=1)
+    rows_top = region_top + head_h
+    region_h = head_h + maxrows * (node_h + vgap) + 8
+    region_bottom = region_top + region_h
+    sec_y = region_bottom + 18
+    sec_h = 60 if sec else 0
+    canvas_bottom = (sec_y + sec_h if sec else region_bottom) + 20
+    cards_y = canvas_bottom + 26
+    card_h = 150
+    legend_y = cards_y + card_h + 30
+    total_h = legend_y + 22
+
+    P = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 {total_h}" width="100%" role="img">',
+        f'<title>Architecture v3 — {esc(template)}</title>',
+        f'<desc>Deterministic plan-derived architecture (v3) for {esc(template)} on {esc(cloud)}.</desc>',
+        '<defs>'
+        '<marker id="av3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
+        f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{MUTED_C}"/></marker>'
+        '<pattern id="g3" width="40" height="40" patternUnits="userSpaceOnUse">'
+        '<path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.05)" stroke-width="0.5"/></pattern>'
+        '<style>'
+        f'.t{{font:600 22px Outfit,system-ui,sans-serif;fill:{TEXT_C}}}'
+        f'.s{{font:500 12px "JetBrains Mono",monospace;fill:{MUTED_C}}}'
+        f'.rg{{font:600 12px "JetBrains Mono",monospace;fill:{SAND_C};letter-spacing:.08em}}'
+        f'.ch{{font:600 12px Outfit,system-ui,sans-serif;letter-spacing:.14em}}'
+        f'.nt{{font:600 13px Inter,system-ui,sans-serif;fill:{TEXT_C}}}'
+        f'.nn{{font:400 11px "JetBrains Mono",monospace;fill:{MUTED_C}}}'
+        f'.nd{{font:600 10px "JetBrains Mono",monospace}}'
+        f'.el{{font:500 9px "JetBrains Mono",monospace;fill:{MUTED_C}}}'
+        f'.ct{{font:600 13px Outfit,system-ui,sans-serif;fill:{TEXT_C}}}'
+        f'.cb{{font:400 11px Inter,system-ui,sans-serif;fill:{MUTED_C}}}'
+        f'.lg{{font:500 11px Inter,system-ui,sans-serif;fill:{MUTED_C}}}'
+        f'.bd{{font:600 9px Inter,system-ui,sans-serif;fill:{BG_C}}}'
+        '</style></defs>',
+        f'<rect x="0" y="0" width="1280" height="{total_h}" fill="{BG_C}"/>',
+        f'<rect x="0" y="0" width="1280" height="{total_h}" fill="url(#g3)"/>',
+        # title bar
+        f'<text class="t" x="24" y="34">{esc(template)}</text>'
+        f'<text class="s" x="24" y="54">{esc(cloud)} · plan {esc(short_hash)} · {esc(ts)}</text>',
+        # canvas panel
+        f'<rect x="16" y="{region_top - 18}" width="1248" height="{canvas_bottom - (region_top - 18)}" '
+        f'rx="16" fill="{PANEL_C}" stroke="rgba(217,93,57,.16)"/>',
+        # region containment box
+        f'<rect x="{region_x}" y="{region_top}" width="{region_w}" height="{region_h}" rx="14" '
+        f'fill="rgba(217,93,57,.04)" stroke="{TERRA_C}" stroke-width="1.3" stroke-dasharray="8 4"/>',
+        f'<text class="rg" x="{region_x + 20}" y="{region_top + 26}">AWS Region: {esc(region)}</text>',
+    ]
+
+    # column headers
+    for t in tiers:
+        x = colx[t]
+        P.append(f'<text class="ch" x="{x}" y="{region_top + head_h - 6}" fill="{TIER_HUE[t]}">{t.upper()}</text>'
+                 f'<rect x="{x}" y="{region_top + head_h + 2}" width="{node_w}" height="2" fill="{TIER_HUE[t]}"/>')
+
+    # edges: numbered choreography between consecutive tiers, with a relationship verb
+    ecx = rows_top + node_h // 2
+    P.append('<g id="edges3">')
+    for i, (a, b) in enumerate(zip(tiers, tiers[1:]), start=1):
+        x1 = colx[a] + node_w
+        x2 = colx[b]
+        mx = (x1 + x2) // 2
+        rel = _V3_REL.get((a, b), "flow")
+        P.append(f'<path d="M{x1},{ecx} C{mx},{ecx} {mx},{ecx} {x2},{ecx}" stroke="{MUTED_C}" '
+                 f'stroke-width="1.5" fill="none" marker-end="url(#av3)" opacity="0.75"/>')
+        # numbered step badge on the line + the relationship verb beneath it
+        P.append(f'<circle cx="{mx}" cy="{ecx}" r="11" fill="{TERRA_C}" stroke="{BG_C}" stroke-width="2"/>'
+                 f'<text class="bd" x="{mx}" y="{ecx + 3}" text-anchor="middle" fill="{TEXT_C}">{i}</text>'
+                 f'<text class="el" x="{mx}" y="{ecx + 26}" text-anchor="middle">{esc(rel)}</text>')
+    P.append('</g>')
+
+    # nodes
+    for t in tiers:
+        x = colx[t]
+        y = rows_top
+        for r in by_tier[t]:
+            tint = ACTION_TINT.get(r["action"], MUTED_C)
+            locked = has_kms and (r["type"].startswith("aws_s3_") or "athena" in r["type"]
+                                  or r["type"].startswith("aws_kms"))
+            detail, dcol = _v3_role(r), SAND_C
+            nf = nfind(r["address"])
+            df = f' data-findings="{esc(",".join(f["id"] for f in nf))}"' if nf else ""
+            P.append(
+                f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}"{df} '
+                f'transform="translate({x},{y})">'
+                f'<rect width="{node_w}" height="{node_h}" rx="11" fill="{PANEL2_C}" '
+                f'stroke="{TIER_HUE[t]}" stroke-width="1.5"/>'
+                f'<rect width="4" height="{node_h}" rx="2" fill="{tint}"/>'
+                + _icon(_icon_for(r["type"]), TIER_HUE[t], 15, 15)
+                + f'<text class="nt" x="44" y="26">{esc(_fit_text(_V3_NICE.get(r["type"], _humanize(r["type"])), 22))}</text>'
+                f'<text class="nn" x="44" y="44">{esc(_fit_text(_node_label(r), 24))}</text>'
+                f'<text class="nd" x="44" y="59" fill="{dcol}">{esc(_fit_text(detail, 24))}</text>')
+            if locked:
+                P.append(f'<g transform="translate({node_w - 22},9)">' + _LOCK + '</g>')
+            if nf:
+                top = min(nf, key=lambda f: _SEV_ORDER.index(f["severity"]) if f["severity"] in _SEV_ORDER else 9)
+                lab = top["id"] + (f" +{len(nf) - 1}" if len(nf) > 1 else "")
+                bw = 12 + len(lab) * 6
+                bx = (node_w - 26 if locked else node_w - 8) - bw
+                P.append(f'<g transform="translate({bx},{node_h - 20})">'
+                         f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], MUTED_C)}"/>'
+                         f'<text class="bd" x="{bw // 2}" y="10" text-anchor="middle">{esc(lab)}</text></g>')
+            P.append('</g>')
+            y += node_h + vgap
+
+    # security band
+    if sec:
+        P.append(f'<rect x="{region_x}" y="{sec_y}" width="{region_w}" height="{sec_h}" rx="10" '
+                 f'fill="none" stroke="{MUTED_C}" stroke-dasharray="4 4"/>'
+                 f'<text class="ch" x="{region_x + 18}" y="{sec_y + 24}" fill="{MUTED_C}">SECURITY &amp; IAM</text>')
+        cap = 6
+        for i, r in enumerate(sec[:cap]):
+            cx = region_x + 200 + i * 158
+            nf = nfind(r["address"])
+            st = _SEV_COLOR.get(nf[0]["severity"], MUTED_C) if nf else MUTED_C
+            P.append(f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}">'
+                     f'<rect x="{cx}" y="{sec_y + 16}" width="142" height="28" rx="8" fill="{PANEL2_C}" '
+                     f'stroke="{st}" stroke-width="1"/>'
+                     f'<text class="nn" x="{cx + 10}" y="{sec_y + 34}">{esc(_fit_text(_V3_NICE.get(r["type"], _humanize(r["type"])), 17))}</text></g>')
+        if len(sec) > cap:
+            P.append(f'<text class="lg" x="{region_x + region_w - 30}" y="{sec_y + 34}">+{len(sec) - cap}</text>')
+
+    # summary cards
+    cards = _v3_summary_cards(original, findings)
+    cw = (1248 - 2 * 20) // 3
+    for i, (title_, dot, bullets) in enumerate(cards):
+        cx = 16 + i * (cw + 20)
+        P.append(f'<rect x="{cx}" y="{cards_y}" width="{cw}" height="{card_h}" rx="12" '
+                 f'fill="{PANEL_C}" stroke="rgba(217,93,57,.14)"/>'
+                 f'<circle cx="{cx + 20}" cy="{cards_y + 26}" r="4" fill="{dot}"/>'
+                 f'<text class="ct" x="{cx + 32}" y="{cards_y + 30}">{esc(title_)}</text>')
+        by = cards_y + 56
+        for b in bullets:
+            P.append(f'<text class="cb" x="{cx + 20}" y="{by}">• {esc(_fit_text(b, 40))}</text>')
+            by += 20
+
+    # legend
+    P.append(f'<line x1="24" y1="{legend_y}" x2="58" y2="{legend_y}" stroke="{MUTED_C}" stroke-width="1.5" '
+             f'marker-end="url(#av3)"/><text class="lg" x="64" y="{legend_y + 4}">data flow</text>'
+             f'<g transform="translate(150,{legend_y - 8})">' + _LOCK + '</g>'
+             f'<text class="lg" x="172" y="{legend_y + 4}">encrypted (KMS)</text>'
+             f'<rect x="292" y="{legend_y - 7}" width="12" height="12" rx="3" fill="{SAGE_C}"/>'
+             f'<text class="lg" x="310" y="{legend_y + 4}">create</text>'
+             f'<rect x="360" y="{legend_y - 7}" width="12" height="12" rx="3" fill="{MUTED_C}"/>'
+             f'<text class="lg" x="378" y="{legend_y + 4}">no-op</text>'
+             f'<rect x="430" y="{legend_y - 7}" width="12" height="12" rx="3" fill="{TERRA_C}"/>'
+             f'<text class="lg" x="448" y="{legend_y + 4}">delete</text>'
+             f'<text class="lg" x="520" y="{legend_y + 4}">dashed boundary = AWS Region containment</text>')
+
+    P.append('</svg>')
+    return "\n".join(P)
+
+
+_SVG_ACTIVE_ELEMS = ("script", "foreignobject", "iframe", "embed", "object", "image", "animate", "set")
+
+
+def _sanitize_svg_fragment(inner):
+    """Strip active content from an untrusted SVG fragment.
+
+    Icon files come from an operator-supplied directory and the result is embedded in
+    reports the dashboard serves, so they must not carry script. Removes script/
+    foreignObject/embedding/animation elements, comments, event-handler attributes, and
+    any href that is not fragment-local. Fails closed: returns None (caller falls back
+    to the built-in glyph) if anything dangerous survives.
+    """
+    inner = re.sub(r"<!--.*?-->", "", inner, flags=re.S)
+    for tag in _SVG_ACTIVE_ELEMS:
+        inner = re.sub(rf"<\s*{tag}\b.*?(/\s*>|<\s*/\s*{tag}\s*>)", "", inner, flags=re.S | re.I)
+    inner = re.sub(r"\son[\w-]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", "", inner, flags=re.I)
+    # Only fragment-local targets survive (keeps <use href="#id">, drops files/URLs/data:).
+    inner = re.sub(r"\s(?:xlink:)?href\s*=\s*([\"'])(?!#)[^\"']*\1", "", inner, flags=re.I)
+    inner = re.sub(r"\s(?:xlink:)?href\s*=\s*(?![\"']|#)[^\s>]+", "", inner, flags=re.I)
+    low = inner.lower()
+    if ("javascript:" in low
+            or re.search(r"<\s*(" + "|".join(_SVG_ACTIVE_ELEMS) + r")\b", low)
+            or re.search(r"\son[\w-]+\s*=", low)):
+        return None
+    return inner
+
+
+def _df_embed_icon(rtype, uid, x, y, size, hue, icons_dir):
+    """Embed a real service icon by slug from icons_dir if present; else a generic glyph.
+
+    Nothing vendor-owned is shipped in the repo — icons are opt-in via a local dir; the
+    default path is the on-palette generic glyph, so the diagram always renders. Icon
+    content is sanitized on embed (see _sanitize_svg_fragment) — a file that still looks
+    active after sanitization is rejected in favor of the glyph.
+    """
+    if icons_dir:
+        import architecture_model as _am
+        path = os.path.join(icons_dir, _am._strip_provider(rtype).split("_")[0] + ".svg")
+        if os.path.exists(path):
+            try:
+                txt = open(path, encoding="utf-8").read()
+                m = re.search(r"<svg([^>]*)>(.*)</svg>", txt, re.S)
+                inner = _sanitize_svg_fragment(m.group(2) if m else txt)
+                if inner is not None:
+                    # carry the source viewBox through so 80x80 icon sets aren't cropped
+                    vb = re.search(r'viewBox="([^"]+)"', m.group(1)) if m else None
+                    viewbox = vb.group(1) if vb else "0 0 64 64"
+                    for i in sorted(set(re.findall(r'id="([^"]+)"', inner)), key=len, reverse=True):
+                        inner = (inner.replace(f'id="{i}"', f'id="{uid}_{i}"')
+                                 .replace(f'url(#{i})', f'url(#{uid}_{i})')
+                                 .replace(f'xlink:href="#{i}"', f'xlink:href="#{uid}_{i}"')
+                                 .replace(f'href="#{i}"', f'href="#{uid}_{i}"'))
+                    return (f'<svg x="{x}" y="{y}" width="{size}" height="{size}" viewBox="{viewbox}" '
+                            f'xmlns:xlink="http://www.w3.org/1999/xlink">{inner}</svg>')
+            except Exception:
+                pass
+    return _icon(_icon_for(rtype), hue, x + size // 2 - 9, y + size // 2 - 9)
+
+
+def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None,
+                       region="us-east-1", icons_dir=None):
+    """Lake-house data-flow diagram (architecture_svg_spec.md v3), sharing the six-layer
+    classifier with the conformance model (architecture_model). Deterministic and honest:
+    stages on the spine, real transforms between them, catalog/governance in its own zone,
+    results as side outputs, consumption reading curated, orchestration edges drawn only
+    when the plan's references confirm the wiring, and a Security & Monitoring band.
+    """
+    import architecture_model as am
+
+    def esc(s):
+        return html.escape(str(s), quote=True)
+
+    comps = _collapse_components(rows)
+    for c in comps:
+        c["role"] = am.classify_role(c["type"], _instance_key(c["address"]), c.get("name", ""))
+    R = {}
+    for c in comps:
+        R.setdefault(c["role"], []).append(c)
+    stages = sorted(R.get("stage", []), key=lambda c: (am.stage_rank(_instance_key(c["address"]), c.get("name", "")), c["address"]))
+    xforms = list(R.get("transform", []))
+    govern = R.get("catalog", [])
+    consume = R.get("consume", [])
+    side = R.get("store_other", [])
+    orch = R.get("orchestrate", [])
+    band = R.get("security", []) + R.get("observability", [])
+    deps = am.module_dependencies(plan) if plan else {}
+
+    # Place each transform between the stages it actually bridges. The `<from>_to_<to>`
+    # naming convention (bronze_to_silver, silver_to_gold, raw_to_cleaned, …) is matched
+    # against the stage keys first; unnamed jobs fall into the first empty gap in order;
+    # anything still unplaced is appended after the last stage — never silently dropped.
+    def _skey(c):
+        return (_instance_key(c["address"]) or c.get("name", "")).lower()
+
+    stage_keys = [_skey(c) for c in stages]
+
+    def _stage_idx(token):
+        if token in stage_keys:
+            return stage_keys.index(token)
+        rank = am._STAGE_RANK.get(token)
+        if rank is not None:
+            for i, k in enumerate(stage_keys):
+                if am._STAGE_RANK.get(k) == rank:
+                    return i
+        return None
+
+    gaps = {i: [] for i in range(max(len(stages) - 1, 0))}
+    unplaced = []
+    for x in xforms:
+        m = re.match(r"([a-z0-9]+)_to_([a-z0-9]+)", (x.get("name") or "").lower())
+        gi = None
+        if m:
+            a, b = _stage_idx(m.group(1)), _stage_idx(m.group(2))
+            if a is not None and b == a + 1:
+                gi = a
+            elif a is not None and a < len(stages) - 1:
+                gi = a
+        if gi is not None:
+            gaps[gi].append(x)
+        else:
+            unplaced.append(x)
+    for x in unplaced:
+        empty = next((i for i in sorted(gaps) if not gaps[i]), None)
+        if empty is not None:
+            gaps[empty].append(x)
+        else:
+            gaps.setdefault(len(stages) - 1, []).append(x)   # after the last stage
+
+    spine, used_xf = [], []
+    for i, c in enumerate(stages):
+        spine.append(("stage", c))
+        for x in gaps.get(i, []):
+            used_xf.append(x)
+            spine.append(("xf", x))
+    if not stages:              # transform-only plans still render their jobs
+        for x in xforms:
+            used_xf.append(x)
+            spine.append(("xf", x))
+
+    W = 1280
+    proc_x, proc_w, cons_x, cons_w = 24, 990, 1030, 226
+    spine_y, sz = 250, 56
+    side_y = spine_y + sz + 95
+    orch_y = side_y + (110 if orch else 0)
+    proc_top = 210
+    proc_bottom = (orch_y + 70) if orch else (side_y + 70 if side else spine_y + sz + 55)
+    band_y = proc_bottom + 30
+    total_h = band_y + (120 if band else 20) + 30
+    gov_top = 110
+    n = max(len(spine), 1)
+    slot = proc_w / (n + 0.2)
+    cx = [int(proc_x + 40 + slot * (i + 0.4)) for i in range(n)]
+
+    def nm(rt):
+        return _V3_NICE.get(rt, _humanize(rt))
+
+    def tnode(c, cxp, y, s, hue, sub=None):
+        uid = re.sub(r"\W", "", c["address"])
+        if sub is None:
+            sub = _v3_role(c)
+            if sub in ("no-op", "create", "update", "delete"):
+                sub = "resource"
+        return (f'<g class="node" data-address="{esc(c["address"])}" data-action="{esc(c.get("action", ""))}">'
+                + _df_embed_icon(c["type"], uid, cxp - s // 2, y, s, hue, icons_dir)
+                + f'<text x="{cxp}" y="{y + s + 15}" text-anchor="middle" style="font:600 12px Inter,sans-serif;fill:{TEXT_C}">{esc(_fit_text(nm(c["type"]), 18))}</text>'
+                f'<text x="{cxp}" y="{y + s + 30}" text-anchor="middle" style="font:400 10px \'JetBrains Mono\',monospace;fill:{MUTED_C}">{esc(_fit_text(sub, 20))}</text></g>')
+
+    def zone(x, y, w, h, label, col=None):
+        col = col or "rgba(217,93,57,.5)"
+        return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="12" fill="rgba(217,93,57,.045)" '
+                f'stroke="{col}" stroke-width="1.3" stroke-dasharray="7 4"/>'
+                f'<text x="{x + 14}" y="{y + 20}" style="font:600 11px Outfit,sans-serif;fill:{TERRA_C};letter-spacing:.1em">{esc(label.upper())}</text>')
+
+    P = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {total_h}" width="100%" role="img">',
+         f'<title>Data flow — {esc(template)}</title>',
+         f'<desc>Lake-house data-flow architecture (v3) for {esc(template)} on {esc(cloud)}.</desc>',
+         '<defs>'
+         f'<marker id="dfa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{MUTED_C}"/></marker>'
+         '<pattern id="dfg" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.05)" stroke-width="0.5"/></pattern>'
+         '</defs>',
+         f'<rect width="{W}" height="{total_h}" fill="{BG_C}"/><rect width="{W}" height="{total_h}" fill="url(#dfg)"/>',
+         f'<text x="24" y="34" style="font:600 22px Outfit,sans-serif;fill:{TEXT_C}">{esc(template)} — data flow</text>'
+         f'<text x="24" y="54" style="font:500 12px \'JetBrains Mono\',monospace;fill:{MUTED_C}">{esc(cloud)} · plan {esc(short_hash)} · {esc(ts)} · {esc(region)}</text>']
+
+    P.append(zone(proc_x, proc_top, proc_w, proc_bottom - proc_top, "Storage & Processing"))
+    if consume:
+        P.append(zone(cons_x, proc_top, cons_w, (side_y + 70) - proc_top, "Consumption"))
+    if govern:
+        P.append(zone(proc_x + 300, gov_top, 420, 92, "Cataloging & Governance"))
+        gx0 = proc_x + 320
+        for j, c in enumerate(govern[:3]):
+            P.append(tnode(c, gx0 + 22 + j * 130, gov_top + 18, 40, GOLD_C, sub="schema / catalog"))
+        if len(govern) > 3:
+            P.append(f'<text x="{proc_x + 300 + 420 - 14}" y="{gov_top + 52}" text-anchor="end" '
+                     f'style="font:600 10px \'JetBrains Mono\',monospace;fill:{MUTED_C}">+{len(govern) - 3} more</text>')
+        if used_xf:
+            tx = cx[[k for k, (kind, _) in enumerate(spine) if kind == "xf"][0]]
+            P.append(f'<path d="M{gx0 + 22},{gov_top + 92} C{gx0 + 22},{gov_top + 150} {tx},{spine_y - 60} {tx},{spine_y}" '
+                     f'stroke="{SAND_C}" stroke-width="1.3" fill="none" stroke-dasharray="5 4" opacity="0.8"/>')
+
+    for i in range(len(spine) - 1):
+        x1, x2 = cx[i] + sz // 2 + 6, cx[i + 1] - sz // 2 - 6
+        ey = spine_y + sz // 2
+        if spine[i][0] == "stage" and spine[i + 1][0] == "stage":
+            # Two storage stages with NO transform between them in the plan: an implied
+            # solid arrow would fabricate a flow, so the gap is drawn faint and named.
+            P.append(f'<line x1="{x1}" y1="{ey}" x2="{x2}" y2="{ey}" stroke="{MUTED_C}" '
+                     f'stroke-width="1.2" stroke-dasharray="4 5" opacity="0.45" marker-end="url(#dfa)"/>')
+            P.append(f'<text x="{(x1 + x2) // 2}" y="{ey - 8}" text-anchor="middle" '
+                     f'style="font:600 9px \'JetBrains Mono\',monospace;fill:{GOLD_C}">no transform in plan</text>')
+        else:
+            P.append(f'<line x1="{x1}" y1="{ey}" x2="{x2}" y2="{ey}" stroke="{MUTED_C}" '
+                     f'stroke-width="1.6" marker-end="url(#dfa)"/>')
+    hue = {"stage": TERRA_C, "xf": SAGE_C}
+    for i, (k, c) in enumerate(spine):
+        P.append(tnode(c, cx[i], spine_y, sz, hue.get(k, TERRA_C)))
+
+    if consume and spine:
+        # Consumption reads the curated END OF STORAGE (last stage), not whatever
+        # happens to sit last on the spine.
+        last_stage = max((i for i, (k, _) in enumerate(spine) if k == "stage"), default=len(spine) - 1)
+        ax = cons_x + cons_w // 2
+        P.append(f'<line x1="{cx[last_stage] + sz // 2 + 6}" y1="{spine_y + sz // 2}" x2="{ax - 28}" y2="{spine_y + sz // 2}" stroke="{MUTED_C}" stroke-width="1.6" marker-end="url(#dfa)"/>')
+        P.append(tnode(consume[0], ax, spine_y, sz, GOLD_C))
+        if len(consume) > 1:
+            P.append(f'<text x="{ax}" y="{spine_y + sz + 45}" text-anchor="middle" '
+                     f'style="font:600 10px \'JetBrains Mono\',monospace;fill:{MUTED_C}">+{len(consume) - 1} more consumer(s)</text>')
+
+    for sb in side:
+        owner = next((c for c in used_xf + consume + stages if c["module"] == sb["module"]), None)
+        ox = None
+        if owner:
+            for i, (k, c) in enumerate(spine):
+                if c["address"] == owner["address"]:
+                    ox = cx[i]
+            if ox is None and consume and owner["address"] == consume[0]["address"]:
+                ox = cons_x + cons_w // 2
+        if ox is None:
+            continue
+        P.append(f'<line x1="{ox}" y1="{spine_y + sz + 34}" x2="{ox}" y2="{side_y - 6}" stroke="{MUTED_C}" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.7"/>')
+        P.append(tnode(sb, ox, side_y, 34, MUTED_C, sub="results / output"))
+
+    if orch:
+        oc = orch[0]
+        xf_idx = [k for k, (kk, _) in enumerate(spine) if kk == "xf"]
+        ox = (sum(cx[k] for k in xf_idx) // len(xf_idx)) if xf_idx else cx[len(spine) // 2]
+        # Same wiring test as architecture_model.conformance (any orchestrator module
+        # referencing any transform module), so the picture and the report always agree.
+        xf_mods = {c["module"].split(".")[-1] for c in xforms if c["module"].startswith("module.")}
+        wired = any(xf_mods & deps.get(o["module"].split(".")[-1], set())
+                    for o in orch if o["module"].startswith("module."))
+        osub = "orchestrator" + (f" +{len(orch) - 1} more" if len(orch) > 1 else "")
+        P.append(tnode(oc, ox, orch_y, 46, SAGE_C, sub=osub))
+        for k in xf_idx:
+            P.append(f'<path d="M{ox},{orch_y} C{ox},{orch_y - 30} {cx[k]},{spine_y + sz + 50} {cx[k]},{spine_y + sz + 8}" '
+                     f'stroke="{SAGE_C}" stroke-width="1.3" fill="none" stroke-dasharray="5 4" opacity="{("0.85" if wired else "0.35")}"/>')
+        if wired:
+            P.append(f'<text x="{ox}" y="{orch_y + 92}" text-anchor="middle" style="font:600 9px \'JetBrains Mono\',monospace;fill:{SAGE_C}">orchestrates</text>')
+        else:
+            P.append(f'<text x="{ox}" y="{orch_y + 92}" text-anchor="middle" style="font:600 9px \'JetBrains Mono\',monospace;fill:{GOLD_C}">not wired — placeholder definition</text>')
+
+    if band:
+        P.append(zone(24, band_y, W - 48, 120, "Security & Monitoring", col="rgba(176,156,147,.55)"))
+        bg = {}
+        for c in band:
+            bg.setdefault(am._strip_provider(c["type"]).split("_")[0], []).append(c)
+        bitems = [(g[0], len(g)) for g in bg.values()]
+        bslot = (W - 160) / max(len(bitems), 1)
+        for j, (c, cnt) in enumerate(bitems):
+            x = int(100 + bslot * (j + 0.5))
+            lab = nm(c["type"]) + (f" ×{cnt}" if cnt > 1 else "")
+            P.append(f'<g class="node" data-address="{esc(c["address"])}">'
+                     + _df_embed_icon(c["type"], re.sub(r"\W", "", c["address"]), x - 24, band_y + 28, 48, MUTED_C, icons_dir)
+                     + f'<text x="{x}" y="{band_y + 94}" text-anchor="middle" style="font:600 12px Inter,sans-serif;fill:{TEXT_C}">{esc(_fit_text(lab, 18))}</text></g>')
+    P.append('</svg>')
+    return "\n".join(P)
 
 
 # --- cost (BCM evidence only; no offline or service-specific assumptions) ---
@@ -882,8 +1427,9 @@ def estimate_cost():
     return {
         "ok": False,
         "error": (
-            "AWS BCM Pricing Calculator API estimate was not generated. Creating or updating "
-            "a BCM workload estimate is an AWS-side effect and must be explicitly approved."
+            "AWS BCM Pricing Calculator API estimate was not generated. Estimates are created "
+            "automatically when AWS credentials with BCM Pricing Calculator access are available; "
+            "configure credentials (aws configure) and regenerate the report, or run the commands below."
         ),
         "pricing_source": "unavailable - AWS BCM Pricing Calculator API required",
         "pricing_commands": pricing_commands,
@@ -964,9 +1510,12 @@ def load_bcm_estimate(report_dir):
         line_items = []
         for it in items or []:
             if isinstance(it, dict):
+                qty = it.get("quantity") if isinstance(it.get("quantity"), dict) else {}
                 line_items.append({
                     "serviceCode": it.get("serviceCode"), "usageType": it.get("usageType"),
-                    "operation": it.get("operation"), "cost": _amt(it.get("cost")), "amount": it.get("amount"),
+                    "operation": it.get("operation"), "cost": _amt(it.get("cost")),
+                    "amount": qty.get("amount", it.get("amount")),
+                    "unit": qty.get("unit"),
                 })
         commits = data.get("commitments") or {}
         commit_items = commits.get("items") if isinstance(commits, dict) else (commits if isinstance(commits, list) else [])
@@ -978,7 +1527,9 @@ def load_bcm_estimate(report_dir):
                 return json.loads(open(p, encoding="utf-8").read()) if os.path.exists(p) else {}
             except Exception:
                 return {}
-        assumptions = _read("bcm-assumptions.json").get("derived_amount_assumptions") or {}
+        assumption_doc = _read("bcm-assumptions.json")
+        assumptions = assumption_doc.get("derived_amount_assumptions") or {}
+        not_estimated = assumption_doc.get("not_estimated_services") or []
         rate_type = _read("bcm-create-workload-estimate.json").get("rateType") or "BEFORE_DISCOUNTS"
         actuals = _read("bcm-actuals.json") or {}
         variance = forecast_vs_actual(line_items, actuals) if actuals else None
@@ -989,6 +1540,7 @@ def load_bcm_estimate(report_dir):
             "line_items": line_items,
             "commitments": commit_items,
             "assumptions": assumptions,
+            "not_estimated_services": not_estimated,
             "rate_type": rate_type,
             "priced_at": data.get("generated_at", ""),
             "actuals": actuals,
@@ -1020,24 +1572,47 @@ def refresh_cost(report_dir):
 
 
 # --- HTML report -----------------------------------------------------------
-def _terraform_structure_html():
-    files = [
-        ("main.tf", "Entry point and operator-facing map of the Terraform package."),
-        ("provider.tf", "Terraform/AWS provider requirements, region, account data, default tags."),
-        ("variables.tf", "Blueprint inputs such as owner, environment, region, ingestion mode, daily volume."),
-        ("terraform.tfvars", "Resolved input values for this generated run."),
-        ("kms.tf", "Customer-managed KMS key and policy used by storage and query outputs."),
-        ("s3.tf", "Bronze, silver, gold, and Athena result buckets with encryption, versioning, lifecycle, and public access blocks."),
-        ("iam.tf", "Dedicated Glue and Step Functions roles plus scoped policies."),
-        ("glue.tf", "Glue Catalog database and ETL job definitions."),
-        ("scripts.tf", "Uploads local Glue scripts to the S3 locations referenced by Glue jobs."),
-        ("scripts/glue/", "Local ETL source code for the generated pipeline jobs."),
-        ("step_functions.tf", "Sequential workflow that starts and waits for the Glue jobs."),
-        ("athena.tf", "Athena workgroup with enforced KMS result encryption."),
-        ("monitoring.tf", "CloudWatch failure alarm and AWS Budget control."),
-        ("outputs.tf", "Values exposed after apply."),
-    ]
-    rows = "".join(f"<tr><td><code>{name}</code></td><td>{purpose}</td></tr>" for name, purpose in files)
+def _terraform_structure_html(tf_dir=None):
+    """Describe the actual Terraform package on disk — root files plus composed modules.
+
+    Scans tf_dir so the report reflects the real generated layout (module-based
+    composition or flat files) instead of a hardcoded fixture. Falls back to a
+    generic description only when the directory is unavailable.
+    """
+    purpose_by_name = {
+        "main.tf": "Entry point — module composition and resource wiring.",
+        "providers.tf": "Provider requirements, region, account data, and default tags.",
+        "provider.tf": "Provider requirements, region, account data, and default tags.",
+        "variables.tf": "Input variables (owner, environment, region, and module inputs).",
+        "versions.tf": "Required Terraform and provider version constraints.",
+        "outputs.tf": "Values exposed after apply.",
+        "terraform.tfvars": "Resolved input values for this generated run.",
+        "minus-generated.json": "Synthesis manifest — modules composed into this package.",
+        "COMPOSITION.md": "Human-readable summary of the composed modules.",
+    }
+    files = []
+    if tf_dir and os.path.isdir(tf_dir):
+        for name in sorted(os.listdir(tf_dir)):
+            path = os.path.join(tf_dir, name)
+            if os.path.isfile(path) and (
+                name.endswith(".tf") or name in ("terraform.tfvars", "minus-generated.json", "COMPOSITION.md")
+            ):
+                files.append((name, purpose_by_name.get(name, "Terraform configuration.")))
+        modules_dir = os.path.join(tf_dir, "modules")
+        if os.path.isdir(modules_dir):
+            for mod in sorted(os.listdir(modules_dir)):
+                if os.path.isdir(os.path.join(modules_dir, mod)):
+                    files.append((f"modules/{mod}/", f"Composed module: {mod}."))
+    if not files:
+        files = [
+            ("main.tf", "Entry point — module composition and resource wiring."),
+            ("variables.tf", "Input variables for the generated package."),
+            ("outputs.tf", "Values exposed after apply."),
+        ]
+    rows = "".join(
+        f"<tr><td><code>{html.escape(name)}</code></td><td>{html.escape(purpose)}</td></tr>"
+        for name, purpose in files
+    )
     return f"<table><thead><tr><th>File</th><th>Purpose</th></tr></thead><tbody>{rows}</tbody></table>"
 
 
@@ -1260,7 +1835,7 @@ def build_html(template, cloud, short_hash, ts, rows, counts, cost, svg, plan=No
         costhtml = (
             f'<p class="flow">Cost estimate unavailable: {esc(cost.get("error", ""))}</p>'
             '<p class="flow muted">Enterprise reports require AWS BCM Pricing Calculator API estimates. '
-            'Offline catalog pricing is disabled, and mutating BCM estimate creation must be explicitly approved.</p>'
+            'Offline catalog pricing is disabled; estimates are created automatically when AWS credentials with BCM access are available.</p>'
             f'<table><thead><tr><th>Required pricing lookup</th></tr></thead><tbody>{commands}</tbody></table>'
         )
 
@@ -1284,6 +1859,15 @@ def build_html(template, cloud, short_hash, ts, rows, counts, cost, svg, plan=No
         ("Planned Changes by Service", 13),
         ("Artifact Index", 14),
     ]
+    if template == "aws-data-pipeline-standard":
+        blueprint_note = ("Demo fixture <code>aws-data-pipeline-standard</code> packages a governed AWS data "
+                          "pipeline example into reviewable Terraform. Production runs start from requirements "
+                          "and an architecture decision before Terraform is synthesized. Inputs below come from "
+                          "<code>terraform show -json tfplan</code>.")
+    else:
+        blueprint_note = ("Inputs are resolved from the run's requirements and architecture decision, then "
+                          "synthesized into a composed, module-based Terraform package. Inputs below come from "
+                          "<code>terraform show -json tfplan</code>.")
     metadata_html = _plan_metadata_html(template, cloud, short_hash, ts, tf_dir, git_sha, counts)
     variables_html = _variables_html(plan)
     outputs_html = _outputs_html(plan)
@@ -1353,7 +1937,7 @@ footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid rgba(212,163,11
 <section class="page">
 <div class="header"><div class="section-no">Section 4</div><h1>Request and Blueprint Inputs</h1>
 <div class="sub">Resolved user intent and Terraform inputs captured in the plan.</div></div>
-<div class="panel"><p class="flow">Blueprint <code>aws-data-pipeline-standard</code> resolves the governed AWS data pipeline request into reviewable Terraform. Inputs below come from <code>terraform show -json tfplan</code>.</p></div>
+<div class="panel"><p class="flow">{blueprint_note}</p></div>
 <div class="panel">{variables_html}</div>
 </section>
 <section class="page">
@@ -1380,9 +1964,9 @@ footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid rgba(212,163,11
 <section class="page">
 <div class="header"><div class="section-no">Section 9</div><h1>Terraform Package</h1>
 <div class="sub">Terraform loads all .tf files in this directory. Files are split by concern for reviewability.</div></div>
-<div class="panel">{_terraform_structure_html()}</div>
+<div class="panel">{_terraform_structure_html(tf_dir)}</div>
 <h2>Safe execution flow</h2>
-<div class="panel"><p class="flow"><code>terraform init</code> prepares providers. <code>python core/plan_gate.py verify --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')}</code> formats, validates, and scans. <code>python core/plan_gate.py plan --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')}</code> generates <code>tfplan</code> and this report. Apply is intentionally absent from this report and remains gated.</p></div>
+<div class="panel"><p class="flow"><code>terraform init</code> prepares providers. <code>python core/plan_gate.py verify --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')} --policy-mode production</code> formats, validates, runs native SEC checks, and requires external scanner evidence. <code>python core/plan_gate.py plan --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')}</code> generates <code>tfplan</code> and this report. Apply is intentionally absent from this report and remains gated.</p></div>
 </section>
 <section class="page">
 <div class="header"><div class="section-no">Section 10</div><h1>Terraform Outputs</h1>
@@ -1477,16 +2061,25 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         rows = ""
         for it in line_items:
             c, a = _f(it.get("cost")), _f(it.get("amount"))
-            rate = f"{c / a:,.4f}" if (c is not None and a) else "-"
+            unit = it.get("unit") or ""
+            usage_cell = f"{a:,.4g} {esc(unit)}" if a is not None else "-"
+            # Effective $/unit = AWS's own cost ÷ AWS's own quantity — arithmetic on BCM's
+            # response, never a hardcoded rate.
+            rate = f"${c / a:,.4f}/{esc(unit or 'unit')}" if (c is not None and a) else "-"
             pct = f"{c / total * 100:.1f}%" if (c is not None and total) else "-"
             rows += (f"<tr><td>{esc(it.get('serviceCode') or it.get('service') or '-')}</td>"
                      f"<td>{esc(it.get('usageType') or '-')}</td><td>{esc(it.get('operation') or '-')}</td>"
-                     f"<td class=\"money\">{esc(it.get('amount') if it.get('amount') is not None else '-')}</td>"
+                     f"<td class=\"money\">{usage_cell}</td>"
                      f"<td class=\"money\">{rate}</td>"
                      f"<td class=\"money\">{('$%.2f' % c) if c is not None else '-'}</td>"
                      f"<td class=\"money\">{pct}</td></tr>")
         if not rows:
             rows = "<tr><td colspan=\"7\">BCM returned no line items in the stored response.</td></tr>"
+        # Unpriced plan services are shown, not hidden — absence of a price is NOT $0.
+        for svc in cost.get("not_estimated_services") or []:
+            rows += (f'<tr style="color:#b8a79e"><td>{esc(svc)}</td>'
+                     '<td colspan="4">not estimated — no reviewed catalog usage line for this service</td>'
+                     '<td class="money">unpriced</td><td class="money">-</td></tr>')
 
         drivers = ""
         for it in sorted(line_items, key=lambda i: _f(i.get("cost")) or 0, reverse=True)[:6]:
@@ -1503,6 +2096,36 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         assume_html = (_kv_table(assumptions.items()) if assumptions
                        else "<p class=\"note\">No derived assumptions recorded (usage supplied directly).</p>")
 
+        # Unit economics for the data domain: cost per GB processed, derived strictly from
+        # the AWS total ÷ the run's own stated volume (only when the run states a volume).
+        unit_econ = ""
+        try:
+            daily_gb = float(assumptions.get("daily_data_gb") or 0)
+        except (TypeError, ValueError):
+            daily_gb = 0
+        days = float(assumptions.get("days_per_month") or 30)
+        if total is not None and daily_gb > 0:
+            per_gb = total / (daily_gb * days)
+            unit_econ = ("<h2>Unit economics</h2>"
+                         f'<p class="note">Cost per GB processed: <b>${per_gb:,.4f}/GB</b> '
+                         f"(AWS total ${total:,.2f} ÷ {daily_gb:g} GB/day × {days:g} days). "
+                         "Track this per run — it is the number that tells you whether the "
+                         "pipeline gets cheaper or more expensive as it scales.</p>")
+
+        scenario_html = (
+            "<h2>What-if scenarios (scale up / down, commitments)</h2>"
+            "<p class=\"note\">Model changed usage or Savings Plans / Reserved Instances with a BCM "
+            "bill scenario — AWS prices the scenario; nothing is computed locally:</p>"
+            "<table><thead><tr><th>Scenario</th><th>Command</th></tr></thead><tbody>"
+            "<tr><td>Scale usage up/down</td><td><code>python core/bcm_pricing_calculator.py scenario "
+            "--report-dir &lt;this dir&gt; --usage-modifications usage-mods.json</code></td></tr>"
+            "<tr><td>With commitments (SP/RI)</td><td><code>python core/bcm_pricing_calculator.py scenario "
+            "--report-dir &lt;this dir&gt; --commitments commitments.json</code></td></tr>"
+            "<tr><td>Different usage assumptions</td><td><code>python core/bcm_pricing_calculator.py prepare "
+            "--report-dir &lt;this dir&gt; --derive --assume glue_runs_per_day=48 &amp;&amp; "
+            "python core/bcm_pricing_calculator.py run --report-dir &lt;this dir&gt;</code></td></tr>"
+            "</tbody></table>")
+
         variance_html = _build_variance_html(cost.get("variance"), esc)
 
         evidence = json.dumps(cost.get("estimate", cost), indent=2, sort_keys=True)
@@ -1514,6 +2137,8 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
             + "<th>Rate $/unit</th><th>Monthly</th><th>% of total</th></tr></thead>"
             + f"<tbody>{rows}</tbody></table>"
             + (f"<h2>Cost drivers</h2>{drivers}" if drivers else "")
+            + unit_econ
+            + scenario_html
             + "<h2>Usage assumptions</h2>"
             + "<p class=\"note\">These drove the submitted usage amounts; AWS BCM Pricing Calculator priced them. "
             + "MinusOps sets no prices.</p>" + assume_html
@@ -1896,15 +2521,41 @@ def _generate_report_bundle(dir_, data, template=None):
     h = plan_hash(data)
     short = h[:12]
     cloud = active_cloud()
-    template = template or os.path.basename(dir_.rstrip("/\\"))
+    if not template:
+        template = os.path.basename(dir_.rstrip("/\\"))
+        if template == "terraform":
+            # Run workspaces are runs/<run-id>/terraform — title reports after the run,
+            # not the meaningless directory basename.
+            run_meta = os.path.join(os.path.dirname(dir_.rstrip("/\\")), "run.json")
+            try:
+                with open(run_meta, encoding="utf-8") as f:
+                    meta = json.load(f)
+                template = meta.get("blueprint") or meta.get("run_id") or template
+            except Exception:
+                pass
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     rows, counts = summarize(data)
     reports_root = reports_root_for_dir(dir_)
     out = os.path.join(reports_root, short)
     os.makedirs(out, exist_ok=True)
-    # Pick up a completed BCM estimate if one exists for this report (so the plan PDF's
-    # cost summary reflects it); otherwise the gated "unavailable" state.
+    with open(os.path.join(out, "plan.json"), "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    try:
+        region = ((data.get("variables") or {}).get("region") or {}).get("value") or "us-east-1"
+    except Exception:
+        region = "us-east-1"
+
+    # BCM pricing: payloads are always prepared; the estimate itself is created
+    # automatically when credentials allow (a free, deletable BCM pricing object —
+    # human approval stays on APPLY, not on pricing). Reviewed usage is never clobbered.
+    if not os.path.exists(os.path.join(out, "bcm-usage.json")):
+        bcm_pricing_calculator.prepare(out, region=region)
+    est_ok, est_note = bcm_pricing_calculator.auto_estimate(out, region=region)
+    if not est_ok:
+        print(f"[reporter] BCM estimate not auto-created: {est_note}")
+    # Pick up the completed BCM estimate (just created or pre-existing) so the plan PDF's
+    # cost summary reflects it; otherwise the honest "unavailable" state.
     cost = load_bcm_estimate(out) or estimate_cost()
     try:
         import optimize_analyzer
@@ -1914,15 +2565,25 @@ def _generate_report_bundle(dir_, data, template=None):
     svg = build_svg(rows, template, cloud, short, ts, findings=findings, plan=data)
     htmldoc = build_html(template, cloud, short, ts, rows, counts, cost, svg, data, None, dir_, git_commit())
 
-    with open(os.path.join(out, "plan.json"), "w", encoding="utf-8") as f:
-        json.dump(data, f)
+    # v3 lake-house data-flow diagram (additive; shares the six-layer classifier with the
+    # conformance model). Icons are opt-in via a local dir; default is on-palette glyphs.
+    icons_dir = os.environ.get("MINUS_ARCH_ICONS_DIR") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "architecture-icons")
+    if not os.path.isdir(icons_dir):
+        icons_dir = None
+    try:
+        dataflow_svg = build_dataflow_svg(rows, template, cloud, short, ts, findings=findings,
+                                          plan=data, region=region, icons_dir=icons_dir)
+    except Exception:
+        dataflow_svg = None
+
     with open(os.path.join(out, "architecture.svg"), "w", encoding="utf-8") as f:
         f.write(svg)
+    if dataflow_svg:
+        with open(os.path.join(out, "dataflow.svg"), "w", encoding="utf-8") as f:
+            f.write(dataflow_svg)
     with open(os.path.join(out, "cost.json"), "w", encoding="utf-8") as f:
         json.dump(cost, f, indent=2)
-    # Prepare BCM payloads only if not already present — never clobber reviewed usage.
-    if not os.path.exists(os.path.join(out, "bcm-usage.json")):
-        bcm_pricing_calculator.prepare(out)
     source_hashes = plan_inspector.write_source_snapshot(dir_, out)
     html_path = os.path.join(out, "plan.html")
     with open(html_path, "w", encoding="utf-8") as f:
@@ -1944,6 +2605,8 @@ def _generate_report_bundle(dir_, data, template=None):
         "bcm-assumptions.json", "bcm-create-workload-estimate.json", "bcm-usage.json", "bcm-commands.json",
         "plan.html", "cost.html", "report.html",
     ]
+    if dataflow_svg:
+        files.append("dataflow.svg")
     if pdf_ok:
         files.append("plan.pdf")
     if cost_pdf_ok:
@@ -1957,7 +2620,7 @@ def _generate_report_bundle(dir_, data, template=None):
         "pdf": pdf_ok,
         "cost_pdf": cost_pdf_ok,
         "files": files,
-        "public_files": ["architecture.svg", "plan.pdf", "cost.pdf"],
+        "public_files": (["architecture.svg", "dataflow.svg"] if dataflow_svg else ["architecture.svg"]) + ["plan.pdf", "cost.pdf"],
         "source_snapshot": "source_snapshot",
         "source_hashes_file": "source_hashes.json",
         "source_file_count": len(source_hashes),

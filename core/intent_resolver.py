@@ -72,45 +72,25 @@ def resolve(query, cloud=None):
     """
     cloud = (cloud or active_cloud()).strip().lower()
     creation = is_creation_request(query)
-    matches = match_blueprints(query, cloud=cloud)
-
-    if creation and matches:
-        best = matches[0]
-        blueprint = best["blueprint"]
-        missing = _missing_inputs(blueprint)
-        return {
-            "intent": "BLUEPRINT",
-            "query": query,
-            "cloud": cloud,
-            "confidence": "high" if best["score"] >= 6 else "medium",
-            "blueprint": blueprint,
-            "match_reasons": best["reasons"],
-            "missing_inputs": missing,
-            "recommendation": (
-                f"Use blueprint {blueprint['id']} and collect "
-                f"{len(missing)} required input(s) before generating Terraform."
-            ),
-            "next_safe_actions": blueprint["safe_next_steps"],
-        }
 
     if creation:
-        available = [bp["id"] for bp in list_blueprints(cloud)]
         return {
-            "intent": "ASK_CLARIFICATION",
+            "intent": "REQUIREMENTS",
             "query": query,
             "cloud": cloud,
-            "confidence": "low",
+            "confidence": "high",
             "blueprint": None,
-            "available_blueprints": available,
             "missing_inputs": [],
             "recommendation": (
-                "Ask the user which governed blueprint they want, or add a new "
-                "blueprint before generating Terraform."
+                "Create a requirements-first run. Do not generate Terraform until "
+                "requirements and an architecture decision are recorded."
             ),
             "next_safe_actions": [
-                "Do not generate free-form infrastructure yet.",
-                "Offer the closest available blueprints.",
-                "Capture the missing product decision.",
+                "Write a requirements.json skeleton into the run workspace.",
+                "Gather functional and non-functional requirements.",
+                "Research candidate architectures against official provider documentation.",
+                "Record architecture_decision.json before Terraform generation.",
+                "Only then synthesize Terraform and enter the deploy gate.",
             ],
         }
 
@@ -162,7 +142,7 @@ def format_resolution(result):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Resolve short enterprise intent into governed blueprints")
+    parser = argparse.ArgumentParser(description="Resolve short enterprise intent into requirements-first creation paths")
     parser.add_argument("query", nargs="?", help="Natural language user request")
     parser.add_argument("--cloud", default=None, help="Cloud filter, defaults to MINUS_CLOUD")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")

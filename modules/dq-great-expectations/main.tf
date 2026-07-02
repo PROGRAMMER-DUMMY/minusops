@@ -45,6 +45,20 @@ resource "aws_s3_bucket_public_access_block" "results" {
   restrict_public_buckets = true
 }
 
+# DQ result files are point-in-time evidence — expire them instead of paying for them
+# forever (our own COST-01 policy applies to the modules we ship, too).
+resource "aws_s3_bucket_lifecycle_configuration" "results" {
+  bucket = aws_s3_bucket.results.id
+  rule {
+    id     = "expire_old_results"
+    status = "Enabled"
+    filter {}
+    expiration {
+      days = 90
+    }
+  }
+}
+
 data "aws_iam_policy_document" "assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -93,8 +107,9 @@ resource "aws_glue_job" "dq" {
   }
 
   default_arguments = {
-    "--fail_on_error" = tostring(var.fail_on_error)
-    "--results_bucket" = aws_s3_bucket.results.bucket
+    "--fail_on_error"       = tostring(var.fail_on_error)
+    "--results_bucket"      = aws_s3_bucket.results.bucket
+    "--job-bookmark-option" = "job-bookmark-enable"
   }
 }
 

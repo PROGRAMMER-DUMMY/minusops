@@ -18,6 +18,29 @@ import os
 REQUIRED_NFR = ["latency", "scale", "availability", "retention", "security", "budget"]
 FILENAME = "requirements.json"
 
+# --- Data-pipeline profile (additive; enforced only for data workloads) ------
+# Functional fields map to the analytics reference architecture's six layers; the
+# non-functional fields map to the Well-Architected Data Analytics Lens pillars.
+# See memory `aws-reference-architectures-for-design`.
+DATA_FR = ["sources", "storage_zones", "transforms", "catalog", "consumption"]      # ingestion..consumption
+DATA_NFR = ["data_quality", "freshness_sla", "data_volume", "governance", "orchestration"]
+DATA_FIELDS = DATA_FR + DATA_NFR
+# What each field grounds to (for the record / audit / grill-me prompts).
+DATA_FIELD_GROUNDING = {
+    "sources": "Ingestion layer — what data comes in and over which protocol",
+    "storage_zones": "Storage layer — raw/cleaned/curated (or bronze/silver/gold) zones",
+    "transforms": "Processing layer — validation/clean/normalize/enrich steps",
+    "catalog": "Cataloging layer — metadata catalog / schema registry strategy",
+    "consumption": "Consumption layer — how data is queried/served (SQL, BI, ML)",
+    "data_quality": "WA Operational Excellence BP 1.1 — source data-quality validation",
+    "freshness_sla": "WA Reliability/Performance — freshness/latency SLA",
+    "data_volume": "WA Performance — data volume and growth (scale)",
+    "governance": "WA Security — access control, lineage, PII/sensitivity",
+    "orchestration": "WA Reliability BP 6.x — scheduling/triggering + failure handling",
+}
+_DATA_SIGNALS = ("data", "pipeline", "lakehouse", "lake house", "etl", "elt",
+                 "analytics", "warehouse", "streaming", "ingest", "medallion")
+
 
 class RequirementsIncomplete(Exception):
     """Raised when generation is attempted without a complete requirements record."""
@@ -35,6 +58,7 @@ def template():
         "stakeholders": "",
         "functional": [],
         "non_functional": {k: "" for k in REQUIRED_NFR},
+        "data_pipeline": {k: "" for k in DATA_FIELDS},
         "constraints": "",
         "gathered_by": "",
         "gathered_at": "",
@@ -67,6 +91,25 @@ def validate(data):
         val = nfr.get(axis, "")
         if not str(val).strip():
             missing.append(f"non_functional.{axis}")
+    return (not missing), missing
+
+
+def is_data_pipeline(data):
+    """Heuristic: does this record describe a data workload? (system_class/goal signal, or a
+    populated data_pipeline block). Used to decide whether the data-pipeline profile applies."""
+    data = data or {}
+    text = (str(data.get("system_class", "")) + " " + str(data.get("goal", ""))).lower()
+    if any(sig in text for sig in _DATA_SIGNALS):
+        return True
+    dp = data.get("data_pipeline") or {}
+    return any(str(v).strip() for v in dp.values())
+
+
+def validate_data_pipeline(data):
+    """Return (ok, missing) for the data-pipeline FR/NFR profile. Each field is answered by a
+    value or an explicit 'deferred: <reason>'. Only meaningful for data workloads."""
+    dp = (data or {}).get("data_pipeline") or {}
+    missing = [f"data_pipeline.{f}" for f in DATA_FIELDS if not str(dp.get(f, "")).strip()]
     return (not missing), missing
 
 
@@ -116,6 +159,8 @@ def main(argv=None):
     sub.add_parser("template")
     c = sub.add_parser("check")
     c.add_argument("path")
+    dc = sub.add_parser("data-check", help="validate the data-pipeline FR/NFR profile (data workloads)")
+    dc.add_argument("path")
     args = ap.parse_args(argv)
 
     if args.cmd == "template":
@@ -135,6 +180,23 @@ def main(argv=None):
         print("[requirements] INCOMPLETE — unanswered:")
         for m in missing:
             print(f"  - {m}")
+        return 2
+    if args.cmd == "data-check":
+        data = load(args.path)
+        if data is None:
+            print(f"[requirements] no record at {args.path}", flush=True)
+            return 2
+        if not is_data_pipeline(data):
+            print("[requirements] not a data workload — data-pipeline profile not required")
+            return 0
+        ok, missing = validate_data_pipeline(data)
+        if ok:
+            print("[requirements] data-pipeline profile complete")
+            return 0
+        print("[requirements] data-pipeline profile INCOMPLETE — unanswered:")
+        for m in missing:
+            field = m.split(".", 1)[-1]
+            print(f"  - {m}  ({DATA_FIELD_GROUNDING.get(field, '')})")
         return 2
     return 1
 

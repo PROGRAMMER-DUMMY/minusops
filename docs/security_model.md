@@ -18,7 +18,10 @@ for an enterprise security review.
 4. **Tamper-evident audit.** Every consequential action is written to a hash-chained,
    append-only log; modification or deletion is detectable (`minusctl audit verify`).
 5. **Least privilege by policy.** The HCL scanner blocks `SEC-*` findings (per-resource);
-   the IAM manifest forbids wildcard resources and shared roles.
+   production policy mode also requires checkov/tfsec evidence and blocks on those findings.
+   The IAM manifest forbids wildcard resources and shared roles.
+6. **Dashboard boundary.** The local dashboard binds to `127.0.0.1` by default. Non-local binds
+   require `MINUS_DASH_TOKEN` and are refused at startup without it.
 
 ---
 
@@ -106,6 +109,6 @@ downgrade. See `examples/iam/README.md`.
 - Run deploys only from ephemeral CI runners with OIDC; never long-lived keys.
 - Set `MINUS_APPROVERS` / `.minus/approvers.json` (never run prod in open mode).
 - Forward `.agents/logs/audit.jsonl` to immutable storage and run `audit verify` in CI.
-- Require `optimize_analyzer` `SEC-*` = 0 (the gate already blocks); add `--external`
-  (checkov/tfsec) for defense in depth.
+- Require `MINUS_POLICY_MODE=production` in production so checkov/tfsec evidence is mandatory
+  and external findings block before plan approval.
 - Use the signed release wheel + CycloneDX SBOM (see `.github/workflows/release.yml`).

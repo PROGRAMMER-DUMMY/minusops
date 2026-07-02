@@ -13,9 +13,38 @@ approval + BCM cost); these modules are starting blocks, not an apply-without-re
 """
 import os
 import re
+import sysconfig
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODULES_DIR = os.path.join(REPO_ROOT, "modules")
+
+
+def _candidate_module_roots():
+    """Module assets can come from a source checkout, Docker workdir, or wheel data-files."""
+    candidates = [
+        os.environ.get("MINUSOPS_MODULES_DIR"),
+        os.path.join(os.getcwd(), "modules"),
+        os.path.join(REPO_ROOT, "modules"),
+        os.path.join(sysconfig.get_path("data") or "", "modules"),
+        os.path.join(sysconfig.get_path("purelib") or "", "modules"),
+    ]
+    seen = set()
+    for path in candidates:
+        if not path:
+            continue
+        resolved = os.path.abspath(path)
+        if resolved not in seen:
+            seen.add(resolved)
+            yield resolved
+
+
+def modules_dir():
+    for path in _candidate_module_roots():
+        if os.path.isdir(path):
+            return path
+    return os.path.join(REPO_ROOT, "modules")
+
+
+MODULES_DIR = modules_dir()
 
 # Each module: id, category, title, satisfies (match keywords), services, inputs, provides.
 MODULES = [
@@ -43,7 +72,7 @@ MODULES = [
         "satisfies": ["step functions", "state machine", "serverless orchestration",
                       "sequential workflow", "sfn"],
         "services": ["AWS Step Functions", "AWS IAM"],
-        "inputs": ["name_prefix", "tags", "definition_json", "task_role_arns"],
+        "inputs": ["name_prefix", "tags", "glue_job_names", "task_role_arns"],
         "provides": ["state_machine_arn", "role_arn"],
     },
     {
@@ -51,8 +80,8 @@ MODULES = [
         "title": "AWS Glue Spark ETL jobs",
         "satisfies": ["glue", "spark", "etl", "batch transform", "pyspark", "batch compute"],
         "services": ["AWS Glue", "AWS IAM"],
-        "inputs": ["name_prefix", "tags", "script_s3_bucket", "jobs", "worker_type", "number_of_workers"],
-        "provides": ["glue_job_names", "glue_role_arn"],
+        "inputs": ["name_prefix", "tags", "script_s3_bucket", "jobs", "worker_type", "number_of_workers", "alarm_sns_topic_arn", "enable_alarms"],
+        "provides": ["glue_job_names", "glue_job_arns", "glue_role_arn"],
     },
     {
         "id": "speed-layer-kinesis", "category": "streaming",
@@ -97,7 +126,7 @@ MODULES = [
                       "cloudwatch", "alerting", "finops"],
         "services": ["AWS Budgets", "Amazon CloudWatch"],
         "inputs": ["name_prefix", "tags", "monthly_budget_usd", "alarm_sns_topic_arn"],
-        "provides": ["budget_name"],
+        "provides": ["budget_name", "alerts_topic_arn"],
     },
 ]
 
@@ -152,6 +181,10 @@ def match_modules(requirements, min_score=1):
 
 
 def module_dir(module_id):
+    for root in _candidate_module_roots():
+        path = os.path.join(root, module_id)
+        if os.path.isdir(path):
+            return path
     return os.path.join(MODULES_DIR, module_id)
 
 

@@ -37,6 +37,19 @@ resource "aws_s3_bucket_public_access_block" "results" {
   restrict_public_buckets = true
 }
 
+# Query results are re-derivable — expire them instead of paying for them forever.
+resource "aws_s3_bucket_lifecycle_configuration" "results" {
+  bucket = aws_s3_bucket.results.id
+  rule {
+    id     = "expire_old_results"
+    status = "Enabled"
+    filter {}
+    expiration {
+      days = 30
+    }
+  }
+}
+
 resource "aws_athena_workgroup" "this" {
   name = "${var.name_prefix}-analysts"
   tags = var.tags

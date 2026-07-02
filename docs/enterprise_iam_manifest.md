@@ -81,5 +81,7 @@ per-resource security audit on every `plan_gate verify`:
 * **Rule `SEC-02`**: Flags any IAM policy that declares `"Resource": "*"` or wildcard statements.
 * **Blocking enforcement**: `SEC-*` findings are *blocking* — the scanner exits non-zero and
   `plan_gate verify` fails, so a plan with open security findings cannot reach approval or apply
-  until they are resolved. (External engines via `--external`, e.g. checkov/tfsec, are advisory
-  unless promoted.) The scanner flags and blocks; it does not auto-remediate.
+  until they are resolved. In production policy mode (`MINUS_POLICY_MODE=production` or
+  `--policy-mode production`), at least one supported external scanner (`checkov` or `tfsec`) is
+  mandatory and external findings are blocking too. The scanner flags and blocks; it does not
+  auto-remediate.

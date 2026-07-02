@@ -27,3 +27,6 @@ tfplan
 
 # Client-specific backend config (never commit)
 backend.hcl
+
+# vendor-owned diagram icons — local only, never committed (see docs/architecture_svg_spec.md v3)
+assets/architecture-icons/

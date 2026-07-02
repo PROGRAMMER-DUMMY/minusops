@@ -25,8 +25,12 @@ COPY pyproject.toml README.md ./
 COPY core ./core
 COPY app ./app
 COPY docs ./docs
+COPY modules ./modules
+COPY examples ./examples
+COPY .agents/AGENTS.md ./.agents/AGENTS.md
+COPY .agents/skills ./.agents/skills
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[policy]" && checkov --version
 
 # Non-root: the gate never needs root, and deploy creds come from the ambient chain.
 RUN useradd --create-home --uid 10001 minus

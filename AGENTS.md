@@ -15,6 +15,11 @@ Always read:
 
 - [`.agents/AGENTS.md`](./.agents/AGENTS.md) — workspace safety rules, HITL constraints, and skill activation requirements.
 
+Production creation is requirements-first. If a project-local skill still describes
+`aws-data-pipeline-standard` as the production-ready blueprint or tells you to run
+`minusctl create ... --generate`, treat that as stale demo-fixture guidance and follow
+this file instead.
+
 Read these skill files when their trigger applies:
 
 - [`.agents/skills/terraform-orchestrator/SKILL.md`](./.agents/skills/terraform-orchestrator/SKILL.md) — before any deployment, Terraform plan/apply workflow, state lock handling, or infrastructure mutation proposal.
@@ -49,7 +54,7 @@ Because there is no bundled IaC, **every tool that acts on infrastructure requir
 │   ├── approval.py                 # approval gate: gatekeeper | auto-approve (audited)
 │   ├── audit_logger.py             # append-only audit trail (.agents/logs/audit.jsonl)
 │   ├── dispatcher.py               # NL query → routes to tools or safe blueprint resolution
-│   ├── intent_resolver.py          # short creation intent → governed blueprint + required inputs
+│   ├── intent_resolver.py          # short creation intent → requirements-first run path
 │   ├── blueprints.py               # approved blueprint registry
 │   ├── finops_agent.py             # live cost intelligence (provider-driven) + gated notify
 │   ├── health_checker.py           # live health probes
@@ -61,7 +66,7 @@ Because there is no bundled IaC, **every tool that acts on infrastructure requir
 │       ├── aws.py                  # AWS impl (Cost Explorer / anomalies / tags / identity)
 │       └── azure.py · gcp.py       # scaffolds (degrade gracefully until implemented)
 │
-├── app/dashboard_app.py            # live FinOps console (Plotly Dash, provider-driven)
+├── app/dashboard_app.py            # live control-plane / FinOps console (Plotly Dash, provider-driven)
 │
 ├── tests/                          # pytest suite (gate hash/approval invariants, scanner rules)
 │
@@ -93,9 +98,9 @@ All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws
 
 | Capability | How you do it | Primary tool |
 | :--- | :--- | :--- |
-| **Operator workflow** | `python core/minusctl.py create "<request>" --input owner=<team> --input daily_data_gb=<n> --generate`, then `python core/minusctl.py next`, `readiness`, and `package` | Safe unified CLI |
+| **Operator workflow** | `python core/minusctl.py create "<request>"`, then complete `runs/<run-id>/requirements.json`, record `architecture_decision.json`, synthesize Terraform, and run `next` / `readiness` / `package` | Safe unified CLI |
 | **Create run workspace** | `python core/runs.py new --blueprint <id> --request "<request>"` | `core/runs.py` |
-| **Resolve request to run** | `python core/workflow.py resolve "<request>" --input owner=<team> --input daily_data_gb=<n> --generate` | `core/workflow.py` |
+| **Resolve request to run** | `python core/workflow.py resolve "<request>"` creates a requirements-first run and never emits production Terraform from demo fixtures | `core/workflow.py` |
 | **No-cloud demo** | `python core/demo.py governed-data-pipeline --owner data-platform --daily-data-gb 50` | Generates run Terraform + synthetic plan report without Terraform/AWS |
 | **Provision / change infra** | Generate or edit HCL in `runs/<run-id>/terraform/`, then run the deploy gate (§6.1) | `core/plan_gate.py` + Terraform |
 | **Detect manual source edits** | `python core/source_guard.py status --dir runs/<run-id>/terraform` and `python core/source_guard.py diff --dir runs/<run-id>/terraform` | Generated-source baseline guard |
@@ -107,10 +112,10 @@ All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws
 | **Prepare BCM estimate** | `python core/bcm_pricing_calculator.py prepare --report-dir runs/<run-id>/reports/<plan-hash> --account-id <account>` (no AWS calls) | BCM payload generator |
 | **Run BCM estimate** | `python core/bcm_pricing_calculator.py run --report-dir runs/<run-id>/reports/<plan-hash> --mode gatekeeper` (AWS-side effect; approval required) | BCM Pricing Calculator API |
 | **Analyze live spend / anomalies** | `python core/finops_agent.py [--cost \| --anomalies \| --correlate]` (via active provider) | `core/providers/` |
-| **View the FinOps console (UI)** | `python app/dashboard_app.py` → http://127.0.0.1:8050 (`pip install -r requirements.txt`) | Plotly Dash |
+| **View the control-plane console (UI)** | `python app/dashboard_app.py` → http://127.0.0.1:8050 (`pip install -r requirements.txt`); non-local binds require `MINUS_DASH_TOKEN` | Plotly Dash |
 | **Notify (Slack/Jira), gated** | `core/finops_agent.py --notify-slack \| --notify-jira --approval-mode {gatekeeper\|auto-approve}` | `approval.py` gate |
 | **Gate any side effect** | `python core/approval.py --action <a> --details <d> --mode {gatekeeper\|auto-approve}` | HITL / auto + audit |
-| **Resolve creation intent** | `python core/intent_resolver.py "create a data pipeline"` | blueprint resolver |
+| **Resolve creation intent** | `python core/intent_resolver.py "create a data pipeline"` | requirements-first resolver |
 | **Validate blueprints** | `python core/intent_resolver.py --validate-blueprints` | blueprint schema validator |
 | **Route a vague request** | `python core/dispatcher.py "<natural language>"` | resolver + keyword classifier |
 | **Clarify ambiguous work** | Read `.agents/skills/resolve-ambiguity/SKILL.md`, then ask one targeted question with a recommended answer | `resolve-ambiguity` skill |
@@ -119,7 +124,7 @@ All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws
 | **Verify the audit chain** | `python core/minusctl.py audit verify` (or `python core/audit_chain.py verify`) | hash-chain integrity check |
 | **Diagnose local env** | `powershell -ExecutionPolicy Bypass -File ./tools/doctor.ps1` | PowerShell |
 
-The **dispatcher** routes operational requests to five tool intents — `HEALTH`, `DEPLOY`, `OPTIMIZE`, `BUDGET`, `FINOPS`. Creation requests such as "create a data pipeline" are first passed through `intent_resolver.py`, which recommends a governed blueprint and required inputs without generating or deploying infrastructure. You may also call any tool directly.
+The **dispatcher** routes operational requests to five tool intents — `HEALTH`, `DEPLOY`, `OPTIMIZE`, `BUDGET`, `FINOPS`. Creation requests such as "create a data pipeline" are first passed through `intent_resolver.py`, which creates a requirements-first path without generating or deploying infrastructure. You may also call any tool directly.
 
 ### 3.1 Project-local decision skills
 
@@ -141,7 +146,7 @@ The production path is **requirements → research → compose → govern**, not
 | Gather requirements | `grill-me` skill |
 | Resolve authoritative sources for a service | `python core/discovery.py <topic> --resource <aws_type>` (Registry/CLI/pricing URLs) |
 | Match requirements to vetted modules | `python core/modules.py match "<requirements>"` |
-| Compose modules into a governed Terraform workspace | `python core/synthesizer.py "<requirements>" [--module <id>]` |
+| Compose modules into a governed Terraform workspace | `python core/synthesizer.py "<requirements>" --run <run-id> --requirements-file <run>/requirements.json --decision-file <run>/architecture_decision.json` |
 | Govern the composed Terraform | the §6.1 deploy gate (`plan_gate verify/plan/approve/apply`) |
 | Reuse an approved composition | `python core/patterns.py match "<requirements>"`; capture after approval with `patterns.py capture` |
 
@@ -218,7 +223,7 @@ These mirror [`.agents/AGENTS.md`](./.agents/AGENTS.md) and [`enterprise_iam_man
 2. **Read before write.** `aws describe-* / list-* / get-*`, `terraform plan`, `terraform validate`, `head-bucket`, `get-caller-identity` are safe and may be run freely to gather state.
 3. **Dry-run first.** Always produce `terraform plan -out=tfplan` (or an API `--dry-run`) and present the diff *before* asking for approval.
 4. **Audit every consequential action.** Log it via `audit_logger.py` to `.agents/logs/audit.jsonl` *before* proposing execution.
-5. **Pass the security scan.** Before proposing infra changes for the live stack, run `optimize_analyzer.py --source-dir <your-dir>`; resolve `SEC-*` findings (esp. `SEC-02` wildcard IAM) to zero. No wildcard `Resource = "*"` for S3/KMS/DynamoDB. Prefer one dedicated least-privilege role per service.
+5. **Pass the security scan.** Before proposing infra changes for the live stack, run `optimize_analyzer.py --source-dir <your-dir>`; resolve `SEC-*` findings (esp. `SEC-02` wildcard IAM) to zero. For production, set `MINUS_POLICY_MODE=production` or pass `--policy-mode production`; the gate then requires checkov or tfsec on PATH and blocks on external findings too. No wildcard `Resource = "*"` for S3/KMS/DynamoDB. Prefer one dedicated least-privilege role per service.
 6. **Don't retry blindly on failure.** Extract the error, look up the doc (§4), write a troubleshooting note, and ask for help if human intervention is needed.
 7. **Deploys go through the plan-gate.** `core/plan_gate.py` enforces verify → plan → **directory-bound plan-hash approval** → apply-the-exact-plan, with a full audit trail. Any `.tf` change produces a new hash, which voids the prior approval and forces a fresh review. Approval records are stored per Terraform directory and plan hash so concurrent plans cannot overwrite each other. The gate **never handles secrets** — authenticate via the cloud CLI first (`aws sso login`, or assume your MFA-gated deploy role); MFA is enforced by that role's trust policy and `apply` uses the ambient credential chain. Use it for every infrastructure change.
 8. **Verify before deleting/overwriting.** If a target's contents contradict how it was described, surface that instead of proceeding.
@@ -230,7 +235,8 @@ These mirror [`.agents/AGENTS.md`](./.agents/AGENTS.md) and [`enterprise_iam_man
 ### 6.1 Secure deployment loop (`core/plan_gate.py`)
 
 ```
-1. Verify   →  plan_gate.py verify  --dir <template>   (fmt + validate + optimize_analyzer scan)
+1. Verify   →  plan_gate.py verify  --dir <template> [--policy-mode production]
+                                                        (fmt + validate + native SEC scan; production requires external scanner evidence)
 2. Plan     →  plan_gate.py plan    --dir <template>   (terraform plan -out=tfplan + record dir-bound plan-hash)
 3. Approve  →  plan_gate.py approve --dir <template> --mfa-arn <arn> [--role-arn <deploy-role>]
                                                        (review + MFA → one-shot session bound to the hash)
@@ -318,6 +324,8 @@ report is tied to exactly one plan; `git` versions the `.tf`, the plan-hash vers
 ## 7. Environment & conventions
 
 - **Active cloud:** set `MINUS_CLOUD={aws|azure|gcp}` (default `aws`). The governance core, FinOps agent, and dashboard all read it and route through `core/providers/`. AWS is fully implemented; azure/gcp are scaffolds that degrade gracefully.
+- **Dashboard exposure:** `app/dashboard_app.py` is localhost-only by default. If you set `DASH_HOST=0.0.0.0` or another non-loopback address, also set a strong `MINUS_DASH_TOKEN`; startup refuses remote binds without it.
+- **Module assets:** released wheels and Docker images include `modules/`, required `docs/`, examples, and `.agents/skills`. Set `MINUSOPS_MODULES_DIR` only when intentionally replacing the packaged module library with a client-specific one.
 - **OS:** cross-platform (Windows / macOS / Linux). Default shell here is **PowerShell**; a Bash (POSIX) tool is also available — use the right syntax per shell.
 - **Credentials:** never handled by our code. The cloud CLI's own credential chain is used (`aws sso login` / `aws configure` / assumed role). Prefer SSO so no long-term secret lands on disk.
 - **Approver RBAC:** set `MINUS_OPERATOR` (the acting principal; wire to SSO/OIDC or CI actor) and `MINUS_APPROVERS` (comma-separated allowlist) or `.minus/approvers.json`. With no allowlist the gates run in recorded "open" mode — never use open mode for production. See [`docs/security_model.md`](./docs/security_model.md) and [`docs/operations_runbook.md`](./docs/operations_runbook.md).

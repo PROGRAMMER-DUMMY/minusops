@@ -19,12 +19,32 @@ variable "monthly_budget_usd" {
 variable "alarm_sns_topic_arn" {
   type        = string
   default     = ""
-  description = "Optional SNS topic for budget + alarm notifications."
+  description = "Optional external SNS topic. If empty, this module creates one for alerts."
 }
 
 variable "notification_emails" {
   type    = list(string)
   default = []
+}
+
+# Failure/spend notification target (WA Analytics Lens BP 6.3 — notify stakeholders on
+# job failures / threshold breaches). Created here so the stack has an alerting channel by
+# default; an external topic can be supplied via alarm_sns_topic_arn to override.
+resource "aws_sns_topic" "alerts" {
+  count = var.alarm_sns_topic_arn == "" ? 1 : 0
+  name  = "${var.name_prefix}-alerts"
+  tags  = var.tags
+}
+
+resource "aws_sns_topic_subscription" "email" {
+  for_each  = var.alarm_sns_topic_arn == "" ? toset(var.notification_emails) : toset([])
+  topic_arn = aws_sns_topic.alerts[0].arn
+  protocol  = "email"
+  endpoint  = each.value
+}
+
+locals {
+  effective_topic_arn = var.alarm_sns_topic_arn != "" ? var.alarm_sns_topic_arn : aws_sns_topic.alerts[0].arn
 }
 
 resource "aws_budgets_budget" "monthly" {
@@ -34,15 +54,13 @@ resource "aws_budgets_budget" "monthly" {
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
-  dynamic "notification" {
-    for_each = length(var.notification_emails) > 0 ? [1] : []
-    content {
-      comparison_operator        = "GREATER_THAN"
-      threshold                  = 80
-      threshold_type             = "PERCENTAGE"
-      notification_type          = "ACTUAL"
-      subscriber_email_addresses = var.notification_emails
-    }
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = var.notification_emails
+    subscriber_sns_topic_arns  = [local.effective_topic_arn]
   }
 }
 
@@ -56,11 +74,15 @@ resource "aws_cloudwatch_metric_alarm" "spend" {
   statistic           = "Maximum"
   threshold           = var.monthly_budget_usd
   alarm_description   = "Estimated charges exceeded the monthly budget for ${var.name_prefix}."
-  alarm_actions       = var.alarm_sns_topic_arn == "" ? [] : [var.alarm_sns_topic_arn]
+  alarm_actions       = [local.effective_topic_arn]
   dimensions          = { Currency = "USD" }
   tags                = var.tags
 }
 
 output "budget_name" {
   value = aws_budgets_budget.monthly.name
+}
+
+output "alerts_topic_arn" {
+  value = local.effective_topic_arn
 }

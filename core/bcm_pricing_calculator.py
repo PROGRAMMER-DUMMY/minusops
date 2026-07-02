@@ -198,7 +198,9 @@ def _amount_for(service_code, inputs, A):
         return round(A["glue_workers"] * (A["glue_minutes_per_run"] / 60.0)
                      * A["glue_runs_per_day"] * A["days_per_month"], 2)        # DPU-hours/mo
     if service_code == "AmazonS3":
-        return round(daily_gb * A["s3_storage_retention_factor"], 2)           # GB-mo
+        # No daily volume input -> no honest amount; the line is skipped (recorded as
+        # not-estimated) rather than submitted as a fabricated 0.
+        return round(daily_gb * A["s3_storage_retention_factor"], 2) if daily_gb > 0 else None
     if service_code == "AmazonAthena":
         return round(A["athena_queries_per_month"] * A["athena_avg_scan_gb"] / 1024.0, 4)  # TB/mo
     return None
@@ -215,6 +217,12 @@ def derive_usage(plan, account_id, region, profile=None, assumptions=None):
     A = dict(DEFAULT_ASSUMPTIONS)
     A.update(assumptions or {})
     inputs = {k: (v or {}).get("value") for k, v in (plan.get("variables") or {}).items()}
+    try:
+        if float(inputs.get("daily_data_gb") or 0) > 0:
+            # Recorded so downstream unit economics (cost/GB) can cite the exact volume used.
+            A["daily_data_gb"] = float(inputs["daily_data_gb"])
+    except (TypeError, ValueError):
+        pass
     account = account_id or f"{PLACEHOLDER}_ACCOUNT_ID"
     catalog = {}
     for line in (_profile_usage(profile) or []):
@@ -290,7 +298,7 @@ def _has_placeholder(value):
 
 def validate_usage(usage):
     errors = []
-    required = ("serviceCode", "usageType", "operation", "key", "usageAccountId", "amount")
+    required = ("serviceCode", "usageType", "key", "usageAccountId", "amount")
     for i, entry in enumerate(usage):
         extra = sorted(set(entry) - USAGE_FIELDS)
         if extra:
@@ -298,6 +306,10 @@ def validate_usage(usage):
         for field in required:
             if field not in entry or entry[field] in ("", None):
                 errors.append(f"usage[{i}].{field} is required")
+        # operation must be present but MAY be empty — e.g. S3 standard storage bills
+        # with an empty operation in the AWS Price List catalog.
+        if "operation" not in entry or entry["operation"] is None:
+            errors.append(f"usage[{i}].operation is required (may be an empty string)")
         key = entry.get("key")
         if key and not re.fullmatch(r"[a-zA-Z0-9]{1,10}", str(key)):
             errors.append(f"usage[{i}].key must be 1-10 alphanumeric characters")
@@ -372,7 +384,10 @@ def _run_json(cmd, cwd):
     return json.loads(res.stdout or "{}")
 
 
-def run(report_dir, mode="gatekeeper"):
+def run(report_dir, mode="auto-approve"):
+    """Create the workload estimate. Default mode is auto-approve (still audited + RBAC-
+    checked): an estimate is a free, deletable BCM pricing object — not infrastructure.
+    Human-in-the-loop approval remains the default for APPLY, not for pricing."""
     paths = _report_paths(report_dir)
     usage = _load_json(paths["usage"])
     errors = validate_usage(usage)
@@ -415,6 +430,92 @@ def run(report_dir, mode="gatekeeper"):
     return True
 
 
+def _sts_account_id():
+    """Account id from ambient credentials, or None. Quiet — used by the auto path."""
+    try:
+        aws = _aws_cli()
+        res = subprocess.run([aws, "sts", "get-caller-identity", "--query", "Account",
+                              "--output", "text"], capture_output=True, text=True, timeout=25)
+        acct = (res.stdout or "").strip()
+        return acct if res.returncode == 0 and re.fullmatch(r"\d{12}", acct) else None
+    except Exception:
+        return None
+
+
+def _default_usage_profile():
+    """The bundled example profile, CATALOG FIELDS ONLY (amounts stripped): its
+    serviceCode/usageType/operation are Price-List-verified, but its quantities are
+    illustrative — submitting them as real usage would fabricate a forecast."""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "examples", "bcm-usage-profile.example.json")
+    if not os.path.exists(p):
+        return None
+    try:
+        profile = _load_json(p)
+        for line in profile.get("usage", []):
+            line.pop("amount", None)
+        return profile
+    except Exception:
+        return None
+
+
+def auto_estimate(report_dir, region="us-east-1", usage_profile=None):
+    """Create the BCM estimate automatically when credentials allow. Returns (ok, note).
+
+    Never raises and never blocks: pricing needs no human gate (the estimate is a free,
+    deletable BCM object; RBAC + audit still apply via request_approval). Honesty rules:
+      * A usage file that already VALIDATES was reviewed — it is used as-is, never
+        clobbered. Placeholder boilerplate is regenerated with derived amounts.
+      * Amounts are derived from the run's inputs + recorded assumptions; catalog
+        usageType/operation come from the reviewed profile. NO prices are produced here.
+      * Only complete, catalog-backed lines are submitted; skipped services are recorded
+        in bcm-assumptions.json as not_estimated_services — a partial estimate says so.
+    Disable with MINUS_BCM_AUTO=0.
+    """
+    if os.environ.get("MINUS_BCM_AUTO", "1") == "0":
+        return False, "disabled via MINUS_BCM_AUTO=0"
+    paths = _report_paths(report_dir)
+    if not os.path.exists(paths["plan"]):
+        return False, "no plan.json in report dir"
+    try:
+        existing = _load_json(paths["usage"]) if os.path.exists(paths["usage"]) else None
+        if not (existing and not validate_usage(existing)):
+            account = _sts_account_id()
+            if not account:
+                return False, "no AWS credentials (sts get-caller-identity failed)"
+            prepare(report_dir, account_id=account, region=region,
+                    usage_profile=usage_profile or _default_usage_profile(), derive=True)
+        usage = _load_json(paths["usage"])
+        complete = [u for u in usage if not _has_placeholder(u)]
+        skipped = sorted({str(u.get("serviceCode", "unknown")) for u in usage if _has_placeholder(u)})
+        if not complete:
+            return False, ("no catalog-backed usage lines — review bcm-usage.json or supply "
+                           "--usage-profile with your region's serviceCode/usageType/operation")
+        if skipped:
+            _write_json(paths["usage"], complete)
+            try:
+                doc = _load_json(paths["assumptions"]) if os.path.exists(paths["assumptions"]) else {}
+                doc["not_estimated_services"] = skipped
+                doc["partial_estimate_note"] = (
+                    "These services are in the plan but had no reviewed catalog identifiers, so "
+                    "they are NOT included in the estimate total. Extend the usage profile to price them.")
+                _write_json(paths["assumptions"], doc)
+            except Exception:
+                pass
+        errors = validate_usage(complete)
+        if errors:
+            return False, "usage payload not ready: " + "; ".join(errors[:3])
+        ok = run(report_dir, mode="auto-approve")
+        if not ok:
+            return False, "approver not authorized (RBAC)"
+        note = "estimate created"
+        if skipped:
+            note += f" (partial — not estimated: {', '.join(skipped)})"
+        return True, note
+    except Exception as exc:
+        return False, str(exc)
+
+
 def _parse_assumptions(pairs):
     out = {}
     for item in pairs or []:
@@ -436,7 +537,7 @@ def _modifications(path, key):
     return data if isinstance(data, list) else []
 
 
-def run_bill_scenario(report_dir, usage_mods=None, commitments=None, mode="gatekeeper", name=None):
+def run_bill_scenario(report_dir, usage_mods=None, commitments=None, mode="auto-approve", name=None):
     """
     Phase F — model commitments (Savings Plans / RIs) with a BCM Bill Scenario, then a Bill
     Estimate with per-service line items + commitment lines. Usage- and commitment-modification
@@ -536,16 +637,18 @@ def main():
                    help="derive monthly usage amounts from blueprint inputs + assumptions (no prices)")
     p.add_argument("--assume", action="append", default=[],
                    help="override a usage assumption, e.g. --assume glue_runs_per_day=12")
-    r = sub.add_parser("run", help="gated AWS-side BCM workload estimate creation")
+    r = sub.add_parser("run", help="create the BCM workload estimate (free pricing object; audited)")
     r.add_argument("--report-dir", required=True)
-    r.add_argument("--mode", default="gatekeeper", choices=["gatekeeper", "auto-approve"])
-    s = sub.add_parser("scenario", help="gated BCM bill scenario + estimate (Savings Plan / RI modeling)")
+    r.add_argument("--mode", default="auto-approve", choices=["gatekeeper", "auto-approve"],
+                   help="estimates default to auto-approve; use gatekeeper to require a prompt")
+    s = sub.add_parser("scenario", help="BCM bill scenario + estimate (Savings Plan / RI modeling)")
     s.add_argument("--report-dir", required=True)
     s.add_argument("--usage-modifications", default="",
                    help="user-supplied usageModifications JSON (from generate-cli-skeleton)")
     s.add_argument("--commitments", default="",
                    help="user-supplied commitmentModifications JSON (Savings Plans / RIs)")
-    s.add_argument("--mode", default="gatekeeper", choices=["gatekeeper", "auto-approve"])
+    s.add_argument("--mode", default="auto-approve", choices=["gatekeeper", "auto-approve"],
+                   help="estimates default to auto-approve; use gatekeeper to require a prompt")
     a = sub.add_parser("actuals", help="pull Cost Explorer per-service actuals for forecast-vs-actual (read-only)")
     a.add_argument("--report-dir", required=True)
     a.add_argument("--month", default="", help="YYYY-MM month to compare (default: most recent with spend)")

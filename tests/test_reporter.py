@@ -120,6 +120,179 @@ def test_bespoke_nonconformant_diagram_is_gone():
     assert not hasattr(reporter, "build_pipeline_svg")
 
 
+def test_dataflow_svg_is_wellformed_layered_and_carries_data_address():
+    plan = {
+        "resource_changes": [
+            {"address": 'aws_s3_bucket.zone["bronze"]', "type": "aws_s3_bucket", "name": "zone",
+             "module_address": "module.storage", "mode": "managed", "change": {"actions": ["create"]}},
+            {"address": "aws_glue_job.dq", "type": "aws_glue_job", "name": "dq",
+             "module_address": "module.compute", "mode": "managed", "change": {"actions": ["create"]}},
+            {"address": "aws_athena_workgroup.this", "type": "aws_athena_workgroup", "name": "this",
+             "module_address": "module.query", "mode": "managed", "change": {"actions": ["create"]}},
+            {"address": "aws_iam_role.glue", "type": "aws_iam_role", "name": "glue",
+             "module_address": "module.compute", "mode": "managed", "change": {"actions": ["create"]}},
+        ],
+        "configuration": {"root_module": {"module_calls": {}}},
+    }
+    rows, _ = reporter.summarize(plan)
+    svg = reporter.build_dataflow_svg(rows, "terraform", "aws", "abc123def456", "2026-07-01 12:00 UTC",
+                                      findings=[], plan=plan)
+    root = ET.fromstring(svg)                         # raises if not well-formed XML
+    assert root.attrib["viewBox"].startswith("0 0 1280")
+    assert "STORAGE &amp; PROCESSING" in svg          # ampersand is escaped (renders standalone)
+    assert "SECURITY &amp; MONITORING" in svg
+    nodes = [el for el in root.iter(SVG_NS + "g") if el.attrib.get("class") == "node"]
+    assert nodes and all(n.attrib.get("data-address") for n in nodes)
+
+
+def test_dataflow_icon_embedding_is_sanitized(tmp_path):
+    # Icon files are operator-supplied (untrusted). Active content must never reach the
+    # emitted SVG — a hostile icon falls back to the built-in generic glyph.
+    (tmp_path / "s3.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        '<script>alert(1)</script>'
+        '<rect width="64" height="64" onload="alert(2)"/>'
+        '<a href="javascript:alert(3)"><circle r="9"/></a>'
+        '<image href="https://evil.example/x.svg"/></svg>', encoding="utf-8")
+    plan = {"resource_changes": [
+        {"address": 'aws_s3_bucket.zone["bronze"]', "type": "aws_s3_bucket", "name": "zone",
+         "mode": "managed", "change": {"actions": ["create"]}}], "output_changes": {}}
+    rows, _ = reporter.summarize(plan)
+    svg = reporter.build_dataflow_svg(rows, "t", "aws", "h", "ts", plan=plan, icons_dir=str(tmp_path))
+    ET.fromstring(svg)                       # still well-formed
+    low = svg.lower()
+    assert "<script" not in low and "onload" not in low
+    assert "javascript:" not in low and "evil.example" not in low
+
+
+def test_dataflow_benign_icon_still_embeds(tmp_path):
+    (tmp_path / "s3.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        '<path id="bkt" d="M4,8 H60 L52,58 H12 Z" fill="#d95d39"/></svg>', encoding="utf-8")
+    plan = {"resource_changes": [
+        {"address": 'aws_s3_bucket.zone["bronze"]', "type": "aws_s3_bucket", "name": "zone",
+         "mode": "managed", "change": {"actions": ["create"]}}], "output_changes": {}}
+    rows, _ = reporter.summarize(plan)
+    svg = reporter.build_dataflow_svg(rows, "t", "aws", "h", "ts", plan=plan, icons_dir=str(tmp_path))
+    ET.fromstring(svg)
+    assert 'd="M4,8 H60 L52,58 H12 Z"' in svg          # real icon path embedded
+    assert '_bkt"' in svg                              # ids namespaced per node
+
+
+def test_dataflow_renders_every_transform_not_just_stage_gaps():
+    # 2 stages leave one slot between them; the 2 extra Glue jobs must still render.
+    plan = {"resource_changes": [
+        {"address": 'aws_s3_bucket.zone["bronze"]', "type": "aws_s3_bucket", "name": "zone",
+         "mode": "managed", "change": {"actions": ["create"]}},
+        {"address": 'aws_s3_bucket.zone["silver"]', "type": "aws_s3_bucket", "name": "zone",
+         "mode": "managed", "change": {"actions": ["create"]}},
+        {"address": "aws_glue_job.a", "type": "aws_glue_job", "name": "a",
+         "mode": "managed", "change": {"actions": ["create"]}},
+        {"address": "aws_glue_job.b", "type": "aws_glue_job", "name": "b",
+         "mode": "managed", "change": {"actions": ["create"]}},
+        {"address": "aws_glue_job.c", "type": "aws_glue_job", "name": "c",
+         "mode": "managed", "change": {"actions": ["create"]}},
+    ], "output_changes": {}}
+    rows, _ = reporter.summarize(plan)
+    svg = reporter.build_dataflow_svg(rows, "t", "aws", "h", "ts", plan=plan)
+    root = ET.fromstring(svg)
+    addrs = {n.attrib["data-address"] for n in root.iter(SVG_NS + "g")
+             if n.attrib.get("class") == "node"}
+    for a in ("aws_glue_job.a", "aws_glue_job.b", "aws_glue_job.c"):
+        assert a in addrs, f"transform silently dropped: {a}"
+
+
+def _medallion_plan(job_names):
+    changes = [
+        {"address": f'aws_s3_bucket.zone["{z}"]', "type": "aws_s3_bucket", "name": "zone",
+         "mode": "managed", "change": {"actions": ["create"]}}
+        for z in ("bronze", "silver", "gold")
+    ] + [
+        {"address": f"aws_glue_job.{n}", "type": "aws_glue_job", "name": n,
+         "mode": "managed", "change": {"actions": ["create"]}}
+        for n in job_names
+    ]
+    return {"resource_changes": changes, "output_changes": {}}
+
+
+def _dataflow(plan):
+    rows, _ = reporter.summarize(plan)
+    return reporter.build_dataflow_svg(rows, "t", "aws", "h", "ts", plan=plan)
+
+
+def test_dataflow_places_jobs_between_their_named_stages():
+    # bronze_to_silver and silver_to_gold must land in THEIR gaps; every stage
+    # boundary has a transform, so no fabricated-flow caveat is needed.
+    svg = _dataflow(_medallion_plan(["bronze_to_silver", "silver_to_gold"]))
+    order = [svg.index(a) for a in (
+        'aws_s3_bucket.zone[&quot;bronze&quot;]', "aws_glue_job.bronze_to_silver",
+        'aws_s3_bucket.zone[&quot;silver&quot;]', "aws_glue_job.silver_to_gold",
+        'aws_s3_bucket.zone[&quot;gold&quot;]')]
+    assert order == sorted(order), "spine order does not follow the medallion flow"
+    assert "no transform in plan" not in svg
+
+
+def test_dataflow_marks_stage_gap_without_transform_as_not_flow():
+    # Only bronze_to_silver exists: silver -> gold has NO job, so drawing a solid
+    # arrow would fabricate a flow. The gap must be visibly declared instead.
+    svg = _dataflow(_medallion_plan(["bronze_to_silver"]))
+    assert svg.count("no transform in plan") == 1
+
+
+def test_dataflow_name_placement_beats_positional_order():
+    # A single job named silver_to_gold belongs between silver and gold — the old
+    # positional interleave would wrongly put it between bronze and silver.
+    svg = _dataflow(_medallion_plan(["silver_to_gold"]))
+    order = [svg.index(a) for a in (
+        'aws_s3_bucket.zone[&quot;silver&quot;]', "aws_glue_job.silver_to_gold",
+        'aws_s3_bucket.zone[&quot;gold&quot;]')]
+    assert order == sorted(order)
+    assert svg.count("no transform in plan") == 1     # the bronze -> silver gap
+
+
+def test_dataflow_wiring_verdict_matches_conformance():
+    import architecture_model
+    # Orchestrator module references the compute module -> conformance says wired,
+    # and the diagram must agree (solid 'orchestrates', no placeholder caveat).
+    plan = {
+        "resource_changes": [
+            {"address": 'module.storage.aws_s3_bucket.zone["bronze"]', "type": "aws_s3_bucket",
+             "name": "zone", "module_address": "module.storage", "mode": "managed",
+             "change": {"actions": ["create"]}},
+            {"address": 'module.storage.aws_s3_bucket.zone["silver"]', "type": "aws_s3_bucket",
+             "name": "zone", "module_address": "module.storage", "mode": "managed",
+             "change": {"actions": ["create"]}},
+            {"address": "module.compute.aws_glue_job.etl", "type": "aws_glue_job",
+             "name": "etl", "module_address": "module.compute", "mode": "managed",
+             "change": {"actions": ["create"]}},
+            {"address": "module.orchestrator.aws_sfn_state_machine.p", "type": "aws_sfn_state_machine",
+             "name": "p", "module_address": "module.orchestrator", "mode": "managed",
+             "change": {"actions": ["create"]}},
+        ],
+        "output_changes": {},
+        "configuration": {"root_module": {"module_calls": {
+            "orchestrator": {"expressions": {"glue_job_names": {
+                "references": ["module.compute.glue_job_names", "module.compute"]}}},
+            "compute": {"expressions": {}},
+            "storage": {"expressions": {}},
+        }}},
+    }
+    rows, _ = reporter.summarize(plan)
+    svg = reporter.build_dataflow_svg(rows, "t", "aws", "h", "ts", plan=plan)
+    report = architecture_model.conformance(plan)
+    conf_wired = not any(f["id"] == "ARCH-ORCH-UNWIRED" for f in report["findings"])
+    assert conf_wired and ">orchestrates<" in svg
+    assert "not wired" not in svg
+
+    # And the unwired case agrees the other way.
+    plan["configuration"]["root_module"]["module_calls"]["orchestrator"]["expressions"] = {}
+    rows, _ = reporter.summarize(plan)
+    svg = reporter.build_dataflow_svg(rows, "t", "aws", "h", "ts", plan=plan)
+    report = architecture_model.conformance(plan)
+    assert any(f["id"] == "ARCH-ORCH-UNWIRED" for f in report["findings"])
+    assert "not wired" in svg
+
+
 def test_collapse_folds_config_into_one_service_node():
     rows = [
         {"address": 'aws_s3_bucket.b["x"]', "type": "aws_s3_bucket", "name": "b", "action": "create", "tier": "storage", "module": ""},

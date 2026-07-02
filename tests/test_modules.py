@@ -1,6 +1,32 @@
 import modules
 
 
+def test_module_dir_prefers_explicit_runtime_asset_root(tmp_path, monkeypatch):
+    root = tmp_path / "runtime-modules"
+    mod = root / "query-athena"
+    mod.mkdir(parents=True)
+    (mod / "main.tf").write_text("# packaged module\n", encoding="utf-8")
+
+    monkeypatch.setenv("MINUSOPS_MODULES_DIR", str(root))
+
+    assert modules.module_dir("query-athena") == str(mod)
+
+
+def test_module_dir_can_find_installed_data_files(tmp_path, monkeypatch):
+    data_root = tmp_path / "venv-data"
+    mod = data_root / "modules" / "query-athena"
+    mod.mkdir(parents=True)
+    (mod / "main.tf").write_text("# installed module\n", encoding="utf-8")
+
+    monkeypatch.delenv("MINUSOPS_MODULES_DIR", raising=False)
+    (tmp_path / "empty-workdir").mkdir()
+    monkeypatch.chdir(tmp_path / "empty-workdir")
+    monkeypatch.setattr(modules, "REPO_ROOT", str(tmp_path / "not-a-checkout"))
+    monkeypatch.setattr(modules.sysconfig, "get_path", lambda key: str(data_root) if key == "data" else "")
+
+    assert modules.module_dir("query-athena") == str(mod)
+
+
 def test_registry_is_valid_and_terraform_exists():
     # Every module passes schema validation AND has its Terraform on disk.
     assert modules.validate_modules() == []

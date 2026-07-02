@@ -176,7 +176,7 @@ def resource_rows(plan):
             "name": change.get("name", ""),
             "action": action,
             "after": after,
-            "owner_file": owner_file_for_type(change.get("type", "")),
+            "owner_file": owner_file_for_address(change.get("address", ""), change.get("type", "")),
         })
     return sorted(rows, key=lambda row: row["address"])
 
@@ -186,6 +186,21 @@ def service_for_type(rtype):
         if rtype.startswith(prefix):
             return service
     return "Other"
+
+
+def owner_file_for_address(address, rtype):
+    """Resolve the .tf file that declares a resource.
+
+    Composition-based synthesis (core/synthesizer.py) puts every resource inside
+    modules/<module-id>/main.tf, wired from the root via `module "<label>" { ... }`
+    blocks whose label is the module id with hyphens swapped for underscores. Fall
+    back to the legacy flat-file convention (core/terraform_generator.py) for
+    resources that aren't inside a module.
+    """
+    if address.startswith("module."):
+        label = address.split(".")[1]
+        return f"modules/{label.replace('_', '-')}/main.tf"
+    return owner_file_for_type(rtype)
 
 
 def owner_file_for_type(rtype):

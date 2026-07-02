@@ -42,3 +42,50 @@ jobs:
           minusctl demo governed-data-pipeline --owner ci --daily-data-gb 10
           minusctl readiness
           minusctl audit verify
+
+  package:
+    name: "wheel asset smoke"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --no-isolation
+
+      - name: Install wheel outside source checkout
+        run: |
+          python -m venv /tmp/minusops-wheel
+          /tmp/minusops-wheel/bin/python -m pip install dist/*.whl
+          mkdir -p /tmp/minusops-smoke
+          cd /tmp/minusops-smoke
+          /tmp/minusops-wheel/bin/minusctl --help
+          /tmp/minusops-wheel/bin/minus-accelerator --help
+          /tmp/minusops-wheel/bin/python - <<'PY'
+          import os
+          from core import modules
+          module_path = modules.module_dir("query-athena")
+          assert os.path.exists(os.path.join(module_path, "main.tf")), module_path
+          assert modules.validate_modules() == []
+          print(module_path)
+          PY
+
+  docker:
+    name: "docker build smoke"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build runner image
+        run: docker build -t minusops:ci .
+
+      - name: Smoke test runner image
+        run: |
+          docker run --rm minusops:ci --help
+          docker run --rm --entrypoint minus-accelerator minusops:ci --help
+          docker run --rm --entrypoint checkov minusops:ci --version

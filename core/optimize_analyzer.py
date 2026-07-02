@@ -6,9 +6,9 @@ bucket needs a public-access-block") are evaluated against each resource block, 
 a directory with four buckets and one public-access-block correctly flags the three
 unprotected buckets — the previous whole-file substring approach missed that.
 
-Optionally merges findings from an external policy engine (checkov / tfsec / trivy)
-when present on PATH, so an enterprise can layer its own ruleset on top. Native
-SEC-* findings remain blocking; external findings are advisory unless promoted.
+Optionally merges findings from external policy engines (checkov / tfsec) when
+present on PATH. Native SEC-* findings always block; external findings are
+advisory in dev mode and blocking in production policy mode.
 """
 import os
 import re
@@ -19,6 +19,8 @@ import sys
 
 
 BLOCKING_PREFIXES = ("SEC-",)
+EXTERNAL_SCANNERS = ("checkov", "tfsec")
+SKIP_DIRS = {".terraform", ".git", "__pycache__", ".minus"}
 
 
 def strip_comments(text):
@@ -67,7 +69,8 @@ def _referenced_by(blocks, target_type, addr):
 def scan_hcl_files(source_dir):
     """Return a list of findings. SEC-* findings block governed deployment."""
     content = ""
-    for root, _dirs, files in os.walk(source_dir):
+    for root, dirs, files in os.walk(source_dir):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for name in files:
             if name.endswith(".tf"):
                 try:
@@ -117,6 +120,29 @@ def scan_hcl_files(source_dir):
                     "COST-03", "Cost", "EMR Cluster Lacks Spot Instance Pricing",
                     "EMR task instances should use Spot pricing (bid_price) to cut cost.",
                     "MEDIUM", resource=f"aws_emr_cluster.{name}"))
+        # ---- Data-pipeline performance/cost rules (WA Analytics Lens BP 10 + incremental) ----
+        elif rtype == "aws_glue_job":
+            if "job-bookmark" not in body:
+                findings.append(_finding(
+                    "DATA-01", "Performance", "Glue Job Without Job Bookmarks",
+                    "Enable '--job-bookmark-option = job-bookmark-enable' so the job processes only "
+                    "new/changed data. Full reloads are slow and costly (WA Analytics Lens BP 10; "
+                    "Glue job bookmarks).",
+                    "LOW", resource=f"aws_glue_job.{name}"))
+        elif rtype == "aws_glue_catalog_table":
+            if "partition_keys" not in body:
+                findings.append(_finding(
+                    "DATA-02", "Performance", "Glue Table Not Partitioned",
+                    "Declare partition_keys so queries prune partitions instead of scanning whole "
+                    "datasets (WA Analytics Lens BP 10.4 — partition for pruning).",
+                    "LOW", resource=f"aws_glue_catalog_table.{name}"))
+        elif rtype == "aws_athena_workgroup":
+            if "bytes_scanned_cutoff" not in body:
+                findings.append(_finding(
+                    "DATA-03", "Cost", "Athena Workgroup Without Scan Cutoff",
+                    "Set bytes_scanned_cutoff_per_query to cap runaway scan cost on unpartitioned or "
+                    "large tables.",
+                    "LOW", resource=f"aws_athena_workgroup.{name}"))
 
     # ---- Whole-config rules (genuinely global) ----
     if re.search(r'["\']?Resource["\']?\s*[:=]\s*"\*"', clean):
@@ -134,9 +160,16 @@ def scan_hcl_files(source_dir):
 
 
 # ---------------------------------------------------------------------------
-# Optional external policy engines (checkov / tfsec / trivy). Advisory by default.
+# Optional external policy engines (checkov / tfsec). Advisory in dev, blocking in production.
 # ---------------------------------------------------------------------------
-def run_external_scanners(source_dir):
+def _scanner_error(scanner, message, required=False):
+    severity = "BLOCKING" if required else "EXTERNAL"
+    return _finding(
+        "POLICY-EXT", f"External:{scanner}", "External policy scanner unavailable",
+        message, severity, resource=scanner)
+
+
+def run_external_scanners(source_dir, required=False):
     findings = []
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import toolpath  # local import keeps the core scanner dependency-free
@@ -155,7 +188,9 @@ def run_external_scanners(source_dir):
                     f"{item.get('resource', '')} ({item.get('file_path', '')})",
                     "EXTERNAL", resource=item.get("resource")))
         except Exception as exc:
-            print(f"[OPTIMIZER] checkov run skipped: {exc}", file=sys.stderr)
+            msg = f"checkov run failed: {exc}"
+            findings.append(_scanner_error("checkov", msg, required))
+            print(f"[OPTIMIZER] {msg}", file=sys.stderr)
 
     tfsec = toolpath.find_tool("tfsec")
     if tfsec:
@@ -170,7 +205,16 @@ def run_external_scanners(source_dir):
                     (item.get("location", {}) or {}).get("filename", ""),
                     "EXTERNAL", resource=item.get("resource")))
         except Exception as exc:
-            print(f"[OPTIMIZER] tfsec run skipped: {exc}", file=sys.stderr)
+            msg = f"tfsec run failed: {exc}"
+            findings.append(_scanner_error("tfsec", msg, required))
+            print(f"[OPTIMIZER] {msg}", file=sys.stderr)
+
+    if required and not (checkov or tfsec):
+        findings.append(_scanner_error(
+            "required",
+            "Production policy mode requires at least one supported external scanner "
+            "(checkov or tfsec) on PATH.",
+            required=True))
 
     return findings
 
@@ -192,9 +236,26 @@ def generate_report(findings, output_dir):
     print(f"[OPTIMIZER] Report successfully generated at: {report_path}")
 
 
-def blocking_findings(findings):
-    """Findings that must block governed deployment (native SEC-* only)."""
-    return [f for f in findings if any(f["id"].startswith(p) for p in BLOCKING_PREFIXES)]
+def blocking_findings(findings, external_blocking=False):
+    """Findings that must block governed deployment.
+
+    Native SEC-* findings always block. External scanner findings block only when
+    production policy mode requires external evidence.
+    """
+    blockers = [f for f in findings if any(f["id"].startswith(p) for p in BLOCKING_PREFIXES)]
+    if external_blocking:
+        blockers.extend(
+            f for f in findings
+            if f.get("category", "").startswith("External:") and f not in blockers
+        )
+    return blockers
+
+
+def _policy_mode(value=None):
+    mode = (value or os.environ.get("MINUS_POLICY_MODE") or "dev").strip().lower()
+    if mode not in {"dev", "production"}:
+        raise ValueError("policy mode must be 'dev' or 'production'")
+    return mode
 
 
 def main(argv=None):
@@ -206,14 +267,21 @@ def main(argv=None):
                         help="Write the report but do not fail on blocking findings")
     parser.add_argument("--external", action="store_true",
                         help="Also run external policy engines (checkov/tfsec) if present; advisory")
+    parser.add_argument("--require-external", action="store_true",
+                        help="Require at least one external scanner and make external findings blocking")
+    parser.add_argument("--policy-mode", choices=["dev", "production"],
+                        default=os.environ.get("MINUS_POLICY_MODE", "dev"),
+                        help="dev keeps external scanners advisory; production requires and blocks on them")
     args = parser.parse_args(argv)
 
+    policy_mode = _policy_mode(args.policy_mode)
+    require_external = args.require_external or policy_mode == "production"
     findings = scan_hcl_files(args.source_dir)
-    if args.external:
-        findings = findings + run_external_scanners(args.source_dir)
+    if args.external or require_external:
+        findings = findings + run_external_scanners(args.source_dir, required=require_external)
     generate_report(findings, args.log_dir)
 
-    blockers = blocking_findings(findings)
+    blockers = blocking_findings(findings, external_blocking=require_external)
     if blockers and not args.report_only:
         ids = ", ".join(f"{b['id']}({b.get('resource', '-')})" for b in blockers)
         print(f"[OPTIMIZER] Blocking findings detected: {ids}", file=sys.stderr)

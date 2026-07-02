@@ -32,6 +32,18 @@ variable "number_of_workers" {
   default = 2
 }
 
+variable "alarm_sns_topic_arn" {
+  type        = string
+  default     = ""
+  description = "SNS topic to notify on Glue job failure (WA Analytics Lens BP 6.2/6.3). An EventBridge rule routes FAILED/TIMEOUT/STOPPED job runs to it when enable_alarms is true."
+}
+
+variable "enable_alarms" {
+  type        = bool
+  default     = false
+  description = "Create the failure EventBridge rule. Separate from alarm_sns_topic_arn because count cannot depend on a value computed at plan time (the topic ARN usually comes from another module)."
+}
+
 data "aws_iam_policy_document" "assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -67,6 +79,17 @@ resource "aws_iam_role_policy" "glue" {
   policy = data.aws_iam_policy_document.glue.json
 }
 
+# Upload the bundled starter PySpark script to each job's S3 key so the job is runnable
+# on apply (the operator replaces the logic; the etag makes a changed script a new plan).
+resource "aws_s3_object" "script" {
+  for_each = var.jobs
+  bucket   = var.script_s3_bucket
+  key      = each.value
+  source   = "${path.module}/scripts/etl.py"
+  etag     = filemd5("${path.module}/scripts/etl.py")
+  tags     = var.tags
+}
+
 resource "aws_glue_job" "this" {
   for_each          = var.jobs
   name              = "${var.name_prefix}-${each.key}"
@@ -79,12 +102,43 @@ resource "aws_glue_job" "this" {
   command {
     name            = "glueetl"
     python_version  = "3"
-    script_location = "s3://${var.script_s3_bucket}/${each.value}"
+    script_location = "s3://${var.script_s3_bucket}/${aws_s3_object.script[each.key].key}"
   }
+
+  # Incremental processing by default (WA Analytics Lens BP10 / our DATA-01 check):
+  # bookmarks stop re-scanning already-processed input on every run.
+  default_arguments = {
+    "--job-bookmark-option" = "job-bookmark-enable"
+  }
+}
+
+# Failure monitoring: route Glue job FAILED/TIMEOUT/STOPPED events to the alerts topic
+# (BP 6.2 detect job failures, BP 6.3 notify stakeholders). Created only when a topic is wired.
+resource "aws_cloudwatch_event_rule" "glue_failed" {
+  count       = var.enable_alarms ? 1 : 0
+  name        = "${var.name_prefix}-glue-failed"
+  description = "Notify on Glue job failure/timeout for ${var.name_prefix}."
+  event_pattern = jsonencode({
+    source        = ["aws.glue"]
+    "detail-type" = ["Glue Job State Change"]
+    detail        = { state = ["FAILED", "TIMEOUT", "STOPPED"] }
+  })
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "glue_failed_sns" {
+  count     = var.enable_alarms ? 1 : 0
+  rule      = aws_cloudwatch_event_rule.glue_failed[0].name
+  target_id = "sns"
+  arn       = var.alarm_sns_topic_arn
 }
 
 output "glue_job_names" {
   value = { for k, j in aws_glue_job.this : k => j.name }
+}
+
+output "glue_job_arns" {
+  value = [for j in aws_glue_job.this : j.arn]
 }
 
 output "glue_role_arn" {

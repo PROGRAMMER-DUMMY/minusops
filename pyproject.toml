@@ -29,6 +29,9 @@ dashboard = [
     "dash>=2.14,<3",
     "plotly>=5.18,<6",
 ]
+policy = [
+    "checkov>=3,<4",
+]
 dev = [
     "pytest>=8.0,<9",
     "build>=1.2",
@@ -44,18 +47,57 @@ minus-workflow = "core.workflow:main"
 minus-bcm = "core.bcm_pricing_calculator:main"
 minus-runs = "core.runs:main"
 minus-demo = "core.demo:main"
+minus-accelerator = "core.accelerators:main"
 
 [project.urls]
 Documentation = "https://github.com/your-org/minusops/blob/main/AGENTS.md"
 
 [tool.setuptools]
-# The engine ships as the `core` package (+ provider subpackage). Each module keeps a
-# runtime sys.path shim so the documented `python core/<tool>.py` invocations and the
-# installed console scripts both work from the same source.
+# Python code ships as the `core` package (+ provider subpackage). Runtime Terraform
+# modules, required docs, examples, and local agent skill manifests are shipped below
+# as data-files so installed wheels work without a source checkout.
 packages = ["core", "core.providers"]
 
 [tool.setuptools.package-data]
 core = ["py.typed"]
+
+[tool.setuptools.data-files]
+"modules/storage-medallion-s3" = ["modules/storage-medallion-s3/main.tf"]
+"modules/orchestrator-mwaa" = ["modules/orchestrator-mwaa/main.tf"]
+"modules/orchestrator-stepfunctions" = ["modules/orchestrator-stepfunctions/main.tf"]
+"modules/compute-glue-etl" = ["modules/compute-glue-etl/main.tf"]
+"modules/speed-layer-kinesis" = ["modules/speed-layer-kinesis/main.tf"]
+"modules/dq-great-expectations" = ["modules/dq-great-expectations/main.tf"]
+"modules/schema-registry-glue" = ["modules/schema-registry-glue/main.tf"]
+"modules/query-athena" = ["modules/query-athena/main.tf"]
+"modules/governance-observability" = ["modules/governance-observability/main.tf"]
+"docs" = [
+    "docs/architecture_synthesis.md",
+    "docs/architecture_svg_skeleton.svg",
+    "docs/architecture_svg_spec.md",
+    "docs/documentation_ledger.md",
+    "docs/enterprise_iam_manifest.md",
+    "docs/information_library.md",
+    "docs/operations_runbook.md",
+    "docs/pricing_catalog_support.md",
+    "docs/security_model.md",
+]
+"examples/bcm" = ["examples/bcm-usage-profile.example.json"]
+"examples/iam" = [
+    "examples/iam/README.md",
+    "examples/iam/ci-oidc-trust-policy.json",
+    "examples/iam/deploy-role-trust-policy.json",
+    "examples/iam/finops-readonly-policy.json",
+]
+".agents" = [".agents/AGENTS.md"]
+".agents/skills/architect" = [".agents/skills/architect/SKILL.md"]
+".agents/skills/architect/agents" = [".agents/skills/architect/agents/openai.yaml"]
+".agents/skills/grill-me" = [".agents/skills/grill-me/SKILL.md"]
+".agents/skills/grill-me/agents" = [".agents/skills/grill-me/agents/openai.yaml"]
+".agents/skills/pipeline-optimizer" = [".agents/skills/pipeline-optimizer/SKILL.md"]
+".agents/skills/resolve-ambiguity" = [".agents/skills/resolve-ambiguity/SKILL.md"]
+".agents/skills/resolve-ambiguity/agents" = [".agents/skills/resolve-ambiguity/agents/openai.yaml"]
+".agents/skills/terraform-orchestrator" = [".agents/skills/terraform-orchestrator/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

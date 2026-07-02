@@ -19,9 +19,14 @@ def _patch_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(workflow.runs, "RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setattr(minusctl.runs, "WORKSPACE", str(tmp_path))
     monkeypatch.setattr(minusctl.runs, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(minusctl.accelerators.runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(minusctl.accelerators.runs, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(minusctl.demo.runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(minusctl.demo.runs, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(minusctl.demo.reporter, "generate_from_plan_json", lambda *a, **k: str(tmp_path / "report"))
 
 
-def test_minusctl_create_generates_workspace(tmp_path, monkeypatch):
+def test_minusctl_create_writes_requirements_first_run(tmp_path, monkeypatch):
     _patch_runs(tmp_path, monkeypatch)
 
     code, output = _capture([
@@ -35,9 +40,11 @@ def test_minusctl_create_generates_workspace(tmp_path, monkeypatch):
     data = json.loads(output)
 
     assert code == 0
-    assert data["terraform_generated"] is True
-    assert os.path.exists(os.path.join(data["run"]["terraform_dir"], "main.tf"))
-    assert os.path.exists(os.path.join(data["run"]["terraform_dir"], ".minus", "baseline.json"))
+    assert data["terraform_generated"] is False
+    assert data["generation_blocked"] is True
+    assert data["run"]["blueprint"] == "requirements-first"
+    assert os.path.exists(data["requirements_file"])
+    assert not os.path.exists(os.path.join(data["run"]["terraform_dir"], "main.tf"))
 
 
 def test_minusctl_next_reports_safe_commands(tmp_path, monkeypatch):
@@ -54,20 +61,55 @@ def test_minusctl_next_reports_safe_commands(tmp_path, monkeypatch):
     code, output = _capture(["next"])
 
     assert code == 0
-    assert "python core/plan_gate.py verify --dir" in output
-    assert "do not apply until a reviewed plan hash is approved" in output
+    assert "requirements:" in output
+    assert "decision   :" in output
+    assert "python core/minusctl.py decision template --write" in output
+    assert "--run" in output
+    assert "--decision-file" in output
+    assert "do not generate Terraform from demo fixtures for production" in output
+
+
+def test_minusctl_decision_template_writes_control_record(tmp_path, monkeypatch):
+    _patch_runs(tmp_path, monkeypatch)
+    _capture(["create", "create a governed AWS data pipeline"])
+
+    code, output = _capture(["decision", "template", "--write", "--json"])
+    data = json.loads(output)
+
+    assert code == 0
+    assert data["written"] is True
+    assert os.path.exists(data["path"])
+    assert data["record"]["selected_modules"] == []
+
+    check_code, check_output = _capture(["decision", "check"])
+    assert check_code == 2
+    assert "selected_modules" in check_output
+
+
+def test_minusctl_accelerator_writes_lakehouse_artifacts(tmp_path, monkeypatch):
+    _patch_runs(tmp_path, monkeypatch)
+    _capture(["create", "create a governed AWS lakehouse"])
+
+    code, output = _capture([
+        "accelerator",
+        "aws-lakehouse",
+        "--owner", "data-platform",
+        "--daily-data-gb", "75",
+        "--force",
+        "--json",
+    ])
+    data = json.loads(output)
+
+    assert code == 0
+    assert os.path.exists(data["requirements_file"])
+    assert os.path.exists(data["decision_file"])
+    assert "storage-medallion-s3" in data["decision"]["selected_modules"]
+    assert "python core/synthesizer.py" in data["next"]
 
 
 def test_minusctl_guard_detects_manual_edit(tmp_path, monkeypatch):
     _patch_runs(tmp_path, monkeypatch)
-    _, output = _capture([
-        "create",
-        "create a governed AWS data pipeline",
-        "--input", "owner=data-platform",
-        "--input", "daily_data_gb=50",
-        "--generate",
-        "--json",
-    ])
+    _, output = _capture(["demo", "governed-data-pipeline", "--json"])
     data = json.loads(output)
     main_tf = os.path.join(data["run"]["terraform_dir"], "main.tf")
     with open(main_tf, "a", encoding="utf-8") as f:
@@ -84,14 +126,7 @@ def test_minusctl_guard_detects_manual_edit(tmp_path, monkeypatch):
 
 def test_minusctl_package_writes_enterprise_summary(tmp_path, monkeypatch):
     _patch_runs(tmp_path, monkeypatch)
-    _, output = _capture([
-        "create",
-        "create a governed AWS data pipeline",
-        "--input", "owner=data-platform",
-        "--input", "daily_data_gb=50",
-        "--generate",
-        "--json",
-    ])
+    _, output = _capture(["demo", "governed-data-pipeline", "--json"])
     data = json.loads(output)
 
     code, package_output = _capture(["package", "--json"])
@@ -112,13 +147,7 @@ def test_minusctl_package_writes_enterprise_summary(tmp_path, monkeypatch):
 
 def test_minusctl_readiness_scores_missing_report_evidence(tmp_path, monkeypatch):
     _patch_runs(tmp_path, monkeypatch)
-    _capture([
-        "create",
-        "create a governed AWS data pipeline",
-        "--input", "owner=data-platform",
-        "--input", "daily_data_gb=50",
-        "--generate",
-    ])
+    _capture(["demo", "governed-data-pipeline"])
 
     code, output = _capture(["readiness", "--json"])
     strict_code, _ = _capture(["readiness", "--strict"])
@@ -140,8 +169,7 @@ def test_minusctl_prove_writes_evidence_bundle(tmp_path, monkeypatch):
             return {"connected": False, "type": "unknown"}
     monkeypatch.setattr(pb, "get_provider", lambda *a, **k: _P())
 
-    _capture(["create", "create a governed AWS data pipeline",
-              "--input", "owner=data-platform", "--input", "daily_data_gb=50", "--generate"])
+    _capture(["demo", "governed-data-pipeline"])
     code, output = _capture(["prove", "--json"])
     data = json.loads(output)
 
@@ -153,16 +181,34 @@ def test_minusctl_prove_writes_evidence_bundle(tmp_path, monkeypatch):
     assert "Evidence Bundle" in bundle and "Remaining AWS-gated steps" in bundle
 
 
+def test_minusctl_conformance_helper_and_formatter(tmp_path):
+    rdir = tmp_path / "rep"
+    rdir.mkdir()
+    plan = {
+        "resource_changes": [
+            {"address": 'aws_s3_bucket.zone["bronze"]', "type": "aws_s3_bucket", "name": "zone",
+             "module_address": "module.storage", "mode": "managed", "change": {"actions": ["create"]}},
+        ],
+        "configuration": {"root_module": {"module_calls": {}}},
+    }
+    (rdir / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    reports = [{"id": "abc", "path": str(rdir), "has_plan_json": True}]
+
+    report = minusctl._conformance_for_run({"run_id": "r"}, reports=reports)
+    assert report and report["layers"]["storage"]["present"] is True
+    assert 0 <= report["score"] <= 100
+    # no report -> graceful None
+    assert minusctl._conformance_for_run({"run_id": "r"}, reports=[]) is None
+    # formatter
+    text = minusctl._format_conformance(report)
+    assert "Reference-architecture conformance" in text
+    assert "storage" in text
+    assert "no plan to analyze" in minusctl._format_conformance(None)
+
+
 def test_minusctl_readiness_blocks_on_manual_source_edit(tmp_path, monkeypatch):
     _patch_runs(tmp_path, monkeypatch)
-    _, output = _capture([
-        "create",
-        "create a governed AWS data pipeline",
-        "--input", "owner=data-platform",
-        "--input", "daily_data_gb=50",
-        "--generate",
-        "--json",
-    ])
+    _, output = _capture(["demo", "governed-data-pipeline", "--json"])
     data = json.loads(output)
     with open(os.path.join(data["run"]["terraform_dir"], "main.tf"), "a", encoding="utf-8") as f:
         f.write("\n# manual edit\n")
@@ -173,3 +219,28 @@ def test_minusctl_readiness_blocks_on_manual_source_edit(tmp_path, monkeypatch):
     assert code == 0
     assert readiness["status"] == "BLOCKED"
     assert any(item["name"] == "source is current" and not item["ok"] for item in readiness["blockers"])
+
+
+def test_minusctl_readiness_rejects_comment_stub_core_files(tmp_path, monkeypatch):
+    # Loophole #5 regression: an agent once satisfied "core Terraform files present" by
+    # writing one-line comment stubs. Content must contain real Terraform blocks.
+    _patch_runs(tmp_path, monkeypatch)
+    _, output = _capture(["demo", "governed-data-pipeline", "--json"])
+    run = json.loads(output)["run"]
+    run_id = run["run_id"]
+    tf_dir = run["terraform_dir"]
+
+    # A healthy composed workspace passes the check.
+    code, out = _capture(["readiness", "--run", run_id, "--json"])
+    data = json.loads(out)
+    core = next(c for c in data["checks"] if c["name"] == "core Terraform files present")
+    assert core["ok"], core
+
+    # Add a comment-only stub file -> the check must fail (gaming detection).
+    with open(os.path.join(tf_dir, "s3_extra.tf"), "w", encoding="utf-8") as f:
+        f.write("# S3 buckets managed within storage module\n")
+    code, out = _capture(["readiness", "--run", run_id, "--json"])
+    data = json.loads(out)
+    core = next(c for c in data["checks"] if c["name"] == "core Terraform files present")
+    assert not core["ok"]
+    assert "s3_extra.tf" in core["detail"] and "stub" in core["detail"]

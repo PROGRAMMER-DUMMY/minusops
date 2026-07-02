@@ -17,7 +17,7 @@ gate. Nothing is hosted by anyone else; each team runs it against their own acco
 You tell the agent what you want; it **gathers requirements before generating anything** — who
 the end users are, the latency SLA, volume, retention — recommending a default for each,
 cross-questioning contradictions ("live dashboards" vs. hourly batch) and missing pieces (no
-cost owner), then mapping the answers to a governed blueprint and building the plan. This is the
+cost owner), then mapping the answers to an architecture decision and governed synthesis. This is the
 [`grill-me`](.agents/skills/grill-me/SKILL.md) skill.
 
 ![requirements interview to build](docs/demo/minusops-requirements.svg)
@@ -44,7 +44,9 @@ break the tour down screen by screen.
 
 ### The live FinOps console
 
-`python app/dashboard_app.py` serves a fixed-screen, tabbed console (account id redacted here):
+`python app/dashboard_app.py` serves a fixed-screen, tabbed console with a Control tab for
+requirements, architecture decision, synthesis commands, and report readiness. It binds to
+`127.0.0.1` by default. If you expose it beyond localhost, set `MINUS_DASH_TOKEN` first.
 
 | Overview — live spend, anomalies, burn | Optimization — security/cost/observability scan |
 |:---:|:---:|
@@ -103,8 +105,8 @@ same data grouped by service:
   and a Plotly Dash console (`app/dashboard_app.py`).
 - **Safety primitives** — an approval gate with **approver RBAC** (`core/approval.py`,
   `core/authz.py`), a **tamper-evident hash-chained** audit trail (`core/audit_chain.py`,
-  verify with `minusctl audit verify`), a **per-resource** HCL security/cost scanner with an
-  optional checkov/tfsec hook (`core/optimize_analyzer.py`), live health probes, and a
+  verify with `minusctl audit verify`), a **per-resource** HCL security/cost scanner with
+  production-blocking checkov/tfsec evidence (`core/optimize_analyzer.py`), live health probes, and a
   versioned, plan-hash-keyed deploy report whose architecture diagram conforms to a binding
   cross-tool spec (`core/reporter.py`, enforced by golden tests).
 - **Source drift visibility** — generated Terraform workspaces carry a local `.minus/` baseline,
@@ -124,12 +126,16 @@ acts on infrastructure requires you to pass an explicit `--dir` / `--source-dir`
 ```bash
 pip install .                 # console scripts: minusctl, minus-gate, minus-resolve, minus-bcm, ...
 pip install ".[dashboard]"    # + the Plotly Dash FinOps console
+pip install ".[policy]"       # + Checkov for production policy gates
 # or the self-contained container (pinned terraform + aws CLI baked in):
 docker build -t minusops . && docker run --rm -v "$PWD:/work" -w /work minusops minusctl --help
 ```
 
 The documented `python core/<tool>.py ...` invocations still work from a source checkout;
 the installed `minusctl` / `minus-gate` console commands are the packaged equivalents.
+Released wheels and the Docker image include the runtime Terraform module library, required docs,
+example IAM policies, and project-local agent skill manifests; synthesis should not depend on a
+source checkout being present.
 For configuration (RBAC, audit, BCM) and day-2 tasks see
 [`docs/operations_runbook.md`](./docs/operations_runbook.md); for trust boundaries see
 [`docs/security_model.md`](./docs/security_model.md).
@@ -148,23 +154,27 @@ aws sso login            # each session
 
 # 3. Govern a change to YOUR terraform directory
 minus-gate run --dir path/to/your/terraform
-#   verify (fmt + validate + per-resource security scan) → plan (+ plan-hash) → approve (review + RBAC) → apply
+#   verify (fmt + validate + native SEC scan) → plan (+ plan-hash) → approve (review + RBAC) → apply
 #   apply refuses long-term static keys — use `aws sso login` or an assumed MFA role
 #   then: minusctl audit verify   # confirm the tamper-evident audit chain
+
+# Production mode also requires checkov or tfsec on PATH and blocks on external findings.
+MINUS_POLICY_MODE=production minus-gate run --dir path/to/your/terraform
 ```
 
 Provision the MFA-gated deploy role and read-only FinOps role from
 [`examples/iam/`](./examples/iam/) so the credential checks are backed by real IAM.
 
 ```bash
-# 4. Resolve short creation intent into a governed blueprint (no deploy)
+# 4. Resolve short creation intent into a requirements-first run (no deploy)
 python core/intent_resolver.py --validate-blueprints
 python core/intent_resolver.py --list-blueprints
 python core/intent_resolver.py "create a governed AWS data pipeline"
 python core/dispatcher.py "build a data pipeline"
 
-# 4b. Create a fresh governed run workspace and generate Terraform only
-python core/minusctl.py create "create a governed AWS data pipeline" --input owner=data-platform --input daily_data_gb=50 --generate
+# 4b. Create a fresh governed requirements workspace
+python core/minusctl.py create "create a governed AWS data pipeline"
+python core/minusctl.py decision template --write
 python core/minusctl.py next
 python core/minusctl.py readiness
 python core/minusctl.py guard status
@@ -172,9 +182,14 @@ python core/minusctl.py guard diff
 python core/minusctl.py package
 
 # The lower-level commands remain available
-python core/workflow.py resolve "create a governed AWS data pipeline" --input owner=data-platform --input daily_data_gb=50 --generate
+python core/workflow.py resolve "create a governed AWS data pipeline"
 python core/source_guard.py status --dir runs/<run-id>/terraform
 python core/source_guard.py diff --dir runs/<run-id>/terraform
+
+# Optional reviewable accelerator, chosen by an operator after requirements gathering.
+# It writes requirements.json + architecture_decision.json; it does not synthesize, plan, or apply.
+python core/minusctl.py accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
+python core/minusctl.py next
 
 # Optional no-cloud demo report, with synthetic plan JSON and no Terraform/AWS calls
 python core/minusctl.py demo governed-data-pipeline --owner data-platform --daily-data-gb 50
@@ -188,6 +203,8 @@ python core/optimize_analyzer.py --source-dir path/to/your/terraform
 
 # 6. Live FinOps console
 python app/dashboard_app.py     # http://127.0.0.1:8050
+# LAN bind requires token auth:
+# MINUS_DASH_TOKEN="$(openssl rand -hex 32)" DASH_HOST=0.0.0.0 python app/dashboard_app.py
 ```
 
 Select a different cloud with `MINUS_CLOUD=azure|gcp` (AWS is the only fully-wired provider today).
@@ -222,13 +239,13 @@ and rebuilds `cost.pdf` with the forecast-vs-actual table.
 ```
 core/                 governance engine (gate, approval, audit, finops, scanner, reporter)
 core/minusctl.py      safe operator CLI for create, next, readiness, guard, reports, package, and demo
-core/blueprints.py    governed blueprint registry for short enterprise intent
+core/blueprints.py    demo/cached blueprint registry for offline fixtures
 core/intent_resolver.py intent-to-blueprint resolver; never deploys
 core/workflow.py      safe request -> blueprint -> run workspace -> optional Terraform generation
 core/source_guard.py  local source baseline and manual edit diff for generated Terraform
 core/plan_inspector.py inspect services, resources, roles, files, and drift from reports
 core/providers/       cloud abstraction (aws implemented; azure/gcp scaffolds)
-app/dashboard_app.py  live FinOps console (Plotly Dash)
+app/dashboard_app.py  live control plane and FinOps console (Plotly Dash)
 tools/doctor.ps1      local environment diagnostics
 docs/                 doc index, IAM manifesto, architecture-diagram spec
 tests/                pytest suite for the gate, approval, and scanner

@@ -236,3 +236,65 @@ def test_usage_profile_can_supply_reviewed_entries(tmp_path):
     assert usage[0]["serviceCode"] == "AmazonS3"
     assert usage[0]["key"] == "S3USAGE1"
     assert bcm.validate_usage(usage) == []
+
+
+# ---- auto_estimate: frictionless pricing (estimates need no human gate) ----
+def _auto_report(tmp_path):
+    report = tmp_path / "reports" / "auto1"
+    report.mkdir(parents=True)
+    plan = dict(PLAN)
+    plan["variables"] = {"daily_data_gb": {"value": 50}, "region": {"value": "us-east-1"}}
+    (report / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    (report / "manifest.json").write_text(json.dumps({"short": "auto1", "template": "t"}), encoding="utf-8")
+    return report
+
+
+def test_auto_estimate_disabled_by_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINUS_BCM_AUTO", "0")
+    ok, note = bcm.auto_estimate(str(_auto_report(tmp_path)))
+    assert not ok and "MINUS_BCM_AUTO" in note
+
+
+def test_auto_estimate_degrades_without_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINUS_BCM_AUTO", "1")
+    monkeypatch.setattr(bcm, "_sts_account_id", lambda: None)
+    ok, note = bcm.auto_estimate(str(_auto_report(tmp_path)))
+    assert not ok and "credentials" in note
+
+
+def test_auto_estimate_submits_complete_lines_and_records_skipped(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINUS_BCM_AUTO", "1")
+    monkeypatch.setattr(bcm, "_sts_account_id", lambda: "123456789012")
+    ran = {}
+
+    def fake_run(report_dir, mode="auto-approve"):
+        ran["mode"] = mode
+        ran["usage"] = json.loads((tmp_path / "reports" / "auto1" / "bcm-usage.json").read_text(encoding="utf-8"))
+        return True
+
+    monkeypatch.setattr(bcm, "run", fake_run)
+    report = _auto_report(tmp_path)
+    ok, note = bcm.auto_estimate(str(report), region="us-east-1")
+    assert ok, note
+    assert ran["mode"] == "auto-approve"
+    # Only catalog-backed lines were submitted (Glue + S3 come from the shipped profile).
+    assert ran["usage"] and all(not bcm._has_placeholder(u) for u in ran["usage"])
+    codes = {u["serviceCode"] for u in ran["usage"]}
+    assert "AWSGlue" in codes and "AmazonS3" in codes
+    # Amounts are derived from run inputs + recorded assumptions (S3: 50 GB/day x factor).
+    s3 = next(u for u in ran["usage"] if u["serviceCode"] == "AmazonS3")
+    assert s3["amount"] == 50 * bcm.DEFAULT_ASSUMPTIONS["s3_storage_retention_factor"]
+
+
+def test_auto_estimate_never_clobbers_reviewed_usage(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINUS_BCM_AUTO", "1")
+    monkeypatch.setattr(bcm, "_sts_account_id", lambda: "123456789012")
+    monkeypatch.setattr(bcm, "run", lambda report_dir, mode="auto-approve": True)
+    report = _auto_report(tmp_path)
+    reviewed = [{"serviceCode": "AWSGlue", "usageType": "USE1-ETL-DPU-Hour", "operation": "Spark",
+                 "key": "U000001", "usageAccountId": "999999999999", "amount": 7.5}]
+    (report / "bcm-usage.json").write_text(json.dumps(reviewed), encoding="utf-8")
+    ok, _ = bcm.auto_estimate(str(report))
+    assert ok
+    kept = json.loads((report / "bcm-usage.json").read_text(encoding="utf-8"))
+    assert kept == reviewed          # a validating (reviewed) payload is used as-is

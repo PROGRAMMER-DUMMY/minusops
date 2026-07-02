@@ -18,7 +18,7 @@ python app/dashboard_app.py        # http://127.0.0.1:8050
 
 The agent gathers requirements first (the [`grill-me`](../.agents/skills/grill-me/SKILL.md)
 skill) — who the users are, the latency SLA, volume, retention — cross-questioning
-contradictions and gaps, then maps the answers to a governed blueprint and runs
+contradictions and gaps, then maps the answers to a requirements record, architecture decision, and governed synthesis run
 `minusctl create`. `prove` then confirms the offline governance chain end-to-end.
 
 ![requirements to build](demo/minusops-requirements.svg)

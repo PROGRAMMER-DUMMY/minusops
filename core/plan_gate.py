@@ -19,6 +19,10 @@ Guarantees:
   * Any .tf change -> new plan hash -> prior approval is void -> re-review required.
   * The approval record holds only a hash + caller identity + timestamp — no credentials.
   * auto-approve skips the y/N prompt but still cannot apply a hash you did not approve.
+  * --policy-mode production enforces: an approver allowlist is required, the approver
+    must differ from the planner (two-person rule), and MINUS_ALLOW_STATIC_CREDS is not
+    honored (a temporary MFA-gated session is required). --policy-mode dev keeps these
+    relaxed for single-operator work.
 
 Cross-platform (Windows / macOS / Linux): os.path, list-form subprocess, no shell.
 
@@ -105,6 +109,13 @@ def _run(args, capture=False):
         return res.returncode, (res.stdout or ""), (res.stderr or "")
     except FileNotFoundError:
         return 127, "", f"command not found: {args[0]}"
+
+
+def _policy_mode(value=None):
+    mode = (value or os.environ.get("MINUS_POLICY_MODE") or "dev").strip().lower()
+    if mode not in {"dev", "production"}:
+        raise ValueError("policy mode must be 'dev' or 'production'")
+    return mode
 
 
 _TERRAFORM_BIN = None
@@ -205,7 +216,7 @@ def _credential_posture():
         return {"connected": False, "type": "unknown"}
 
 
-def _reject_if_weak_credentials(dir_, posture):
+def _reject_if_weak_credentials(dir_, posture, policy_mode="dev"):
     """
     Enforce the product's MFA-gated-deploy promise: apply must run on a TEMPORARY
     session (SSO / assumed MFA role), never long-term static keys or root. Override
@@ -215,15 +226,24 @@ def _reject_if_weak_credentials(dir_, posture):
     if ctype not in ("long_term", "root"):
         return False
     allow = os.environ.get("MINUS_ALLOW_STATIC_CREDS", "").strip().lower() in ("1", "true", "yes")
-    if allow:
+    # Dev only: the override is honored as an audited downgrade.
+    if allow and policy_mode != "production":
         print(f"[gate] WARNING: applying with {ctype} credentials "
               "(MINUS_ALLOW_STATIC_CREDS override).", file=sys.stderr)
         _audit("apply", "WARN", reason="weak_credentials_override", dir=dir_, cred_type=ctype)
         return False
+    # Production: the override is not honored — a temporary MFA-gated session is required.
+    if allow and policy_mode == "production":
+        print("[gate] refusing apply (production): MINUS_ALLOW_STATIC_CREDS is not honored in "
+              "production. Use a temporary MFA-gated session (`aws sso login` or assume your "
+              "deploy role).", file=sys.stderr)
+        _audit("apply", "REJECTED", reason="static_creds_override_denied_in_production",
+               dir=dir_, cred_type=ctype)
+        return True
     print(f"[gate] refusing apply: this session uses {ctype} credentials. The MFA-gated "
           "deploy guarantee requires a temporary session — authenticate with `aws sso login` "
-          "or assume your MFA-gated deploy role. (Override: MINUS_ALLOW_STATIC_CREDS=1, audited.)",
-          file=sys.stderr)
+          "or assume your MFA-gated deploy role. (Override: MINUS_ALLOW_STATIC_CREDS=1, audited "
+          "and honored in dev only.)", file=sys.stderr)
     _audit("apply", "REJECTED", reason="weak_credentials", dir=dir_, cred_type=ctype)
     return True
 
@@ -247,8 +267,9 @@ def _clear_approvals(dir_, plan_hash=None):
 # ---------------------------------------------------------------------------
 # stages
 # ---------------------------------------------------------------------------
-def stage_verify(dir_):
+def stage_verify(dir_, policy_mode=None):
     print("== verify ==")
+    policy_mode = _policy_mode(policy_mode)
     rc, _, err = _tf(dir_, "fmt", "-check", capture=True)
     if rc != 0:
         print("[gate] terraform fmt -check failed (run `terraform fmt`).", file=sys.stderr)
@@ -266,17 +287,21 @@ def stage_verify(dir_):
         _audit("verify", "FAILED", reason="validate", dir=dir_)
         return False
     if os.path.exists(SCAN):
-        rc, out, err = _run([sys.executable, SCAN, "--source-dir", dir_], capture=True)
-        print(f"[gate] security scan complete -> see {os.path.join('.agents', 'logs', 'optimization_report.md')}")
+        rc, out, err = _run([
+            sys.executable, SCAN, "--source-dir", dir_,
+            "--log-dir", LOG_DIR,
+            "--policy-mode", policy_mode,
+        ], capture=True)
+        print(f"[gate] security scan complete ({policy_mode}) -> see {os.path.join('.agents', 'logs', 'optimization_report.md')}")
         if rc != 0:
             if out:
                 print(out, file=sys.stderr)
             if err:
                 print(err, file=sys.stderr)
-            _audit("verify", "FAILED", reason="scan", dir=dir_)
+            _audit("verify", "FAILED", reason="scan", dir=dir_, policy_mode=policy_mode)
             return False
     print("[gate] verify OK")
-    _audit("verify", "OK", dir=dir_)
+    _audit("verify", "OK", dir=dir_, policy_mode=policy_mode)
     return True
 
 
@@ -298,6 +323,7 @@ def stage_plan(dir_):
             "plan_hash": h,
             "dir": dir_,
             "canonical_dir": _canonical_dir(dir_),
+            "planner": authz.operator(),
             "created": _now(),
         }, f, indent=2)
     _clear_approvals(dir_)  # a new plan for this dir invalidates prior approvals
@@ -314,7 +340,42 @@ def stage_plan(dir_):
     return True
 
 
-def stage_approve(dir_, mode="gatekeeper"):
+def _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, plan_hash):
+    """Production controls (enforced): approvals must be attributable and segregated.
+
+    Returns True if approval may proceed, False if it must be blocked. In production
+    an approver allowlist is required, and the approver must be a principal distinct
+    from the planner (two-person rule); a plan with no recorded planner cannot prove
+    that separation and is refused. Dev mode always proceeds.
+    """
+    if policy_mode != "production":
+        return True
+    if authz_mode == "open":
+        print("[gate] refusing approval (production): no approver allowlist configured. "
+              "Set MINUS_APPROVERS or .minus/approvers.json so approvals are attributable.",
+              file=sys.stderr)
+        _audit("approve", "REJECTED", reason="open_allowlist_in_production",
+               plan_hash=plan_hash, dir=dir_, approver=approver)
+        return False
+    planner = (pending or {}).get("planner")
+    if not planner:
+        print("[gate] refusing approval (production): plan has no recorded planner to enforce "
+              "two-person separation. Re-run `plan`, then approve as a different principal.",
+              file=sys.stderr)
+        _audit("approve", "REJECTED", reason="missing_planner_in_production",
+               plan_hash=plan_hash, dir=dir_, approver=approver)
+        return False
+    if planner == approver:
+        print(f"[gate] refusing approval (production): {approver} cannot approve their own plan "
+              "(two-person rule). A different authorized principal must approve.", file=sys.stderr)
+        _audit("approve", "REJECTED", reason="self_approval_in_production",
+               plan_hash=plan_hash, dir=dir_, approver=approver, planner=planner)
+        return False
+    return True
+
+
+def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
+    policy_mode = _policy_mode(policy_mode)
     print("== approve ==")
     h, herr = _plan_hash(dir_)
     if not h:
@@ -342,6 +403,9 @@ def stage_approve(dir_, mode="gatekeeper"):
     if not allowed:
         print(f"[gate] {approver} is not an authorized approver ({authz_reason}). Refusing.", file=sys.stderr)
         _audit("approve", "DENIED_NOT_AUTHORIZED", plan_hash=h, dir=dir_, approver=approver, authz_mode=authz_mode)
+        return False
+
+    if not _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, h):
         return False
 
     account, connected = _identity()
@@ -380,7 +444,8 @@ def stage_approve(dir_, mode="gatekeeper"):
     return True
 
 
-def stage_apply(dir_, mode="gatekeeper"):
+def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
+    policy_mode = _policy_mode(policy_mode)
     print("== apply ==")
     current, herr = _plan_hash(dir_)
     if not current:
@@ -421,7 +486,7 @@ def stage_apply(dir_, mode="gatekeeper"):
         _audit("apply", "BLOCKED", reason="no_session", dir=dir_)
         return False  # approval kept so you can authenticate and retry
 
-    if _reject_if_weak_credentials(dir_, _credential_posture()):
+    if _reject_if_weak_credentials(dir_, _credential_posture(), policy_mode):
         return False  # approval kept; re-auth with a temporary session and retry
 
     print(f"[gate] applying approved plan (hash {current[:16]}...) as {account} ...")
@@ -433,9 +498,9 @@ def stage_apply(dir_, mode="gatekeeper"):
     return ok
 
 
-def stage_run(dir_, mode):
-    return (stage_verify(dir_) and stage_plan(dir_)
-            and stage_approve(dir_, mode) and stage_apply(dir_, mode))
+def stage_run(dir_, mode, policy_mode=None):
+    return (stage_verify(dir_, policy_mode) and stage_plan(dir_)
+            and stage_approve(dir_, mode, policy_mode) and stage_apply(dir_, mode, policy_mode))
 
 
 # ---------------------------------------------------------------------------
@@ -444,18 +509,21 @@ def main(argv=None):
     p.add_argument("stage", choices=["verify", "plan", "approve", "apply", "run"])
     p.add_argument("--dir", required=True, help="Terraform directory to deploy (no default — this is a generic engine)")
     p.add_argument("--mode", default="gatekeeper", choices=["gatekeeper", "auto-approve"])
+    p.add_argument("--policy-mode", choices=["dev", "production"],
+                   default=os.environ.get("MINUS_POLICY_MODE", "dev"),
+                   help="dev blocks native SEC-* only; production also requires external policy scanner evidence")
     args = p.parse_args(argv)
 
     if args.stage == "verify":
-        ok = stage_verify(args.dir)
+        ok = stage_verify(args.dir, args.policy_mode)
     elif args.stage == "plan":
         ok = stage_plan(args.dir)
     elif args.stage == "approve":
-        ok = stage_approve(args.dir, args.mode)
+        ok = stage_approve(args.dir, args.mode, args.policy_mode)
     elif args.stage == "apply":
-        ok = stage_apply(args.dir, args.mode)
+        ok = stage_apply(args.dir, args.mode, args.policy_mode)
     else:
-        ok = stage_run(args.dir, args.mode)
+        ok = stage_run(args.dir, args.mode, args.policy_mode)
     return 0 if ok else 1
 
 

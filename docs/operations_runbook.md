@@ -10,14 +10,20 @@ A task-oriented guide for operators and platform admins. For the deep agent guid
 ```bash
 # From a built/released wheel (preferred for clients):
 pip install minusops-<version>-py3-none-any.whl     # optional: minusops[dashboard]
+pip install "minusops[policy]"                      # production scanner extra
 
 # Or from source:
 pip install .            # console scripts: minusctl, minus-gate, minus-resolve, ...
+pip install ".[policy]"  # includes Checkov for production mode
 
 # Or the self-contained container (pinned terraform + aws CLI baked in):
 docker build -t minusops .
 docker run --rm -v "$PWD:/work" -w /work minusops minusctl --help
 ```
+
+The wheel and container include the runtime Terraform module library, required docs, example IAM
+policies, and project-local `.agents/skills` manifests. If you override module discovery, point
+`MINUSOPS_MODULES_DIR` at a directory containing `modules/<id>/main.tf`.
 
 Verify the local toolchain:
 
@@ -57,11 +63,18 @@ the audit trail as a downgrade).
 ## 4. Govern a change end to end
 
 ```bash
-minus-gate verify  --dir path/to/terraform   # fmt + validate + per-resource security scan
+minus-gate verify  --dir path/to/terraform   # fmt + validate + native per-resource security scan
 minus-gate plan    --dir path/to/terraform   # records plan-hash + versioned deploy report
 minus-gate approve --dir path/to/terraform   # review + RBAC + MFA-backed session → hash-bound approval
 minus-gate apply   --dir path/to/terraform   # applies ONLY the approved hash; one-shot
 # or: minus-gate run --dir ... [--mode auto-approve]
+```
+
+For production, install `checkov` or `tfsec` and run with external policy evidence required:
+
+```bash
+MINUS_POLICY_MODE=production minus-gate verify --dir path/to/terraform
+# or: minus-gate verify --dir path/to/terraform --policy-mode production
 ```
 
 Any `.tf` edit after `plan` changes the hash and voids the approval — re-run `plan`/`approve`.
@@ -69,11 +82,41 @@ Any `.tf` edit after `plan` changes the hash and voids the approval — re-run `
 ## 5. Create a governed workspace from intent (no deploy)
 
 ```bash
-minusctl create "create a governed AWS data pipeline" --input owner=data-platform --input daily_data_gb=50 --generate
+minusctl create "create a governed AWS data pipeline"
+minusctl decision template --write
+python core/architecture_decision.py set runs/<run-id>/architecture_decision.json --architecture "<selected architecture>" --summary "<why this choice>"
+python core/architecture_decision.py add-module runs/<run-id>/architecture_decision.json <module-id>
+python core/architecture_decision.py add-source runs/<run-id>/architecture_decision.json "<official doc URL>"
 minusctl next            # safe next steps
 minusctl readiness       # enterprise readiness score
-minusctl guard diff      # show manual edits vs the generated baseline
+minusctl guard diff      # after synthesis, show manual edits vs the generated baseline
 minusctl package         # write the enterprise handoff package
+```
+
+For the supported AWS lakehouse starting point, an operator may write a complete reviewable
+requirements/decision pair instead of filling the JSON by hand:
+
+```bash
+minusctl accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
+minusctl next
+```
+
+That accelerator is only evidence generation. It does not synthesize Terraform, create a plan, or
+apply anything.
+
+The dashboard Control tab shows the same run-bound gates, artifact links, decision editor, lakehouse
+starter action, and synthesis command:
+
+```bash
+python app/dashboard_app.py
+```
+
+The dashboard is localhost-only by default. To expose it on a LAN or behind a reverse proxy, set a
+strong token; startup refuses non-local binds without one:
+
+```bash
+MINUS_DASH_TOKEN="$(openssl rand -hex 32)" DASH_HOST=0.0.0.0 python app/dashboard_app.py
+# then open http://<host>:8050/?token=<token>
 ```
 
 ## 6. Reportable cost via AWS BCM (no fabricated totals)

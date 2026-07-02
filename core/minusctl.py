@@ -12,11 +12,16 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import architecture_decision as archdec  # noqa: E402
+import architecture_model  # noqa: E402
+import accelerators  # noqa: E402
 import audit_chain  # noqa: E402
 import demo  # noqa: E402
 import plan_inspector  # noqa: E402
+import requirements as reqgate  # noqa: E402
 import runs  # noqa: E402
 import source_guard  # noqa: E402
+import tf_validate  # noqa: E402
 import workflow  # noqa: E402
 
 
@@ -126,6 +131,36 @@ def _run_reports(run):
 
 def _next_steps(run):
     tf_dir = run["terraform_dir"]
+    workflow_record = _read_workflow(run)
+    requirements_file = workflow_record.get("requirements_file") or str(Path(run["root"]) / reqgate.FILENAME)
+    decision_file = str(Path(run["root"]) / archdec.FILENAME)
+    requirements_data = reqgate.load(requirements_file)
+    requirements_ok, missing_requirements = reqgate.validate(requirements_data or {})
+    decision_data = archdec.load(decision_file)
+    decision_ok, missing_decision = archdec.validate(decision_data or {})
+    if workflow_record.get("architecture_decision_required") and not (Path(tf_dir) / "minus-generated.json").exists():
+        lines = [
+            "Safe next steps",
+            f"run        : {run['run_id']}",
+            f"request    : {run.get('request', '-')}",
+            f"requirements: {requirements_file}",
+            f"decision   : {decision_file}",
+            f"req status : {'complete' if requirements_ok else 'incomplete'}",
+            f"arch status: {'complete' if decision_ok else 'incomplete'}",
+        ]
+        if missing_requirements:
+            lines.append("req missing: " + ", ".join(missing_requirements))
+        if missing_decision:
+            lines.append("arch missing: " + ", ".join(missing_decision))
+        lines.extend([
+            "complete   : python core/requirements.py check " + requirements_file,
+            "decide     : python core/minusctl.py decision template --write",
+            "check arch : python core/architecture_decision.py check " + decision_file,
+            "synthesize : python core/synthesizer.py \"<requirements summary>\" --run " + run["run_id"] + " --requirements-file " + requirements_file + " --decision-file " + decision_file,
+            "blocked    : do not generate Terraform from demo fixtures for production",
+        ])
+        return {"run": run, "source": {"status": "PRE_GENERATION"}, "reports": [], "text": "\n".join(lines)}
+
     guard = source_guard.status(tf_dir)
     reports = _run_reports(run)
     lines = [
@@ -139,6 +174,7 @@ def _next_steps(run):
     if not reports:
         lines.extend([
             "verify     : python core/plan_gate.py verify --dir " + tf_dir,
+            "prod verify: python core/plan_gate.py verify --dir " + tf_dir + " --policy-mode production",
             "plan       : python core/plan_gate.py plan --dir " + tf_dir,
             "reports    : none yet",
         ])
@@ -227,6 +263,46 @@ def _report_source_status(report_path, manifest):
     }
 
 
+def _conformance_for_run(run, reports=None):
+    """Score the run's latest plan against the analytics reference architecture +
+    Well-Architected Analytics Lens. Returns None when there is no plan.json to analyze."""
+    reports = reports if reports is not None else _run_reports(run)
+    if not reports or not reports[0].get("has_plan_json"):
+        return None
+    try:
+        plan = json.loads((Path(reports[0]["path"]) / "plan.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    try:
+        return architecture_model.conformance(plan)
+    except Exception:
+        return None
+
+
+def _format_conformance(report):
+    if not report:
+        return "Reference conformance: no plan to analyze (run plan_gate plan first)."
+    lines = [
+        "Reference-architecture conformance",
+        f"status : {report['status']}",
+        f"score  : {report['score']}/100",
+        "",
+        "Layers:",
+    ]
+    for layer, info in report["layers"].items():
+        mark = "present" if info["present"] else "MISSING"
+        lines.append(f"- {layer:<12} {mark} ({info['count']})")
+    lines.append("")
+    lines.append("Findings:")
+    if not report["findings"]:
+        lines.append("- none — conforms to the reference architecture + Well-Architected checks")
+    for f in report["findings"]:
+        lines.append(f"- [{f['severity']}] {f['id']}: {f['title']}")
+        lines.append(f"    {f['detail']}")
+        lines.append(f"    ref: {f['reference']}")
+    return "\n".join(lines)
+
+
 def _check(name, ok, severity, detail, fix):
     return {
         "name": name,
@@ -239,15 +315,89 @@ def _check(name, ok, severity, detail, fix):
 
 def _readiness(run):
     tf_dir = Path(run["terraform_dir"])
+    workflow_record = _read_workflow(run)
+    requirements_file = workflow_record.get("requirements_file") or str(Path(run["root"]) / reqgate.FILENAME)
+    decision_file = str(Path(run["root"]) / archdec.FILENAME)
+    requirements_data = reqgate.load(requirements_file)
+    requirements_ok, missing_requirements = reqgate.validate(requirements_data or {})
+    decision_data = archdec.load(decision_file)
+    decision_ok, missing_decision = archdec.validate(decision_data or {})
+    if workflow_record.get("architecture_decision_required") and not (tf_dir / "minus-generated.json").exists():
+        checks = [
+            _check(
+                "requirements record exists",
+                bool(requirements_data),
+                "blocker",
+                requirements_file,
+                "Run `python core/minusctl.py create \"<request>\"` to create a requirements-first run.",
+            ),
+            _check(
+                "requirements complete",
+                requirements_ok,
+                "blocker",
+                ", ".join(missing_requirements) if missing_requirements else "complete",
+                "Gather the missing functional and non-functional requirements before architecture synthesis.",
+            ),
+            _check(
+                "architecture decision recorded",
+                bool(decision_data),
+                "blocker",
+                decision_file,
+                "Research candidates and record the selected architecture before generating Terraform.",
+            ),
+            _check(
+                "architecture decision complete",
+                decision_ok,
+                "blocker",
+                ", ".join(missing_decision) if missing_decision else "complete",
+                "Fill selected architecture, selected modules, alternatives, assumptions, risks, and sources.",
+            ),
+        ]
+        blockers = [item for item in checks if not item["ok"] and item["severity"] == "blocker"]
+        return {
+            "status": "NEEDS_REQUIREMENTS" if blockers else "READY_TO_SYNTHESIZE",
+            "score": max(0, 100 - len(blockers) * 25),
+            "run": run,
+            "source": {"status": "PRE_GENERATION"},
+            "reports": [],
+            "latest_report": {},
+            "generated_files": [],
+            "checks": checks,
+            "blockers": blockers,
+            "warnings": [],
+        }
+
     reports = _run_reports(run)
     source = source_guard.status(tf_dir)
     generated_files = _generated_files(run)
     latest = _latest_report_details(reports)
     latest_path = Path(latest["path"]) if latest.get("path") else None
-    required_tf = [
-        "main.tf", "provider.tf", "variables.tf", "kms.tf", "s3.tf", "iam.tf",
-        "glue.tf", "step_functions.tf", "athena.tf", "monitoring.tf", "outputs.tf",
-    ]
+    conformance = _conformance_for_run(run, reports)
+    # The workspace must contain REAL Terraform content — layout-agnostic (module
+    # composition and flat blueprints are both legitimate), but an agent once passed the
+    # old presence-only check with one-line comment stubs, so: (a) the root files must
+    # collectively declare infrastructure + provider + variables, and (b) no root .tf
+    # file may be a contentless stub (comments/blanks only).
+    import re as _re
+    _BLOCK_RE = _re.compile(r'^\s*(resource|module|data|variable|output|provider|locals|terraform)\b', _re.M)
+
+    def _tf_text(path):
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    _root_tf = sorted(tf_dir.glob("*.tf")) if tf_dir.is_dir() else []
+    _all_text = "\n".join(_tf_text(p) for p in _root_tf)
+    core_tf_missing = []
+    if not _re.search(r'^\s*(resource|module)\s+"', _all_text, _re.M):
+        core_tf_missing.append("no resource/module blocks in any root .tf")
+    if not _re.search(r'^\s*(provider\s+"|terraform\s*\{)', _all_text, _re.M):
+        core_tf_missing.append("no provider/terraform block")
+    if not _re.search(r'^\s*variable\s+"', _all_text, _re.M):
+        core_tf_missing.append("no variable blocks")
+    core_tf_missing += [f"{p.name} is a contentless stub"
+                        for p in _root_tf if not _BLOCK_RE.search(_tf_text(p))]
     required_report_files = ["architecture.svg", "plan.pdf", "cost.pdf", "report.html"]
     checks = [
         _check(
@@ -255,7 +405,7 @@ def _readiness(run):
             tf_dir.exists() and tf_dir.is_dir(),
             "blocker",
             str(tf_dir),
-            "Generate a run with `python core/minusctl.py create ... --generate`.",
+            "Create a requirements-first run with `python core/minusctl.py create \"<request>\"`, then synthesize Terraform after architecture approval.",
         ),
         _check(
             "generated manifest exists",
@@ -280,17 +430,17 @@ def _readiness(run):
         ),
         _check(
             "core Terraform files present",
-            all((tf_dir / name).exists() for name in required_tf),
+            not core_tf_missing,
             "blocker",
-            ", ".join(name for name in required_tf if not (tf_dir / name).exists()) or "all present",
-            "Regenerate the Terraform workspace or restore missing files.",
+            "; ".join(core_tf_missing) or "real content present",
+            "Regenerate the Terraform workspace — empty or comment-only stubs do not count.",
         ),
         _check(
             "report exists",
             bool(reports),
             "warning",
             reports[0]["id"] if reports else "none",
-            "Run `python core/plan_gate.py verify --dir <terraform-dir>` then `python core/plan_gate.py plan --dir <terraform-dir>`.",
+            "Run `python core/plan_gate.py verify --dir <terraform-dir> --policy-mode production` then `python core/plan_gate.py plan --dir <terraform-dir>`.",
         ),
         _check(
             "latest report has required visuals",
@@ -314,6 +464,36 @@ def _readiness(run):
             "Review BCM payloads, resolve REVIEW_REQUIRED usage fields, approve BCM estimate creation, then regenerate report.",
         ),
         _check(
+            "terraform configuration valid",
+            not ((_tf_validation := tf_validate.load(str(tf_dir))) and _tf_validation.get("ok") is False),
+            "warning",
+            ("valid" if (_tf_validation and _tf_validation.get("ok")) else
+             "not recorded — run `validate`" if not _tf_validation else
+             "terraform not installed" if _tf_validation.get("ok") is None else
+             f"{_tf_validation.get('error_count', '?')} error(s)"),
+            "Run `python core/minusctl.py validate --run " + run["run_id"] + "` (offline, no credentials).",
+        ),
+        _check(
+            "data-pipeline requirements profile",
+            (not reqgate.is_data_pipeline(requirements_data or {}))
+            or reqgate.validate_data_pipeline(requirements_data or {})[0],
+            "warning",
+            (("complete" if reqgate.validate_data_pipeline(requirements_data or {})[0]
+              else ", ".join(reqgate.validate_data_pipeline(requirements_data or {})[1]))
+             if reqgate.is_data_pipeline(requirements_data or {}) else "n/a (not a data workload)"),
+            "Gather the data-pipeline FR/NFR: `python core/requirements.py data-check "
+            + str(requirements_file) + "` (or run grill-me).",
+        ),
+        _check(
+            "reference-architecture conformance",
+            bool(conformance) and conformance["score"] >= 90,
+            "warning",
+            (f"{conformance['score']}/100, {len(conformance['findings'])} finding(s)"
+             if conformance else "no plan to analyze"),
+            "Run `python core/minusctl.py conformance --run " + run["run_id"]
+            + "` and address the reference / Well-Architected gaps.",
+        ),
+        _check(
             "safe package can be written",
             bool(run.get("root")) and Path(run["root"]).exists(),
             "info",
@@ -332,6 +512,7 @@ def _readiness(run):
         "source": source,
         "reports": [{k: v for k, v in item.items() if k != "manifest"} for item in reports],
         "latest_report": latest,
+        "conformance": conformance,
         "generated_files": generated_files,
         "checks": checks,
         "blockers": blockers,
@@ -427,6 +608,23 @@ def _package_markdown(package):
         lines.append(f"- **{marker}** `{item.get('name')}`: {item.get('detail')}")
         if not item.get("ok"):
             lines.append(f"  - Fix: {item.get('fix')}")
+    conformance = readiness.get("conformance")
+    if conformance:
+        lines.extend([
+            "",
+            "## Reference-Architecture Conformance",
+            "",
+            f"- Score: `{conformance['score']}/100` ({conformance['status']})",
+            f"- Layers present: "
+            + ", ".join(layer for layer, info in conformance["layers"].items() if info["present"]),
+            "",
+        ])
+        if conformance["findings"]:
+            lines.append("Gaps (vs AWS reference architecture + Well-Architected Analytics Lens):")
+            for f in conformance["findings"]:
+                lines.append(f"- **{f['severity']}** `{f['id']}`: {f['title']} — {f['reference']}")
+        else:
+            lines.append("- No gaps — conforms to the reference architecture + Well-Architected checks.")
     lines.extend([
         "",
         "## Blocked Actions",
@@ -499,7 +697,7 @@ def _prove(run):
         return bool(latest_path) and os.path.exists(os.path.join(latest_path, name))
 
     checks = [
-        _check("run workspace generated", os.path.isdir(tf_dir), "blocker", tf_dir, "minusctl create ... --generate"),
+        _check("run workspace generated", os.path.isdir(tf_dir), "blocker", tf_dir, "minusctl create \"<request>\""),
         _check("deploy report present", bool(reports), "blocker", latest["id"] if latest else "none", "plan_gate plan"),
         _check("architecture.svg", artifact("architecture.svg"), "warning", "-", "regenerate report"),
         _check("plan.pdf", artifact("plan.pdf"), "warning", "-", "regenerate report"),
@@ -555,11 +753,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="MinusOps safe operator CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    create = sub.add_parser("create", help="resolve request and optionally generate Terraform")
+    create = sub.add_parser("create", help="resolve request and create a requirements-first run")
     create.add_argument("request")
     create.add_argument("--cloud", default=None)
-    create.add_argument("--input", action="append", default=[], help="Blueprint input as name=value")
-    create.add_argument("--generate", action="store_true")
+    create.add_argument("--input", action="append", default=[], help="Captured request input as name=value")
+    create.add_argument("--generate", action="store_true", help="Compatibility flag; generation is blocked until requirements and architecture decision are complete")
     create.add_argument("--json", action="store_true")
 
     run_cmd = sub.add_parser("runs", help="list or show run workspaces")
@@ -590,6 +788,31 @@ def main(argv=None):
     ready.add_argument("--run", default="latest")
     ready.add_argument("--json", action="store_true")
     ready.add_argument("--strict", action="store_true", help="Exit non-zero unless status is READY")
+
+    conf = sub.add_parser("conformance", help="score a run against the analytics reference architecture + Well-Architected Lens")
+    conf.add_argument("--run", default="latest")
+    conf.add_argument("--json", action="store_true")
+    conf.add_argument("--strict", action="store_true", help="Exit non-zero unless status is READY")
+
+    val = sub.add_parser("validate", help="offline `terraform validate` — non-mutating, credential-free correctness check")
+    val.add_argument("--run", default="latest")
+    val.add_argument("--json", action="store_true")
+
+    decision_cmd = sub.add_parser("decision", help="manage the architecture decision record for a run")
+    decision_cmd.add_argument("action", choices=["template", "check"])
+    decision_cmd.add_argument("--run", default="latest")
+    decision_cmd.add_argument("--write", action="store_true", help="write template to the run as architecture_decision.json")
+    decision_cmd.add_argument("--force", action="store_true", help="overwrite an existing architecture_decision.json with --write")
+    decision_cmd.add_argument("--json", action="store_true")
+
+    accelerator_cmd = sub.add_parser("accelerator", help="write reviewable accelerator artifacts for a run")
+    accelerator_cmd.add_argument("name", choices=["aws-lakehouse"])
+    accelerator_cmd.add_argument("--run", default="latest")
+    accelerator_cmd.add_argument("--owner", default="data-platform")
+    accelerator_cmd.add_argument("--daily-data-gb", type=float, default=100)
+    accelerator_cmd.add_argument("--streaming", action="store_true")
+    accelerator_cmd.add_argument("--force", action="store_true")
+    accelerator_cmd.add_argument("--json", action="store_true")
 
     prove_cmd = sub.add_parser("prove", help="run the end-to-end evidence harness for a run")
     prove_cmd.add_argument("--run", default="latest")
@@ -662,6 +885,73 @@ def main(argv=None):
         _json_or_text(result, args.json, _format_readiness(result))
         if args.strict and result["status"] != "READY":
             return 2
+        return 0
+
+    if args.cmd == "validate":
+        run = _run_by_id_or_latest(args.run)
+        result = tf_validate.validate_and_record(run["terraform_dir"])
+        _json_or_text(result, args.json, tf_validate._format(result))
+        return 0 if (result.get("ok") or result.get("ok") is None) else 2
+
+    if args.cmd == "conformance":
+        run = _run_by_id_or_latest(args.run)
+        report = _conformance_for_run(run)
+        _json_or_text(report or {"error": "no plan to analyze"}, args.json, _format_conformance(report))
+        if args.strict and (not report or report["status"] != "READY"):
+            return 2
+        return 0 if report else 2
+
+    if args.cmd == "decision":
+        run = _run_by_id_or_latest(args.run)
+        workflow_record = _read_workflow(run)
+        requirements_file = workflow_record.get("requirements_file") or str(Path(run["root"]) / reqgate.FILENAME)
+        decision_path = Path(run["root"]) / archdec.FILENAME
+        if args.action == "template":
+            record = archdec.template(requirements_file=requirements_file)
+            result = {"run": run, "path": str(decision_path), "record": record, "written": False}
+            if args.write:
+                if decision_path.exists() and not args.force:
+                    result["error"] = "architecture_decision.json already exists; pass --force to overwrite"
+                    _json_or_text(result, args.json, result["error"])
+                    return 2
+                archdec.write(run["root"], record)
+                result["written"] = True
+            text = json.dumps(record, indent=2) if not args.write else f"architecture decision template written: {decision_path}"
+            _json_or_text(result, args.json, text)
+            return 0
+        data = archdec.load(str(decision_path))
+        ok, missing = archdec.validate(data or {})
+        result = {"run": run, "path": str(decision_path), "ok": ok, "missing": missing}
+        if ok:
+            _json_or_text(result, args.json, f"[architecture] complete: {decision_path}")
+            return 0
+        text = "[architecture] INCOMPLETE: " + str(decision_path) + "\n" + "\n".join(f"  - {item}" for item in missing)
+        _json_or_text(result, args.json, text)
+        return 2
+
+    if args.cmd == "accelerator":
+        run = _run_by_id_or_latest(args.run)
+        try:
+            if args.name == "aws-lakehouse":
+                result = accelerators.write_lakehouse(
+                    run,
+                    owner=args.owner,
+                    daily_data_gb=args.daily_data_gb,
+                    streaming=args.streaming,
+                    force=args.force,
+                )
+            else:
+                raise SystemExit(f"unknown accelerator: {args.name}")
+        except FileExistsError as exc:
+            _json_or_text({"run": run, "error": str(exc)}, args.json, f"[accelerator] REFUSED: {exc}")
+            return 2
+        text = "\n".join([
+            "[accelerator] reviewable aws-lakehouse artifacts written",
+            f"requirements: {result['requirements_file']}",
+            f"decision    : {result['decision_file']}",
+            f"next        : {result['next']}",
+        ])
+        _json_or_text(result, args.json, text)
         return 0
 
     if args.cmd == "prove":

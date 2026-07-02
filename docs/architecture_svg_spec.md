@@ -20,14 +20,15 @@ exactly. A diagram that does not conform is invalid and must be regenerated.
 
 ## 0. Hard requirements (a diagram is INVALID without these)
 
-1. Root `<svg>` with `xmlns="http://www.w3.org/2000/svg"`, `viewBox="0 0 1280 760"`,
-   `width="100%"`, `role="img"`.
+1. Root `<svg>` with `xmlns="http://www.w3.org/2000/svg"`, `viewBox="0 0 1280 <total_h>"`
+   (`total_h >= 760`, see §1), `width="100%"`, `role="img"`.
 2. A `<title>` and `<desc>` as the first two children (accessibility + embedding).
 3. **Self-contained** — no external refs (no `<image href=...>`, no remote fonts/CSS).
    Inline everything. The SVG must render identically inside a PDF with no network.
-4. The six **named layer groups** in this exact order and with these exact ids:
-   `bg`, `titlebar`, `tier-sources`, `tier-storage`, `tier-compute`, `tier-orchestration`,
-   `tier-observability`, `band-security`, `legend`. (Empty tiers still render their header.)
+4. The ten **named groups** in this exact order and with these exact ids:
+   `bg`, `titlebar`, `edges`, `tier-sources`, `tier-storage`, `tier-compute`,
+   `tier-orchestration`, `tier-observability`, `band-security`, `legend`.
+   (Empty tiers still render their header; `edges` is drawn under the nodes, see §4.)
 5. Every resource node carries `data-address` (the Terraform address) and a visible
    **type label** + **name label**.
 6. The title bar shows: template name, cloud, short plan-hash, generated timestamp.
@@ -36,10 +37,10 @@ exactly. A diagram that does not conform is invalid and must be regenerated.
 
 ---
 
-## 1. Canvas & coordinate bands (fixed)
+## 1. Canvas & coordinate bands (width fixed, height grows with content)
 
 ```
-viewBox: 0 0 1280 760
+viewBox: 0 0 1280 <total_h>   (total_h = 760, or more if a tier is tall)
 
  y   0 ┌─────────────────────────────────────────────┐
        │ TITLEBAR  (id=titlebar)            h = 64    │
@@ -51,18 +52,25 @@ viewBox: 0 0 1280 760
        │   compute        x 520 .. 752               │
        │   orchestration  x 768 .. 1000              │
        │   observability  x 1016 .. 1248             │
- y 632 ├─────────────────────────────────────────────┤
+       │  (grows downward with the tallest tier)     │
+ y   * ├─────────────────────────────────────────────┤
        │ BAND-SECURITY (cross-cutting)     h = 56    │
- y 688 ├─────────────────────────────────────────────┤
+ y  *  ├─────────────────────────────────────────────┤
        │ LEGEND  (id=legend)               h = 72    │
- y 760 └─────────────────────────────────────────────┘
+ y  *  └─────────────────────────────────────────────┘
 ```
 
 - **Flow is left → right** (sources → observability). This encodes the data/control path.
 - Each tier is a **column**. Its header sits at `y=76`; nodes stack downward from `y=108`.
-- **Node card:** 232 × 60, corner radius 12, vertical gap 14 between cards in a column.
+- **Node card:** 232 × 44, corner radius 12, vertical gap 8 between cards in a column.
 - Within a tier, order nodes **alphabetically by Terraform address** (deterministic).
-- If a column overflows 8 nodes, shrink card height to 44 and gap to 8; never spill columns.
+- **Every resource renders — none are hidden.** The width stays fixed (1280, five 232px
+  columns), but the canvas height grows to fit the tallest tier: `total_h = max(760, 108 +
+  tallest_tier_content_height + 24 + 56 + 32 + 72)`. The security band and legend shift down
+  by the same `dy = total_h - 760` so they always sit just below the last node. A diagram
+  that would otherwise need to shrink cards or truncate a column must grow taller instead —
+  the interactive viewer (`app/dashboard_app.py`) provides pan/zoom so a tall canvas stays
+  navigable rather than illegible.
 
 ---
 
@@ -89,11 +97,11 @@ Security is a **horizontal band** (not a column) because IAM/KMS cuts across eve
 ```xml
 <g class="node" data-address="aws_glue_job.bronze_to_silver"
    transform="translate(<x>,<y>)">
-  <rect class="card" width="232" height="60" rx="12"
+  <rect class="card" width="232" height="44" rx="12"
         fill="var(--panel)" stroke="<tier-hue>" stroke-width="1.5"/>
-  <circle cx="26" cy="30" r="10" fill="<tier-hue>"/>      <!-- icon dot, colored by tier -->
-  <text class="n-type" x="48" y="26">AWS Glue Job</text>   <!-- friendly type -->
-  <text class="n-name" x="48" y="44">bronze_to_silver</text> <!-- resource name -->
+  <circle cx="23" cy="22" r="10" fill="<tier-hue>"/>      <!-- icon dot, colored by tier -->
+  <text class="n-type" x="44" y="19">AWS Glue Job</text>   <!-- friendly type -->
+  <text class="n-name" x="44" y="34">bronze_to_silver</text> <!-- resource name -->
 </g>
 ```
 
@@ -180,8 +188,9 @@ groups. Do not move the bands, rename ids, or alter the palette.
 
 ## 8. Consistency checklist (self-verify before emitting)
 
-- [ ] viewBox `0 0 1280 760`, `<title>`+`<desc>` present, fully self-contained
-- [ ] all nine layer groups present, correct ids, correct order
+- [ ] viewBox `0 0 1280 <total_h>` (`total_h >= 760`), `<title>`+`<desc>` present, fully self-contained
+- [ ] no resource is hidden/truncated — every plan resource has a rendered node
+- [ ] all ten named groups present (§0.4, incl. `edges`), correct ids, correct order
 - [ ] every plan resource appears exactly once, in the right tier, with `data-address`
 - [ ] change status tint + `data-action` on every node
 - [ ] modules wrapped in dashed labeled boxes
@@ -212,3 +221,34 @@ These extend v1; a v2 diagram still satisfies every §0 hard requirement.
    chips tint their border by finding severity. Findings come from `optimize_analyzer`
    (per-resource), so the diagram is also the security/cost review surface, bound to the
    plan-hash. Tiering note: `aws_s3_object` and `aws_athena_*` map to **storage**.
+
+## v3 — `dataflow.svg` (additive lake-house data-flow view)
+
+`architecture.svg` (v2, above) remains the **binding cross-tool contract** (fixed viewBox,
+named groups, `data-address`/`data-findings` — consumed by the dashboard pan-zoom viewer).
+v3 adds a **second, presentation-focused** diagram, `dataflow.svg`, emitted alongside it by
+`reporter.build_dataflow_svg`; it does not replace or alter the v2 contract.
+
+- **Shared brain.** Resources are classified with `architecture_model.classify_role` — the same
+  six-layer classifier used by the conformance report — so the picture and the conformance gaps
+  always agree.
+- **Layout.** A left→right data spine of storage **stages** (raw/cleaned/curated ≈
+  bronze/silver/gold, ordered by stage rank) with the **real** transforms between them (no
+  invented steps); a **Cataloging & Governance** zone; results buckets as **side outputs** hung
+  off their owner; **Consumption** reading the curated end; a cross-cutting **Security &
+  Monitoring** band grouped by service.
+- **Honesty.** The orchestration edge is solid only when the plan's module references actually
+  wire the orchestrator to a transform (the exact test `architecture_model.conformance` uses,
+  so the picture and the conformance report always agree); otherwise it is faint and labelled
+  `not wired — placeholder definition`. Nothing is fabricated, and nothing is dropped
+  silently: transforms that don't fit between two stages are appended to the end of the
+  spine, and extra consumption / catalog / orchestrator resources beyond the drawn ones are
+  declared with a `+n more` marker.
+- **Icons.** Official service icons are opt-in from a local dir (`MINUS_ARCH_ICONS_DIR` or
+  `assets/architecture-icons/<service-slug>.svg`); with no dir the on-palette generic glyphs are
+  used. No vendor-owned assets are committed. Icon files are untrusted input: they are
+  **sanitized on embed** (script/foreignObject/embedding/animation elements, event-handler
+  attributes, and non-fragment `href`s stripped; anything still active after sanitization
+  falls back to the generic glyph). All text is XML-escaped so the file renders
+  standalone (strict XML), not only when embedded in HTML.
+- Every node still carries `data-address`/`data-action`, so overlays remain possible.

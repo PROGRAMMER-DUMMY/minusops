@@ -1,11 +1,11 @@
 {
   "name": "reviewed-data-pipeline-profile",
-  "_comment": "Reviewed BCM usage evidence for the governed AWS data pipeline. Replace usageAccountId with YOUR account, and replace the amounts with YOUR reviewed monthly quantities. Every field below is catalog-backed (no placeholders), so it passes validate_usage and is ready for: python core/bcm_pricing_calculator.py run --report-dir <dir> --usage-profile <this file>. serviceCode/usageType/operation must match the AWS Price List catalog for your region.",
+  "_comment": "Reviewed BCM usage evidence for the governed AWS data pipeline (us-east-1). Replace usageAccountId with YOUR account, and replace the amounts with YOUR reviewed monthly quantities. serviceCode/usageType/operation below were verified against the AWS Price List catalog (aws pricing get-products) on 2026-07-02 — S3 standard storage has an EMPTY operation in the catalog, and Glue job runs bill under operation Jobrun. Ready for: python core/bcm_pricing_calculator.py run --report-dir <dir> --usage-profile <this file>.",
   "usage": [
     {
       "serviceCode": "AWSGlue",
       "usageType": "USE1-ETL-DPU-Hour",
-      "operation": "Spark",
+      "operation": "Jobrun",
       "key": "GLUE1",
       "group": "tf-us-east-1",
       "usageAccountId": "000000000000",
@@ -13,8 +13,8 @@
     },
     {
       "serviceCode": "AmazonS3",
-      "usageType": "USE1-TimedStorage-ByteHrs",
-      "operation": "StandardStorage",
+      "usageType": "TimedStorage-ByteHrs",
+      "operation": "",
       "key": "S3STD1",
       "group": "tf-us-east-1",
       "usageAccountId": "000000000000",

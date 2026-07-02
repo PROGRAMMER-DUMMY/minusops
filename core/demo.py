@@ -11,8 +11,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import workflow  # noqa: E402
+import blueprints  # noqa: E402
 import reporter  # noqa: E402
+import runs  # noqa: E402
+import terraform_generator  # noqa: E402
 
 
 RESOURCE_TYPES = {
@@ -94,14 +96,24 @@ def synthetic_plan(tf_dir, inputs):
 
 def governed_data_pipeline(owner, daily_data_gb):
     inputs = {"owner": owner, "daily_data_gb": float(daily_data_gb)}
-    record = workflow.resolve_to_run(
-        "create a governed AWS data pipeline",
-        cloud="aws",
-        inputs=inputs,
-        generate=True,
-    )
-    if not record.get("ok"):
-        raise RuntimeError(json.dumps(record.get("missing_inputs", []), indent=2))
+    run = runs.new_run(blueprint="demo/aws-data-pipeline-standard",
+                       request="demo governed AWS data pipeline", cloud="aws")
+    blueprint = blueprints.get_blueprint("aws-data-pipeline-standard")
+    generated = terraform_generator.generate(blueprint, inputs, run["terraform_dir"])
+    record = {
+        "ok": True,
+        "demo": True,
+        "resolution": {
+            "intent": "DEMO_FIXTURE",
+            "cloud": "aws",
+            "blueprint": blueprint,
+            "recommendation": "Demo fixture only; production create is requirements-first.",
+        },
+        "run": run,
+        "inputs": inputs,
+        "terraform_generated": True,
+        "generated": generated,
+    }
     tf_dir = record["run"]["terraform_dir"]
     plan = synthetic_plan(tf_dir, record["inputs"])
     plan_path = os.path.join(record["run"]["root"], "demo-plan.json")

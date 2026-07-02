@@ -46,6 +46,37 @@ def test_template_is_a_valid_blank_skeleton():
     assert not ok                                    # blank template is intentionally incomplete
 
 
+def test_template_includes_data_pipeline_profile():
+    t = reqgate.template()
+    assert set(t["data_pipeline"]) == set(reqgate.DATA_FIELDS)
+
+
+def test_is_data_pipeline_detection():
+    assert reqgate.is_data_pipeline({"system_class": "data-pipeline"}) is True
+    assert reqgate.is_data_pipeline({"goal": "build a lakehouse for analytics"}) is True
+    assert reqgate.is_data_pipeline({"system_class": "web-app", "goal": "a todo app"}) is False
+    # a populated data_pipeline block signals a data workload even without keyword
+    assert reqgate.is_data_pipeline({"system_class": "svc", "data_pipeline": {"sources": "kafka"}}) is True
+
+
+def test_validate_data_pipeline_reports_missing_and_accepts_deferral():
+    ok, missing = reqgate.validate_data_pipeline({"data_pipeline": {"sources": "kafka"}})
+    assert not ok
+    assert "data_pipeline.storage_zones" in missing
+    assert "data_pipeline.data_quality" in missing
+
+    complete = {f: "specified" for f in reqgate.DATA_FIELDS}
+    complete["freshness_sla"] = "deferred: set after profiling"   # deferral counts as answered
+    ok2, missing2 = reqgate.validate_data_pipeline({"data_pipeline": complete})
+    assert ok2 and missing2 == []
+
+
+def test_generic_validate_unaffected_by_data_profile():
+    # A complete generic record with no data_pipeline block still passes the generic gate.
+    ok, missing = reqgate.validate(COMPLETE)
+    assert ok and missing == []
+
+
 def test_write_and_load_roundtrip(tmp_path):
     path = reqgate.write(str(tmp_path), COMPLETE, gathered_by="alice")
     assert path.endswith("requirements.json")

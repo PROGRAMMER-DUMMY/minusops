@@ -1,0 +1,8 @@
+include README.md
+include AGENTS.md
+include .agents/AGENTS.md
+recursive-include modules *.tf
+recursive-include docs *.md *.svg
+recursive-include examples *.md *.json
+recursive-include .agents/skills SKILL.md *.yaml
+recursive-exclude .agents/logs *

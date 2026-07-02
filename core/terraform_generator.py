@@ -1,5 +1,5 @@
 """
-Terraform generator for governed blueprints.
+Demo Terraform generator for cached fixture blueprints.
 
 This module writes Terraform source only. It does not run terraform init, plan,
 apply, or cloud CLI commands.
@@ -26,7 +26,7 @@ def _write(path, text):
 def generate(blueprint, inputs, terraform_dir):
     blueprint_id = blueprint["id"]
     if blueprint_id != "aws-data-pipeline-standard":
-        raise ValueError(f"unsupported blueprint: {blueprint_id}")
+        raise ValueError(f"unsupported demo blueprint: {blueprint_id}")
     return generate_aws_data_pipeline(inputs, terraform_dir)
 
 
@@ -53,7 +53,7 @@ locals {{
     Environment = var.environment
     Owner       = var.owner
     ManagedBy   = "MinusTerraformCli"
-    Blueprint   = "aws-data-pipeline-standard"
+    DemoFixture = "aws-data-pipeline-standard"
   }}
 }}
 ''',
@@ -358,7 +358,7 @@ output "step_function_arn" { value = aws_sfn_state_machine.pipeline.arn }
         "README.md": f'''
 # {prefix}
 
-Generated Terraform for blueprint `aws-data-pipeline-standard`.
+Generated Terraform for demo fixture `aws-data-pipeline-standard`.
 
 Safe workflow:
 
@@ -385,5 +385,5 @@ Do not run apply until the plan hash is reviewed and approved.
         "files": sorted(list(files) + list(scripts)),
     }
     _write(out / "minus-generated.json", json.dumps(manifest, indent=2))
-    source_guard.write_baseline(out, label="generated", extra={"blueprint": "aws-data-pipeline-standard"})
+    source_guard.write_baseline(out, label="generated", extra={"demo_fixture": "aws-data-pipeline-standard"})
     return manifest

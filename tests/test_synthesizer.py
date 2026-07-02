@@ -2,6 +2,7 @@ import os
 
 import pytest
 
+import architecture_decision as archdec
 import requirements as reqgate
 import synthesizer
 
@@ -13,6 +14,19 @@ COMPLETE_SPEC = {
         "latency": "hourly batch", "scale": "50 GB/day", "availability": "99.9%",
         "retention": "deferred: pending legal", "security": "KMS + scoped IAM", "budget": "$500/mo",
     },
+}
+
+COMPLETE_DECISION = {
+    "requirements_file": "requirements.json",
+    "selected_architecture": "AWS managed lakehouse with MWAA orchestration",
+    "decision_summary": "Chosen for Airflow orchestration, data quality, and schema governance.",
+    "selected_modules": ["orchestrator-mwaa", "dq-great-expectations", "schema-registry-glue"],
+    "alternatives": [
+        {"name": "Step Functions", "decision": "rejected", "reason": "Existing team prefers Airflow DAGs."}
+    ],
+    "assumptions": ["AWS is the target cloud."],
+    "risks": ["MWAA cost must be checked during BCM estimate."],
+    "sources": ["AWS MWAA documentation", "Terraform AWS provider registry"],
 }
 
 
@@ -40,6 +54,23 @@ def test_compose_writes_a_governed_terraform_root(tmp_path):
     assert 'module.storage_medallion_s3.bucket_names["bronze"]' in main  # glue script bucket
 
 
+def test_compose_wires_orchestration_to_glue_jobs(tmp_path):
+    # B' loop-close: the orchestrator must reference the compute module (so it is not
+    # 'unwired' in conformance), and compute must get a default runnable job.
+    out = tmp_path / "tf"
+    synthesizer.compose(
+        ["storage-medallion-s3", "compute-glue-etl", "orchestrator-stepfunctions"],
+        "acme-dev", str(out), owner="acme", request="lakehouse")
+    main = (out / "main.tf").read_text(encoding="utf-8")
+    assert "module.compute_glue_etl.glue_job_names" in main   # orchestration wired to jobs
+    assert "module.compute_glue_etl.glue_job_arns" in main    # sfn can act on the jobs
+    assert "bronze_to_silver" in main                         # a default job is composed
+    # the orchestrator module builds a real definition from the wired jobs (no mock required)
+    orch_main = (out / "modules" / "orchestrator-stepfunctions" / "main.tf").read_text(encoding="utf-8")
+    assert "effective_definition" in orch_main
+    assert "startJobRun" in orch_main
+
+
 def test_synthesize_refuses_without_complete_requirements(tmp_path, monkeypatch):
     import runs
     monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
@@ -51,15 +82,85 @@ def test_synthesize_refuses_without_complete_requirements(tmp_path, monkeypatch)
     assert not os.path.isdir(tmp_path / "runs")    # nothing generated
 
 
+def test_synthesize_refuses_without_architecture_decision(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    with pytest.raises(archdec.ArchitectureDecisionIncomplete) as exc:
+        synthesizer.synthesize("airflow pipeline", spec=COMPLETE_SPEC)
+    assert "selected_architecture" in exc.value.missing
+    assert not os.path.isdir(tmp_path / "runs")
+
+
 def test_synthesize_creates_run_records_requirements_and_composes(tmp_path, monkeypatch):
     import runs
     monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
     monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
     res = synthesizer.synthesize("airflow pipeline with data quality and schema enforcement",
-                                 spec=COMPLETE_SPEC, owner="data-platform")
+                                 spec=COMPLETE_SPEC, decision=COMPLETE_DECISION, owner="data-platform")
     assert os.path.isdir(res["run"]["terraform_dir"])
     assert "orchestrator-mwaa" in res["modules"]
+    assert "dq-great-expectations" in res["modules"]
+    assert "schema-registry-glue" in res["modules"]
     assert os.path.exists(os.path.join(res["out_dir"], "main.tf"))
     # the requirements record is written alongside the run as audit evidence
     assert os.path.exists(os.path.join(res["run"]["root"], "requirements.json"))
+    assert os.path.exists(os.path.join(res["run"]["root"], "architecture_decision.json"))
     assert res["requirements_recorded"]
+    assert res["architecture_decision_recorded"]
+
+
+def test_synthesize_into_existing_run_writes_manifest_and_baseline(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    run = runs.new_run(blueprint="requirements-first", request="create airflow pipeline")
+
+    res = synthesizer.synthesize(
+        "airflow pipeline with data quality and schema enforcement",
+        spec=COMPLETE_SPEC,
+        decision=COMPLETE_DECISION,
+        owner="data-platform",
+        target_run=run,
+    )
+
+    assert res["run"]["run_id"] == run["run_id"]
+    assert os.path.exists(os.path.join(run["terraform_dir"], "main.tf"))
+    assert os.path.exists(os.path.join(run["terraform_dir"], "minus-generated.json"))
+    assert os.path.exists(os.path.join(run["terraform_dir"], ".minus", "baseline.json"))
+    assert res["manifest"]["blueprint"] == "synthesized"
+    assert "minus-generated.json" in res["manifest"]["files"]
+    assert res["workflow"]["terraform_generated"] is True
+    assert res["workflow"]["generation_blocked"] is False
+
+
+def test_synthesize_refuses_to_overwrite_nonempty_target_run(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    run = runs.new_run(blueprint="requirements-first", request="create airflow pipeline")
+    with open(os.path.join(run["terraform_dir"], "main.tf"), "w", encoding="utf-8") as f:
+        f.write("# existing\n")
+
+    with pytest.raises(ValueError) as exc:
+        synthesizer.synthesize(
+            "airflow pipeline",
+            spec=COMPLETE_SPEC,
+            decision=COMPLETE_DECISION,
+            target_run=run,
+        )
+
+    assert "pass --overwrite" in str(exc.value)
+
+
+def test_synthesize_refuses_unknown_decision_module(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    decision = dict(COMPLETE_DECISION)
+    decision["selected_modules"] = ["orchestrator-mwaa", "not-a-module"]
+
+    with pytest.raises(ValueError) as exc:
+        synthesizer.synthesize("airflow pipeline", spec=COMPLETE_SPEC, decision=decision)
+
+    assert "unknown selected module" in str(exc.value)

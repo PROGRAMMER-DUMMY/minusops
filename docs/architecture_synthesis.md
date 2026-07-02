@@ -42,41 +42,66 @@ Small, vetted Terraform modules selected by requirement keywords (`core/modules.
 Add a capability by dropping in `modules/<id>/main.tf` + a row in `core/modules.py` — never by
 forking a giant recipe.
 
+Installed wheels and the Docker image ship these modules as runtime data files. In source
+checkouts `core/modules.py` reads `./modules`; in installed environments it falls back to the
+packaged data location. `MINUSOPS_MODULES_DIR` can override discovery for a client-specific module
+library.
+
 ## CLI
 
 ```bash
 python core/modules.py match "airflow, lambda architecture, data quality, schema enforcement"
 python core/discovery.py "mwaa airflow" --resource aws_mwaa_environment --service-code AmazonMWAA
-python core/synthesizer.py "<requirements>" --owner <team>      # compose into a run workspace
+python core/minusctl.py accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
+python core/synthesizer.py "<requirements>" --run <run-id> --requirements-file requirements.json --decision-file architecture_decision.json --owner <team>
 python core/plan_gate.py verify --dir runs/<run-id>/terraform   # govern it (same gate)
+python core/plan_gate.py verify --dir runs/<run-id>/terraform --policy-mode production
+# production requires checkov or tfsec on PATH and blocks on external findings
 python core/patterns.py match "<requirements>"                  # reuse a prior approved composition
 ```
 
-## Requirements gate (generation is bound to requirements)
+## Requirements and decision gates
 
-The same way the plan-hash gate binds *apply* to a reviewed plan, the **requirements gate** binds
-*generation* to a reviewed requirements set (`core/requirements.py`). grill-me writes a
+The same way the plan-hash gate binds *apply* to a reviewed plan, the **requirements gate** and
+**architecture decision gate** bind *generation* to reviewed inputs. grill-me writes a
 `requirements.json` — goal, system class, ≥1 functional capability, and each non-functional axis
 (latency, scale, availability, retention, security, budget) with a value **or an explicit
-`deferred: <reason>`**. `synthesizer` is **fail-closed**: without a complete record it refuses and
-lists what's unanswered.
+`deferred: <reason>`**. The architect path writes `architecture_decision.json` with the selected
+architecture, selected modules, alternatives, assumptions, risks, and sources. `synthesizer` is
+**fail-closed**: without both complete records it refuses and lists what's unanswered.
 
 ```bash
 python core/requirements.py template > requirements.json   # grill-me fills this
 python core/requirements.py check requirements.json        # completeness check
-python core/synthesizer.py "<summary>" --requirements-file requirements.json --owner <team>
+python core/minusctl.py decision template --write           # create run-bound decision record
+python core/architecture_decision.py template --requirements-file requirements.json > architecture_decision.json
+python core/architecture_decision.py set architecture_decision.json --architecture "<selected architecture>" --summary "<why this choice>"
+python core/architecture_decision.py add-module architecture_decision.json <module-id>
+python core/architecture_decision.py add-source architecture_decision.json "<official doc URL>"
+python core/architecture_decision.py add-alternative architecture_decision.json --name "<option>" --decision rejected --reason "<why rejected>"
+python core/architecture_decision.py check architecture_decision.json
+python core/synthesizer.py "<summary>" --run <run-id> --requirements-file requirements.json --decision-file architecture_decision.json --owner <team>
 ```
 
-So a vague request can't be silently turned into infrastructure — it's blocked until requirements
-are gathered and justified, and the record is kept beside the run as audit evidence for what was
-built and why. (`--allow-incomplete` is an audited demo/testing override.)
+So a vague request and an unreviewed module recommendation can't be silently turned into
+infrastructure — generation is blocked until requirements and the architecture choice are gathered
+and justified, and both records are kept beside the run as audit evidence for what was built and
+why. (`--allow-incomplete` is an audited demo/testing override.)
+
+`minusctl accelerator aws-lakehouse` is a convenience for the one production path this repo now
+supports deeply enough to use as a starting point: an AWS governed lakehouse. It writes a complete,
+reviewable `requirements.json` and `architecture_decision.json` with explicit modules, alternatives,
+assumptions, risks, and official sources. It is not an automatic recommendation engine and it never
+generates Terraform by itself; the operator still edits/reviews the records, then runs synthesis and
+the deploy gate.
 
 ## Safety invariant
 
 A synthesized composition is **not trusted because the agent proposed it.** Every resource is
 grounded in its real Terraform Registry schema; `terraform validate` rejects garbage; the
-`SEC-*` scanner blocks wildcard IAM / missing encryption / public exposure; a human approves the
-exact plan-hash; BCM prices it. The synthesizer emits a **scaffold the architect refines and the
+`SEC-*` scanner blocks wildcard IAM / missing encryption / public exposure; production policy mode
+requires checkov/tfsec evidence and blocks on those findings; a human approves the exact plan-hash;
+BCM prices it. The synthesizer emits a **scaffold the architect refines and the
 gate validates** (module-specific inputs are flagged `REVIEW` in the composed `main.tf` and
 `COMPOSITION.md`) — never an apply-without-review shortcut.
 

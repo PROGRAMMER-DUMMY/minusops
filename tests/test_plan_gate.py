@@ -189,6 +189,122 @@ def test_apply_refuses_approval_from_another_directory(gate_env, monkeypatch):
     assert not os.path.exists(plan_gate._approved_path("target", current))
 
 
+def _record_pending(dir_, plan_hash, planner=None):
+    os.makedirs(plan_gate._state_dir(dir_), exist_ok=True)
+    rec = {"plan_hash": plan_hash, "dir": dir_, "canonical_dir": plan_gate._canonical_dir(dir_)}
+    if planner is not None:
+        rec["planner"] = planner
+    with open(plan_gate._pending_path(dir_), "w", encoding="utf-8") as f:
+        json.dump(rec, f)
+
+
+def test_production_rejects_open_allowlist(gate_env, monkeypatch, capsys):
+    """Production: no approver allowlist -> approval refused, no approval recorded."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "open", "open mode"))
+    current, _ = plan_gate._plan_hash("d")
+    _record_pending("d", current, planner="dave")
+
+    assert plan_gate.stage_approve("d", mode="auto-approve", policy_mode="production") is False
+    assert not os.path.exists(plan_gate._approved_path("d", current))
+    assert "no approver allowlist" in capsys.readouterr().err
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "open_allowlist_in_production" in audit
+
+
+def test_production_rejects_self_approval(gate_env, monkeypatch, capsys):
+    """Production two-person rule: approver == planner -> refused."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "alice")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
+    current, _ = plan_gate._plan_hash("d")
+    _record_pending("d", current, planner="alice")
+
+    assert plan_gate.stage_approve("d", mode="auto-approve", policy_mode="production") is False
+    assert not os.path.exists(plan_gate._approved_path("d", current))
+    assert "cannot approve their own plan" in capsys.readouterr().err
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "self_approval_in_production" in audit
+
+
+def test_production_rejects_missing_planner(gate_env, monkeypatch, capsys):
+    """Production: a plan with no recorded planner can't prove separation -> refused."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "bob")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
+    current, _ = plan_gate._plan_hash("d")
+    _record_pending("d", current)  # no planner recorded
+
+    assert plan_gate.stage_approve("d", mode="auto-approve", policy_mode="production") is False
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "missing_planner_in_production" in audit
+
+
+def test_production_approves_with_allowlist_and_distinct_approver(gate_env, monkeypatch):
+    """Production happy path: enforced allowlist + approver != planner -> approval recorded."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "carol")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
+    current, _ = plan_gate._plan_hash("d")
+    _record_pending("d", current, planner="dave")
+
+    assert plan_gate.stage_approve("d", mode="auto-approve", policy_mode="production") is True
+    assert os.path.exists(plan_gate._approved_path("d", current))
+
+
+def test_dev_mode_allows_open_self_approval(gate_env, monkeypatch, capsys):
+    """Dev lane is untouched: open allowlist + self-approval still approves, no prod rejection."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "alice")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "open", "open mode"))
+    current, _ = plan_gate._plan_hash("d")
+    _record_pending("d", current, planner="alice")
+
+    assert plan_gate.stage_approve("d", mode="auto-approve", policy_mode="dev") is True
+    assert os.path.exists(plan_gate._approved_path("d", current))
+    assert "(production)" not in capsys.readouterr().err
+
+
+def test_production_apply_rejects_static_creds_override(gate_env, monkeypatch, capsys):
+    """Production: MINUS_ALLOW_STATIC_CREDS is not honored -> apply refused, approval kept."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_credential_posture", lambda: {"connected": True, "type": "long_term"})
+    monkeypatch.setenv("MINUS_ALLOW_STATIC_CREDS", "1")
+    current, _ = plan_gate._plan_hash("d")
+    os.makedirs(plan_gate._approval_dir("d"), exist_ok=True)
+    with open(plan_gate._approved_path("d", current), "w", encoding="utf-8") as f:
+        json.dump({"plan_hash": current, "dir": "d",
+                   "canonical_dir": plan_gate._canonical_dir("d")}, f)
+
+    assert plan_gate.stage_apply("d", policy_mode="production") is False
+    # Approval is kept so the operator can re-auth with a temporary session and retry.
+    assert os.path.exists(plan_gate._approved_path("d", current))
+    assert "not honored in production" in capsys.readouterr().err
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "static_creds_override_denied_in_production" in audit
+
+
+def test_dev_apply_honors_static_creds_override(gate_env, monkeypatch):
+    """Dev lane: the audited static-cred downgrade still applies."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_credential_posture", lambda: {"connected": True, "type": "long_term"})
+    monkeypatch.setenv("MINUS_ALLOW_STATIC_CREDS", "1")
+    current, _ = plan_gate._plan_hash("d")
+    os.makedirs(plan_gate._approval_dir("d"), exist_ok=True)
+    with open(plan_gate._approved_path("d", current), "w", encoding="utf-8") as f:
+        json.dump({"plan_hash": current, "dir": "d",
+                   "canonical_dir": plan_gate._canonical_dir("d")}, f)
+
+    assert plan_gate.stage_apply("d", policy_mode="dev") is True
+
+
 def test_verify_fails_when_security_scan_blocks(gate_env, monkeypatch):
     def ok_tf(dir_, *args, capture=False):
         return 0, "", ""
@@ -201,3 +317,24 @@ def test_verify_fails_when_security_scan_blocks(gate_env, monkeypatch):
     monkeypatch.setattr(plan_gate, "SCAN", __file__)
 
     assert plan_gate.stage_verify("d") is False
+
+
+def test_verify_passes_policy_mode_and_log_dir_to_scanner(gate_env, monkeypatch):
+    seen = {}
+
+    def ok_tf(dir_, *args, capture=False):
+        return 0, "", ""
+
+    def scan(args, capture=False):
+        seen["args"] = args
+        return 0, "", ""
+
+    monkeypatch.setattr(plan_gate, "_tf", ok_tf)
+    monkeypatch.setattr(plan_gate, "_run", scan)
+    monkeypatch.setattr(plan_gate, "SCAN", __file__)
+
+    assert plan_gate.stage_verify("d", policy_mode="production") is True
+    assert "--policy-mode" in seen["args"]
+    assert seen["args"][seen["args"].index("--policy-mode") + 1] == "production"
+    assert "--log-dir" in seen["args"]
+    assert seen["args"][seen["args"].index("--log-dir") + 1] == plan_gate.LOG_DIR

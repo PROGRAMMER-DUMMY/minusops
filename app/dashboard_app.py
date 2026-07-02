@@ -1,9 +1,11 @@
 """
-AWS Cost Ledger — a live FinOps operator console (Plotly Dash).
+MinusOps Console — governed data-pipeline delivery (Plotly Dash).
 
-Reads the real account through finops_agent (Cost Explorer, Cost Anomaly Detection,
-CloudTrail, resource tags). No mock data. Degrades to honest empty states when AWS
-credentials are not configured.
+The overview leads with the pipeline itself: run readiness, reference-architecture
+conformance, the plan-derived architecture diagram, plan composition, and the cost
+gate. Account spend (Cost Explorer / Cost Anomaly Detection via finops_agent) is one
+compact evidence panel. No mock data — everything degrades to honest empty states
+when AWS credentials are not configured or nothing has been generated yet.
 
 Cross-platform — runs the same on Windows, macOS, and Linux (pure Python + the
 werkzeug dev server; no OS-specific calls).
@@ -14,7 +16,8 @@ Run:
 
 Optional environment overrides:
     DASH_PORT=8060   # use a different port if 8050 is taken
-    DASH_HOST=0.0.0.0  # expose on the LAN (default is localhost-only, which is safer)
+    DASH_HOST=0.0.0.0  # expose on the LAN only with MINUS_DASH_TOKEN set
+    MINUS_DASH_TOKEN=...  # optional bearer/query-token auth; required for non-local binds
 """
 import os
 import sys
@@ -22,6 +25,7 @@ import html as html_lib
 import json
 import time
 import datetime
+import hmac
 from concurrent.futures import ThreadPoolExecutor
 
 # Talk to the active cloud only through the provider abstraction (core/ package).
@@ -32,6 +36,9 @@ from providers.base import get_provider, active_cloud  # noqa: E402
 import plan_inspector  # noqa: E402
 import runs as run_store  # noqa: E402
 import minusctl  # noqa: E402
+import requirements as reqgate  # noqa: E402
+import architecture_decision as archdec  # noqa: E402
+import accelerators  # noqa: E402
 
 import dash  # noqa: E402
 from dash import dcc, html, Input, Output, State, ctx  # noqa: E402
@@ -126,11 +133,19 @@ def assemble(force=False):
     return data
 
 
-def report_inventory():
+def report_inventory(run_id=None):
     """Return generated deployment reports, preferring product artifacts over agent internals."""
     reports = {}
     for root in report_roots():
         if not os.path.isdir(root):
+            continue
+        root_parts = os.path.normpath(root).split(os.sep)
+        root_run_id = ""
+        if "runs" in root_parts:
+            idx = root_parts.index("runs")
+            if len(root_parts) > idx + 1:
+                root_run_id = root_parts[idx + 1]
+        if run_id and root_run_id and not (root_run_id == run_id or root_run_id.startswith(str(run_id))):
             continue
         for name in os.listdir(root):
             path = os.path.join(root, name)
@@ -152,9 +167,12 @@ def report_inventory():
                 status = {"status": "UNKNOWN", "stale": False, "reason": "source status unavailable"}
             reports[short] = {
                 "short": short,
+                "path": path,
+                "run_id": root_run_id,
                 "template": manifest.get("template", "unknown"),
                 "generated_at": manifest.get("generated_at", "unknown"),
                 "counts": manifest.get("counts", {}),
+                "cost": manifest.get("cost", {}),
                 "files": files,
                 "source": "run" if "\\runs\\" in root or "/runs/" in root else ("artifacts" if "artifacts" in root else "agent-runtime"),
                 "status": status,
@@ -162,7 +180,7 @@ def report_inventory():
     return sorted(reports.values(), key=lambda r: r["generated_at"], reverse=True)
 
 
-def collect_optimization_findings(limit=3):
+def collect_optimization_findings(limit=3, run_id=None):
     """Run the per-resource scanner over the most recent run workspaces.
 
     Returns the SEC/COST/OBS findings (each tagged with its run_id) so the dashboard
@@ -175,7 +193,13 @@ def collect_optimization_findings(limit=3):
         runs_list = run_store.list_runs()
     except Exception:
         return findings
-    for run in runs_list[:limit]:
+    selected = []
+    for run in runs_list:
+        rid = run.get("run_id", "")
+        if run_id and not (rid == run_id or rid.startswith(str(run_id))):
+            continue
+        selected.append(run)
+    for run in selected[:limit]:
         tf_dir = run.get("terraform_dir")
         if not tf_dir or not os.path.isdir(tf_dir):
             continue
@@ -185,6 +209,71 @@ def collect_optimization_findings(limit=3):
         except Exception:
             continue
     return findings
+
+
+def _read_json_file(path):
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _row_for_run(rows, run_id=None):
+    if not rows:
+        return None
+    if run_id:
+        for row in rows:
+            rid = row["run"].get("run_id", "")
+            if rid == run_id or rid.startswith(str(run_id)):
+                return row
+    return rows[0]
+
+
+def _selected_report(row):
+    if not row:
+        return None
+    latest = (row.get("readiness") or {}).get("latest_report") or {}
+    if latest.get("path"):
+        manifest = _read_json_file(os.path.join(latest["path"], "manifest.json")) or {}
+        return {
+            "short": latest.get("id") or manifest.get("short", ""),
+            "path": latest.get("path"),
+            "counts": manifest.get("counts", {}),
+            "cost": manifest.get("cost", {}),
+            "generated_at": manifest.get("generated_at", ""),
+            "files": manifest.get("files", []),
+            "status": row.get("readiness", {}).get("source", {}),
+        }
+    reports = report_inventory(row["run"].get("run_id"))
+    return reports[0] if reports else None
+
+
+def _plan_resource_rows(report):
+    if not report:
+        return []
+    plan = _read_json_file(os.path.join(report.get("path", ""), "plan.json"))
+    rows = []
+    for change in (plan or {}).get("resource_changes", []):
+        actions = change.get("change", {}).get("actions", [])
+        rows.append({
+            "address": change.get("address", ""),
+            "type": change.get("type", ""),
+            "action": "+".join(actions) if actions else "unknown",
+            "service": plan_inspector.service_for_type(change.get("type", "")),
+        })
+    return rows
+
+
+def _service_counts(report):
+    counts = {}
+    for row in _plan_resource_rows(report):
+        if row["action"] == "no-op":
+            continue
+        counts[row["service"]] = counts.get(row["service"], 0) + 1
+    return counts
 
 
 def run_inventory(limit=8):
@@ -206,11 +295,19 @@ def run_inventory(limit=8):
                 "reports": [],
             }
         root = item.get("root", "")
+        requirements_path = os.path.join(root, reqgate.FILENAME)
+        decision_path = os.path.join(root, archdec.FILENAME)
+        requirements_ok, _ = reqgate.validate(reqgate.load(requirements_path) or {})
+        decision_ok, _ = archdec.validate(archdec.load(decision_path) or {})
         package_md = os.path.join(root, "enterprise-package.md")
         package_json = os.path.join(root, "enterprise-package.json")
         rows.append({
             "run": item,
             "readiness": readiness,
+            "requirements_path": requirements_path if os.path.exists(requirements_path) else None,
+            "requirements_ok": requirements_ok,
+            "decision_path": decision_path if os.path.exists(decision_path) else None,
+            "decision_ok": decision_ok,
             "package_md": package_md if os.path.exists(package_md) else None,
             "package_json": package_json if os.path.exists(package_json) else None,
         })
@@ -232,54 +329,111 @@ def _base_layout(height):
     )
 
 
+def _money_tickformat(max_value):
+    """Adaptive tick format so five identical '$0.00' ticks never happen on small spend."""
+    if max_value >= 100:
+        return ",.0f"
+    if max_value >= 1:
+        return ",.2f"
+    return ",.4f"
+
+
 def spend_bar(month):
-    """Horizontal bars — service composition of the latest month's spend."""
+    """Spend by service — horizontal bars with EMPHASIS: the top spender carries the
+    accent hue, the rest are de-emphasized (identity is in the labels, not a hue cycle)."""
     items = sorted((month or {}).get("by_service", {}).items(), key=lambda r: r[1])[-8:]
     fig = go.Figure()
     if items:
         labels = [s.replace("Amazon", "").replace("AWS", "").strip() for s, _ in items]
         vals = [v for _, v in items]
         hi = max(vals)
-        # warm gradient: bigger spend → hotter terracotta
-        colors = [C["terracotta"] if v == hi else C["sand"] for v in vals]
+        colors = [C["terracotta"] if v == hi else C["muted"] for v in vals]
         fig.add_bar(
             x=vals, y=labels, orientation="h", marker=dict(color=colors),
-            text=[f"${v:,.0f}" for v in vals], textposition="outside",
-            textfont=dict(family=MONO, color=C["text"], size=12),
+            text=[f"${v:,.2f}" if hi < 100 else f"${v:,.0f}" for v in vals],
+            textposition="outside",
+            textfont=dict(family=MONO, color=C["text"], size=11),
             hovertemplate="%{y}: $%{x:,.2f}<extra></extra>",
         )
-    lay = _base_layout(max(180, 38 * max(len(items), 1)))
+    lay = _base_layout(max(180, 34 * max(len(items), 1) + 20))
     lay.update(
+        margin=dict(l=10, r=56, t=8, b=8),          # room for outside value labels
         xaxis=dict(visible=False),
-        yaxis=dict(tickfont=dict(family=MONO, color=C["muted"], size=12), automargin=True),
-        bargap=0.35,
+        yaxis=dict(tickfont=dict(family=MONO, color=C["muted"], size=11), automargin=True),
+        bargap=0.4,
     )
     fig.update_layout(**lay)
+    try:
+        fig.update_layout(barcornerradius=3)
+    except Exception:
+        pass
     return fig
 
 
 def trend_line(months):
-    """Monthly burn — total spend trend."""
+    """Monthly spend — thin single-hue columns (magnitude by month; a spline over
+    near-zero months fabricates a curve, so bars it is — the Cost Explorer form).
+    Micro-spend (< 1¢ max) hides the axis (every tick would read $0.00) and
+    direct-labels the non-zero bars instead."""
     fig = go.Figure()
+    vals = [m["total"] for m in (months or [])]
+    mx = max(vals) if vals else 0
+    micro = 0 < mx < 0.01
+    def _micro_label(v):
+        if not v:
+            return ""
+        s = f"${v:.6f}".rstrip("0").rstrip(".")
+        return s if s != "$0" else "< $0.000001"
+
     if months:
-        x = [m["month"] for m in months]
-        y = [m["total"] for m in months]
-        rising = len(y) >= 2 and y[-1] >= y[-2]
-        accent = C["terracotta"] if rising else C["sage"]
-        fig.add_scatter(
-            x=x, y=y, mode="lines+markers",
-            line=dict(color=accent, width=2.5, shape="spline"),
-            fill="tozeroy", fillcolor="rgba(217, 93, 57, 0.10)",
-            marker=dict(size=7, color=accent, line=dict(color=C["bg"], width=2)),
-            hovertemplate="%{x}: $%{y:,.2f}<extra></extra>",
+        fig.add_bar(
+            x=[m["month"] for m in months], y=vals,
+            marker=dict(color=C["terracotta"]),
+            text=[_micro_label(v) for v in vals] if micro else None,
+            textposition="outside" if micro else None,
+            textfont=dict(family=MONO, color=C["muted"], size=10) if micro else None,
+            cliponaxis=False,                       # outside labels must not be cut at the plot edge
+            hovertemplate="%{x}: $%{y:,.6f}<extra></extra>" if micro
+            else "%{x}: $%{y:,.2f}<extra></extra>",
         )
-    lay = _base_layout(190)
+    lay = _base_layout(200)
     lay.update(
+        margin=dict(l=10, r=18, t=18, b=34),        # keep month + outside labels inside the card
+        bargap=0.45,
         xaxis=dict(tickfont=dict(family=MONO, color=C["faint"], size=11),
                    showgrid=False, showline=False),
-        yaxis=dict(tickprefix="$", tickfont=dict(family=MONO, color=C["faint"], size=11),
-                   gridcolor=C["line"], zeroline=False),
+        yaxis=(dict(visible=False) if micro else
+               dict(tickprefix="$", tickformat=_money_tickformat(mx), nticks=4,
+                    tickfont=dict(family=MONO, color=C["faint"], size=11),
+                    gridcolor=C["line"], zeroline=False)),
     )
+    fig.update_layout(**lay)
+    try:
+        fig.update_layout(barcornerradius=3)
+    except Exception:
+        pass
+    return fig
+
+
+def plan_action_donut(report):
+    counts = (report or {}).get("counts") or {}
+    palette = {"create": C["sage"], "update": C["sand"], "delete": C["terracotta"], "no-op": C["faint"]}
+    # Zero-value slices only stack unreadable "x 0" labels on the rim — drop them.
+    present = [(label, counts.get(label, 0)) for label in palette if counts.get(label, 0)]
+    fig = go.Figure()
+    if present:
+        fig.add_pie(
+            labels=[label for label, _ in present],
+            values=[v for _, v in present],
+            hole=.64,
+            marker=dict(colors=[palette[label] for label, _ in present],
+                        line=dict(color=C["bg"], width=2)),
+            textinfo="label+value",
+            textfont=dict(family=MONO, color=C["text"], size=12),
+            hovertemplate="%{label}: %{value}<extra></extra>",
+        )
+    lay = _base_layout(220)
+    lay.update(margin=dict(l=10, r=10, t=10, b=10))
     fig.update_layout(**lay)
     return fig
 
@@ -409,6 +563,7 @@ def run_readiness_card(item):
     if report_id and report_path:
         for filename, label in [
             ("architecture.svg", "Architecture"),
+            ("dataflow.svg", "Data flow"),
             ("report.html", "Report HTML"),
             ("plan.pdf", "Plan PDF"),
             ("cost.pdf", "Cost PDF"),
@@ -423,6 +578,18 @@ def run_readiness_card(item):
     if item.get("package_json"):
         links.append(html.A("Package JSON", href=f"/runs/{run['run_id']}/enterprise-package.json",
                             target="_blank", className="report-link"))
+    if item.get("requirements_path"):
+        label = "Requirements OK" if item.get("requirements_ok") else "Requirements"
+        links.append(html.A(label, href=f"/runs/{run['run_id']}/requirements.json",
+                            target="_blank", className="report-link"))
+    else:
+        links.append(html.Span("requirements missing", className="report-missing"))
+    if item.get("decision_path"):
+        label = "Decision OK" if item.get("decision_ok") else "Decision"
+        links.append(html.A(label, href=f"/runs/{run['run_id']}/architecture_decision.json",
+                            target="_blank", className="report-link"))
+    else:
+        links.append(html.Span("decision missing", className="report-missing"))
     if not item.get("package_md"):
         links.append(html.Span("run: python core/minusctl.py package", className="report-missing"))
     first_issue = (blockers or warnings or [{}])[0]
@@ -432,6 +599,8 @@ def run_readiness_card(item):
             html.Div(className="run-meta", children=[
                 html.Span(run.get("blueprint", "-")),
                 html.Span(run.get("cloud", "-")),
+                html.Span("req ok" if item.get("requirements_ok") else "req open"),
+                html.Span("decision ok" if item.get("decision_ok") else "decision open"),
                 html.Span(f"reports {len(readiness.get('reports', []))}"),
                 html.Span(readiness.get("source", {}).get("status", "UNKNOWN")),
             ]),
@@ -448,20 +617,254 @@ def run_readiness_card(item):
     ])
 
 
-def readiness_panel():
+def _gate_status(label, ok, present=True):
+    tone = "ok" if ok else "open" if present else "missing"
+    value = "complete" if ok else "open" if present else "missing"
+    return html.Div(className=f"gate-status {tone}", children=[
+        html.Span(label),
+        html.Strong(value),
+    ])
+
+
+def _command_line(text):
+    return html.Code(text, className="command-line")
+
+
+def _split_control_lines(value):
+    if not value:
+        return []
+    raw = str(value).replace(",", "\n").splitlines()
+    return [item.strip() for item in raw if item.strip()]
+
+
+def _find_dashboard_run(run_id):
+    if not run_id:
+        return None
+    for item in run_store.list_runs():
+        if item.get("run_id") == run_id or item.get("run_id", "").startswith(str(run_id)):
+            return item
+    return None
+
+
+def write_control_decision(run, selected_architecture="", decision_summary="", modules_text="",
+                           sources_text="", assumptions_text="", risks_text="", alternatives_text="",
+                           decided_by="dashboard"):
+    decision_path = os.path.join(run["root"], archdec.FILENAME)
+    requirements_file = os.path.join(run["root"], reqgate.FILENAME)
+    data = archdec.load_or_template(decision_path, requirements_file=requirements_file)
+    if selected_architecture:
+        data["selected_architecture"] = selected_architecture.strip()
+    if decision_summary:
+        data["decision_summary"] = decision_summary.strip()
+    module_ids = _split_control_lines(modules_text)
+    if module_ids:
+        known = {item["id"] for item in archdec.module_registry.list_modules()}
+        unknown = [module_id for module_id in module_ids if module_id not in known]
+        if unknown:
+            raise ValueError("unknown module id(s): " + ", ".join(unknown))
+        data["selected_modules"] = module_ids
+    for field, text in (("sources", sources_text), ("assumptions", assumptions_text), ("risks", risks_text)):
+        values = _split_control_lines(text)
+        if values:
+            data[field] = values
+    alternatives = []
+    for line in (alternatives_text or "").splitlines():
+        if not line.strip():
+            continue
+        parts = [part.strip() for part in line.split("|", 2)]
+        if len(parts) != 3 or not all(parts):
+            raise ValueError("alternatives must use: name | decision | reason")
+        alternatives.append({"name": parts[0], "decision": parts[1], "reason": parts[2]})
+    if alternatives:
+        data["alternatives"] = alternatives
+    archdec.save(decision_path, data, decided_by=decided_by)
+    ok, missing = archdec.validate(data)
+    return {"path": decision_path, "record": data, "ok": ok, "missing": missing}
+
+
+def control_editor_panel(rows, selected_run_id=None):
+    selected_row = _row_for_run(rows, selected_run_id)
+    options = [
+        {"label": row["run"].get("run_id", "run"), "value": row["run"].get("run_id")}
+        for row in rows
+    ]
+    latest = selected_row["run"] if selected_row else {}
+    decision = archdec.load(os.path.join(latest.get("root", ""), archdec.FILENAME)) or {}
+    modules_value = "\n".join(decision.get("selected_modules") or [
+        "storage-medallion-s3",
+        "compute-glue-etl",
+        "orchestrator-stepfunctions",
+        "dq-great-expectations",
+        "schema-registry-glue",
+        "query-athena",
+        "governance-observability",
+    ])
+    sources_value = "\n".join(decision.get("sources") or [])
+    assumptions_value = "\n".join(decision.get("assumptions") or [])
+    risks_value = "\n".join(decision.get("risks") or [])
+    alternatives_value = "\n".join(
+        f"{item.get('name', '')} | {item.get('decision', '')} | {item.get('reason', '')}"
+        for item in (decision.get("alternatives") or [])
+        if item.get("name") or item.get("reason")
+    )
+    return html.Div(className="control-editor", children=[
+        html.Div(className="control-editor-head", children=[
+            html.Div("Artifact editor", className="control-editor-title"),
+            html.Div("Write requirements and architecture-decision evidence before synthesis.", className="control-editor-sub"),
+        ]),
+        html.Div(className="control-editor-gates", children=[
+            _gate_status("requirements", (selected_row or {}).get("requirements_ok"), bool((selected_row or {}).get("requirements_path"))),
+            _gate_status("decision", (selected_row or {}).get("decision_ok"), bool((selected_row or {}).get("decision_path"))),
+            _gate_status("terraform", os.path.exists(os.path.join(latest.get("terraform_dir", ""), "minus-generated.json")),
+                         os.path.isdir(latest.get("terraform_dir", ""))),
+            _gate_status("report", bool(((selected_row or {}).get("readiness") or {}).get("latest_report")), True),
+        ]),
+        html.Div(className="control-form-grid", children=[
+            html.Label(className="field-label", children=[
+                html.Span("Run"),
+                dcc.Dropdown(id="control-run-select", options=options,
+                             value=latest.get("run_id"), clearable=False, className="control-select"),
+            ]),
+            html.Label(className="field-label", children=[
+                html.Span("Selected architecture"),
+                dcc.Input(id="control-architecture", value=decision.get("selected_architecture", ""),
+                          placeholder="AWS governed lakehouse with Step Functions orchestration",
+                          className="control-input"),
+            ]),
+            html.Label(className="field-label wide", children=[
+                html.Span("Decision summary"),
+                dcc.Textarea(id="control-summary", value=decision.get("decision_summary", ""),
+                             placeholder="Why this architecture fits the gathered requirements.",
+                             className="control-textarea"),
+            ]),
+            html.Label(className="field-label", children=[
+                html.Span("Selected modules"),
+                dcc.Textarea(id="control-modules", value=modules_value,
+                             placeholder="One module id per line", className="control-textarea small"),
+            ]),
+            html.Label(className="field-label", children=[
+                html.Span("Official sources"),
+                dcc.Textarea(id="control-sources", value=sources_value,
+                             placeholder="One official URL per line", className="control-textarea small"),
+            ]),
+            html.Label(className="field-label", children=[
+                html.Span("Assumptions"),
+                dcc.Textarea(id="control-assumptions", value=assumptions_value,
+                             placeholder="One assumption per line", className="control-textarea small"),
+            ]),
+            html.Label(className="field-label", children=[
+                html.Span("Risks"),
+                dcc.Textarea(id="control-risks", value=risks_value,
+                             placeholder="One risk per line", className="control-textarea small"),
+            ]),
+            html.Label(className="field-label wide", children=[
+                html.Span("Alternatives"),
+                dcc.Textarea(id="control-alternatives", value=alternatives_value,
+                             placeholder="Name | decision | reason", className="control-textarea small"),
+            ]),
+        ]),
+        html.Div(className="control-actions", children=[
+            html.Button("Write lakehouse starter", id="control-accelerator-btn", n_clicks=0, className="control-button"),
+            html.Button("Save decision", id="control-save-decision-btn", n_clicks=0, className="control-button primary"),
+            dcc.Checklist(
+                id="control-force",
+                options=[{"label": "overwrite existing starter files", "value": "force"}],
+                value=[],
+                className="control-checklist",
+            ),
+        ]),
+        html.Div(id="control-action-status", className="control-status"),
+    ])
+
+
+def control_run_card(item):
+    run = item["run"]
+    readiness = item["readiness"]
+    run_id = run.get("run_id", "run")
+    req_path = item.get("requirements_path")
+    decision_path = item.get("decision_path")
+    requirements_file = req_path or os.path.join(run.get("root", ""), reqgate.FILENAME)
+    decision_file = decision_path or os.path.join(run.get("root", ""), archdec.FILENAME)
+    links = []
+    if req_path:
+        links.append(html.A("requirements.json", href=f"/runs/{run_id}/requirements.json",
+                            target="_blank", className="report-link"))
+    if decision_path:
+        links.append(html.A("architecture_decision.json", href=f"/runs/{run_id}/architecture_decision.json",
+                            target="_blank", className="report-link"))
+    latest = readiness.get("latest_report") or {}
+    if latest.get("id"):
+        links.append(html.A("latest report", href=f"/runs/{run_id}/reports/{latest['id']}/report.html",
+                            target="_blank", className="report-link"))
+    commands = [
+        f"python core/requirements.py check {requirements_file}",
+        f"python core/minusctl.py decision template --run {run_id} --write",
+        f"python core/architecture_decision.py set {decision_file} --architecture \"<selected architecture>\" --summary \"<why this choice>\"",
+        f"python core/architecture_decision.py add-module {decision_file} <module-id>",
+        f"python core/architecture_decision.py add-source {decision_file} \"<official doc URL>\"",
+        f"python core/architecture_decision.py check {decision_file}",
+        f"python core/synthesizer.py \"<requirements summary>\" --run {run_id} --requirements-file {requirements_file} --decision-file {decision_file}",
+        f"python core/plan_gate.py verify --dir {run.get('terraform_dir')} --policy-mode production",
+    ]
+    return html.Div(className="control-card", children=[
+        html.Div(className="control-main", children=[
+            html.Div(run_id, className="run-title"),
+            html.Div(run.get("request", "-"), className="control-request"),
+            html.Div(className="run-meta", children=[
+                html.Span(run.get("cloud", "-")),
+                html.Span(run.get("blueprint", "-")),
+                html.Span(readiness.get("status", "UNKNOWN")),
+            ]),
+        ]),
+        html.Div(className="gate-grid", children=[
+            _gate_status("requirements", item.get("requirements_ok"), bool(req_path)),
+            _gate_status("decision", item.get("decision_ok"), bool(decision_path)),
+            _gate_status("terraform", os.path.exists(os.path.join(run.get("terraform_dir", ""), "minus-generated.json")),
+                         os.path.isdir(run.get("terraform_dir", ""))),
+        ]),
+        html.Details(className="command-details", children=[
+            html.Summary("CLI commands"),
+            html.Div(className="command-stack", children=[_command_line(command) for command in commands]),
+        ]),
+        html.Div(className="report-links", children=links or [
+            html.Span("no control artifacts yet", className="report-missing")
+        ]),
+    ])
+
+
+def control_plane_panel(selected_run_id=None):
     rows = run_inventory()
-    total_runs = len(run_store.list_runs()) if os.path.isdir(os.path.join(ROOT, "runs")) else 0
+    selected = _row_for_run(rows, selected_run_id)
     if not rows:
         body = html.Div(className="empty sage", children=[
             html.Div("No run workspaces", className="empty-title"),
-            html.Div("Run core/minusctl.py create ... --generate to create a governed workspace.", className="empty-sub"),
+            html.Div('Run core/minusctl.py create "<request>".', className="empty-sub"),
+        ])
+    else:
+        visible_rows = [selected] + [row for row in rows if row is not selected] if selected else rows
+        body = html.Div(className="control-stack", children=[
+            control_editor_panel(rows, selected_run_id=selected_run_id),
+            html.Div(className="control-list", children=[control_run_card(row) for row in visible_rows[:4]]),
+        ])
+    return panel("Control plane", "requirements -> decision -> synthesis", body)
+
+
+def readiness_panel(selected_run_id=None):
+    rows = run_inventory()
+    total_runs = len(run_store.list_runs()) if os.path.isdir(os.path.join(ROOT, "runs")) else 0
+    selected = _row_for_run(rows, selected_run_id)
+    if not rows:
+        body = html.Div(className="empty sage", children=[
+            html.Div("No run workspaces", className="empty-title"),
+            html.Div('Run core/minusctl.py create "<request>" to create a requirements-first workspace.', className="empty-sub"),
         ])
     else:
         tabs = []
-        for idx, row in enumerate(rows):
+        visible = [selected] + [row for row in rows if row is not selected] if selected else rows
+        for idx, row in enumerate(visible):
             run = row["run"]
             readiness = row["readiness"]
-            label = ("Latest " if idx == 0 else "") + run.get("run_id", "run").split("-aws-data-pipeline-standard")[0]
+            label = ("Selected " if idx == 0 else "") + run.get("run_id", "run")
             tabs.append(dcc.Tab(
                 label=label,
                 value=run.get("run_id", str(idx)),
@@ -471,7 +874,7 @@ def readiness_panel():
             ))
         body = html.Div(className="runs", children=[
             dcc.Tabs(
-                value=rows[0]["run"].get("run_id"),
+                value=visible[0]["run"].get("run_id"),
                 className="run-tabs",
                 children=tabs,
             ),
@@ -496,9 +899,57 @@ def finding_row(f):
     ])
 
 
-def optimization_panels():
+def conformance_panel(readiness):
+    """Reference-architecture conformance: six-layer coverage + Well-Architected gaps.
+
+    Reads the report that minusctl._readiness already computed (readiness['conformance']),
+    so it stays deterministic and consistent with the CLI / enterprise package.
+    """
+    conf = (readiness or {}).get("conformance")
+    if not conf:
+        return panel("Reference conformance", "six-layer analytics model",
+                     html.Div(className="empty sage", children=[
+                         html.Div("No plan analyzed", className="empty-title"),
+                         html.Div("Run plan_gate plan to score against the reference architecture.",
+                                  className="empty-sub"),
+                     ]))
+    score = conf.get("score", 0)
+    tone = C["sage"] if score >= 90 else C["sand"] if score >= 60 else C["terracotta"]
+    chips = []
+    for name, info in (conf.get("layers") or {}).items():
+        present = info.get("present")
+        chips.append(html.Span(
+            f"{name} {info.get('count', 0)}" if present else f"{name} —",
+            style={
+                "display": "inline-block", "padding": ".2rem .55rem", "marginRight": ".4rem",
+                "marginBottom": ".4rem", "borderRadius": "20px", "fontSize": ".72rem",
+                "fontFamily": MONO,
+                "color": C["text"] if present else C["faint"],
+                "border": f"1px solid {C['sage'] if present else C['line']}",
+            }))
+    findings = conf.get("findings", [])
+    body = html.Div(children=[
+        html.Div(style={"display": "flex", "alignItems": "baseline", "gap": ".6rem",
+                        "marginBottom": ".6rem"}, children=[
+            html.Strong(f"{score}/100", style={"color": tone, "fontFamily": MONO, "fontSize": "1.4rem"}),
+            html.Span(conf.get("status", ""), style={"color": C["muted"], "fontFamily": MONO,
+                                                     "fontSize": ".78rem"}),
+        ]),
+        html.Div(chips, style={"marginBottom": ".6rem"}),
+        html.Div(className="findings", children=[
+            finding_row({"id": f.get("id", ""), "severity": f.get("severity", ""),
+                         "resource": f.get("reference", ""), "title": f.get("title", ""),
+                         "description": f.get("detail", "")})
+            for f in findings
+        ]) if findings else html.Div("Conforms to the reference architecture + Well-Architected checks.",
+                                     className="empty-sub"),
+    ])
+    return panel("Reference conformance", "six-layer analytics model · Well-Architected", body)
+
+
+def optimization_panels(selected_run_id=None):
     """One distinct panel per finding category (Cost / Security / Observability)."""
-    findings = collect_optimization_findings()
+    findings = collect_optimization_findings(run_id=selected_run_id)
     if not findings:
         return [panel("Optimization & findings", "scan of generated runs",
                       html.Div(className="empty sage", children=[
@@ -520,8 +971,8 @@ def optimization_panels():
     return panels
 
 
-def deployment_reports_panel():
-    reports = report_inventory()
+def deployment_reports_panel(selected_run_id=None):
+    reports = report_inventory(selected_run_id)
     if not reports:
         body = html.Div(className="empty sage", children=[
             html.Div("No deployment reports", className="empty-title"),
@@ -539,26 +990,142 @@ def deployment_reports_panel():
 # Page — static shell renders instantly; data fills in via a callback (with a
 # loading spinner) so a refresh never blocks on AWS round-trips.
 # ---------------------------------------------------------------------------
-def build_dynamic(d):
+def _cost_status(report):
+    cost = (report or {}).get("cost") or {}
+    if cost.get("ok"):
+        try:
+            total = float(cost.get("monthly_total_usd") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        value = f"${total:,.2f}/mo" if total else "priced"
+        return value, "AWS BCM estimate (on-demand list price)", "sage"
+    if cost.get("bcm_pricing_calculator_required") or cost.get("ok") is False:
+        return "BCM required", "cost unavailable until approved AWS BCM estimate", "sand"
+    return "unknown", "cost evidence unavailable", "muted"
+
+
+def _redact_account(account):
+    value = str(account or "").strip()
+    if not value:
+        return "not connected"
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) >= 4:
+        return "••••••••" + digits[-4:]
+    return "connected"
+
+
+def selected_run_banner(row, report):
+    if not row:
+        return html.Div(className="banner", children="No run selected.")
+    run = row["run"]
+    readiness = row.get("readiness") or {}
+    report_id = (report or {}).get("short") or "no report"
+    cost_value, cost_sub, cost_tone = _cost_status(report)
+    return html.Div(className="selected-run-banner", children=[
+        html.Div(className="selected-main", children=[
+            html.Div(run.get("run_id", "run"), className="selected-title"),
+            html.Div(run.get("request", "-"), className="selected-sub"),
+        ]),
+        html.Div(className="selected-chips", children=[
+            html.Span(run.get("cloud", "-")),
+            html.Span(readiness.get("status", "UNKNOWN")),
+            html.Span(f"readiness {readiness.get('score', 0)}/100"),
+            html.Span(f"plan {report_id}"),
+            html.Span(cost_value, className=f"chip-{cost_tone}"),
+        ]),
+        html.Div(cost_sub, className="selected-cost-note"),
+    ])
+
+
+def architecture_panel(row, report):
+    """The architecture itself, front and center on the overview: the plan-derived
+    dataflow diagram (six-layer model) inline, with a jump to the interactive viewer.
+    Nothing is fabricated — no report yet means an honest empty state, not a mockup."""
+    run_id = ((row or {}).get("run") or {}).get("run_id", "")
+    children = []
+    if report and report.get("path") and run_id:
+        short = report.get("short", "")
+        for fname in ("dataflow.svg", "architecture.svg"):
+            if os.path.exists(os.path.join(report["path"], fname)):
+                children = [
+                    html.Iframe(src=f"/runs/{run_id}/reports/{short}/{fname}", className="arch-embed"),
+                    html.Div(className="report-links", children=[
+                        html.A("Open interactive viewer (click-to-code, pan/zoom)",
+                               href=f"/deployment-reports/{short}/architecture",
+                               target="_blank", className="report-link"),
+                    ]),
+                ]
+                break
+    if not children:
+        children = [html.Div(className="empty sage", children=[
+            html.Div("No architecture yet", className="empty-title"),
+            html.Div('Create a run and generate a plan — the diagram is derived from the '
+                     'plan, so it appears with the first report.', className="empty-sub"),
+        ])]
+    return panel("Architecture — data flow", "derived from the plan · six-layer analytics model",
+                 html.Div(children=children))
+
+
+def _chart_empty(title, sub):
+    return html.Div(className="empty sage", children=[
+        html.Div(title, className="empty-title"),
+        html.Div(sub, className="empty-sub"),
+    ])
+
+
+def monthly_spend_panel(months, connected):
+    """Chart 1 — monthly spend columns, led by the MTD stat line (Cost Explorer)."""
+    if not connected:
+        body = _chart_empty("Not connected to AWS", "Run aws configure to load Cost Explorer data.")
+    elif months and any(m["total"] for m in months):
+        latest = months[-1]
+        spend_value = f"${latest['total']:,.2f}" if latest["total"] < 100 else f"${latest['total']:,.0f}"
+        if len(months) >= 2:
+            delta = months[-1]["total"] - months[-2]["total"]
+            spend_sub = f"{'up' if delta >= 0 else 'down'} ${abs(delta):,.2f} vs prior month"
+        else:
+            spend_sub = "trailing month"
+        body = html.Div(children=[
+            html.Div(className="spend-line", children=[html.Strong(spend_value), html.Span(spend_sub)]),
+            dcc.Graph(figure=trend_line(months), config={"displayModeBar": False}),
+        ])
+    else:
+        body = _chart_empty("No recorded spend", "Cost Explorer reports no spend in the trailing months.")
+    return panel("Monthly spend", "cost explorer — trailing months", body)
+
+
+def spend_service_panel(latest_month, connected):
+    """Chart 2 — where the latest month's spend went, top service emphasized."""
+    by_service = (latest_month or {}).get("by_service") or {}
+    if not connected:
+        body = _chart_empty("Not connected to AWS", "Run aws configure to load Cost Explorer data.")
+    elif by_service:
+        body = dcc.Graph(figure=spend_bar(latest_month), config={"displayModeBar": False})
+    else:
+        body = _chart_empty("No per-service spend", "The latest month has no recorded spend by service.")
+    return panel("Spend by service", "latest month, cost explorer", body)
+
+
+def anomaly_panel(anoms, connected):
+    """Chart 4 — the anomaly ledger (Cost Anomaly Detection)."""
+    if not connected:
+        body = _chart_empty("Not connected to AWS", "Run aws configure to load anomaly data.")
+    else:
+        body = ledger(anoms)
+    return panel("Spend anomalies", "cost anomaly detection — account level", body)
+
+
+def build_dynamic(d, selected_run_id=None):
     """Build the data-dependent part of the page from one assembled snapshot."""
     months = d["months"]
-    if months:
-        curr = months[-1]["total"]
-        prev = months[-2]["total"] if len(months) >= 2 else 0
-        delta_pct = ((curr - prev) / prev * 100) if prev else 0
-        this_month_val = f"${curr:,.2f}"
-        vs_val = f"{delta_pct:+.1f}%"
-        vs_tone = "terracotta" if delta_pct >= 0 else "sage"
-        vs_sub = f"{'up' if delta_pct >= 0 else 'down'} from {months[-2]['month']}" if prev else "no prior month"
-        tracked = str(len(months[-1]["by_service"]))
-    else:
-        this_month_val, vs_val, vs_tone, vs_sub, tracked = "—", "—", "muted", "awaiting data", "—"
-
+    rows = run_inventory()
+    selected_row = _row_for_run(rows, selected_run_id)
+    selected_report = _selected_report(selected_row)
+    readiness = (selected_row or {}).get("readiness") or {}
+    counts = (selected_report or {}).get("counts") or {}
+    cost_value, cost_sub, cost_tone = _cost_status(selected_report)
+    service_count = len(_service_counts(selected_report))
     anoms = d["anomalies"]
-    crit = sum(1 for a in anoms if a["severity"] == "CRITICAL")
-    anom_val = str(len(anoms))
-    anom_tone = "terracotta" if crit else ("sage" if not anoms else "sand")
-    anom_sub = f"{crit} critical" if crit else ("all clear" if not anoms else "review")
 
     banner = None
     if not d["connected"]:
@@ -567,24 +1134,39 @@ def build_dynamic(d):
             " to load live cost data, then refresh.",
         ])
 
+    conf = readiness.get("conformance") or {}
+    conf_score = conf.get("score")
+    changes = (f"+{counts.get('create', 0)} ~{counts.get('update', 0)} -{counts.get('delete', 0)}"
+               if counts else "—")
+    changes_sub = f"{service_count} service(s) in plan" if counts else "no report yet"
+
+    # Overview = the pipeline, not the wallet: run readiness, conformance to the
+    # reference architecture, what the plan changes, the diagram, and the cost GATE.
+    # Account-wide spend keeps one compact evidence panel instead of a page of $0 charts.
     overview = html.Div(className="tabpane", children=[
+        selected_run_banner(selected_row, selected_report),
         html.Div(className="kpis", children=[
-            kpi("This month", this_month_val, "unblended, month-to-date", "text"),
-            kpi("Vs last month", vs_val, vs_sub, vs_tone),
-            kpi("Anomalies", anom_val, anom_sub, anom_tone),
-            kpi("Tracked services", tracked, "with spend this month", "sand"),
+            kpi("Readiness", f"{readiness.get('score', 0)}/100", readiness.get("status", "UNKNOWN"),
+                "sage" if readiness.get("score", 0) >= 90 else "sand"),
+            kpi("Conformance", f"{conf_score}/100" if conf_score is not None else "—",
+                conf.get("status", "no plan analyzed"),
+                "sage" if (conf_score or 0) >= 90 else "sand"),
+            kpi("Plan changes", changes, changes_sub, "text"),
+            kpi("Cost evidence", cost_value, cost_sub, cost_tone),
         ]),
         html.Div(className="grid", children=[
             html.Div(className="col-main", children=[
-                panel("Spend by service", "this month",
-                      dcc.Graph(figure=spend_bar(months[-1] if months else None),
-                                config={"displayModeBar": False})),
-                panel("Monthly burn", "trailing months",
-                      dcc.Graph(figure=trend_line(months),
-                                config={"displayModeBar": False})),
+                monthly_spend_panel(months, d["connected"]),
+                spend_service_panel(months[-1] if months else None, d["connected"]),
+                conformance_panel(readiness),
             ]),
             html.Div(className="col-side", children=[
-                panel("Anomaly ledger", "cost spike -> root cause", ledger(anoms)),
+                panel("Plan composition", f"selected plan · {service_count or 0} service(s)",
+                      dcc.Graph(figure=plan_action_donut(selected_report),
+                                config={"displayModeBar": False})
+                      if any((counts or {}).values()) else
+                      _chart_empty("No plan yet", "Actions (+/~/-) appear once a report is generated.")),
+                anomaly_panel(anoms, d["connected"]),
             ]),
         ]),
     ])
@@ -595,11 +1177,14 @@ def build_dynamic(d):
                        children=html.Div(className="tabpane", children=children)
                        if not isinstance(children, html.Div) else children)
 
-    tabs = dcc.Tabs(value="overview", className="main-tabs", children=[
+    tabs = dcc.Tabs(value=os.environ.get("MINUS_DASH_DEFAULT_TAB", "overview"),
+                    className="main-tabs", children=[
         _tab("Overview", "overview", overview),
-        _tab("Optimization", "optimization", optimization_panels()),
-        _tab("Reports", "reports", [deployment_reports_panel()]),
-        _tab("Readiness", "readiness", [readiness_panel()]),
+        _tab("Control", "control", [control_plane_panel(selected_run_id)]),
+        _tab("Optimization", "optimization", optimization_panels(selected_run_id)),
+        _tab("Reports", "reports", [architecture_panel(selected_row, selected_report),
+                                    deployment_reports_panel(selected_run_id)]),
+        _tab("Readiness", "readiness", [readiness_panel(selected_run_id)]),
     ])
     return [banner, tabs]
 
@@ -611,11 +1196,16 @@ def app_shell():
             html.Div(className="brand", children=[
                 html.Span(className="brand-mark"),
                 html.Div(children=[
-                    html.Div("AWS Cost Ledger", className="brand-name"),
-                    html.Div("live FinOps console", className="brand-tag"),
+                    html.Div("MinusOps", className="brand-name"),
+                    html.Div("governed data-pipeline console", className="brand-tag"),
                 ]),
             ]),
             html.Div(className="masthead-right", children=[
+                html.Div(className="run-picker", children=[
+                    html.Span("pipeline", className="acct-label"),
+                    dcc.Dropdown(id="global-run-select", options=[], clearable=False,
+                                 placeholder="select run", className="global-run-select"),
+                ]),
                 html.Div(className="acct", children=[
                     html.Span("account", className="acct-label"),
                     html.Span("connecting…", id="acct-value", className="acct-value"),
@@ -634,8 +1224,68 @@ def app_shell():
 # ---------------------------------------------------------------------------
 # App shell (fonts + global CSS)
 # ---------------------------------------------------------------------------
-app = dash.Dash(__name__, title="AWS Cost Ledger")
+app = dash.Dash(__name__, title="MinusOps Console", suppress_callback_exceptions=True)
 app.layout = app_shell
+
+
+def _dashboard_token():
+    return os.environ.get("MINUS_DASH_TOKEN") or os.environ.get("DASH_TOKEN")
+
+
+def _is_loopback_host(host):
+    host = (host or "").strip().lower()
+    return host in {"", "localhost", "127.0.0.1", "::1"} or host.startswith("127.")
+
+
+def _remote_bind_requires_token(host):
+    return not _is_loopback_host(host) and not _dashboard_token()
+
+
+def _valid_dashboard_token(value):
+    token = _dashboard_token()
+    return bool(token and value and hmac.compare_digest(str(value), str(token)))
+
+
+def _request_authorized():
+    token = _dashboard_token()
+    if not token:
+        return True
+    from flask import request
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer ") and _valid_dashboard_token(auth[7:].strip()):
+        return True
+    if _valid_dashboard_token(request.args.get("token")):
+        return True
+    if _valid_dashboard_token(request.cookies.get("minus_dash_token")):
+        return True
+    return False
+
+
+@app.server.before_request
+def _enforce_dashboard_auth():
+    if _request_authorized():
+        return None
+    from flask import Response
+    return Response(
+        "dashboard authentication required",
+        401,
+        {"WWW-Authenticate": 'Bearer realm="minusops-dashboard"'},
+    )
+
+
+@app.server.after_request
+def _persist_dashboard_token(response):
+    from flask import request
+    supplied = request.args.get("token")
+    if _valid_dashboard_token(supplied):
+        response.set_cookie(
+            "minus_dash_token",
+            supplied,
+            httponly=True,
+            secure=request.is_secure,
+            samesite="Strict",
+        )
+    return response
 
 
 @app.server.route("/deployment-reports/<report_id>/<path:filename>")
@@ -664,9 +1314,19 @@ _ARCH_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Architec
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:#14110f;color:#fbf7f4;font-family:Inter,system-ui,sans-serif}
 .wrap{display:flex;height:100vh}
-.canvas{flex:1;overflow:auto;padding:20px;scrollbar-width:none;-ms-overflow-style:none}
-.canvas::-webkit-scrollbar{display:none}
-.canvas svg{width:100%;height:auto}
+.canvas{flex:1;position:relative;overflow:hidden;background:#14110f}
+.canvas-inner{position:absolute;top:0;left:0;transform-origin:0 0;cursor:grab}
+.canvas-inner.dragging{cursor:grabbing}
+.canvas-inner svg{display:block;width:1280px;height:auto}
+.zoom-controls{position:absolute;top:16px;right:16px;z-index:5;display:flex;flex-direction:column;gap:6px}
+.zoom-controls button{width:32px;height:32px;border-radius:8px;border:1px solid rgba(217,93,57,.28);
+ background:#1c1714;color:#fbf7f4;font:600 16px 'JetBrains Mono',monospace;cursor:pointer;line-height:1}
+.zoom-controls button:hover{border-color:#d95d39;background:rgba(217,93,57,.14)}
+.zoom-pct{font:500 10px 'JetBrains Mono',monospace;color:#b09c93;text-align:center;padding-top:2px}
+.view-toggle{position:absolute;bottom:16px;left:16px;z-index:5;display:flex;gap:6px}
+.view-toggle button{height:32px;padding:0 14px;border-radius:8px;border:1px solid rgba(217,93,57,.28);
+ background:#1c1714;color:#b09c93;font:600 12px 'Outfit',sans-serif;cursor:pointer}
+.view-toggle button.active{border-color:#d95d39;background:rgba(217,93,57,.14);color:#fbf7f4}
 .panel{width:440px;flex:none;border-left:1px solid rgba(217,93,57,.18);background:#1c1714;padding:18px 20px;
  overflow:auto;scrollbar-width:none;-ms-overflow-style:none}
 .panel::-webkit-scrollbar{display:none}
@@ -684,10 +1344,19 @@ pre::-webkit-scrollbar{display:none}
 .node{cursor:pointer}.node:hover .card{stroke-width:2.6}
 </style></head><body>
 <div class="wrap">
- <div class="canvas">__SVG__</div>
+ <div class="canvas" id="canvas">
+  <div class="canvas-inner" id="canvasInner">__VIEWS__</div>
+  <div class="view-toggle" id="viewToggle">__TOGGLE__</div>
+  <div class="zoom-controls">
+   <button id="zoomIn" title="Zoom in">+</button>
+   <button id="zoomReset" title="Fit to screen">⤢</button>
+   <button id="zoomOut" title="Zoom out">−</button>
+   <div class="zoom-pct" id="zoomPct">100%</div>
+  </div>
+ </div>
  <div class="panel" id="panel">
   <h2>Service inspector</h2>
-  <div class="hint">Click any service box in the diagram to see the exact Terraform that provisions it, plus its security/cost findings.</div>
+  <div class="hint">Click any service box in the diagram to see the exact Terraform that provisions it, plus its security/cost findings. Scroll to zoom, drag to pan — useful once an architecture has many components.</div>
  </div>
 </div>
 <script>
@@ -724,6 +1393,82 @@ document.querySelectorAll('.node').forEach(function(n){
   show(n.getAttribute('data-address'));
  });
 });
+
+// Pan + zoom — large diagrams (many resources) get a tall canvas; this keeps it navigable
+// instead of shrinking cards or clipping content.
+(function(){
+ const canvas = document.getElementById('canvas');
+ const inner = document.getElementById('canvasInner');
+ const pctLabel = document.getElementById('zoomPct');
+ let scale = 1, tx = 20, ty = 20, dragging = false, moved = false, lastX = 0, lastY = 0;
+
+ function apply(){
+  inner.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+  pctLabel.textContent = Math.round(scale * 100) + '%';
+ }
+ function clampScale(s){ return Math.min(3, Math.max(0.15, s)); }
+ function visibleSvg(){
+  const views = inner.querySelectorAll('.diagram-view');
+  for(const v of views){ if(v.style.display !== 'none'){ return v.querySelector('svg'); } }
+  return inner.querySelector('svg');
+ }
+ function fitToScreen(){
+  const svg = visibleSvg();
+  if(!svg){ return; }
+  const vb = svg.viewBox.baseVal;
+  const w = vb && vb.width ? vb.width : 1280;
+  const h = vb && vb.height ? vb.height : 760;
+  const availW = canvas.clientWidth - 40;
+  const availH = canvas.clientHeight - 40;
+  scale = clampScale(Math.min(availW / w, availH / h, 1));
+  tx = 20; ty = 20;
+  apply();
+ }
+ window.addEventListener('resize', fitToScreen);
+ fitToScreen();
+
+ canvas.addEventListener('wheel', function(e){
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  const prev = scale;
+  scale = clampScale(scale * (e.deltaY < 0 ? 1.12 : 0.89));
+  tx = cx - (cx - tx) * (scale / prev);
+  ty = cy - (cy - ty) * (scale / prev);
+  apply();
+ }, {passive: false});
+
+ canvas.addEventListener('mousedown', function(e){
+  dragging = true; moved = false; lastX = e.clientX; lastY = e.clientY;
+  inner.classList.add('dragging');
+ });
+ window.addEventListener('mousemove', function(e){
+  if(!dragging){ return; }
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  if(Math.abs(dx) > 3 || Math.abs(dy) > 3){ moved = true; }
+  tx += dx; ty += dy; lastX = e.clientX; lastY = e.clientY;
+  apply();
+ });
+ window.addEventListener('mouseup', function(){
+  dragging = false; inner.classList.remove('dragging');
+ });
+
+ document.getElementById('zoomIn').addEventListener('click', function(){ scale = clampScale(scale * 1.2); apply(); });
+ document.getElementById('zoomOut').addEventListener('click', function(){ scale = clampScale(scale * 0.8); apply(); });
+ document.getElementById('zoomReset').addEventListener('click', fitToScreen);
+
+ // Topology / Data flow toggle (buttons exist only when dataflow.svg was generated).
+ const toggles = document.querySelectorAll('#viewToggle button');
+ const views = inner.querySelectorAll('.diagram-view');
+ toggles.forEach(function(btn, i){
+  btn.addEventListener('click', function(){
+   toggles.forEach(function(b){ b.classList.remove('active'); });
+   btn.classList.add('active');
+   views.forEach(function(v, j){ v.style.display = (i === j) ? 'block' : 'none'; });
+   fitToScreen();
+  });
+ });
+})();
 </script></body></html>"""
 
 
@@ -742,6 +1487,16 @@ def _serve_architecture_page(report_id):
     if not svg_path.exists():
         abort(404)
     svg = svg_path.read_text(encoding="utf-8")
+    df_path = report_dir / "dataflow.svg"
+    df_svg = df_path.read_text(encoding="utf-8") if df_path.exists() else None
+    if df_svg:
+        views = (f'<div class="diagram-view">{df_svg}</div>'
+                 f'<div class="diagram-view" style="display:none">{svg}</div>')
+        toggle = ('<button class="active">Data flow</button>'
+                  '<button>Topology</button>')
+    else:
+        views = f'<div class="diagram-view">{svg}</div>'
+        toggle = ""
 
     # Embed the plan-bound source + per-resource file/type/findings for click-to-code.
     sources = {}
@@ -749,12 +1504,13 @@ def _serve_architecture_page(report_id):
     if snapshot.exists():
         for f in snapshot.rglob("*"):
             if f.is_file() and f.suffix in (".tf", ".tfvars"):
-                sources[f.name] = f.read_text(encoding="utf-8", errors="replace")
+                rel = f.relative_to(snapshot).as_posix()
+                sources[rel] = f.read_text(encoding="utf-8", errors="replace")
     addr_file, addr_type = {}, {}
     for ch in plan.get("resource_changes", []):
         addr, rtype = ch.get("address"), ch.get("type", "")
         if addr:
-            addr_file[addr] = plan_inspector.owner_file_for_type(rtype)
+            addr_file[addr] = plan_inspector.owner_file_for_address(addr, rtype)
             addr_type[addr] = rtype
     addr_findings = {}
     try:
@@ -773,7 +1529,8 @@ def _serve_architecture_page(report_id):
     data = {"sources": sources, "addrFile": addr_file, "addrType": addr_type, "addrFindings": addr_findings}
     page = (_ARCH_PAGE
             .replace("__TITLE__", html_lib.escape(report_id))
-            .replace("__SVG__", svg)
+            .replace("__VIEWS__", views)
+            .replace("__TOGGLE__", toggle)
             .replace("__DATA__", json.dumps(data).replace("</", "<\\/")))
     return Response(page, mimetype="text/html")
 
@@ -892,7 +1649,7 @@ def _serve_report_files(report_id):
 @app.server.route("/runs/<run_id>/<filename>")
 def _serve_run_file(run_id, filename):
     from flask import abort, send_file
-    if filename not in {"enterprise-package.md", "enterprise-package.json"}:
+    if filename not in {"enterprise-package.md", "enterprise-package.json", "requirements.json", "architecture_decision.json"}:
         abort(404)
     try:
         run = None
@@ -916,7 +1673,7 @@ def _serve_run_file(run_id, filename):
 def _serve_run_report_file(run_id, report_id, filename):
     from flask import abort, send_file
     allowed = {
-        "architecture.svg", "report.html", "plan.html", "cost.html",
+        "architecture.svg", "dataflow.svg", "report.html", "plan.html", "cost.html",
         "plan.pdf", "cost.pdf", "plan.json", "cost.json",
         "bcm-assumptions.json", "bcm-create-workload-estimate.json", "bcm-usage.json", "bcm-commands.json",
     }
@@ -944,13 +1701,75 @@ def _serve_run_report_file(run_id, report_id, filename):
     Output("acct-value", "children"),
     Output("refresh-time", "children"),
     Input("refresh-btn", "n_clicks"),
+    Input("global-run-select", "value"),
 )
-def _render(_n_clicks):
+def _render(_n_clicks, selected_run_id):
     # The Refresh button forces a fresh fetch; initial page load uses the cache if warm.
     force = ctx.triggered_id == "refresh-btn"
     d = assemble(force=force)
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M UTC")
-    return build_dynamic(d), (d["account"] or "not connected"), f"Refreshed {now}"
+    return build_dynamic(d, selected_run_id), _redact_account(d["account"]), f"Refreshed {now}"
+
+
+@app.callback(
+    Output("global-run-select", "options"),
+    Output("global-run-select", "value"),
+    Input("refresh-btn", "n_clicks"),
+)
+def _run_selector(_n_clicks):
+    rows = run_inventory()
+    options = [
+        {"label": row["run"].get("run_id", "run"), "value": row["run"].get("run_id")}
+        for row in rows
+    ]
+    return options, (options[0]["value"] if options else None)
+
+
+@app.callback(
+    Output("control-action-status", "children"),
+    Input("control-accelerator-btn", "n_clicks"),
+    Input("control-save-decision-btn", "n_clicks"),
+    State("control-run-select", "value"),
+    State("control-architecture", "value"),
+    State("control-summary", "value"),
+    State("control-modules", "value"),
+    State("control-sources", "value"),
+    State("control-assumptions", "value"),
+    State("control-risks", "value"),
+    State("control-alternatives", "value"),
+    State("control-force", "value"),
+    prevent_initial_call=True,
+)
+def _control_action(_accelerator_clicks, _save_clicks, run_id, architecture, summary, modules_text,
+                    sources_text, assumptions_text, risks_text, alternatives_text, force_values):
+    run = _find_dashboard_run(run_id)
+    if not run:
+        return html.Div("Run not found.", className="status-bad")
+    try:
+        if ctx.triggered_id == "control-accelerator-btn":
+            result = accelerators.write_lakehouse(run, force="force" in (force_values or []))
+            return html.Div(className="status-good", children=[
+                html.Strong("Lakehouse starter written."),
+                html.Code(result["next"], className="command-line"),
+            ])
+        result = write_control_decision(
+            run,
+            selected_architecture=architecture or "",
+            decision_summary=summary or "",
+            modules_text=modules_text or "",
+            sources_text=sources_text or "",
+            assumptions_text=assumptions_text or "",
+            risks_text=risks_text or "",
+            alternatives_text=alternatives_text or "",
+        )
+    except Exception as exc:
+        return html.Div(str(exc), className="status-bad")
+    if result["ok"]:
+        return html.Div(f"Decision complete: {result['path']}", className="status-good")
+    return html.Div(className="status-warn", children=[
+        html.Strong("Decision saved but incomplete."),
+        html.Span(", ".join(result["missing"])),
+    ])
 
 
 @app.server.before_request
@@ -1013,6 +1832,14 @@ app.index_string = """<!DOCTYPE html>
     .brand-name{font-family:'Outfit',sans-serif;font-weight:700;font-size:1.22rem;letter-spacing:-.01em}
     .brand-tag{font-size:.74rem;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-top:.12rem}
     .masthead-right{display:flex;align-items:center;gap:1.5rem}
+    .run-picker{min-width:310px;display:flex;flex-direction:column;gap:.18rem}
+    .global-run-select .Select-control{background:#14110f!important;border:1px solid var(--line)!important;
+      border-radius:8px!important;min-height:34px!important}
+    .global-run-select .Select-value,.global-run-select .Select-placeholder{line-height:32px!important}
+    .global-run-select .Select-value-label,.global-run-select .Select-placeholder{color:var(--text)!important;
+      font-family:'JetBrains Mono',monospace!important;font-size:.74rem!important}
+    .global-run-select .Select-menu-outer{background:#1c1714!important;border:1px solid var(--line)!important;
+      color:var(--text)!important}
     .acct{display:flex;flex-direction:column;align-items:flex-end;gap:.15rem}
     .acct-label{font-size:.64rem;letter-spacing:.18em;text-transform:uppercase;color:var(--faint)}
     .acct-value{font-family:'JetBrains Mono',monospace;font-size:.86rem;color:var(--sand)}
@@ -1026,8 +1853,25 @@ app.index_string = """<!DOCTYPE html>
       border-radius:10px;padding:.85rem 1.1rem;margin-bottom:1.6rem;color:var(--muted);font-size:.9rem}
     .banner code{font-family:'JetBrains Mono',monospace;color:var(--sand);background:rgba(0,0,0,.25);
       padding:.1rem .4rem;border-radius:5px}
+    .selected-run-banner{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.6rem 1rem;
+      align-items:center;border:1px solid var(--line);border-left:3px solid var(--sage);border-radius:10px;
+      padding:.85rem 1rem;margin-bottom:1rem;background:rgba(141,161,137,.07)}
+    .selected-main{min-width:0}
+    .selected-title{font-family:'JetBrains Mono',monospace;font-size:.88rem;color:var(--text);overflow-wrap:anywhere}
+    .selected-sub{font-size:.8rem;color:var(--muted);margin-top:.22rem;overflow-wrap:anywhere}
+    .selected-chips{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.4rem}
+    .selected-chips span{font-family:'JetBrains Mono',monospace;font-size:.7rem;border:1px solid rgba(255,255,255,.09);
+      border-radius:7px;padding:.22rem .42rem;color:var(--muted);background:rgba(0,0,0,.18)}
+    .selected-chips .chip-sage{color:var(--sage);border-color:rgba(141,161,137,.4)}
+    .selected-chips .chip-sand{color:var(--sand);border-color:rgba(212,163,115,.45)}
+    .selected-chips .chip-terracotta{color:var(--terra);border-color:rgba(217,93,57,.5)}
+    .selected-cost-note{grid-column:1/-1;color:var(--faint);font-size:.76rem;font-family:'JetBrains Mono',monospace}
 
     /* KPI strip */
+    .arch-embed{width:100%;height:480px;border:0;border-radius:12px;background:var(--bg);display:block}
+    .spend-line{display:flex;align-items:baseline;gap:.55rem;font-family:var(--mono,monospace);
+      font-size:.86rem;color:var(--muted);margin-bottom:.7rem;flex-wrap:wrap}
+    .spend-line strong{font-size:1.25rem;color:var(--text)}
     .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1.1rem;margin-bottom:1.6rem}
     .kpi{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:1.3rem 1.4rem;
       backdrop-filter:blur(10px)}
@@ -1039,6 +1883,7 @@ app.index_string = """<!DOCTYPE html>
     /* Grid */
     .grid{display:grid;grid-template-columns:1.55fr 1fr;gap:1.1rem;align-items:start}
     .col-main{display:flex;flex-direction:column;gap:1.1rem}
+    .col-side{display:flex;flex-direction:column;gap:1.1rem}
     .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;
       padding:1.35rem 1.45rem;backdrop-filter:blur(10px)}
     .panel-head{margin-bottom:.9rem}
@@ -1132,6 +1977,60 @@ app.index_string = """<!DOCTYPE html>
     .readiness-issue small{color:var(--muted);line-height:1.45}
     .run-history-note{font-size:.78rem;color:var(--faint);font-family:'JetBrains Mono',monospace;
       padding:.25rem .1rem;line-height:1.45}
+    .control-stack{display:flex;flex-direction:column;gap:.9rem}
+    .control-editor{border:1px solid var(--line);border-radius:10px;padding:1rem;background:rgba(0,0,0,.2)}
+    .control-editor-head{display:flex;justify-content:space-between;gap:1rem;align-items:flex-end;margin-bottom:.9rem}
+    .control-editor-title{font-family:'Outfit',sans-serif;font-weight:700;font-size:1rem}
+    .control-editor-sub{font-size:.78rem;color:var(--muted);line-height:1.35;text-align:right}
+    .control-editor-gates{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.45rem;margin-bottom:.9rem}
+    .control-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}
+    .field-label{display:flex;flex-direction:column;gap:.35rem;font-size:.68rem;text-transform:uppercase;
+      letter-spacing:.08em;color:var(--faint);font-family:'JetBrains Mono',monospace}
+    .field-label.wide{grid-column:1/-1}
+    .control-input,.control-textarea{width:100%;border:1px solid rgba(255,255,255,.1);border-radius:8px;
+      background:#14110f;color:var(--text);font-family:'Inter',sans-serif;font-size:.84rem;
+      padding:.62rem .7rem;outline:none}
+    .control-textarea{min-height:96px;resize:vertical;line-height:1.42}
+    .control-textarea.small{min-height:148px;font-family:'JetBrains Mono',monospace;font-size:.75rem}
+    .control-textarea{scrollbar-width:none;-ms-overflow-style:none}
+    .control-textarea::-webkit-scrollbar{display:none;width:0;height:0}
+    .control-input:focus,.control-textarea:focus{border-color:var(--terra);box-shadow:0 0 0 2px rgba(217,93,57,.12)}
+    .control-select .Select-control{background:#14110f;border:1px solid rgba(255,255,255,.1);border-radius:8px}
+    .control-select .Select-value-label,.control-select .Select-placeholder{color:var(--text)!important}
+    .control-actions{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin-top:.85rem}
+    .control-button{font-family:'JetBrains Mono',monospace;font-size:.78rem;border:1px solid var(--line);
+      border-radius:8px;padding:.55rem .75rem;background:rgba(217,93,57,.07);color:var(--text);cursor:pointer}
+    .control-button.primary{border-color:rgba(141,161,137,.4);background:rgba(141,161,137,.12)}
+    .control-button:hover{border-color:var(--terra)}
+    .control-checklist{font-size:.76rem;color:var(--muted)}
+    .control-status{margin-top:.7rem;font-size:.82rem;line-height:1.45}
+    .control-status .command-line{margin-top:.45rem}
+    .status-good,.status-warn,.status-bad{border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:.6rem .7rem}
+    .status-good{border-color:rgba(141,161,137,.45);background:rgba(141,161,137,.08)}
+    .status-warn{border-color:rgba(212,163,115,.5);background:rgba(212,163,115,.08)}
+    .status-bad{border-color:rgba(217,93,57,.5);background:rgba(217,93,57,.08)}
+    .control-list{display:flex;flex-direction:column;gap:.75rem}
+    .control-card{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(260px,.8fr);
+      gap:.8rem 1rem;align-items:start;background:rgba(0,0,0,.18);border:1px solid var(--line);
+      border-radius:10px;padding:.95rem 1rem}
+    .control-main{min-width:0}
+    .control-request{font-size:.84rem;color:var(--muted);line-height:1.45;margin-top:.35rem;overflow-wrap:anywhere}
+    .gate-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.45rem}
+    .gate-status{border:1px solid var(--line);border-radius:8px;padding:.55rem .6rem;
+      background:rgba(255,255,255,.025);font-family:'JetBrains Mono',monospace}
+    .gate-status span{display:block;font-size:.68rem;color:var(--faint);text-transform:uppercase}
+    .gate-status strong{display:block;margin-top:.18rem;font-size:.82rem;color:var(--text)}
+    .gate-status.ok{border-color:rgba(141,161,137,.4);background:rgba(141,161,137,.08)}
+    .gate-status.open{border-color:rgba(212,163,115,.42);background:rgba(212,163,115,.07)}
+    .gate-status.missing{border-color:rgba(217,93,57,.42);background:rgba(217,93,57,.07)}
+    .command-stack{grid-column:1/-1;display:flex;flex-direction:column;gap:.42rem}
+    .command-line{display:block;white-space:normal;overflow-wrap:anywhere;border:1px solid rgba(255,255,255,.08);
+      border-radius:7px;padding:.5rem .6rem;background:rgba(0,0,0,.22);color:var(--text);
+      font-family:'JetBrains Mono',monospace;font-size:.75rem}
+    .command-details{grid-column:1/-1;border:1px solid rgba(255,255,255,.08);border-radius:8px;
+      padding:.55rem .65rem;background:rgba(0,0,0,.14)}
+    .command-details summary{cursor:pointer;color:var(--sand);font-family:'JetBrains Mono',monospace;font-size:.74rem}
+    .command-details .command-stack{margin-top:.55rem}
 
     .footer{display:flex;justify-content:space-between;align-items:center;margin-top:2rem;
       padding-top:1.3rem;border-top:1px solid var(--line);font-size:.76rem;color:var(--faint)}
@@ -1140,8 +2039,19 @@ app.index_string = """<!DOCTYPE html>
     @media (max-width:920px){
       .kpis{grid-template-columns:repeat(2,1fr)}
       .grid{grid-template-columns:1fr}
+      .masthead{align-items:flex-start;gap:.8rem;flex-direction:column}
+      .masthead-right{width:100%;justify-content:space-between;gap:.8rem;flex-wrap:wrap}
+      .run-picker{min-width:min(100%,320px)}
+      .selected-run-banner{grid-template-columns:1fr}
+      .selected-chips{justify-content:flex-start}
       .report-card{grid-template-columns:1fr}
       .run-card{grid-template-columns:1fr}
+      .control-form-grid{grid-template-columns:1fr}
+      .control-editor-gates{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .control-editor-head{align-items:flex-start;flex-direction:column}
+      .control-editor-sub{text-align:left}
+      .control-card{grid-template-columns:1fr}
+      .gate-grid{grid-template-columns:1fr}
       .latest-report{grid-template-columns:1fr}
       .report-counts{justify-content:flex-start}
       .latest-counts{justify-content:flex-start}
@@ -1164,19 +2074,27 @@ def _port_in_use(host, port):
 
 
 if __name__ == "__main__":
-    # Safe default: bind to localhost only. Set DASH_HOST=0.0.0.0 to expose on the LAN.
+    # Safe default: bind to localhost only. Non-local binds require MINUS_DASH_TOKEN.
     host = os.environ.get("DASH_HOST", "127.0.0.1")
     try:
         port = int(os.environ.get("DASH_PORT", "8050"))
     except ValueError:
         port = 8050
 
+    if _remote_bind_requires_token(host):
+        print("[error] Refusing to bind dashboard to a non-local interface without auth.\n"
+              "        Set MINUS_DASH_TOKEN to a strong random value, then open with:\n"
+              f"        http://{host}:{port}/?token=$MINUS_DASH_TOKEN",
+              file=sys.stderr)
+        sys.exit(1)
+
     if _port_in_use(host, port):
         print(f"[error] Port {port} is already in use. Pick another, e.g.:\n"
               f"        DASH_PORT=8060 python app/dashboard_app.py", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n  AWS Cost Ledger  ->  http://{host}:{port}   (Ctrl+C to stop)\n")
+    auth_note = "token auth enabled" if _dashboard_token() else "localhost-only"
+    print(f"\n  MinusOps Console  ->  http://{host}:{port}   ({auth_note}; Ctrl+C to stop)\n")
     # Werkzeug's built-in server behaves identically on Windows / macOS / Linux.
     # hot-reload off: some Dash renderers poll an internal endpoint that 500s without a callback.
     app.run(host=host, port=port, debug=False, dev_tools_hot_reload=False)
