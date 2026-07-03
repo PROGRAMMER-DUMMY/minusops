@@ -504,11 +504,10 @@ def report_card(report):
     for filename, label in [("plan.pdf", "Plan PDF"), ("cost.pdf", "Cost PDF")]:
         if filename in files:
             links.append(report_link(short, filename, label))
-    links.append(html.A("Diff", href=f"/deployment-reports/{short}/diff",
+    # Services / resources / IAM / drift / files live on ONE consolidated page —
+    # five link-outs was a navigation chore (the individual routes still work).
+    links.append(html.A("Inspect", href=f"/deployment-reports/{short}/inspect",
                         target="_blank", className="report-link"))
-    for view in ("services", "resources", "roles", "files"):
-        links.append(html.A(view.title(), href=f"/deployment-reports/{short}/{view}",
-                            target="_blank", className="report-link"))
     return html.Div(className="report-card", children=[
         html.Div(className="report-main", children=[
             html.Div(report["template"], className="report-title"),
@@ -1731,6 +1730,92 @@ td{{font-family:Consolas,monospace}}
 <h1>{html_lib.escape(title)}</h1>
 <div class="sub">plan {html_lib.escape(report_id)}</div>
 <table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>
+</body></html>""", mimetype="text/html")
+
+
+def _inspect_section(title, summary_extra, table_html, open_=False):
+    return (f'<details{" open" if open_ else ""}><summary><b>{html_lib.escape(title)}</b>'
+            f'<span class="meta">{summary_extra}</span></summary>{table_html}</details>')
+
+
+def _inspect_table(headers, rows):
+    head = "".join(f"<th>{html_lib.escape(str(h))}</th>" for h in headers)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{html_lib.escape(str(cell))}</td>" for cell in row) + "</tr>"
+        for row in rows) or f'<tr><td colspan="{len(headers)}">No data</td></tr>'
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+@app.server.route("/deployment-reports/<report_id>/inspect")
+def _serve_report_inspect(report_id):
+    """One consolidated review page — services, resources, IAM, source drift, files —
+    instead of five separate link-outs. Everything is derived from the frozen report."""
+    from flask import abort, Response
+    try:
+        report_dir, manifest, plan = plan_inspector.load_report(report_id)
+        svc = plan_inspector.services(plan)
+        resources = plan_inspector.resource_rows(plan)
+        iam = plan_inspector.iam_roles(plan)
+        drift = plan_inspector.source_status(report_id)
+        diff_lines = plan_inspector.diff_source(report_id)
+        files = [(i.name, i.stat().st_size) for i in sorted(report_dir.iterdir())
+                 if i.name != "source_snapshot"]
+    except Exception:
+        abort(404)
+
+    counts = manifest.get("counts", {})
+    deletes = counts.get("delete", 0)
+    drift_status = drift.get("status", "UNKNOWN")
+    drift_tone = "#8da189" if drift_status == "CURRENT" else "#d95d39"
+
+    sections = [
+        _inspect_section(
+            "Services", f'{len(svc)} service(s)',
+            _inspect_table(["Service", "Count", "Resources"],
+                           [(s, len(items), ", ".join(r["address"] for r in items))
+                            for s, items in svc.items()]), open_=True),
+        _inspect_section(
+            "Resources", f'{len(resources)} — +{counts.get("create", 0)} '
+                         f'~{counts.get("update", 0)} -{deletes}',
+            _inspect_table(["Address", "Type", "Action", "Service", "File"],
+                           [(r["address"], r["type"], r["action"],
+                             plan_inspector.service_for_type(r["type"]), r["owner_file"])
+                            for r in resources])),
+        _inspect_section(
+            "IAM roles & policies", f'{len(iam["roles"])} role(s), {len(iam["policies"])} policy(ies)',
+            _inspect_table(["Address", "Name", "Attachments"],
+                           [(r["address"], r["name"], ", ".join(r["policy_attachments"]))
+                            for r in iam["roles"]]
+                           + [(p["address"], p["name"], "policy") for p in iam["policies"]])),
+        _inspect_section(
+            "Source drift", f'<span style="color:{drift_tone}">{html_lib.escape(drift_status)}</span>',
+            "<pre>" + html_lib.escape("\n".join(diff_lines) or drift.get("reason", "no drift")) + "</pre>",
+            open_=(drift_status != "CURRENT")),
+        _inspect_section(
+            "Report files", f'{len(files)} artifact(s)',
+            _inspect_table(["File", "Bytes"], files)),
+    ]
+    return Response(f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Inspect {html_lib.escape(report_id)}</title>
+<style>
+body{{background:#14110f;color:#fbf7f4;font-family:Inter,system-ui,sans-serif;margin:0;padding:28px;max-width:1320px}}
+h1{{font-size:24px;margin:0 0 8px}}.sub{{color:#b09c93;font-family:Consolas,monospace;margin-bottom:20px}}
+details{{background:#1c1714;border:1px solid rgba(217,93,57,.18);border-radius:12px;margin-bottom:14px;padding:0}}
+summary{{cursor:pointer;padding:14px 18px;font-size:15px;list-style:none;display:flex;justify-content:space-between;align-items:baseline}}
+summary::-webkit-details-marker{{display:none}}
+summary .meta{{color:#b09c93;font:500 12px Consolas,monospace}}
+details[open] summary{{border-bottom:1px solid rgba(255,255,255,.06)}}
+details>table,details>pre{{margin:0}}
+table{{width:100%;border-collapse:collapse}}
+th,td{{text-align:left;border-bottom:1px solid rgba(255,255,255,.06);padding:9px 14px;font-size:12.5px;vertical-align:top}}
+th{{color:#b09c93;text-transform:uppercase;font-size:10.5px;letter-spacing:.08em}}
+td{{font-family:Consolas,monospace}}
+pre{{padding:14px 18px;overflow:auto;white-space:pre-wrap;line-height:1.45;font-size:12px;color:#e8e2dc}}
+</style></head><body>
+<h1>Report inspection</h1>
+<div class="sub">plan {html_lib.escape(report_id)} · {html_lib.escape(manifest.get('template', ''))} ·
+{html_lib.escape(manifest.get('generated_at', ''))}</div>
+{''.join(sections)}
 </body></html>""", mimetype="text/html")
 
 
