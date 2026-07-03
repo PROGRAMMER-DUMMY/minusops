@@ -1448,6 +1448,94 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
     return "\n".join(P)
 
 
+def build_inspect_html(manifest, plan, report_files=(), drift_status="CURRENT", diff_text="",
+                       for_print=False):
+    """The consolidated inspection page (services / resources / IAM / drift / files).
+
+    One builder serves both surfaces: the dashboard route renders it live (collapsible
+    sections, live drift), and the report bundle prints it to inspect.pdf (sections
+    forced open — PDF can't collapse — with real headings so Chromium emits a clickable
+    PDF outline as the section dropdown).
+    """
+    def esc(s):
+        return html.escape(str(s))
+
+    def table(headers, rows_):
+        head = "".join(f"<th>{esc(h)}</th>" for h in headers)
+        body = "".join("<tr>" + "".join(f"<td>{esc(c)}</td>" for c in row) + "</tr>"
+                       for row in rows_) or f'<tr><td colspan="{len(headers)}">No data</td></tr>'
+        return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+    svc = plan_inspector.services(plan)
+    resources = plan_inspector.resource_rows(plan)
+    iam = plan_inspector.iam_roles(plan)
+    counts = manifest.get("counts", {})
+    drift_tone = "#8da189" if drift_status == "CURRENT" else "#d95d39"
+
+    def section(title, meta, body, open_=False):
+        o = " open" if (for_print or open_) else ""
+        return (f'<details{o}><summary><h2>{esc(title)}</h2>'
+                f'<span class="meta">{meta}</span></summary>{body}</details>')
+
+    sections = [
+        section("Services", f"{len(svc)} service(s)",
+                table(["Service", "Count", "Resources"],
+                      [(s, len(items), ", ".join(r["address"] for r in items))
+                       for s, items in svc.items()]), open_=True),
+        section("Resources",
+                f'{len(resources)} — +{counts.get("create", 0)} ~{counts.get("update", 0)} '
+                f'-{counts.get("delete", 0)}',
+                table(["Address", "Type", "Action", "Service", "File"],
+                      [(r["address"], r["type"], r["action"],
+                        plan_inspector.service_for_type(r["type"]), r["owner_file"])
+                       for r in resources])),
+        section("IAM roles & policies",
+                f'{len(iam["roles"])} role(s), {len(iam["policies"])} policy(ies)',
+                table(["Address", "Name", "Attachments"],
+                      [(r["address"], r["name"], ", ".join(r["policy_attachments"]))
+                       for r in iam["roles"]]
+                      + [(p["address"], p["name"], "policy") for p in iam["policies"]])),
+        section("Source drift",
+                f'<span style="color:{drift_tone}">{esc(drift_status)}</span>',
+                "<pre>" + esc(diff_text or "no drift — source matches the plan snapshot") + "</pre>",
+                open_=(drift_status != "CURRENT")),
+        section("Report files", f"{len(report_files)} artifact(s)",
+                table(["File", "Bytes"], list(report_files))),
+    ]
+    note = ("<p class=\"note\">Point-in-time record printed with the report; source drift "
+            "shown as of generation — the dashboard Inspect page checks drift live.</p>"
+            if for_print else "")
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Inspect {esc(manifest.get('short', ''))}</title>
+<style>
+@page{{size:A4;margin:10mm;background:#14110f}}
+body{{background:#14110f;color:#fbf7f4;font-family:Inter,system-ui,sans-serif;margin:0;padding:28px;
+-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+h1{{font-size:24px;margin:0 0 8px}}.sub{{color:#b09c93;font-family:Consolas,monospace;margin-bottom:20px}}
+h2{{display:inline;font-size:15px;margin:0;font-weight:600}}
+details{{background:#1c1714;border:1px solid rgba(217,93,57,.18);border-radius:12px;margin-bottom:14px;
+break-inside:avoid-page}}
+summary{{cursor:pointer;padding:14px 18px;font-size:15px;list-style:none;display:flex;
+justify-content:space-between;align-items:baseline}}
+summary::-webkit-details-marker{{display:none}}
+summary .meta{{color:#b09c93;font:500 12px Consolas,monospace}}
+details[open] summary{{border-bottom:1px solid rgba(255,255,255,.06)}}
+table{{width:100%;border-collapse:collapse}}
+th,td{{text-align:left;border-bottom:1px solid rgba(255,255,255,.06);padding:9px 14px;font-size:12px;vertical-align:top}}
+th{{color:#b09c93;text-transform:uppercase;font-size:10.5px;letter-spacing:.08em}}
+td{{font-family:Consolas,monospace;word-break:break-word}}
+pre{{padding:14px 18px;overflow:hidden;white-space:pre-wrap;line-height:1.45;font-size:11.5px;color:#e8e2dc;margin:0}}
+.note{{color:#b09c93;font-size:11.5px;background:#1c1714;border:1px solid rgba(212,163,115,.22);
+border-radius:8px;padding:10px 12px}}
+</style></head><body>
+<h1>Report inspection</h1>
+<div class="sub">plan {esc(manifest.get('short', ''))} · {esc(manifest.get('template', ''))} ·
+{esc(manifest.get('generated_at', ''))}</div>
+{''.join(sections)}
+{note}
+</body></html>"""
+
+
 # --- cost (BCM evidence only; no offline or service-specific assumptions) ---
 def estimate_cost():
     pricing_commands = [
@@ -2617,18 +2705,22 @@ def _cdp_print_pdf(browser, html_path, pdf_path):
 
                 call("Page.enable")
                 call("Page.navigate", {"url": file_url}, wait_event="Page.loadEventFired")
-                result = call(
-                    "Page.printToPDF",
-                    {
-                        "printBackground": True,
-                        "preferCSSPageSize": True,
-                        "displayHeaderFooter": False,
-                        "marginTop": 0,
-                        "marginBottom": 0,
-                        "marginLeft": 0,
-                        "marginRight": 0,
-                    },
-                )
+                params = {
+                    "printBackground": True,
+                    "preferCSSPageSize": True,
+                    "displayHeaderFooter": False,
+                    "marginTop": 0,
+                    "marginBottom": 0,
+                    "marginLeft": 0,
+                    "marginRight": 0,
+                    # Clickable PDF outline from the document's headings (the section
+                    # "dropdown" in any PDF viewer). Retried without if unsupported.
+                    "generateDocumentOutline": True,
+                }
+                result = call("Page.printToPDF", params)
+                if not result:
+                    params.pop("generateDocumentOutline", None)
+                    result = call("Page.printToPDF", params)
                 with open(pdf_path, "wb") as f:
                     f.write(base64.b64decode(result["data"]))
                 return True, browser
@@ -2731,6 +2823,24 @@ def _generate_report_bundle(dir_, data, template=None):
     cost_pdf_path = os.path.join(out, "cost.pdf")
     cost_pdf_ok, _ = render_pdf(cost_html_path, cost_pdf_path)
 
+    # inspect.pdf — the consolidated review record (services/resources/IAM/drift/files),
+    # sections expanded with a clickable PDF outline. The HTML is only a print source.
+    inspect_pdf_ok = False
+    try:
+        file_rows = [(name, os.path.getsize(os.path.join(out, name)))
+                     for name in sorted(os.listdir(out))
+                     if os.path.isfile(os.path.join(out, name))]
+        inspect_manifest = {"short": short, "template": template, "generated_at": ts,
+                            "counts": counts}
+        inspect_src = os.path.join(out, "inspect.html")
+        with open(inspect_src, "w", encoding="utf-8") as f:
+            f.write(build_inspect_html(inspect_manifest, data, report_files=file_rows,
+                                       drift_status="CURRENT", diff_text="", for_print=True))
+        inspect_pdf_ok, _ = render_pdf(inspect_src, os.path.join(out, "inspect.pdf"))
+        os.remove(inspect_src)                     # only the PDF ships
+    except Exception:
+        inspect_pdf_ok = False
+
     files = [
         "plan.json", "architecture.svg", "cost.json",
         "bcm-assumptions.json", "bcm-create-workload-estimate.json", "bcm-usage.json", "bcm-commands.json",
@@ -2742,6 +2852,8 @@ def _generate_report_bundle(dir_, data, template=None):
         files.append("plan.pdf")
     if cost_pdf_ok:
         files.append("cost.pdf")
+    if inspect_pdf_ok:
+        files.append("inspect.pdf")
 
     manifest = {
         "plan_hash": h, "short": short, "template": template, "cloud": cloud,
@@ -2751,7 +2863,8 @@ def _generate_report_bundle(dir_, data, template=None):
         "pdf": pdf_ok,
         "cost_pdf": cost_pdf_ok,
         "files": files,
-        "public_files": (["architecture.svg", "dataflow.svg"] if dataflow_svg else ["architecture.svg"]) + ["plan.pdf", "cost.pdf"],
+        "public_files": (["architecture.svg", "dataflow.svg"] if dataflow_svg else ["architecture.svg"])
+        + ["plan.pdf", "cost.pdf"] + (["inspect.pdf"] if inspect_pdf_ok else []),
         "source_snapshot": "source_snapshot",
         "source_hashes_file": "source_hashes.json",
         "source_file_count": len(source_hashes),

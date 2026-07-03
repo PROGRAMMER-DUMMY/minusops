@@ -491,3 +491,46 @@ def test_humanize_quantity_tiers_size_units():
     # Non-size units are AWS's own — never converted.
     assert reporter.humanize_quantity(240, "DPU-Hour") == (240, "DPU-Hour")
     assert reporter.humanize_quantity(None, "GB") == (None, "GB")
+
+
+def test_inspect_html_builder_sections_and_print_mode():
+    plan = {"resource_changes": [
+        {"address": "module.m.aws_iam_role.r", "type": "aws_iam_role", "name": "r",
+         "mode": "managed", "change": {"actions": ["create"]}},
+        {"address": "module.m.aws_s3_bucket.b", "type": "aws_s3_bucket", "name": "b",
+         "mode": "managed", "change": {"actions": ["create"]}},
+    ], "output_changes": {}}
+    manifest = {"short": "abc123", "template": "t", "generated_at": "ts",
+                "counts": {"create": 2, "update": 0, "delete": 0}}
+    doc = reporter.build_inspect_html(manifest, plan, report_files=[("plan.json", 10)],
+                                      drift_status="CURRENT", for_print=True)
+    for heading in ("Services", "Resources", "IAM roles &amp; policies", "Source drift", "Report files"):
+        assert heading in doc
+    # print mode: every section is expanded and headings exist for the PDF outline
+    assert doc.count("<details open>") == 5
+    assert "<h2>" in doc
+    # live mode: only the default-open sections are expanded
+    live = reporter.build_inspect_html(manifest, plan, drift_status="STALE", diff_text="x", for_print=False)
+    assert live.count("<details open>") == 2      # Services + drift (STALE auto-opens)
+
+
+def test_report_bundle_ships_inspect_pdf(tmp_path, monkeypatch):
+    monkeypatch.setattr(reporter, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(reporter, "REPORTS", str(tmp_path / "artifacts" / "reports"))
+    # every render "succeeds" by creating the target file, so files-list logic is exercised
+    def fake_pdf(html_path, pdf_path):
+        with open(pdf_path, "wb") as f:
+            f.write(b"%PDF-fake")
+        return True, "stub"
+    monkeypatch.setattr(reporter, "render_pdf", fake_pdf)
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "main.tf").write_text("# generated\n", encoding="utf-8")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(PLAN), encoding="utf-8")
+    out = reporter.generate_from_plan_json(str(tf_dir), str(plan_path), template="t")
+    manifest = json.loads((__import__("pathlib").Path(out) / "manifest.json").read_text(encoding="utf-8"))
+    assert "inspect.pdf" in manifest["files"] and "inspect.pdf" in manifest["public_files"]
+    import os as _os
+    assert _os.path.exists(_os.path.join(out, "inspect.pdf"))
+    assert not _os.path.exists(_os.path.join(out, "inspect.html"))   # only the PDF ships
