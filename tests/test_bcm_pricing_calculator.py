@@ -298,3 +298,40 @@ def test_auto_estimate_never_clobbers_reviewed_usage(tmp_path, monkeypatch):
     assert ok
     kept = json.loads((report / "bcm-usage.json").read_text(encoding="utf-8"))
     assert kept == reviewed          # a validating (reviewed) payload is used as-is
+
+
+def test_derive_prices_every_glue_job_and_every_zone():
+    # P0 review findings: one Glue line must cover ALL jobs; S3 retains a copy per zone.
+    plan = {
+        "variables": {"daily_data_gb": {"value": 100}},
+        "resource_changes": [
+            {"address": 'module.s.aws_s3_bucket.zone["bronze"]', "type": "aws_s3_bucket",
+             "mode": "managed", "change": {"actions": ["create"]}},
+            {"address": 'module.s.aws_s3_bucket.zone["silver"]', "type": "aws_s3_bucket",
+             "mode": "managed", "change": {"actions": ["create"]}},
+            {"address": 'module.s.aws_s3_bucket.zone["gold"]', "type": "aws_s3_bucket",
+             "mode": "managed", "change": {"actions": ["create"]}},
+            {"address": "module.s.aws_s3_bucket.results", "type": "aws_s3_bucket",
+             "mode": "managed", "change": {"actions": ["create"]}},   # results bucket: NOT a zone
+            {"address": "module.c.aws_glue_job.a", "type": "aws_glue_job",
+             "mode": "managed", "change": {"actions": ["create"]}},
+            {"address": "module.c.aws_glue_job.b", "type": "aws_glue_job",
+             "mode": "managed", "change": {"actions": ["create"]}},
+            {"address": "module.c.aws_glue_job.c", "type": "aws_glue_job",
+             "mode": "managed", "change": {"actions": ["create"]}},
+        ],
+    }
+    usage, A = bcm.derive_usage(plan, "123456789012", "us-east-1")
+    assert A["glue_job_count"] == 3 and A["s3_retention_zones"] == 3
+    by_code = {u["serviceCode"]: u for u in usage}
+    per_job = (bcm.DEFAULT_ASSUMPTIONS["glue_workers"]
+               * bcm.DEFAULT_ASSUMPTIONS["glue_minutes_per_run"] / 60.0
+               * bcm.DEFAULT_ASSUMPTIONS["glue_runs_per_day"]
+               * bcm.DEFAULT_ASSUMPTIONS["days_per_month"])
+    assert by_code["AWSGlue"]["amount"] == round(per_job * 3, 2)          # 720, not 240
+    assert by_code["AmazonS3"]["amount"] == 100 * 30 * 3                  # 9000 GB-Mo, not 3000
+    # explicit overrides still win and are recorded
+    usage2, A2 = bcm.derive_usage(plan, "123456789012", "us-east-1",
+                                  assumptions={"glue_job_count": 1, "s3_retention_zones": 1})
+    assert A2["glue_job_count"] == 1
+    assert {u["serviceCode"]: u for u in usage2}["AWSGlue"]["amount"] == round(per_job, 2)

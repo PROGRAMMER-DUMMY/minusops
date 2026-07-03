@@ -401,6 +401,30 @@ def _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pendin
     return True
 
 
+def _warn_if_over_budget(dir_, plan_hash_):
+    """The plan provisions its OWN budget guardrail; approving a forecast that already
+    exceeds it must be a conscious act. Loud warning + audit record — a reviewer seeing
+    the approval trail sees the operator approved over budget knowingly."""
+    try:
+        import reporter
+        report_dir = os.path.join(reporter.reports_root_for_dir(dir_), plan_hash_[:12])
+        cost = reporter.load_bcm_estimate(report_dir)
+        if not cost or not cost.get("ok"):
+            return
+        total = float(cost.get("monthly_total_usd") or 0)
+        budget = cost.get("monthly_budget_usd")
+        if budget and total > float(budget):
+            pct = total / float(budget) * 100
+            print(f"[gate] WARNING: the AWS forecast (${total:,.2f}/mo) is {pct:.0f}% of this "
+                  f"plan's own budget guardrail (${float(budget):,.2f}/mo aws_budgets_budget). "
+                  "Raise monthly_budget_usd and re-plan, or approve knowingly — this warning "
+                  "is recorded in the audit chain.", file=sys.stderr)
+            _audit("approve", "WARN", reason="forecast_exceeds_budget", dir=dir_,
+                   forecast_usd=total, budget_usd=float(budget), utilization_pct=round(pct))
+    except Exception:
+        pass
+
+
 def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
     policy_mode = _policy_mode(policy_mode)
     print("== approve ==")
@@ -408,6 +432,7 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
     if not h:
         print(f"[gate] no valid plan to approve ({herr}). Run `plan` first.", file=sys.stderr)
         return False
+    _warn_if_over_budget(dir_, h)
 
     pending = {}
     pending_path = _pending_path(dir_)

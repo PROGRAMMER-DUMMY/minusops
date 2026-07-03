@@ -195,12 +195,19 @@ def _amount_for(service_code, inputs, A):
     """Monthly usage AMOUNT derived from blueprint inputs + assumptions — never a price."""
     daily_gb = float(inputs.get("daily_data_gb", 0) or 0)
     if service_code == "AWSGlue":
-        return round(A["glue_workers"] * (A["glue_minutes_per_run"] / 60.0)
-                     * A["glue_runs_per_day"] * A["days_per_month"], 2)        # DPU-hours/mo
+        # Per-job DPU-hours × the number of Glue jobs the PLAN actually creates
+        # (pricing one job while provisioning three understated compute 3x).
+        per_job = (A["glue_workers"] * (A["glue_minutes_per_run"] / 60.0)
+                   * A["glue_runs_per_day"] * A["days_per_month"])
+        return round(per_job * A.get("glue_job_count", 1), 2)                  # DPU-hours/mo
     if service_code == "AmazonS3":
         # No daily volume input -> no honest amount; the line is skipped (recorded as
-        # not-estimated) rather than submitted as a fabricated 0.
-        return round(daily_gb * A["s3_storage_retention_factor"], 2) if daily_gb > 0 else None
+        # not-estimated) rather than submitted as a fabricated 0. Each medallion zone
+        # retains its own copy concurrently, so the footprint multiplies by zone count.
+        if daily_gb <= 0:
+            return None
+        return round(daily_gb * A["s3_storage_retention_factor"]
+                     * A.get("s3_retention_zones", 1), 2)                      # GB-Mo
     if service_code == "AmazonAthena":
         return round(A["athena_queries_per_month"] * A["athena_avg_scan_gb"] / 1024.0, 4)  # TB/mo
     return None
@@ -223,6 +230,17 @@ def derive_usage(plan, account_id, region, profile=None, assumptions=None):
             A["daily_data_gb"] = float(inputs["daily_data_gb"])
     except (TypeError, ValueError):
         pass
+    # Plan-derived multipliers (explicit --assume overrides win; both are recorded):
+    # every aws_glue_job is priced, and S3 retains one copy PER medallion zone.
+    inventory = _plan_inventory(plan)
+    if "glue_job_count" not in (assumptions or {}):
+        A["glue_job_count"] = max(1, inventory.get("aws_glue_job", {}).get("count", 0) or 1)
+    if "s3_retention_zones" not in (assumptions or {}):
+        zone_keys = {"landing", "raw", "bronze", "clean", "cleaned", "staged", "stage",
+                     "silver", "curated", "presentation", "gold", "serving"}
+        zones = sum(1 for addr in inventory.get("aws_s3_bucket", {}).get("addresses", [])
+                    if (m := re.search(r'\["([^"]+)"\]', addr)) and m.group(1).lower() in zone_keys)
+        A["s3_retention_zones"] = max(1, zones)
     account = account_id or f"{PLACEHOLDER}_ACCOUNT_ID"
     catalog = {}
     for line in (_profile_usage(profile) or []):
@@ -571,7 +589,11 @@ def scale_curve(report_dir, factors=(1, 5, 10)):
                                   "--identifier", est_id], cwd)
             points.append({"factor": factor,
                            "total": float(estimate.get("totalCost") or 0),
-                           "estimate_id": est_id})
+                           "estimate_id": est_id,
+                           # Raw AWS response retained as evidence that each point is an
+                           # INDEPENDENT BCM estimate, not a local extrapolation.
+                           "evidence": estimate,
+                           "submitted_usage": scaled})
         finally:
             # Curve points are point-in-time reads — don't clutter Saved estimates.
             subprocess.run([aws, "bcm-pricing-calculator", "delete-workload-estimate",

@@ -482,6 +482,19 @@ def _readiness(run):
             "configure credentials and regenerate the report.",
         ),
         _check(
+            "forecast within budget guardrail",
+            not (latest.get("cost", {}).get("ok")
+                 and latest.get("cost", {}).get("monthly_budget_usd")
+                 and float(latest.get("cost", {}).get("monthly_total_usd") or 0)
+                 > float(latest.get("cost", {}).get("monthly_budget_usd"))),
+            "warning",
+            (f"forecast ${float(latest.get('cost', {}).get('monthly_total_usd') or 0):,.2f}/mo vs "
+             f"budget ${float(latest.get('cost', {}).get('monthly_budget_usd') or 0):,.2f}/mo"
+             if latest.get("cost", {}).get("monthly_budget_usd") else "no budget/estimate to compare"),
+            "Raise monthly_budget_usd on governance-observability (or reduce scope) and re-plan — "
+            "the plan provisions a guardrail its own forecast already exceeds.",
+        ),
+        _check(
             "forecast vs actuals drift",
             _cost_drift_pct(latest) is None
             or abs(_cost_drift_pct(latest)) < float(os.environ.get("MINUS_VARIANCE_ALERT_PCT", "20")),

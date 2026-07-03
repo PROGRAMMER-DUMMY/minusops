@@ -834,23 +834,30 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
             y += node_h + gap
         parts.append('</g>')
 
-    # security band — chip border tinted when the resource has a finding
+    # security band — one chip per NAME (a role and its policy share a name; repeating
+    # the bare name read as duplicates), border tinted when any member has a finding
     sec = by_tier["security"]
+    sec_groups = {}
+    for r in sec:
+        sec_groups.setdefault(r["name"], []).append(r)
     parts.append(f'<g id="band-security"><rect x="24" y="{632 + dy}" width="1224" height="56" rx="10" fill="none" '
                  'stroke="#b09c93" stroke-dasharray="4 4"/>'
                  f'<text class="tier-h" x="40" y="{654 + dy}">SECURITY &amp; IAM</text>')
     chip_cap = 6
-    for i, r in enumerate(sec[:chip_cap]):
+    grouped = list(sec_groups.items())
+    for i, (name, members) in enumerate(grouped[:chip_cap]):
         cx = 220 + i * 168
-        nf = node_findings(r["address"])
+        r = members[0]
+        nf = [f for m in members for f in node_findings(m["address"])]
         stroke = _SEV_COLOR.get(nf[0]["severity"], "#b09c93") if nf else "#b09c93"
         df_attr = f' data-findings="{esc(",".join(f["id"] for f in nf))}"' if nf else ""
+        label = name + (f" ×{len(members)}" if len(members) > 1 else "")
         parts.append(
             f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}"{df_attr}>'
             f'<rect x="{cx}" y="{646 + dy}" width="150" height="28" rx="8" fill="#1c1714" stroke="{stroke}" stroke-width="1"/>'
-            f'<text class="n-name" x="{cx + 8}" y="{664 + dy}">{esc(_fit_text(r["name"], 18))}</text></g>')
-    if len(sec) > chip_cap:
-        parts.append(f'<text class="legend" x="1196" y="{664 + dy}">+{len(sec) - chip_cap}</text>')
+            f'<text class="n-name" x="{cx + 8}" y="{664 + dy}">{esc(_fit_text(label, 18))}</text></g>')
+    if len(grouped) > chip_cap:
+        parts.append(f'<text class="legend" x="1196" y="{664 + dy}">+{len(grouped) - chip_cap}</text>')
     parts.append('</g>')
 
     # legend: tiers + flow + control + encryption + finding overlay + status
@@ -1207,7 +1214,7 @@ def _df_embed_icon(rtype, uid, x, y, size, hue, icons_dir):
 
 
 def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None,
-                       region="us-east-1", icons_dir=None):
+                       region="us-east-1", icons_dir=None, usage_annotations=None):
     """Lake-house data-flow diagram (architecture_svg_spec.md v3), sharing the six-layer
     classifier with the conformance model (architecture_model). Deterministic and honest:
     stages on the spine, real transforms between them, catalog/governance in its own zone,
@@ -1308,7 +1315,7 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
     proc_top = 210
     proc_bottom = (orch_y + 70) if orch else (side_y + 70 if side else spine_y + sz + 55)
     band_y = proc_bottom + 30
-    total_h = band_y + (120 if band else 20) + 30
+    total_h = band_y + (120 if band else 20) + 56          # +26 for the edge-semantics legend
     gov_top = 110
     n = max(len(spine), 1)
     slot = proc_w / (n + 0.2)
@@ -1374,9 +1381,24 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
         else:
             P.append(f'<line x1="{x1}" y1="{ey}" x2="{x2}" y2="{ey}" stroke="{MUTED_C}" '
                      f'stroke-width="1.6" marker-end="url(#dfa)"/>')
+    # Capacity annotations: the priced usage quantity (from the BCM estimate) rendered
+    # under the node it belongs to — topology AND capacity in one picture.
+    _ANN_CODE = {"glue": "AWSGlue", "s3": "AmazonS3", "athena": "AmazonAthena"}
+
+    def _annotation(c):
+        prefix = am._strip_provider(c["type"]).split("_")[0]
+        return (usage_annotations or {}).get(_ANN_CODE.get(prefix))
+
     hue = {"stage": TERRA_C, "xf": SAGE_C}
+    annotated_codes = set()
     for i, (k, c) in enumerate(spine):
         P.append(tnode(c, cx[i], spine_y, sz, hue.get(k, TERRA_C)))
+        ann = _annotation(c)
+        code = _ANN_CODE.get(am._strip_provider(c["type"]).split("_")[0])
+        if ann and code not in annotated_codes:      # once per service, above its first node
+            annotated_codes.add(code)
+            P.append(f'<text x="{cx[i]}" y="{spine_y - 8}" text-anchor="middle" '
+                     f'style="font:600 9px \'JetBrains Mono\',monospace;fill:{GOLD_C}">{esc(ann)}</text>')
 
     if consume and spine:
         # Consumption reads the curated END OF STORAGE (last stage), not whatever
@@ -1438,12 +1460,35 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
             bg.setdefault(am._strip_provider(c["type"]).split("_")[0], []).append(c)
         bitems = [(g[0], len(g)) for g in bg.values()]
         bslot = (W - 160) / max(len(bitems), 1)
+        # A grouped count must be labeled at the SERVICE level: "IAM Role ×10" claimed
+        # ten roles when the ten were roles + policies + policy documents.
+        _BAND_SVC = {"iam": "AWS IAM", "kms": "AWS KMS", "cloudwatch": "CloudWatch",
+                     "sns": "Amazon SNS", "budgets": "AWS Budgets", "secrets": "Secrets Mgr",
+                     "secretsmanager": "Secrets Mgr"}
         for j, (c, cnt) in enumerate(bitems):
             x = int(100 + bslot * (j + 0.5))
-            lab = nm(c["type"]) + (f" ×{cnt}" if cnt > 1 else "")
+            prefix = am._strip_provider(c["type"]).split("_")[0]
+            lab = (f"{_BAND_SVC.get(prefix, nm(c['type']))} ×{cnt}" if cnt > 1
+                   else nm(c["type"]))
             P.append(f'<g class="node" data-address="{esc(c["address"])}">'
                      + _df_embed_icon(c["type"], re.sub(r"\W", "", c["address"]), x - 24, band_y + 28, 48, MUTED_C, icons_dir)
                      + f'<text x="{x}" y="{band_y + 94}" text-anchor="middle" style="font:600 12px Inter,sans-serif;fill:{TEXT_C}">{esc(_fit_text(lab, 18))}</text></g>')
+
+    # Edge-semantics legend — each dashed style means ONE thing (they were overloaded).
+    ly = total_h - 18
+    lt = f"font:500 11px Inter,sans-serif;fill:{MUTED_C}"
+    P.append(
+        f'<line x1="24" y1="{ly}" x2="56" y2="{ly}" stroke="{MUTED_C}" stroke-width="1.6" marker-end="url(#dfa)"/>'
+        f'<text x="62" y="{ly + 4}" style="{lt}">data flow</text>'
+        f'<line x1="150" y1="{ly}" x2="182" y2="{ly}" stroke="{SAGE_C}" stroke-width="1.3" stroke-dasharray="5 4"/>'
+        f'<text x="188" y="{ly + 4}" style="{lt}">orchestration / schedule</text>'
+        f'<line x1="352" y1="{ly}" x2="384" y2="{ly}" stroke="{MUTED_C}" stroke-width="1.2" stroke-dasharray="3 3"/>'
+        f'<text x="390" y="{ly + 4}" style="{lt}">side output</text>'
+        f'<line x1="486" y1="{ly}" x2="518" y2="{ly}" stroke="{SAND_C}" stroke-width="1.3" stroke-dasharray="5 4"/>'
+        f'<text x="524" y="{ly + 4}" style="{lt}">catalog reference</text>'
+        f'<rect x="656" y="{ly - 6}" width="12" height="12" rx="3" fill="none" stroke="{SAGE_C}" stroke-width="1.4"/>'
+        f'<text x="674" y="{ly + 4}" style="{lt}">maintenance job (off-flow, scheduled)</text>'
+        f'<text x="920" y="{ly + 4}" style="font:600 10px \'JetBrains Mono\',monospace;fill:{GOLD_C}">gold figures = AWS-priced monthly usage</text>')
     P.append('</svg>')
     return "\n".join(P)
 
@@ -2354,6 +2399,10 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
             cards
             + variance_html
             + "<h2>Per-service cost breakdown</h2>"
+            + (f"<p class=\"note\">{len(line_items)} of "
+               f"{len(line_items) + len(cost.get('not_estimated_services') or [])} plan services priced; "
+               f"{len(cost.get('not_estimated_services') or [])} not estimated (listed below — "
+               "unpriced is not $0).</p>")
             + "<table><thead><tr><th>Service</th><th>Usage type</th><th>Operation</th><th>Usage</th>"
             + "<th>Rate $/unit</th><th>Monthly</th><th>% of total</th></tr></thead>"
             + f"<tbody>{rows}</tbody></table>"
@@ -2793,10 +2842,19 @@ def _generate_report_bundle(dir_, data, template=None):
     htmldoc = build_html(template, cloud, short, ts, rows, counts, cost, svg, data, None, dir_, git_commit())
 
     # v3 lake-house data-flow diagram (additive; shares the six-layer classifier with the
-    # conformance model). Icons resolve inside the renderer (_default_icons_dir).
+    # conformance model). Icons resolve inside the renderer (_default_icons_dir). When an
+    # estimate exists, the priced usage quantities annotate the nodes (capacity view).
+    usage_annotations = {}
+    if cost.get("ok"):
+        for it in cost.get("line_items") or []:
+            qty, unit = humanize_quantity(_num(it.get("amount")), it.get("unit") or "")
+            if qty is not None and it.get("serviceCode"):
+                q = f"{qty:,.0f}" if qty >= 100 else f"{qty:,.4g}"
+                usage_annotations[it["serviceCode"]] = f"{q} {unit}/mo"
     try:
         dataflow_svg = build_dataflow_svg(rows, template, cloud, short, ts, findings=findings,
-                                          plan=data, region=region)
+                                          plan=data, region=region,
+                                          usage_annotations=usage_annotations)
     except Exception:
         dataflow_svg = None
 
