@@ -30,3 +30,14 @@ class AzureProvider(CloudProvider):
 
     def owner(self, resource_hint):
         return None
+
+    # Pre-deploy pricing discovery (list_billable_services/resolve_resource_type/
+    # lookup_usage_dimensions/confirmed_free) is not implemented yet — inherited from
+    # CloudProvider, they degrade to empty/None so a caller never crashes; coverage_audit.py
+    # will show every resource type as unresolved for this cloud until they're wired up. When
+    # Azure is actually needed, implement them against the Azure Retail Prices API — public,
+    # unauthenticated, no credentials required: https://prices.azure.com/api/retail/prices
+    # (filter by serviceName / armSkuName / armRegionName via OData $filter). There is no Azure
+    # equivalent of AWS BCM's workload-estimate object, so a resolved estimate here would be
+    # SELF-COMPUTED (catalog unit price x derived usage amount) rather than provider-computed —
+    # label it as such in any report, never with the same confidence as an AWS BCM total.

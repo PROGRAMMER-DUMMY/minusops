@@ -143,3 +143,22 @@ class AWSProvider(CloudProvider):
             if owner:
                 return owner
         return None
+
+    # -- pre-deploy pricing discovery: the AWS Price List Query API, via pricing_catalog.py --
+    def list_billable_services(self):
+        import pricing_catalog  # lazy: core/ is on sys.path by the time any provider call runs
+        return [{"service_code": s.get("ServiceCode"), "attribute_names": s.get("AttributeNames", [])}
+                for s in pricing_catalog.list_service_codes()]
+
+    def resolve_resource_type(self, tf_type):
+        import pricing_catalog
+        return pricing_catalog.resolve_resource_type(tf_type)
+
+    def lookup_usage_dimensions(self, service, filters=None):
+        import pricing_catalog
+        region = (filters or {}).get("region", "us-east-1")
+        return pricing_catalog.lookup_dimensions(service, region=region)
+
+    def confirmed_free(self, tf_type):
+        import pricing_catalog
+        return pricing_catalog.confirmed_free(tf_type)

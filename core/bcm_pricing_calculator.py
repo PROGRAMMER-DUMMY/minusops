@@ -24,6 +24,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from approval import request_approval  # noqa: E402
+import pricing_catalog  # noqa: E402
 import toolpath  # noqa: E402
 
 PLACEHOLDER = "REVIEW_REQUIRED"
@@ -168,31 +169,61 @@ def _bcm_group(region):
     return cleaned.strip("-") or "tf"
 
 
-# Stable AWS service identifiers (NOT prices, NOT region-specific) keyed by Terraform type.
-_SERVICE_CODE = [
-    ("aws_glue", "AWSGlue"), ("aws_s3", "AmazonS3"), ("aws_athena", "AmazonAthena"),
-    ("aws_redshift", "AmazonRedshift"), ("aws_emr", "ElasticMapReduce"), ("aws_lambda", "AWSLambda"),
-    ("aws_dynamodb", "AmazonDynamoDB"), ("aws_kms", "awskms"), ("aws_cloudwatch", "AmazonCloudWatch"),
-    ("aws_sfn", "AWSStepFunctions"),
-]
+# Service identifiers now come from core/pricing_data/aws_resource_map.json via
+# pricing_catalog.resolve_resource_type() — this replaces the old static _SERVICE_CODE list,
+# which was one of three independent, hand-maintained tables that all shared the same blind
+# spots (MWAA/Kinesis/SNS were absent from every one of them).
 
 # Named, documented, OVERRIDABLE usage assumptions (NOT prices). Recorded in the report so a
 # reviewer sees exactly what usage was assumed; override with --assume key=value.
 DEFAULT_ASSUMPTIONS = {
     "glue_workers": 2, "glue_minutes_per_run": 10, "glue_runs_per_day": 24, "days_per_month": 30,
+    "hours_per_month": 730,
     "s3_storage_retention_factor": 30, "athena_queries_per_month": 150, "athena_avg_scan_gb": 15,
+    "kinesis_shard_count_default": 1,
+    "redshift_serverless_rpu_default": 8, "redshift_serverless_utilization": 0.5,
 }
 
 
 def _service_code(rtype):
-    for prefix, code in _SERVICE_CODE:
-        if rtype.startswith(prefix):
-            return code
-    return None
+    entry = pricing_catalog.resolve_resource_type(rtype)
+    return entry["service_code"] if entry else None
 
 
-def _amount_for(service_code, inputs, A):
-    """Monthly usage AMOUNT derived from blueprint inputs + assumptions — never a price."""
+def _sum_plan_attr(plan, rtype_prefix, attr, per_resource_default):
+    """Sum an actual planned attribute (e.g. shard_count) across every managed resource of
+    this type in the PLAN — not a guess, the value Terraform is actually about to create.
+    Falls back to `per_resource_default` per resource where the attribute is absent (e.g. a
+    computed/unknown value at plan time). Returns (total, any_value_was_from_plan)."""
+    total, found_real = 0.0, False
+    for change in plan.get("resource_changes", []):
+        if change.get("mode", "managed") != "managed":
+            continue
+        rtype = _resource_type(change.get("address", ""), change)
+        if not rtype.startswith(rtype_prefix):
+            continue
+        after = change.get("change", {}).get("after") or {}
+        val = after.get(attr)
+        if val is None:
+            total += per_resource_default
+        else:
+            found_real = True
+            try:
+                total += float(val)
+            except (TypeError, ValueError):
+                total += per_resource_default
+    return total, found_real
+
+
+def _amount_for(service_code, inputs, A, plan):
+    """Monthly usage AMOUNT derived from blueprint inputs + assumptions — never a price.
+
+    Only services with a genuine, plan-derivable usage driver get a real amount here. Services
+    whose usage depends on runtime behaviour that no static Terraform plan can know (execution
+    counts, alarm-trigger frequency, actual job runtime vs. provisioned max capacity) are
+    deliberately left unresolved (return None) — an honest REVIEW_REQUIRED beats a fabricated
+    number, same doctrine as the original Glue/S3/Athena entries.
+    """
     daily_gb = float(inputs.get("daily_data_gb", 0) or 0)
     if service_code == "AWSGlue":
         # Per-job DPU-hours × the number of Glue jobs the PLAN actually creates
@@ -210,7 +241,58 @@ def _amount_for(service_code, inputs, A):
                      * A.get("s3_retention_zones", 1), 2)                      # GB-Mo
     if service_code == "AmazonAthena":
         return round(A["athena_queries_per_month"] * A["athena_avg_scan_gb"] / 1024.0, 4)  # TB/mo
+    if service_code == "AmazonMWAA":
+        # An MWAA environment runs continuously once created, billed hourly regardless of DAG
+        # volume — environment COUNT is a real plan fact, hours/month is the assumption.
+        env_count = len(plan_inventory_addresses(plan, "aws_mwaa_environment"))
+        if env_count <= 0:
+            return None
+        return round(env_count * A["hours_per_month"], 2)                      # environment-hours/mo
+    if service_code == "AmazonKinesis":
+        shards, _ = _sum_plan_attr(plan, "aws_kinesis_stream", "shard_count",
+                                    A["kinesis_shard_count_default"])
+        if shards <= 0:
+            return None
+        return round(shards * A["hours_per_month"], 2)                        # shard-hours/mo
+    if service_code == "AmazonKinesisFirehose":
+        # Firehose bills per GB ingested — same honest gate as S3: no volume input, no amount.
+        if daily_gb <= 0:
+            return None
+        return round(daily_gb * A["days_per_month"], 2)                       # GB ingested/mo
+    if service_code == "AmazonRedshift":
+        # base_capacity (RPUs) is a real plan fact for Serverless workgroups; classic
+        # provisioned aws_redshift_cluster node counts aren't derived here yet (REVIEW_REQUIRED).
+        if not plan_inventory_addresses(plan, "aws_redshiftserverless_workgroup"):
+            return None
+        rpu_total, _ = _sum_plan_attr(plan, "aws_redshiftserverless_workgroup", "base_capacity",
+                                       A["redshift_serverless_rpu_default"])
+        if rpu_total <= 0:
+            return None
+        return round(rpu_total * A["hours_per_month"] * A["redshift_serverless_utilization"], 2)  # RPU-hours/mo
+    if service_code == "AmazonCloudWatch":
+        # Standard-resolution alarms bill per-alarm/month — alarm COUNT is a real plan fact,
+        # not a usage guess. Event rules / custom metrics are NOT covered here (left REVIEW_REQUIRED).
+        alarm_count = len(plan_inventory_addresses(plan, "aws_cloudwatch_metric_alarm"))
+        if alarm_count <= 0:
+            return None
+        return float(alarm_count)                                            # alarm-count/mo
+    # AmazonKinesisAnalytics (KPU-parallelism unknowable from plan), AmazonSNS (notification
+    # volume unknowable), ElasticMapReduce (max_vcpu/max_memory is a CEILING, not utilization),
+    # AWSLambda / AmazonDynamoDB / AWSStepFunctions / awskms (no module wires a usage driver
+    # yet) intentionally fall through to None — REVIEW_REQUIRED via a reviewed usage profile.
     return None
+
+
+def plan_inventory_addresses(plan, rtype_exact_or_prefix):
+    """Addresses of every managed resource whose type starts with the given prefix."""
+    out = []
+    for change in plan.get("resource_changes", []):
+        if change.get("mode", "managed") != "managed":
+            continue
+        rtype = _resource_type(change.get("address", ""), change)
+        if rtype.startswith(rtype_exact_or_prefix):
+            out.append(change.get("address", ""))
+    return out
 
 
 def derive_usage(plan, account_id, region, profile=None, assumptions=None):
@@ -255,7 +337,7 @@ def derive_usage(plan, account_id, region, profile=None, assumptions=None):
     usage = []
     for i, code in enumerate(codes, start=1):
         ref = catalog.get(code, {})
-        amount = _amount_for(code, inputs, A)
+        amount = _amount_for(code, inputs, A, plan)
         usage.append({
             "serviceCode": code,
             "usageType": ref.get("usageType", f"{PLACEHOLDER}_USAGE_TYPE"),

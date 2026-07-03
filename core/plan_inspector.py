@@ -10,8 +10,11 @@ import difflib
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pricing_catalog  # noqa: E402
 
 WORKSPACE = Path(os.getcwd())
 REPORTS = WORKSPACE / "artifacts" / "reports"
@@ -19,30 +22,10 @@ SKIP_DIRS = {".terraform", ".git", "__pycache__"}
 SOURCE_SUFFIXES = {".tf", ".tfvars", ".py", ".md", ".yaml", ".yml", ".json"}
 SOURCE_NAMES = {"README.md"}
 
-
-SERVICE_PREFIXES = [
-    ("Amazon S3", "aws_s3_"),
-    ("AWS KMS", "aws_kms_"),
-    ("AWS Glue", "aws_glue_"),
-    ("AWS Step Functions", "aws_sfn_"),
-    ("Amazon Athena", "aws_athena_"),
-    ("Amazon CloudWatch", "aws_cloudwatch_"),
-    ("AWS Budgets", "aws_budgets_"),
-    ("AWS IAM", "aws_iam_"),
-]
-
-
-FILE_HINTS = [
-    ("aws_s3_", "s3.tf"),
-    ("aws_kms_", "kms.tf"),
-    ("aws_iam_", "iam.tf"),
-    ("aws_glue_", "glue.tf"),
-    ("aws_s3_object", "scripts.tf"),
-    ("aws_sfn_", "step_functions.tf"),
-    ("aws_athena_", "athena.tf"),
-    ("aws_cloudwatch_", "monitoring.tf"),
-    ("aws_budgets_", "monitoring.tf"),
-]
+# Service/file-hint naming now comes from core/pricing_data/{aws_resource_map,free_resources}.json
+# via pricing_catalog — this used to be a second, independent copy of the same lookup table that
+# lives in bcm_pricing_calculator.py, and both copies missed the same resource types (MWAA,
+# Kinesis, SNS). One reviewed file now backs both consumers.
 
 
 def _rel(path):
@@ -182,10 +165,7 @@ def resource_rows(plan):
 
 
 def service_for_type(rtype):
-    for service, prefix in SERVICE_PREFIXES:
-        if rtype.startswith(prefix):
-            return service
-    return "Other"
+    return pricing_catalog.service_display_name(rtype)
 
 
 def owner_file_for_address(address, rtype):
@@ -204,10 +184,7 @@ def owner_file_for_address(address, rtype):
 
 
 def owner_file_for_type(rtype):
-    for prefix, filename in FILE_HINTS:
-        if rtype.startswith(prefix):
-            return filename
-    return "main.tf"
+    return pricing_catalog.file_hint(rtype) or "main.tf"
 
 
 def services(plan):

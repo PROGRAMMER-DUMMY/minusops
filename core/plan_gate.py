@@ -332,8 +332,43 @@ def stage_verify(dir_, policy_mode=None):
     return True
 
 
-def stage_plan(dir_):
+def _check_coverage(dir_, plan_hash_, policy_mode):
+    """Cost-coverage audit: every resource type in the plan must be auto-priced, mapped
+    (needs a reviewed usage profile), or confirmed free — never silently absent. Dev mode
+    warns loudly; production treats an unresolved resource type as a blocking finding, same
+    posture as the two-person-rule / weak-credential checks elsewhere in this gate."""
+    try:
+        import reporter
+        import coverage_audit
+        report_dir = os.path.join(reporter.reports_root_for_dir(dir_), plan_hash_[:12])
+        coverage = coverage_audit.audit(report_dir)
+    except Exception as exc:
+        print(f"[gate] (coverage audit skipped: {exc})", file=sys.stderr)
+        return True
+    unresolved = coverage.get("unresolved") or []
+    if not unresolved:
+        return True
+    names = ", ".join(f"{u['resource_type']} x{u['count']}" for u in unresolved)
+    if policy_mode == "production":
+        print(f"[gate] refusing plan (production): unresolved cost coverage for: {names}. "
+              "Add these to core/pricing_data/aws_resource_map.json (priced) or "
+              "core/pricing_data/free_resources.json (confirmed free) after checking the AWS "
+              "Price List catalog — never guess.", file=sys.stderr)
+        _audit("plan", "REJECTED", reason="unresolved_cost_coverage", dir=dir_,
+               plan_hash=plan_hash_, unresolved=names)
+        return False
+    print(f"[gate] WARNING: unresolved cost coverage for: {names} — these resource types have "
+          "no known AWS service mapping, so they are silently excluded from the cost report. "
+          "Run `python core/coverage_audit.py audit --report-dir {}`.".format(report_dir),
+          file=sys.stderr)
+    _audit("plan", "WARN", reason="unresolved_cost_coverage", dir=dir_,
+           plan_hash=plan_hash_, unresolved=names)
+    return True
+
+
+def stage_plan(dir_, policy_mode=None):
     print("== plan ==")
+    policy_mode = _policy_mode(policy_mode)
     rc, _, err = _tf(dir_, "plan", f"-out={PLAN_FILE}")
     if rc != 0:
         print(f"[gate] terraform plan failed:\n{err}", file=sys.stderr)
@@ -364,7 +399,9 @@ def stage_plan(dir_):
         reporter.generate(dir_)
     except Exception as e:
         print(f"[gate] (report skipped: {e})", file=sys.stderr)
-    return True
+        return True
+
+    return _check_coverage(dir_, h, policy_mode)
 
 
 def _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, plan_hash):
@@ -496,9 +533,29 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
     return True
 
 
+def _reject_if_audit_chain_tampered():
+    """Audit finding 2026-07-03: audit_chain.verify() existed and worked, but nothing in the
+    deploy path ever called it — tamper-evidence was real but opt-in, not load-bearing. This
+    makes it load-bearing: apply refuses to proceed if the trail that's supposed to record every
+    prior gate decision has itself been edited, reordered, or truncated out-of-band."""
+    audit_path = os.path.join(LOG_DIR, "audit.jsonl")
+    ok, errors = audit_chain.verify(audit_path)
+    if ok:
+        return False
+    print("[gate] REFUSING TO APPLY — the audit trail has been tampered with:", file=sys.stderr)
+    for err in errors[:5]:
+        print(f"  - {err}", file=sys.stderr)
+    print(f"[gate] Investigate {audit_path} before proceeding — do not delete/reset it to "
+          "bypass this check.", file=sys.stderr)
+    _audit("apply", "REJECTED", reason="audit_chain_tampered", errors=errors[:5])
+    return True
+
+
 def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
     policy_mode = _policy_mode(policy_mode)
     print("== apply ==")
+    if _reject_if_audit_chain_tampered():
+        return False
     current, herr = _plan_hash(dir_)
     if not current:
         print(f"[gate] cannot read current plan ({herr}).", file=sys.stderr)
@@ -554,7 +611,7 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
 
 
 def stage_run(dir_, mode, policy_mode=None):
-    return (stage_verify(dir_, policy_mode) and stage_plan(dir_)
+    return (stage_verify(dir_, policy_mode) and stage_plan(dir_, policy_mode)
             and stage_approve(dir_, mode, policy_mode) and stage_apply(dir_, mode, policy_mode))
 
 
@@ -572,7 +629,7 @@ def main(argv=None):
     if args.stage == "verify":
         ok = stage_verify(args.dir, args.policy_mode)
     elif args.stage == "plan":
-        ok = stage_plan(args.dir)
+        ok = stage_plan(args.dir, args.policy_mode)
     elif args.stage == "approve":
         ok = stage_approve(args.dir, args.mode, args.policy_mode)
     elif args.stage == "apply":

@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -108,6 +109,30 @@ def test_synthesize_creates_run_records_requirements_and_composes(tmp_path, monk
     assert os.path.exists(os.path.join(res["run"]["root"], "architecture_decision.json"))
     assert res["requirements_recorded"]
     assert res["architecture_decision_recorded"]
+
+
+def test_allow_incomplete_bypass_is_actually_audited(tmp_path, monkeypatch):
+    # Audit findings, 2026-07-03: allow_incomplete was documented as an "audited override" but
+    # made zero audit_chain calls. This proves the bypass now writes a real, chained record —
+    # not just that the docstring claims it does.
+    import runs
+    import audit_chain
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(synthesizer, "LOG_DIR", str(tmp_path / "logs"))
+
+    res = synthesizer.synthesize("vague pipeline request", spec={"goal": "x"}, allow_incomplete=True)
+
+    log_path = os.path.join(str(tmp_path / "logs"), "audit.jsonl")
+    assert os.path.exists(log_path)
+    ok, errors = audit_chain.verify(log_path)
+    assert ok, errors
+    entries = [json.loads(line) for line in open(log_path, encoding="utf-8") if line.strip()]
+    bypass = next(e for e in entries if e["status"] == "ALLOW_INCOMPLETE_BYPASS")
+    assert bypass["component"] == "synthesizer"
+    assert bypass["run_id"] == res["run"]["run_id"]
+    assert "system_class" in bypass["requirements_missing"]
+    assert bypass["architecture_decision_missing"]  # decision was never supplied either
 
 
 def test_synthesize_into_existing_run_writes_manifest_and_baseline(tmp_path, monkeypatch):

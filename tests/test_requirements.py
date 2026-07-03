@@ -33,6 +33,58 @@ def test_explicit_deferral_counts_as_answered():
     assert "budget" in reqgate.deferred_axes(spec)   # deferral is recorded, not silent
 
 
+def test_bare_deferred_with_no_reason_does_not_count_as_answered():
+    # Audit finding 2026-07-03: bare "deferred" (no reason) used to satisfy the gate.
+    spec = {**COMPLETE, "non_functional": {**COMPLETE["non_functional"], "budget": "deferred"}}
+    ok, missing = reqgate.validate(spec)
+    assert not ok
+    assert "non_functional.budget" in missing
+
+
+def test_lazy_deferral_reason_does_not_count_as_answered():
+    spec = {**COMPLETE, "non_functional": {**COMPLETE["non_functional"], "budget": "deferred: tbd"}}
+    ok, missing = reqgate.validate(spec)
+    assert not ok
+    assert "non_functional.budget" in missing
+
+
+def test_cannot_satisfy_the_gate_by_deferring_everything():
+    # The exact loophole the audit flagged: six one-word "deferred" axes + minimal required
+    # fields must NOT pass validate() cleanly.
+    spec = {
+        "goal": "x", "system_class": "x", "functional": ["x"],
+        "non_functional": {axis: "deferred" for axis in reqgate.REQUIRED_NFR},
+    }
+    ok, missing = reqgate.validate(spec)
+    assert not ok
+    assert all(f"non_functional.{axis}" in missing for axis in reqgate.REQUIRED_NFR)
+
+
+def test_more_than_two_real_deferrals_requires_signoff():
+    real_deferrals = {axis: f"deferred: {axis} intentionally deferred pending review cycle"
+                       for axis in reqgate.REQUIRED_NFR[:3]}
+    remaining = {axis: "specified value" for axis in reqgate.REQUIRED_NFR[3:]}
+    spec = {"goal": "x", "system_class": "x", "functional": ["x"],
+            "non_functional": {**real_deferrals, **remaining}}
+    ok, missing = reqgate.validate(spec)
+    assert not ok
+    assert any("deferral_signoff" in m for m in missing)
+
+    spec["deferral_signoff"] = "approved by platform lead ahead of MVP scope cut"
+    ok2, missing2 = reqgate.validate(spec)
+    assert ok2 and missing2 == []
+
+
+def test_two_or_fewer_real_deferrals_need_no_signoff():
+    spec = {**COMPLETE, "non_functional": {
+        **COMPLETE["non_functional"],
+        "budget": "deferred: set in finance review",
+        "retention": "deferred: pending legal review of data policy",
+    }}
+    ok, missing = reqgate.validate(spec)
+    assert ok and missing == []
+
+
 def test_require_raises_with_the_missing_list():
     with pytest.raises(reqgate.RequirementsIncomplete) as exc:
         reqgate.require({"goal": "x"})

@@ -11,13 +11,43 @@ import os
 import re
 import json
 import shutil
+import sys
+import getpass
 import datetime
 
 import architecture_decision as archdec
+import audit_chain
 import modules as module_registry
 import requirements as reqgate
 import runs
 import source_guard
+
+LOG_DIR = os.path.join(os.getcwd(), ".agents", "logs")
+
+
+def _audit_allow_incomplete_bypass(requirements_text, spec, decision, run):
+    """The allow_incomplete override is documented as an 'audited' escape hatch — this is what
+    actually makes that true. Writes into the SAME chain plan_gate/approval use (audit_chain.py's
+    own doctrine: one continuous chain across the control plane), so a reviewer sees every
+    bypass alongside every deploy decision, not in a separate, easy-to-miss log."""
+    _, req_missing = reqgate.validate(spec or {})
+    _, dec_missing = archdec.validate(decision or {})
+    rec = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "operator": getpass.getuser(),
+        "component": "synthesizer",
+        "action": "synthesize",
+        "status": "ALLOW_INCOMPLETE_BYPASS",
+        "run_id": (run or {}).get("run_id", ""),
+        "request": requirements_text,
+        "requirements_missing": req_missing,
+        "architecture_decision_missing": dec_missing,
+    }
+    os.makedirs(LOG_DIR, exist_ok=True)
+    try:
+        audit_chain.append(os.path.join(LOG_DIR, "audit.jsonl"), rec)
+    except Exception as exc:
+        print(f"[architect] WARNING: could not write audit record: {exc}", file=sys.stderr)
 
 # A small set of obvious cross-module wirings applied when both modules are present.
 # Module block labels use underscores (hyphens are awkward in HCL references).
@@ -333,6 +363,8 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     if not chosen:
         raise ValueError("no modules matched the requirements; refine the request or pass --module")
     run = target_run or runs.new_run(blueprint="synthesized", request=requirements_text, cloud=cloud)
+    if allow_incomplete:
+        _audit_allow_incomplete_bypass(requirements_text, spec, decision, run)
     _ensure_empty_or_overwrite(run["terraform_dir"], overwrite=overwrite)
     if spec:
         reqgate.write(run["root"], spec, gathered_by=owner)

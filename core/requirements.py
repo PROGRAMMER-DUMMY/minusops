@@ -66,17 +66,49 @@ def template():
     }
 
 
+_DEFERRAL_RE = re.compile(r"^deferred\s*:\s*(.+)$", re.I)
+# Bare filler reasons that technically match "deferred: <text>" but carry no real content.
+_LAZY_DEFERRAL_REASONS = {"tbd", "n/a", "na", "unknown", "later", "todo", "pending", "review"}
+MIN_DEFERRAL_REASON_LEN = 10
+# Audit finding 2026-07-03: an agent could satisfy the whole NFR gate by writing bare
+# "deferred" x6 with no reason at all. Beyond this many deferred axes, an explicit
+# deferral_signoff is required -- deferring a couple of axes is normal; deferring almost
+# everything needs a human to say so out loud.
+MAX_FREE_NFR_DEFERRALS = 2
+
+
 def is_deferred(value):
-    return isinstance(value, str) and value.strip().lower().startswith("deferred")
+    """A deferral must be 'deferred: <real reason>' -- bare 'deferred', a missing reason, or a
+    lazy placeholder (tbd/n/a/unknown/...) does not count. This is what stops the gate being
+    satisfied by deferring everything with no real content."""
+    if not isinstance(value, str):
+        return False
+    m = _DEFERRAL_RE.match(value.strip())
+    if not m:
+        return False
+    reason = m.group(1).strip()
+    if len(reason) < MIN_DEFERRAL_REASON_LEN:
+        return False
+    return reason.lower().rstrip(".") not in _LAZY_DEFERRAL_REASONS
 
 
-def _answered(value):
-    return bool(str(value).strip()) and (is_deferred(value) or not str(value).strip().lower().startswith("deferred"))
+def _field_answered(value):
+    """A real value counts as answered. Anything that LOOKS like a deferral attempt (starts
+    with 'deferred') must pass the is_deferred() quality bar to count -- it doesn't get a free
+    pass just for being non-empty."""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.lower().startswith("deferred"):
+        return is_deferred(text)
+    return True
 
 
 def validate(data):
-    """Return (ok, missing). `missing` names every unanswered required field (deferral counts as
-    answered). A field is unanswered if it is empty / absent."""
+    """Return (ok, missing). `missing` names every unanswered required field (a well-formed
+    deferral counts as answered; a bare/lazy one does not). A field is unanswered if it is
+    empty, absent, or an unconvincing deferral. If more than MAX_FREE_NFR_DEFERRALS of the six
+    NFR axes are deferred, `deferral_signoff` must also be a real (non-lazy) explanation."""
     missing = []
     if not isinstance(data, dict):
         return False, ["(not a requirements object)"]
@@ -88,10 +120,19 @@ def validate(data):
     if not (isinstance(functional, list) and any(str(x).strip() for x in functional)):
         missing.append("functional (at least one capability)")
     nfr = data.get("non_functional") or {}
+    deferred_count = 0
     for axis in REQUIRED_NFR:
         val = nfr.get(axis, "")
-        if not str(val).strip():
+        if not _field_answered(val):
             missing.append(f"non_functional.{axis}")
+        elif is_deferred(str(val)):
+            deferred_count += 1
+    if deferred_count > MAX_FREE_NFR_DEFERRALS and not is_deferred(
+            "deferred: " + str(data.get("deferral_signoff", ""))):
+        missing.append(
+            f"deferral_signoff (required once more than {MAX_FREE_NFR_DEFERRALS} of "
+            f"{len(REQUIRED_NFR)} non-functional axes are deferred — {deferred_count} are here)"
+        )
     return (not missing), missing
 
 
@@ -108,9 +149,10 @@ def is_data_pipeline(data):
 
 def validate_data_pipeline(data):
     """Return (ok, missing) for the data-pipeline FR/NFR profile. Each field is answered by a
-    value or an explicit 'deferred: <reason>'. Only meaningful for data workloads."""
+    value or an explicit, real 'deferred: <reason>' (same quality bar as validate()). Only
+    meaningful for data workloads."""
     dp = (data or {}).get("data_pipeline") or {}
-    missing = [f"data_pipeline.{f}" for f in DATA_FIELDS if not str(dp.get(f, "")).strip()]
+    missing = [f"data_pipeline.{f}" for f in DATA_FIELDS if not _field_answered(dp.get(f, ""))]
     return (not missing), missing
 
 

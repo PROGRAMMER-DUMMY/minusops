@@ -129,6 +129,49 @@ def test_apply_refuses_when_plan_drifted(gate_env, monkeypatch):
     assert not os.path.exists(plan_gate._approved_path("d", approved_hash))
 
 
+def test_apply_refuses_when_audit_chain_tampered(gate_env, monkeypatch):
+    # Audit finding 2026-07-03: audit_chain.verify() existed but nothing in the deploy path
+    # called it -- tamper-evidence was opt-in, not load-bearing. This proves it now is.
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+
+    current, _ = plan_gate._plan_hash("d")
+    os.makedirs(plan_gate._state_dir("d"), exist_ok=True)
+    with open(plan_gate._pending_path("d"), "w", encoding="utf-8") as f:
+        json.dump({"plan_hash": current, "dir": "d", "canonical_dir": plan_gate._canonical_dir("d")}, f)
+    assert plan_gate.stage_approve("d", mode="gatekeeper") is True
+
+    # Hand-edit the audit log out-of-band -- exactly what verify() exists to catch.
+    audit_path = gate_env / "audit.jsonl"
+    lines = audit_path.read_text(encoding="utf-8").splitlines()
+    assert lines, "approve should have written at least one audit record"
+    rec = json.loads(lines[0])
+    rec["status"] = "TAMPERED"
+    lines[0] = json.dumps(rec)
+    audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    assert plan_gate.stage_apply("d") is False
+    # Refused before even reaching the plan-hash check -- the approval record is still there,
+    # proving it wasn't ordinary hash/drift logic that blocked this apply.
+    assert os.path.exists(plan_gate._approved_path("d", current))
+
+
+def test_apply_proceeds_with_an_untampered_audit_chain(gate_env, monkeypatch):
+    # Sanity check: a normal chain built from real gate activity never blocks apply.
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+
+    current, _ = plan_gate._plan_hash("d")
+    os.makedirs(plan_gate._state_dir("d"), exist_ok=True)
+    with open(plan_gate._pending_path("d"), "w", encoding="utf-8") as f:
+        json.dump({"plan_hash": current, "dir": "d", "canonical_dir": plan_gate._canonical_dir("d")}, f)
+
+    assert plan_gate.stage_approve("d", mode="gatekeeper") is True
+    assert plan_gate.stage_apply("d") is True
+
+
 def test_apply_with_no_approval_is_refused(gate_env, monkeypatch):
     monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
     assert plan_gate.stage_apply("d") is False

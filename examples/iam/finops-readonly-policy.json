@@ -15,7 +15,9 @@
         "cloudtrail:LookupEvents",
         "bcm-pricing-calculator:GetWorkloadEstimate",
         "bcm-pricing-calculator:ListWorkloadEstimateUsage",
-        "pricing:GetProducts"
+        "pricing:GetProducts",
+        "pricing:DescribeServices",
+        "pricing:GetAttributeValues"
       ],
       "Resource": "*"
     }

@@ -30,3 +30,7 @@ backend.hcl
 
 # vendor-owned diagram icons — local only, never committed (see docs/architecture_svg_spec.md v3)
 assets/architecture-icons/
+
+# generated repo-structure snapshot — a point-in-time reference, not maintained documentation;
+# would go stale in source control, so it's local-only (regenerate on demand instead)
+docs/REPO_MAP.md

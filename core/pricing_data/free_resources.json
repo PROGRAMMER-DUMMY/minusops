@@ -1,0 +1,23 @@
+{
+  "_comment": "Terraform resource-type prefixes CONFIRMED to carry no billable AWS Price List SKU, ever, regardless of scale or configuration. This is a reviewed allowlist, not an assumption -- each entry must be independently verifiable (e.g. via `aws pricing get-products --service-code <code>` returning nothing, or documented AWS free-tier-unconditional behavior) before it's added. Do NOT add resources with a conditional or scale-dependent free tier here (e.g. NAT Gateways, VPC interface endpoints, CloudWatch Alarms above the free-tier count, action-enabled AWS Budgets) -- those belong in aws_resource_map.json as unverified/mapped-but-manual instead, so the coverage audit still asks a human to check rather than silently assuming $0.",
+  "prefixes": [
+    {"prefix": "aws_iam_role_policy_attachment", "display_name": "AWS IAM", "note": "policy attachments carry no charge"},
+    {"prefix": "aws_iam_role_policy", "display_name": "AWS IAM", "note": "inline role policies carry no charge"},
+    {"prefix": "aws_iam_role", "display_name": "AWS IAM", "note": "IAM roles carry no charge"},
+    {"prefix": "aws_iam_policy", "display_name": "AWS IAM", "note": "customer-managed IAM policies carry no charge"},
+    {"prefix": "aws_iam_instance_profile", "display_name": "AWS IAM", "note": "instance profiles carry no charge"},
+
+    {"prefix": "aws_security_group_rule", "display_name": "Amazon VPC", "note": "security group rules carry no charge"},
+    {"prefix": "aws_security_group", "display_name": "Amazon VPC", "note": "security groups carry no charge"},
+    {"prefix": "aws_vpc", "display_name": "Amazon VPC", "note": "the VPC resource itself is free -- subresources like NAT gateways and interface endpoints are NOT free and must never be added to this file"},
+    {"prefix": "aws_subnet", "display_name": "Amazon VPC", "note": "subnets carry no charge"},
+    {"prefix": "aws_route_table", "display_name": "Amazon VPC", "note": "route tables and associations carry no charge"},
+    {"prefix": "aws_internet_gateway", "display_name": "Amazon VPC", "note": "internet gateways carry no charge (data transfer through them is billed separately, not on this resource)"},
+
+    {"prefix": "aws_kms_alias", "display_name": "AWS KMS", "note": "aliases are free -- the aws_kms_key resource itself IS billable and is intentionally not in this file"},
+
+    {"prefix": "aws_budgets_budget", "display_name": "AWS Budgets", "note": "standard cost/usage budgets with notifications are free; action-enabled budgets beyond the first 2/account/month are billable -- re-review if a module ever configures budget actions"},
+
+    {"prefix": "aws_sns_topic_subscription", "display_name": "Amazon SNS", "note": "the subscription itself carries no separate fee (SNS bills publish/delivery requests on the topic, mapped separately as aws_sns in aws_resource_map.json)"}
+  ]
+}
