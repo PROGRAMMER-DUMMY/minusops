@@ -43,27 +43,21 @@ override_data {
 # these aws_iam_policy_document data sources isn't valid JSON, and the aws_iam_role/policy
 # resources that consume it as assume_role_policy/policy fail validation. Neither data source
 # is the thing under test here (the bucket name is), so any valid JSON policy is fine.
+# Literal strings, not jsonencode(...) -- override_data values disallow function calls on
+# Terraform < 1.15 (CI/Docker pin is 1.10.5); each is byte-identical to what the equivalent
+# jsonencode(...) call produces (alphabetical key order, no whitespace), verified against the
+# real 1.15.7 binary.
 override_data {
   target = data.aws_iam_policy_document.assume
   values = {
-    json = jsonencode({
-      Version = "2012-10-17"
-      Statement = [{
-        Effect    = "Allow"
-        Action    = "sts:AssumeRole"
-        Principal = { Service = "glue.amazonaws.com" }
-      }]
-    })
+    json = "{\\"Statement\\":[{\\"Action\\":\\"sts:AssumeRole\\",\\"Effect\\":\\"Allow\\",\\"Principal\\":{\\"Service\\":\\"glue.amazonaws.com\\"}}],\\"Version\\":\\"2012-10-17\\"}"
   }
 }
 
 override_data {
   target = data.aws_iam_policy_document.dq
   values = {
-    json = jsonencode({
-      Version   = "2012-10-17"
-      Statement = []
-    })
+    json = "{\\"Statement\\":[],\\"Version\\":\\"2012-10-17\\"}"
   }
 }
 

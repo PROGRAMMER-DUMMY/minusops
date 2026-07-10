@@ -42,25 +42,27 @@ variables {
 # computed .json attribute (same issue hit by dq-great-expectations' aws_iam_policy_document
 # data sources) -- override with a minimal but valid JSON object so the resources consuming
 # .json (aws_iam_role, aws_iam_role_policy, aws_s3_bucket_policy) don't fail plan-time
-# JSON validation.
+# JSON validation. Literal string, not jsonencode(...) -- override_data values disallow function
+# calls on Terraform < 1.15 (CI/Docker pin is 1.10.5); byte-identical to jsonencode's output
+# (alphabetical key order, no whitespace), verified against the real 1.15.7 binary.
 override_data {
   target = data.databricks_aws_assume_role_policy.this
   values = {
-    json = jsonencode({ Version = "2012-10-17", Statement = [] })
+    json = "{\\"Statement\\":[],\\"Version\\":\\"2012-10-17\\"}"
   }
 }
 
 override_data {
   target = data.databricks_aws_crossaccount_policy.this
   values = {
-    json = jsonencode({ Version = "2012-10-17", Statement = [] })
+    json = "{\\"Statement\\":[],\\"Version\\":\\"2012-10-17\\"}"
   }
 }
 
 override_data {
   target = data.databricks_aws_bucket_policy.this
   values = {
-    json = jsonencode({ Version = "2012-10-17", Statement = [] })
+    json = "{\\"Statement\\":[],\\"Version\\":\\"2012-10-17\\"}"
   }
 }
 

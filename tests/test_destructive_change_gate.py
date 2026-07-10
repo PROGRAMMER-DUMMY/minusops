@@ -410,11 +410,15 @@ def _override_data_blocks(main_tf_content):
     blocks = []
     for data_type, name in re.findall(r'data\s+"([A-Za-z0-9_]+)"\s+"([A-Za-z0-9_]+)"', main_tf_content):
         if data_type in _JSON_POLICY_TYPES:
+            # Literal JSON string, not jsonencode(...) -- override_data values are evaluated in a
+            # restricted context that disallows function calls on Terraform < 1.15 (CI/Docker pin
+            # is 1.10.5). Byte-identical to what jsonencode({Version=..., Statement=[]}) produces
+            # (alphabetical key order, no whitespace) -- verified against the real 1.15.7 binary.
             blocks.append(f'''
 override_data {{
   target = data.{data_type}.{name}
   values = {{
-    json = jsonencode({{ Version = "2012-10-17", Statement = [] }})
+    json = "{{\\"Statement\\":[],\\"Version\\":\\"2012-10-17\\"}}"
   }}
 }}''')
         elif data_type == "aws_region":
