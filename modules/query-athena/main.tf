@@ -24,8 +24,20 @@ variable "bytes_scanned_cutoff" {
   description = "Per-query data scan limit in bytes (default 10 GiB)."
 }
 
+variable "run_id" {
+  type        = string
+  default     = ""
+  description = "MinusOps run id, folded into the results bucket name so two runs sharing the same name_prefix don't collide with each other (or with an unrelated bucket in the global S3 namespace)."
+}
+
+data "aws_caller_identity" "current" {}
+
 resource "aws_s3_bucket" "results" {
-  bucket = "${var.name_prefix}-athena-results"
+  # account_id guards against colliding with an unrelated bucket in the global S3 namespace;
+  # the run_id hash guards against two of our own runs colliding when they share the same
+  # name_prefix. Same fix as storage-medallion-s3 (2026-07-04 audit finding), applied here
+  # after an exhaustive read found this module had the identical unsuffixed pattern.
+  bucket = "${var.name_prefix}-athena-results-${data.aws_caller_identity.current.account_id}-${substr(md5(var.run_id), 0, 8)}"
   tags   = var.tags
 }
 

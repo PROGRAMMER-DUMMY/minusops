@@ -26,7 +26,7 @@ Read these skill files when their trigger applies:
 - [`.agents/skills/pipeline-optimizer/SKILL.md`](./.agents/skills/pipeline-optimizer/SKILL.md) — before scanning, optimizing, or proposing remediation for Terraform/data-pipeline infrastructure.
 - [`.agents/skills/resolve-ambiguity/SKILL.md`](./.agents/skills/resolve-ambiguity/SKILL.md) — when a request is unclear, underspecified, too broad, too simple for hidden risk, or supports incompatible outcomes.
 - [`.agents/skills/grill-me/SKILL.md`](./.agents/skills/grill-me/SKILL.md) — **the mandatory front door for any build/create request**: gather full functional + non-functional requirements (one question at a time) before generating; also when the user asks to be grilled or to resolve a decision tree.
-- [`.agents/skills/architect/SKILL.md`](./.agents/skills/architect/SKILL.md) — after requirements are gathered: research current services/reference architectures, choose the best-fit, compose vetted modules (`core/modules.py` + `core/synthesizer.py`), and govern through the deploy gate. The path for any scenario the demo blueprint doesn't fit.
+- [`.agents/skills/architect/SKILL.md`](./.agents/skills/architect/SKILL.md) — after requirements are gathered: research current services/reference architectures, choose the best-fit, compose vetted modules (`core/generation/modules.py` + `core/generation/synthesizer.py`), and govern through the deploy gate. The path for any scenario the demo blueprint doesn't fit.
 
 If your agent runtime has explicit skill auto-discovery, these files may load automatically. If not, manually read the matching `SKILL.md` before taking action.
 
@@ -98,30 +98,30 @@ All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws
 
 | Capability | How you do it | Primary tool |
 | :--- | :--- | :--- |
-| **Operator workflow** | `python core/minusctl.py create "<request>"`, then complete `runs/<run-id>/requirements.json`, record `architecture_decision.json`, synthesize Terraform, and run `next` / `readiness` / `package` | Safe unified CLI |
-| **Create run workspace** | `python core/runs.py new --blueprint <id> --request "<request>"` | `core/runs.py` |
-| **Resolve request to run** | `python core/workflow.py resolve "<request>"` creates a requirements-first run and never emits production Terraform from demo fixtures | `core/workflow.py` |
-| **No-cloud demo** | `python core/demo.py governed-data-pipeline --owner data-platform --daily-data-gb 50` | Generates run Terraform + synthetic plan report without Terraform/AWS |
-| **Provision / change infra** | Generate or edit HCL in `runs/<run-id>/terraform/`, then run the deploy gate (§6.1) | `core/plan_gate.py` + Terraform |
-| **Detect manual source edits** | `python core/source_guard.py status --dir runs/<run-id>/terraform` and `python core/source_guard.py diff --dir runs/<run-id>/terraform` | Generated-source baseline guard |
-| **Inspect generated reports** | `python core/plan_inspector.py services --latest`, `resources --latest`, `roles --latest`, `diff --latest` | Report and drift explorer |
+| **Operator workflow** | `python core/reporting/minusctl.py create "<request>"`, then complete `runs/<run-id>/requirements.json`, record `architecture_decision.json`, synthesize Terraform, and run `next` / `readiness` / `package` | Safe unified CLI |
+| **Create run workspace** | `python core/reporting/runs.py new --blueprint <id> --request "<request>"` | `core/reporting/runs.py` |
+| **Resolve request to run** | `python core/generation/workflow.py resolve "<request>"` creates a requirements-first run and never emits production Terraform from demo fixtures | `core/generation/workflow.py` |
+| **No-cloud demo** | `python core/generation/demo.py governed-data-pipeline --owner data-platform --daily-data-gb 50` | Generates run Terraform + synthetic plan report without Terraform/AWS |
+| **Provision / change infra** | Generate or edit HCL in `runs/<run-id>/terraform/`, then run the deploy gate (§6.1) | `core/governance/plan_gate.py` + Terraform |
+| **Detect manual source edits** | `python core/governance/source_guard.py status --dir runs/<run-id>/terraform` and `python core/governance/source_guard.py diff --dir runs/<run-id>/terraform` | Generated-source baseline guard |
+| **Inspect generated reports** | `python core/reporting/plan_inspector.py services --latest`, `resources --latest`, `roles --latest`, `diff --latest` | Report and drift explorer |
 | **Inspect live state** | `aws <service> <describe/list/get>` (or `az`/`gcloud`) — read-only, safe | cloud CLI |
-| **Health diagnostics** | `python core/health_checker.py` | cloud CLI probes |
-| **Scan infra for issues** | `python core/optimize_analyzer.py --source-dir <dir>` | HCL scanner |
-| **Estimate cost** | `python core/budget_calculator.py` (BCM Pricing Calculator API required for reportable costs) | Pricing API |
-| **Prepare BCM estimate** | `python core/bcm_pricing_calculator.py prepare --report-dir runs/<run-id>/reports/<plan-hash> --account-id <account>` (no AWS calls) | BCM payload generator |
-| **Run BCM estimate** | `python core/bcm_pricing_calculator.py run --report-dir runs/<run-id>/reports/<plan-hash> --mode gatekeeper` (AWS-side effect; approval required) | BCM Pricing Calculator API |
-| **Analyze live spend / anomalies** | `python core/finops_agent.py [--cost \| --anomalies \| --correlate]` (via active provider) | `core/providers/` |
+| **Health diagnostics** | `python core/reporting/health_checker.py` | cloud CLI probes |
+| **Scan infra for issues** | `python core/reporting/optimize_analyzer.py --source-dir <dir>` | HCL scanner |
+| **Estimate cost** | `python core/cost/budget_calculator.py` (BCM Pricing Calculator API required for reportable costs) | Pricing API |
+| **Prepare BCM estimate** | `python core/cost/bcm_pricing_calculator.py prepare --report-dir runs/<run-id>/reports/<plan-hash> --account-id <account>` (no AWS calls) | BCM payload generator |
+| **Run BCM estimate** | `python core/cost/bcm_pricing_calculator.py run --report-dir runs/<run-id>/reports/<plan-hash> --mode gatekeeper` (AWS-side effect; approval required) | BCM Pricing Calculator API |
+| **Analyze live spend / anomalies** | `python core/reporting/finops_agent.py [--cost \| --anomalies \| --correlate]` (via active provider) | `core/providers/` |
 | **View the control-plane console (UI)** | `python app/dashboard_app.py` → http://127.0.0.1:8050 (`pip install -r requirements.txt`); non-local binds require `MINUS_DASH_TOKEN` | Plotly Dash |
-| **Notify (Slack/Jira), gated** | `core/finops_agent.py --notify-slack \| --notify-jira --approval-mode {gatekeeper\|auto-approve}` | `approval.py` gate |
-| **Gate any side effect** | `python core/approval.py --action <a> --details <d> --mode {gatekeeper\|auto-approve}` | HITL / auto + audit |
-| **Resolve creation intent** | `python core/intent_resolver.py "create a data pipeline"` | requirements-first resolver |
-| **Validate blueprints** | `python core/intent_resolver.py --validate-blueprints` | blueprint schema validator |
-| **Route a vague request** | `python core/dispatcher.py "<natural language>"` | resolver + keyword classifier |
+| **Notify (Slack/Jira), gated** | `core/reporting/finops_agent.py --notify-slack \| --notify-jira --approval-mode {gatekeeper\|auto-approve}` | `approval.py` gate |
+| **Gate any side effect** | `python core/governance/approval.py --action <a> --details <d> --mode {gatekeeper\|auto-approve}` | HITL / auto + audit |
+| **Resolve creation intent** | `python core/generation/intent_resolver.py "create a data pipeline"` | requirements-first resolver |
+| **Validate blueprints** | `python core/generation/intent_resolver.py --validate-blueprints` | blueprint schema validator |
+| **Route a vague request** | `python core/reporting/dispatcher.py "<natural language>"` | resolver + keyword classifier |
 | **Clarify ambiguous work** | Read `.agents/skills/resolve-ambiguity/SKILL.md`, then ask one targeted question with a recommended answer | `resolve-ambiguity` skill |
 | **Stress-test a plan** | Read `.agents/skills/grill-me/SKILL.md`, then interview one decision at a time until major branches are resolved | `grill-me` skill |
-| **Audit an action** | `python core/audit_logger.py --action <a> --details <d>` | append to tamper-evident `audit.jsonl` |
-| **Verify the audit chain** | `python core/minusctl.py audit verify` (or `python core/audit_chain.py verify`) | hash-chain integrity check |
+| **Audit an action** | `python core/governance/audit_logger.py --action <a> --details <d>` | append to tamper-evident `audit.jsonl` |
+| **Verify the audit chain** | `python core/reporting/minusctl.py audit verify` (or `python core/governance/audit_chain.py verify`) | hash-chain integrity check |
 | **Diagnose local env** | `powershell -ExecutionPolicy Bypass -File ./tools/doctor.ps1` | PowerShell |
 
 The **dispatcher** routes operational requests to five tool intents — `HEALTH`, `DEPLOY`, `OPTIMIZE`, `BUDGET`, `FINOPS`. Creation requests such as "create a data pipeline" are first passed through `intent_resolver.py`, which creates a requirements-first path without generating or deploying infrastructure. You may also call any tool directly.
@@ -144,13 +144,13 @@ The production path is **requirements → research → compose → govern**, not
 | Step | Tool |
 | :--- | :--- |
 | Gather requirements | `grill-me` skill |
-| Resolve authoritative sources for a service | `python core/discovery.py <topic> --resource <aws_type>` (Registry/CLI/pricing URLs) |
-| Match requirements to vetted modules | `python core/modules.py match "<requirements>"` |
-| Compose modules into a governed Terraform workspace | `python core/synthesizer.py "<requirements>" --run <run-id> --requirements-file <run>/requirements.json --decision-file <run>/architecture_decision.json` |
+| Resolve authoritative sources for a service | `python core/architecture/discovery.py <topic> --resource <aws_type>` (Registry/CLI/pricing URLs) |
+| Match requirements to vetted modules | `python core/generation/modules.py match "<requirements>"` |
+| Compose modules into a governed Terraform workspace | `python core/generation/synthesizer.py "<requirements>" --run <run-id> --requirements-file <run>/requirements.json --decision-file <run>/architecture_decision.json` |
 | Govern the composed Terraform | the §6.1 deploy gate (`plan_gate verify/plan/approve/apply`) |
-| Reuse an approved composition | `python core/patterns.py match "<requirements>"`; capture after approval with `patterns.py capture` |
+| Reuse an approved composition | `python core/generation/patterns.py match "<requirements>"`; capture after approval with `patterns.py capture` |
 
-`aws-data-pipeline-standard` (`core/blueprints.py`, `terraform_generator.py`) is the **demo/cached
+`aws-data-pipeline-standard` (`core/generation/blueprints.py`, `terraform_generator.py`) is the **demo/cached
 fixture** that powers `minusctl demo` and the golden tests — not the production generator.
 
 ---
@@ -225,14 +225,14 @@ These mirror [`.agents/AGENTS.md`](./.agents/AGENTS.md) and [`enterprise_iam_man
 4. **Audit every consequential action.** Log it via `audit_logger.py` to `.agents/logs/audit.jsonl` *before* proposing execution.
 5. **Pass the security scan.** Before proposing infra changes for the live stack, run `optimize_analyzer.py --source-dir <your-dir>`; resolve `SEC-*` findings (esp. `SEC-02` wildcard IAM) to zero. For production, set `MINUS_POLICY_MODE=production` or pass `--policy-mode production`; the gate then requires checkov or tfsec on PATH and blocks on external findings too. No wildcard `Resource = "*"` for S3/KMS/DynamoDB. Prefer one dedicated least-privilege role per service.
 6. **Don't retry blindly on failure.** Extract the error, look up the doc (§4), write a troubleshooting note, and ask for help if human intervention is needed.
-7. **Deploys go through the plan-gate.** `core/plan_gate.py` enforces verify → plan → **directory-bound plan-hash approval** → apply-the-exact-plan, with a full audit trail. Any `.tf` change produces a new hash, which voids the prior approval and forces a fresh review. Approval records are stored per Terraform directory and plan hash so concurrent plans cannot overwrite each other. The gate **never handles secrets** — authenticate via the cloud CLI first (`aws sso login`, or assume your MFA-gated deploy role); MFA is enforced by that role's trust policy and `apply` uses the ambient credential chain. Use it for every infrastructure change.
+7. **Deploys go through the plan-gate.** `core/governance/plan_gate.py` enforces verify → plan → **directory-bound plan-hash approval** → apply-the-exact-plan, with a full audit trail. Any `.tf` change produces a new hash, which voids the prior approval and forces a fresh review. Approval records are stored per Terraform directory and plan hash so concurrent plans cannot overwrite each other. The gate **never handles secrets** — authenticate via the cloud CLI first (`aws sso login`, or assume your MFA-gated deploy role); MFA is enforced by that role's trust policy and `apply` uses the ambient credential chain. Use it for every infrastructure change.
 8. **Verify before deleting/overwriting.** If a target's contents contradict how it was described, surface that instead of proceeding.
 
 ---
 
 ## 6. Core workflows
 
-### 6.1 Secure deployment loop (`core/plan_gate.py`)
+### 6.1 Secure deployment loop (`core/governance/plan_gate.py`)
 
 ```
 1. Verify   →  plan_gate.py verify  --dir <template> [--policy-mode production]

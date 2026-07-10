@@ -31,6 +31,34 @@ COMPLETE_DECISION = {
 }
 
 
+def test_compose_without_databricks_renders_byte_identical_root_templates(tmp_path):
+    # databricks-workspace is the first module needing a non-AWS provider, which made
+    # versions.tf/providers.tf/variables.tf conditional on present_ids instead of static
+    # strings. Every composition that doesn't select it must be completely unaffected.
+    out = tmp_path / "tf"
+    synthesizer.compose(["storage-medallion-s3", "governance-observability"], "acme-dev",
+                        str(out), owner="acme")
+    assert (out / "versions.tf").read_text(encoding="utf-8") == synthesizer._VERSIONS
+    assert (out / "providers.tf").read_text(encoding="utf-8") == synthesizer._PROVIDERS
+    assert (out / "variables.tf").read_text(encoding="utf-8") == synthesizer._VARIABLES
+
+
+def test_compose_with_databricks_adds_provider_and_account_id_variable(tmp_path):
+    out = tmp_path / "tf"
+    synthesizer.compose(["networking-vpc", "databricks-workspace"], "acme-dev",
+                        str(out), owner="acme")
+    versions = (out / "versions.tf").read_text(encoding="utf-8")
+    providers = (out / "providers.tf").read_text(encoding="utf-8")
+    variables = (out / "variables.tf").read_text(encoding="utf-8")
+    assert 'source  = "databricks/databricks"' in versions
+    assert 'provider "databricks"' in providers
+    assert 'host       = "https://accounts.cloud.databricks.com"' in providers
+    assert 'variable "databricks_account_id"' in variables
+    # aws provider/variables are unaffected -- purely additive
+    assert 'provider "aws"' in providers
+    assert 'variable "name_prefix"' in variables
+
+
 def test_select_modules_adds_governance_baseline():
     chosen = synthesizer.select_modules("a data lake with athena for analysts")
     ids = [m["id"] for m in chosen]
@@ -212,3 +240,31 @@ def test_compose_writes_tfvars_with_showback_and_volume(tmp_path):
     assert "daily_data_gb = 100" in tfvars and "10 to 100 GB per day" in tfvars
     providers = (out / "providers.tf").read_text(encoding="utf-8")
     assert "run_id     = var.run_id" in providers   # showback tag on every resource
+
+
+def test_synthesize_wires_stated_budget_into_governance_module(tmp_path, monkeypatch):
+    # Audit finding 2026-07-04: requirements.json's stated budget was captured as evidence
+    # and never wired anywhere -- governance-observability always used its own $100 default.
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    spec = {**COMPLETE_SPEC, "non_functional": {**COMPLETE_SPEC["non_functional"], "budget": "$1.00/mo hard cap"}}
+    res = synthesizer.synthesize("airflow pipeline", spec=spec, decision=COMPLETE_DECISION, owner="sandbox-test")
+    main_tf = open(os.path.join(res["out_dir"], "main.tf"), encoding="utf-8").read()
+    assert "monthly_budget_usd = 1" in main_tf
+    assert "monthly_budget_usd" not in res["review"]  # no longer an unwired REVIEW item
+    comp_md = open(os.path.join(res["out_dir"], "COMPOSITION.md"), encoding="utf-8").read()
+    assert "1.00/mo hard cap" in comp_md   # source text recorded as evidence
+
+
+def test_synthesize_leaves_budget_as_review_when_unparseable(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    spec = {**COMPLETE_SPEC, "non_functional": {**COMPLETE_SPEC["non_functional"],
+                                                 "budget": "deferred: pending finance sign-off cycle"}}
+    res = synthesizer.synthesize("airflow pipeline", spec=spec, decision=COMPLETE_DECISION, owner="sandbox-test")
+    main_tf = open(os.path.join(res["out_dir"], "main.tf"), encoding="utf-8").read()
+    assert "monthly_budget_usd =" not in main_tf  # never guessed -- no wired assignment
+    assert "# REVIEW: set monthly_budget_usd" in main_tf  # stays an explicit review item
+    assert any("monthly_budget_usd" in r for r in res["review"])

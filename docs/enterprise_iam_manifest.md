@@ -53,9 +53,9 @@ at authentication time, so by the time `terraform apply` runs the session is alr
      `aws:MultiFactorAuthPresent = true`), e.g.
      `aws sts assume-role --role-arn <MinusDeploy> --serial-number <mfa-arn> --token-code <code>`
      and load the returned session into the CLI profile.
-2. `python core/plan_gate.py approve` reviews the exact plan and records a **hash-bound approval**
+2. `python core/governance/plan_gate.py approve` reviews the exact plan and records a **hash-bound approval**
    (hash + caller identity + timestamp — no secrets).
-3. `python core/plan_gate.py apply` re-checks the plan hash, confirms an active session via the
+3. `python core/governance/plan_gate.py apply` re-checks the plan hash, confirms an active session via the
    provider's `identity()`, and runs `terraform apply tfplan` using the **ambient CLI credential
    chain**. Any `.tf` change voids the approval and forces a fresh review.
 
@@ -76,7 +76,7 @@ at authentication time, so by the time `terraform apply` runs the session is alr
 ---
 
 ## 4. Verification & Compliance Scans
-Our security scanner ([**`optimize_analyzer.py`**](/core/optimize_analyzer.py)) runs a
+Our security scanner ([**`optimize_analyzer.py`**](/core/reporting/optimize_analyzer.py)) runs a
 per-resource security audit on every `plan_gate verify`:
 * **Rule `SEC-02`**: Flags any IAM policy that declares `"Resource": "*"` or wildcard statements.
 * **Blocking enforcement**: `SEC-*` findings are *blocking* — the scanner exits non-zero and

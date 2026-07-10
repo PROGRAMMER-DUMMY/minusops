@@ -12,9 +12,9 @@ Cost evidence is split into two layers:
    - Teams may supply a reviewed JSON usage profile with `--usage-profile`.
 
 2. **BCM estimate execution**
-   - `core/bcm_pricing_calculator.py prepare` writes reviewable payloads only. It makes
+   - `core/cost/bcm_pricing_calculator.py prepare` writes reviewable payloads only. It makes
      no AWS calls.
-   - `core/bcm_pricing_calculator.py run` is an AWS-side effect. It routes through
+   - `core/cost/bcm_pricing_calculator.py run` is an AWS-side effect. It routes through
      `approval.py`, creates the BCM workload estimate, adds usage lines, and reads the
      estimate result.
 

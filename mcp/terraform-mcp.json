@@ -1,0 +1,23 @@
+{
+  "_comment": "Canonical, client-neutral definition of MinusOps' Terraform MCP server. Every per-agent registration in mcp/README.md is derived from this one file -- if this changes, regenerate all of them. Do not add credentials or operation flags here; see the fields below for why.",
+  "mcpServers": {
+    "terraform": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "hashicorp/terraform-mcp-server:1.0.0",
+        "--toolsets=registry"
+      ],
+      "env": {},
+      "transport": "stdio"
+    }
+  },
+  "_notes": {
+    "image": "hashicorp/terraform-mcp-server:1.0.0 -- pinned, not :latest, so every agent resolves the identical image regardless of when it connects.",
+    "toolset": "registry only (provider docs, module search, provider schema). No terraform/all toolset, so no create_run/apply/discard_run/cancel_run tools are exposed -- this server cannot mutate any Terraform Cloud/Enterprise workspace or run terraform apply.",
+    "credentials": "none. TFE_TOKEN is only needed for private-registry/HCP Terraform operations, which this server doesn't use (public Terraform Registry lookups need no auth).",
+    "operations": "ENABLE_TF_OPERATIONS is deliberately unset (defaults to disabled) -- this server is authoring-time doc/schema lookup only, never wired into any plan/apply path.",
+    "transport_default": "stdio -- lowest common denominator, every MCP client supports it, each agent process runs its own container instance via docker run -i --rm (ephemeral, no shared state, no open port).",
+    "transport_http_upgrade": "Optional, for when multiple agents/people want one shared long-lived instance instead of N per-agent containers. See 'Streamable HTTP (optional, shared instance)' in README.md before using this -- exposing it beyond localhost needs auth + TLS + an IP allowlist, none of which this default definition provides."
+  }
+}

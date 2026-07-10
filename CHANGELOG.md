@@ -12,9 +12,9 @@ First packaged, productionization-focused release.
   `minus-gate`, `minus-resolve`, `minus-workflow`, `minus-bcm`, `minus-runs`,
   `minus-demo`); pip-installable; `Dockerfile` (pinned Terraform + AWS CLI); release
   workflow producing a Sigstore build-provenance attestation + CycloneDX SBOM.
-- **Tamper-evident audit log** (`core/audit_chain.py`): hash-chained append-only trail;
+- **Tamper-evident audit log** (`core/governance/audit_chain.py`): hash-chained append-only trail;
   `minusctl audit verify`. All components (gate, approval, audit_logger) share one chain.
-- **Approver RBAC** (`core/authz.py`): operator identity from `MINUS_OPERATOR`; approver
+- **Approver RBAC** (`core/governance/authz.py`): operator identity from `MINUS_OPERATOR`; approver
   allowlist from `MINUS_APPROVERS` / `.minus/approvers.json`; enforced in the approval
   and deploy gates ("open" mode reported when unconfigured).
 - **Credential-posture enforcement**: `apply` refuses long-term static keys / root and
@@ -136,7 +136,7 @@ First packaged, productionization-focused release.
 - **Architecture SVG now conforms to its binding spec on every path** (fixed
   `viewBox 0 0 1280 760`, the nine named groups, `data-address`/`data-action` on every
   node). The bespoke non-conformant pipeline diagram was removed.
-- Cross-platform tool discovery (`core/toolpath.py`) replaces the personal hardcoded
+- Cross-platform tool discovery (`core/reporting/toolpath.py`) replaces the personal hardcoded
   Windows paths and import-time registry side effects in `plan_gate`, `budget_calculator`,
   and `bcm_pricing_calculator`.
 - `health_checker` now resolves the AWS CLI via shared discovery.

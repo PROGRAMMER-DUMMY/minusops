@@ -25,6 +25,14 @@ variable "retention_days" {
   description = "Days before objects transition to Glacier (cost optimization)."
 }
 
+variable "run_id" {
+  type        = string
+  default     = ""
+  description = "MinusOps run id, folded into bucket names so two runs sharing the same name_prefix don't collide with each other (or with an unrelated bucket in the global S3 namespace)."
+}
+
+data "aws_caller_identity" "current" {}
+
 resource "aws_kms_key" "lake" {
   description             = "${var.name_prefix} data lake CMK"
   enable_key_rotation     = true
@@ -39,8 +47,11 @@ resource "aws_kms_alias" "lake" {
 
 resource "aws_s3_bucket" "zone" {
   for_each = toset(var.zones)
-  bucket   = "${var.name_prefix}-${each.value}"
-  tags     = merge(var.tags, { zone = each.value })
+  # account_id guards against colliding with an unrelated bucket in the global S3 namespace
+  # (the incident this fixes); the run_id hash guards against two of our own runs colliding
+  # with each other when they share the same name_prefix. Each solves a different failure mode.
+  bucket = "${var.name_prefix}-${each.value}-${data.aws_caller_identity.current.account_id}-${substr(md5(var.run_id), 0, 8)}"
+  tags   = merge(var.tags, { zone = each.value })
 }
 
 resource "aws_s3_bucket_public_access_block" "zone" {

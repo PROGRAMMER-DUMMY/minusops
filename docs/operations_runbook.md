@@ -84,9 +84,9 @@ Any `.tf` edit after `plan` changes the hash and voids the approval — re-run `
 ```bash
 minusctl create "create a governed AWS data pipeline"
 minusctl decision template --write
-python core/architecture_decision.py set runs/<run-id>/architecture_decision.json --architecture "<selected architecture>" --summary "<why this choice>"
-python core/architecture_decision.py add-module runs/<run-id>/architecture_decision.json <module-id>
-python core/architecture_decision.py add-source runs/<run-id>/architecture_decision.json "<official doc URL>"
+python core/architecture/architecture_decision.py set runs/<run-id>/architecture_decision.json --architecture "<selected architecture>" --summary "<why this choice>"
+python core/architecture/architecture_decision.py add-module runs/<run-id>/architecture_decision.json <module-id>
+python core/architecture/architecture_decision.py add-source runs/<run-id>/architecture_decision.json "<official doc URL>"
 minusctl next            # safe next steps
 minusctl readiness       # enterprise readiness score
 minusctl guard diff      # after synthesis, show manual edits vs the generated baseline
@@ -131,7 +131,7 @@ minus-bcm run --report-dir runs/<run-id>/reports/<plan-hash> --mode gatekeeper
 ## 7. Verify the audit trail (tamper-evidence)
 
 ```bash
-minusctl audit verify                       # or: python core/audit_chain.py verify
+minusctl audit verify                       # or: python core/governance/audit_chain.py verify
 # In CI/retention: forward .agents/logs/audit.jsonl to immutable storage / SIEM.
 ```
 
@@ -139,7 +139,7 @@ minusctl audit verify                       # or: python core/audit_chain.py ver
 
 ```bash
 minusctl  # (dashboard) → python app/dashboard_app.py → http://127.0.0.1:8050
-python core/finops_agent.py --cost      # spend by service (read-only, safe)
+python core/reporting/finops_agent.py --cost      # spend by service (read-only, safe)
 ```
 
 ## 9. Incident: "apply refused"

@@ -1,6 +1,6 @@
 {
   "name": "reviewed-data-pipeline-profile",
-  "_comment": "Reviewed BCM usage evidence for the governed AWS data pipeline (us-east-1). Replace usageAccountId with YOUR account, and replace the amounts with YOUR reviewed monthly quantities. serviceCode/usageType/operation below were verified against the AWS Price List catalog (aws pricing get-products) on 2026-07-02 — S3 standard storage has an EMPTY operation in the catalog, and Glue job runs bill under operation Jobrun. Ready for: python core/bcm_pricing_calculator.py run --report-dir <dir> --usage-profile <this file>.",
+  "_comment": "Reviewed BCM usage evidence for the governed AWS data pipeline (us-east-1). Replace usageAccountId with YOUR account, and replace the amounts with YOUR reviewed monthly quantities. serviceCode/usageType/operation below were verified against the AWS Price List catalog (aws pricing get-products) on 2026-07-02 (Glue/S3/Athena) and 2026-07-04 (KMS/CloudWatch) — S3 standard storage and KMS/CloudWatch all have an EMPTY operation in the catalog, and Glue job runs bill under operation Jobrun. Ready for: python core/cost/bcm_pricing_calculator.py run --report-dir <dir> --usage-profile <this file>.",
   "usage": [
     {
       "serviceCode": "AWSGlue",
@@ -28,6 +28,24 @@
       "group": "tf-us-east-1",
       "usageAccountId": "000000000000",
       "amount": 2
+    },
+    {
+      "serviceCode": "awskms",
+      "usageType": "us-east-1-KMS-Keys",
+      "operation": "",
+      "key": "KMS1",
+      "group": "tf-us-east-1",
+      "usageAccountId": "000000000000",
+      "amount": 1
+    },
+    {
+      "serviceCode": "AmazonCloudWatch",
+      "usageType": "CW:AlarmMonitorUsage",
+      "operation": "",
+      "key": "CW1",
+      "group": "tf-us-east-1",
+      "usageAccountId": "000000000000",
+      "amount": 1
     }
   ]
 }

@@ -481,6 +481,89 @@ def test_report_bundle_manifest_and_hash(tmp_path, monkeypatch):
     assert manifest["cost"]["ok"] is False
 
 
+# A destroy-only plan: every resource_change is actions=["delete"], the exact shape
+# plan_gate.py's own docstring describes for a governed teardown.
+DESTROY_PLAN = {
+    "format_version": "1.2",
+    "variables": {"owner": {"value": "data-platform"}},
+    "resource_changes": [
+        {"address": 'aws_s3_bucket.zone["bronze"]', "type": "aws_s3_bucket",
+         "name": "zone", "change": {"actions": ["delete"]}},
+        {"address": "aws_glue_job.bronze_to_silver", "type": "aws_glue_job",
+         "name": "bronze_to_silver", "change": {"actions": ["delete"]}},
+    ],
+    "output_changes": {},
+}
+
+
+def test_destroy_plan_gets_no_bcm_forecast_not_a_blank_one(tmp_path, monkeypatch):
+    """Item 6 finding 2: reporter.py's cost section used to call BCM on a destroy plan too,
+    treating resources being TORN DOWN as if they were being newly created -- backwards, not
+    just unhelpful. A destroy-only plan must skip BCM entirely and label the cost section
+    clearly, not present a blank/misleading forecast."""
+    monkeypatch.setattr(reporter, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(reporter, "REPORTS", str(tmp_path / "artifacts" / "reports"))
+    monkeypatch.setattr(reporter, "render_pdf", lambda *a, **k: (False, "pdf skipped in test"))
+
+    prepare_calls, estimate_calls = [], []
+    monkeypatch.setattr(reporter.bcm_pricing_calculator, "prepare",
+                        lambda *a, **k: prepare_calls.append((a, k)))
+    monkeypatch.setattr(reporter.bcm_pricing_calculator, "auto_estimate",
+                        lambda *a, **k: (estimate_calls.append((a, k)), (False, "should not run"))[1])
+
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "main.tf").write_text('# generated\n', encoding="utf-8")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(DESTROY_PLAN), encoding="utf-8")
+
+    out = reporter.generate_from_plan_json(str(tf_dir), str(plan_path), template="aws-data-pipeline-standard")
+    manifest = json.loads((__import__("pathlib").Path(out) / "manifest.json").read_text(encoding="utf-8"))
+
+    # BCM must never be invoked for a destroy-only plan -- not called-and-ignored, not called at all.
+    assert prepare_calls == []
+    assert estimate_calls == []
+
+    assert manifest["cost"]["ok"] is False
+    assert manifest["cost"]["destroy"] is True
+
+    cost_html = (__import__("pathlib").Path(out) / "cost.html").read_text(encoding="utf-8")
+    plan_html = (__import__("pathlib").Path(out) / "plan.html").read_text(encoding="utf-8")
+    for doc in (cost_html, plan_html):
+        assert "Destroy plan" in doc
+        assert "no cost forecast applies" in doc
+        # The old misleading "go configure BCM credentials" workflow must not appear here.
+        assert "Configure AWS CLI credentials" not in doc
+        assert "Required pricing lookup" not in doc
+
+
+def test_create_plan_still_gets_normal_bcm_treatment(tmp_path, monkeypatch):
+    """Companion to the destroy test above: a normal create/modify plan must still go through
+    BCM as before -- proves the destroy-only detection doesn't accidentally swallow real plans."""
+    monkeypatch.setattr(reporter, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(reporter, "REPORTS", str(tmp_path / "artifacts" / "reports"))
+    monkeypatch.setattr(reporter, "render_pdf", lambda *a, **k: (False, "pdf skipped in test"))
+
+    prepare_calls = []
+    monkeypatch.setattr(reporter.bcm_pricing_calculator, "prepare",
+                        lambda *a, **k: prepare_calls.append((a, k)))
+    monkeypatch.setattr(reporter.bcm_pricing_calculator, "auto_estimate",
+                        lambda *a, **k: (False, "no credentials in test"))
+
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "main.tf").write_text('# generated\n', encoding="utf-8")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(PLAN), encoding="utf-8")
+
+    out = reporter.generate_from_plan_json(str(tf_dir), str(plan_path), template="aws-data-pipeline-standard")
+    manifest = json.loads((__import__("pathlib").Path(out) / "manifest.json").read_text(encoding="utf-8"))
+
+    assert prepare_calls, "a real create plan must still go through BCM prepare"
+    assert manifest["cost"]["ok"] is False
+    assert "destroy" not in manifest["cost"]
+
+
 def test_humanize_quantity_tiers_size_units():
     # The user's ask: values past ~4 digits climb to the next tier (1024 steps).
     assert reporter.humanize_quantity(153600, "GB-Mo") == (150.0, "TB-Mo")
@@ -534,3 +617,124 @@ def test_report_bundle_ships_inspect_pdf(tmp_path, monkeypatch):
     import os as _os
     assert _os.path.exists(_os.path.join(out, "inspect.pdf"))
     assert not _os.path.exists(_os.path.join(out, "inspect.html"))   # only the PDF ships
+
+
+def test_architecture_sentence_reflects_actual_composed_modules():
+    # Audit finding 2026-07-04: the Executive Summary used to be a static sentence
+    # describing a full lakehouse (Step Functions, Athena, ...) regardless of what was
+    # actually composed. This must now name only the real modules.
+    manifest = {"modules": ["storage-medallion-s3", "compute-glue-etl"]}
+    sentence = reporter._architecture_sentence(manifest)
+    assert "Medallion S3 storage" in sentence
+    assert "Glue Spark ETL" in sentence
+    assert "Step Functions" not in sentence
+    assert "Athena" not in sentence
+
+
+def test_architecture_sentence_is_honest_when_manifest_missing():
+    # No manifest / empty module list -> say so plainly, never fall back to a generic
+    # description that might not match this plan either.
+    for manifest in (None, {}, {"modules": []}):
+        sentence = reporter._architecture_sentence(manifest)
+        assert "unavailable" in sentence.lower()
+        assert "Step Functions" not in sentence
+
+
+def test_build_html_executive_summary_uses_real_modules(tmp_path, monkeypatch):
+    monkeypatch.setattr(reporter, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(reporter, "REPORTS", str(tmp_path / "artifacts" / "reports"))
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "main.tf").write_text("# generated\n", encoding="utf-8")
+    (tf_dir / "minus-generated.json").write_text(json.dumps({
+        "modules": ["storage-medallion-s3", "compute-glue-etl"],
+    }), encoding="utf-8")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(PLAN), encoding="utf-8")
+    out = reporter.generate_from_plan_json(str(tf_dir), str(plan_path), template="t")
+    html_doc = (__import__("pathlib").Path(out) / "report.html").read_text(encoding="utf-8")
+    assert "Medallion S3 storage" in html_doc
+    assert "Step Functions orchestration, Athena query access" not in html_doc
+
+
+def test_cost_html_cites_real_rate_for_sns_instead_of_bare_not_estimated():
+    # SNS notification volume is genuinely unknowable from a plan -- but the free-tier/rate
+    # facts themselves are real, live-queried AWS Price List data (2026-07-04), not a guess.
+    cost = {
+        "ok": True, "monthly_total_usd": 10.0, "line_items": [],
+        "not_estimated_services": ["AmazonSNS"],
+    }
+    html = reporter.build_cost_html("t", "aws", "abc", "ts", cost)
+    assert "1,000,000 API requests/mo free" in html
+    assert "not estimated — no reviewed catalog usage line" not in html
+
+
+def test_cost_html_falls_back_to_generic_message_when_no_citation_exists():
+    cost = {
+        "ok": True, "monthly_total_usd": 10.0, "line_items": [],
+        "not_estimated_services": ["AWSLambda"],  # no rate_citation recorded for this one
+    }
+    html = reporter.build_cost_html("t", "aws", "abc", "ts", cost)
+    assert "not estimated — no reviewed catalog usage line for this service" in html
+
+
+# 2026-07-04 test finding: SSE-KMS + aws_s3_object.etag = filemd5(...) makes Terraform show a
+# perpetual etag-only "update" even when the uploaded file is byte-identical. These fixtures
+# isolate the etag-only case from a genuine content change touching the same resource.
+ETAG_ONLY_PLAN = {
+    "resource_changes": [
+        {"address": 'module.compute_glue_etl.aws_s3_object.script["bronze_to_silver"]',
+         "type": "aws_s3_object", "name": "script",
+         "change": {
+             "actions": ["update"],
+             "before": {"etag": "aaa", "key": "scripts/etl.py", "bucket": "b", "version_id": "v1"},
+             "after": {"etag": "bbb", "key": "scripts/etl.py", "bucket": "b", "version_id": None},
+             "after_unknown": {"version_id": True},
+         }},
+    ],
+}
+
+ETAG_PLUS_REAL_CHANGE_PLAN = {
+    "resource_changes": [
+        {"address": 'module.compute_glue_etl.aws_s3_object.script["bronze_to_silver"]',
+         "type": "aws_s3_object", "name": "script",
+         "change": {
+             "actions": ["update"],
+             # key differs too (a genuine content/target change), not just etag.
+             "before": {"etag": "aaa", "key": "scripts/etl.py", "bucket": "b", "version_id": "v1"},
+             "after": {"etag": "bbb", "key": "scripts/etl_v2.py", "bucket": "b", "version_id": None},
+             "after_unknown": {"version_id": True},
+         }},
+    ],
+}
+
+
+def test_etag_drift_note_fires_when_etag_is_the_only_real_difference():
+    note = reporter._etag_drift_note(ETAG_ONLY_PLAN)
+    assert "Known non-issue" in note
+    assert "bronze_to_silver" in note  # names the specific address (HTML-escaped quotes/brackets)
+
+
+def test_etag_drift_note_absent_when_no_s3_object_changes():
+    assert reporter._etag_drift_note(PLAN) == ""
+
+
+def test_etag_drift_note_silent_on_genuine_change_but_resource_still_shown(tmp_path, monkeypatch):
+    # The note's job is to explain benign noise, never to make a real change look quieter.
+    monkeypatch.setattr(reporter, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(reporter, "REPORTS", str(tmp_path / "artifacts" / "reports"))
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "main.tf").write_text("# generated\n", encoding="utf-8")
+    (tf_dir / "minus-generated.json").write_text(
+        json.dumps({"modules": ["compute-glue-etl"]}), encoding="utf-8")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(ETAG_PLUS_REAL_CHANGE_PLAN), encoding="utf-8")
+
+    out = reporter.generate_from_plan_json(str(tf_dir), str(plan_path), template="t")
+    html_doc = (__import__("pathlib").Path(out) / "report.html").read_text(encoding="utf-8")
+
+    assert "Known non-issue" not in html_doc
+    # the underlying change must still appear normally -- not suppressed or downplayed
+    assert "AWS S3 Object" in html_doc
+    assert '<span class="badge update">update</span>' in html_doc

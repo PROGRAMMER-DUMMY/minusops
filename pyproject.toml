@@ -40,14 +40,16 @@ dev = [
 
 [project.scripts]
 # Pip-installable console commands — clients run `minusctl ...`, not `python core/x.py ...`.
-minusctl = "core.minusctl:main"
-minus-gate = "core.plan_gate:main"
-minus-resolve = "core.intent_resolver:main"
-minus-workflow = "core.workflow:main"
-minus-bcm = "core.bcm_pricing_calculator:main"
-minus-runs = "core.runs:main"
-minus-demo = "core.demo:main"
-minus-accelerator = "core.accelerators:main"
+minusctl = "core.reporting.minusctl:main"
+minus-gate = "core.governance.plan_gate:main"
+minus-resolve = "core.generation.intent_resolver:main"
+minus-workflow = "core.generation.workflow:main"
+minus-bcm = "core.cost.bcm_pricing_calculator:main"
+minus-runs = "core.reporting.runs:main"
+minus-demo = "core.generation.demo:main"
+minus-accelerator = "core.generation.accelerators:main"
+minus-update-module = "core.generation.module_provenance:main"
+minus-schema-watch = "core.generation.schema_watch:main"
 
 [project.urls]
 Documentation = "https://github.com/your-org/minusops/blob/main/AGENTS.md"
@@ -56,20 +58,39 @@ Documentation = "https://github.com/your-org/minusops/blob/main/AGENTS.md"
 # Python code ships as the `core` package (+ provider subpackage). Runtime Terraform
 # modules, required docs, examples, and local agent skill manifests are shipped below
 # as data-files so installed wheels work without a source checkout.
-packages = ["core", "core.providers"]
+packages = [
+    "core", "core.providers",
+    "core.generation", "core.architecture", "core.governance", "core.cost", "core.reporting",
+]
 
 [tool.setuptools.package-data]
 core = ["py.typed"]
+# pricing_data lives inside the core.cost package (not a sibling dir like modules/docs/examples
+# below), so it belongs here, not in [tool.setuptools.data-files] -- it was omitted from both,
+# which is why a real wheel install never had it (core/cost/pricing_data/*.json missing ->
+# pricing_catalog.resolve_resource_type() crashed with FileNotFoundError on first use).
+"core.cost" = ["pricing_data/*.json"]
 
 [tool.setuptools.data-files]
+# NOTE: this list is hand-maintained and does not auto-discover new modules/<id> dirs -- it's
+# exactly how 5 of 14 modules went missing from the wheel before (added to modules/ but never
+# added here). When adding a new module, add its data-files entry here too, and check
+# `python -m build --wheel` actually contains it before considering the module done.
 "modules/storage-medallion-s3" = ["modules/storage-medallion-s3/main.tf"]
 "modules/orchestrator-mwaa" = ["modules/orchestrator-mwaa/main.tf"]
 "modules/orchestrator-stepfunctions" = ["modules/orchestrator-stepfunctions/main.tf"]
 "modules/compute-glue-etl" = ["modules/compute-glue-etl/main.tf"]
+"modules/compute-glue-etl/scripts" = ["modules/compute-glue-etl/scripts/etl.py"]
+"modules/compute-emr-serverless" = ["modules/compute-emr-serverless/main.tf"]
 "modules/speed-layer-kinesis" = ["modules/speed-layer-kinesis/main.tf"]
+"modules/ingest-firehose" = ["modules/ingest-firehose/main.tf"]
 "modules/dq-great-expectations" = ["modules/dq-great-expectations/main.tf"]
 "modules/schema-registry-glue" = ["modules/schema-registry-glue/main.tf"]
 "modules/query-athena" = ["modules/query-athena/main.tf"]
+"modules/consumption-redshift-serverless" = ["modules/consumption-redshift-serverless/main.tf"]
+"modules/table-format-iceberg" = ["modules/table-format-iceberg/main.tf"]
+"modules/compaction-glue" = ["modules/compaction-glue/main.tf"]
+"modules/compaction-glue/scripts" = ["modules/compaction-glue/scripts/compact.py"]
 "modules/governance-observability" = ["modules/governance-observability/main.tf"]
 "docs" = [
     "docs/architecture_synthesis.md",

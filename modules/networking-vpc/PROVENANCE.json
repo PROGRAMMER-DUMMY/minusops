@@ -1,0 +1,9 @@
+{
+  "module_id": "networking-vpc",
+  "version": 1,
+  "content_hash": "2f355a2e38d4985757fdbd66b79367c7d3508f49f391e0c660134f05277bd3c2",
+  "source": "hand-authored, adapted from runs/manual-mwaa-network-scratch/main.tf (2026-07-06, live-tested: real terraform apply + destroy, 15 resources, independently verified via aws ec2 describe-vpcs/describe-nat-gateways)",
+  "provider_version": null,
+  "notes": "Phase 1 VPC module. Diverges from the scratch skeleton: az_count-driven public+private subnets (was hardcoded to 1 public/2 private), single_nat_gateway toggle (single shared NAT vs one-per-AZ), VPC default security group (aws_default_security_group, self-referencing) instead of a named MWAA-specific SG so orchestrator-mwaa and a future Databricks module share one SG, S3 gateway endpoint unconditional + optional STS/Kinesis interface endpoints. data.aws_region.current.region used (not .name, deprecated in provider v6.53.0, confirmed via terraform validate warning during authoring).",
+  "pinned_at": "2026-07-08T18:40:35.802941+00:00"
+}

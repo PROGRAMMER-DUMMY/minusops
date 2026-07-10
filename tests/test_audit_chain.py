@@ -2,6 +2,7 @@
 The audit trail must be tamper-evident: any edit, deletion, or reorder is detectable.
 """
 import json
+import threading
 
 import audit_chain
 
@@ -105,6 +106,55 @@ def test_seal_archives_legacy_log_and_starts_clean_chain(tmp_path):
     assert status["intact"] and status["chained_count"] == 2 and status["legacy_count"] == 0
     ok, _ = audit_chain.verify(str(log))
     assert ok
+
+
+def test_append_is_safe_under_concurrent_writers(tmp_path):
+    # Without a lock, last_hash() (read) and the write in append() are two separate steps:
+    # concurrent callers can read the same prev_hash and both append, forking the chain. This
+    # proves the fix actually does what it exists for -- not just that append() still works
+    # solo, but that the chain stays linear and uncorrupted under real contention.
+    log = tmp_path / "audit.jsonl"
+    n_threads = 8
+    appends_per_thread = 15
+    errors = []
+
+    def worker(worker_id):
+        try:
+            for i in range(appends_per_thread):
+                audit_chain.append(str(log), {"worker": worker_id, "seq": i})
+        except Exception as exc:  # pragma: no cover - failure path asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(w,)) for w in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+
+    lines = [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == n_threads * appends_per_thread  # no lost writes
+
+    ok, chain_errors = audit_chain.verify(str(log))
+    assert ok, chain_errors  # the chain stayed linear -- no forked prev_hash from a race
+
+    # The lock's own sidecar file must not be left behind once every writer has finished.
+    assert not (tmp_path / "audit.jsonl.lock").exists()
+
+
+def test_append_lock_times_out_instead_of_hanging_forever(tmp_path, monkeypatch):
+    monkeypatch.setattr(audit_chain, "_LOCK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(audit_chain, "_LOCK_POLL_SECONDS", 0.01)
+    log = tmp_path / "audit.jsonl"
+    stale_lock = tmp_path / "audit.jsonl.lock"
+    stale_lock.write_bytes(b"")  # simulate a crashed writer that never released the lock
+
+    try:
+        audit_chain.append(str(log), {"action": "should-not-hang"})
+        assert False, "expected TimeoutError"
+    except TimeoutError as exc:
+        assert "audit-chain lock" in str(exc)
 
 
 def test_chain_status_flags_legacy_record_inserted_after_chaining(tmp_path):

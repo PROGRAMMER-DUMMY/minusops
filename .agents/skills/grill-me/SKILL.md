@@ -95,7 +95,7 @@ companion `resolve-ambiguity` skill applies.
 
 As answers land, map them to a governed blueprint and its required inputs. The supported
 blueprint today is **`aws-data-pipeline-standard`**, inputs: `environment`, `region`, `owner`,
-`ingestion_mode` (`batch`|`streaming`), `daily_data_gb` (verify against `core/blueprints.py` —
+`ingestion_mode` (`batch`|`streaming`), `daily_data_gb` (verify against `core/generation/blueprints.py` —
 it is the source of truth). When the requirements match, end by emitting the exact command:
 
 ```bash
@@ -140,9 +140,9 @@ resolved; and MoSCoW prioritization is done. Then:
 
 1. **Summarize the gathered requirements back to the user** for confirmation.
 2. **Write the requirements record** the generator is gated on: start from
-   `python core/requirements.py template`, fill `goal`, `system_class`, `functional` (≥1
+   `python core/architecture/requirements.py template`, fill `goal`, `system_class`, `functional` (≥1
    capability), and every `non_functional` axis (value or `deferred: …`), save it as the run's
-   `requirements.json`, and verify with `python core/requirements.py check <path>`.
+   `requirements.json`, and verify with `python core/architecture/requirements.py check <path>`.
 3. Hand off to [`architect`](../architect/SKILL.md), which calls the synthesizer with that record.
 
 The synthesizer is **fail-closed**: without a complete record it refuses to generate and lists

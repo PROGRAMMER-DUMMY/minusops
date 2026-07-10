@@ -42,6 +42,10 @@ def applyable(tmp_path, monkeypatch):
                         lambda _h: {"status": "CURRENT", "stale": False, "reason": ""})
     monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
     monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN))
+    def _apply_stub(dir_, applied, failed, errors):
+        applied.append("aws_s3_bucket.d")
+        return 0
+    monkeypatch.setattr(plan_gate, "_apply_with_json_capture", _apply_stub)
     current, _ = plan_gate._plan_hash("d")
     os.makedirs(plan_gate._approval_dir("d"), exist_ok=True)
     with open(plan_gate._approved_path("d", current), "w", encoding="utf-8") as f:

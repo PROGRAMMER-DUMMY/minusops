@@ -5,7 +5,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE = os.path.join(ROOT, "core")
 APP = os.path.join(ROOT, "app")
-for path in (CORE, APP):
+CORE_SUBPACKAGES = ("generation", "architecture", "governance", "cost", "reporting", "providers")
+for path in (CORE, APP, *(os.path.join(CORE, sub) for sub in CORE_SUBPACKAGES)):
     if path not in sys.path:
         sys.path.insert(0, path)
 

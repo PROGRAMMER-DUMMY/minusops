@@ -134,3 +134,24 @@ def test_write_and_load_roundtrip(tmp_path):
     assert path.endswith("requirements.json")
     loaded = reqgate.load(str(tmp_path))             # load by directory resolves the file
     assert loaded["gathered_by"] == "alice" and loaded["gathered_at"]
+
+
+def test_parse_budget_usd_extracts_dollar_figure():
+    spec = {"non_functional": {"budget": "sandbox account has a $1.00 hard budget alarm -- stay well under it"}}
+    amount, source = reqgate.parse_budget_usd(spec)
+    assert amount == 1.0
+    assert "1.00" in source
+
+
+def test_parse_budget_usd_takes_smallest_when_ambiguous():
+    # Unlike parse_daily_gb's upper bound, a budget guardrail should err toward tripping
+    # earlier -- take the smallest figure mentioned, not the largest.
+    spec = {"non_functional": {"budget": "departmental cap is $500/mo but this pipeline should stay under $50"}}
+    amount, _ = reqgate.parse_budget_usd(spec)
+    assert amount == 50.0
+
+
+def test_parse_budget_usd_never_guesses():
+    for spec in ({"non_functional": {"budget": "deferred: pending finance approval"}}, {}, None):
+        amount, source = reqgate.parse_budget_usd(spec)
+        assert amount == 0 and source == ""

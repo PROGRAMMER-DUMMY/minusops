@@ -1,0 +1,81 @@
+name: Schema Watch
+
+# First cron-triggered workflow in this repo. Pure detector/reporter (core/generation/
+# schema_watch.py, docs/project_plan.md Phase E addendum "self-updating knowledge" tooling):
+# fetches the real `terraform providers schema -json` for aws + databricks, diffs it against
+# the last committed recent-changes/ snapshot, and opens a PR with anything new. It never
+# touches ci.yml/deploy.yml, never pushes straight to main, and never provisions or applies
+# anything -- a human still reviews and merges.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  schema-watch:
+    name: "provider schema-diff watch"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false
+
+      - name: Install package
+        run: python -m pip install ".[dev]"
+
+      # Every run does a real `terraform init` for both providers (core/generation/
+      # schema_watch.py's _fetch_schema) -- without this, that's a fresh aws + databricks
+      # provider download every single day forever. Same TF_PLUGIN_CACHE_DIR mechanism the
+      # module test suite already reuses locally (see _cached_plugin_dir() in
+      # tests/test_databricks_workspace_module.py), just backed by actions/cache in CI instead
+      # of a runs/ directory on disk.
+      - name: Cache Terraform provider plugins
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/tf-plugin-cache
+          key: tf-plugin-cache-${{ runner.os }}-${{ hashFiles('core/generation/synthesizer.py') }}
+          restore-keys: |
+            tf-plugin-cache-${{ runner.os }}-
+
+      - name: Run schema-diff watch
+        id: watch
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+        run: |
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          set +e
+          minus-schema-watch run --all
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Open a PR with any new/changed recent-changes/ reports
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(schema-watch): update provider schema snapshots"
+          title: "Provider schema-diff watch: snapshot update"
+          body: |
+            Automated output of `minus-schema-watch run --all` (core/generation/schema_watch.py).
+            Detector/reporter only — nothing here provisions or applies anything. Review any
+            `findings` entries in the changed `recent-changes/<provider>/*.json` report before
+            merging: a `removed`, `schema_version_bump`, or `deprecated` finding means a resource
+            type MinusOps' modules already reference changed shape in the live provider.
+          branch: schema-watch/auto-update
+          add-paths: recent-changes/**
+          delete-branch: true
+
+      - name: Surface findings on the Actions dashboard (does not block the PR above)
+        if: steps.watch.outputs.exit_code != '0'
+        run: |
+          echo "::error::schema-diff watch opened one or more findings — see the PR / recent-changes/ reports"
+          exit 1

@@ -88,7 +88,7 @@ same data grouped by service:
 
 ## What it gives you
 
-- **A plan-bound deploy gate** (`core/plan_gate.py`) — `verify → plan → hash → approve → apply`.
+- **A plan-bound deploy gate** (`core/governance/plan_gate.py`) — `verify → plan → hash → approve → apply`.
   The SHA-256 of the planned changes is the contract: any `.tf` edit produces a new hash,
   which voids the prior approval and forces a fresh review. `apply` runs *only* the exact
   plan you approved. Approval records are bound to the Terraform directory and plan hash.
@@ -96,19 +96,19 @@ same data grouped by service:
 - **A cloud abstraction** (`core/providers/`) — the engine talks to AWS / Azure / GCP through
   one interface, selected by `MINUS_CLOUD` (default `aws`). AWS is fully implemented; Azure and
   GCP are scaffolds that degrade gracefully.
-- **A governed intent layer** (`core/intent_resolver.py`, `core/blueprints.py`) — short enterprise
+- **A governed intent layer** (`core/generation/intent_resolver.py`, `core/generation/blueprints.py`) — short enterprise
   requests like "create a data pipeline" resolve to approved blueprints and required inputs instead
   of free-form infrastructure or accidental deploys.
-- **Cost intelligence** — live spend, anomalies, and root-cause correlation (`core/finops_agent.py`),
-  AWS BCM Pricing Calculator payload preparation (`core/bcm_pricing_calculator.py`),
+- **Cost intelligence** — live spend, anomalies, and root-cause correlation (`core/reporting/finops_agent.py`),
+  AWS BCM Pricing Calculator payload preparation (`core/cost/bcm_pricing_calculator.py`),
   reviewed usage-profile support for internal services ([`docs/pricing_catalog_support.md`](./docs/pricing_catalog_support.md)),
   and a Plotly Dash console (`app/dashboard_app.py`).
-- **Safety primitives** — an approval gate with **approver RBAC** (`core/approval.py`,
-  `core/authz.py`), a **tamper-evident hash-chained** audit trail (`core/audit_chain.py`,
+- **Safety primitives** — an approval gate with **approver RBAC** (`core/governance/approval.py`,
+  `core/governance/authz.py`), a **tamper-evident hash-chained** audit trail (`core/governance/audit_chain.py`,
   verify with `minusctl audit verify`), a **per-resource** HCL security/cost scanner with
-  production-blocking checkov/tfsec evidence (`core/optimize_analyzer.py`), live health probes, and a
+  production-blocking checkov/tfsec evidence (`core/reporting/optimize_analyzer.py`), live health probes, and a
   versioned, plan-hash-keyed deploy report whose architecture diagram conforms to a binding
-  cross-tool spec (`core/reporter.py`, enforced by golden tests).
+  cross-tool spec (`core/reporting/reporter.py`, enforced by golden tests).
 - **Source drift visibility** — generated Terraform workspaces carry a local `.minus/` baseline,
   so later manual edits can be shown with `source_guard status|diff` before a plan exists.
 
@@ -167,39 +167,39 @@ Provision the MFA-gated deploy role and read-only FinOps role from
 
 ```bash
 # 4. Resolve short creation intent into a requirements-first run (no deploy)
-python core/intent_resolver.py --validate-blueprints
-python core/intent_resolver.py --list-blueprints
-python core/intent_resolver.py "create a governed AWS data pipeline"
-python core/dispatcher.py "build a data pipeline"
+python core/generation/intent_resolver.py --validate-blueprints
+python core/generation/intent_resolver.py --list-blueprints
+python core/generation/intent_resolver.py "create a governed AWS data pipeline"
+python core/reporting/dispatcher.py "build a data pipeline"
 
 # 4b. Create a fresh governed requirements workspace
-python core/minusctl.py create "create a governed AWS data pipeline"
-python core/minusctl.py decision template --write
-python core/minusctl.py next
-python core/minusctl.py readiness
-python core/minusctl.py guard status
-python core/minusctl.py guard diff
-python core/minusctl.py package
+python core/reporting/minusctl.py create "create a governed AWS data pipeline"
+python core/reporting/minusctl.py decision template --write
+python core/reporting/minusctl.py next
+python core/reporting/minusctl.py readiness
+python core/reporting/minusctl.py guard status
+python core/reporting/minusctl.py guard diff
+python core/reporting/minusctl.py package
 
 # The lower-level commands remain available
-python core/workflow.py resolve "create a governed AWS data pipeline"
-python core/source_guard.py status --dir runs/<run-id>/terraform
-python core/source_guard.py diff --dir runs/<run-id>/terraform
+python core/generation/workflow.py resolve "create a governed AWS data pipeline"
+python core/governance/source_guard.py status --dir runs/<run-id>/terraform
+python core/governance/source_guard.py diff --dir runs/<run-id>/terraform
 
 # Optional reviewable accelerator, chosen by an operator after requirements gathering.
 # It writes requirements.json + architecture_decision.json; it does not synthesize, plan, or apply.
-python core/minusctl.py accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
-python core/minusctl.py next
+python core/reporting/minusctl.py accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
+python core/reporting/minusctl.py next
 
 # Optional no-cloud demo report, with synthetic plan JSON and no Terraform/AWS calls
-python core/minusctl.py demo governed-data-pipeline --owner data-platform --daily-data-gb 50
-python core/minusctl.py reports services --latest
-python core/minusctl.py reports roles --latest
+python core/reporting/minusctl.py demo governed-data-pipeline --owner data-platform --daily-data-gb 50
+python core/reporting/minusctl.py reports services --latest
+python core/reporting/minusctl.py reports roles --latest
 
 # 5. Inspect cost / health any time (read-only, safe)
-python core/finops_agent.py --cost
-python core/health_checker.py --bronze-bucket my-bucket --job-1 my-glue-job
-python core/optimize_analyzer.py --source-dir path/to/your/terraform
+python core/reporting/finops_agent.py --cost
+python core/reporting/health_checker.py --bronze-bucket my-bucket --job-1 my-glue-job
+python core/reporting/optimize_analyzer.py --source-dir path/to/your/terraform
 
 # 6. Live FinOps console
 python app/dashboard_app.py     # http://127.0.0.1:8050
@@ -238,12 +238,12 @@ and rebuilds `cost.pdf` with the forecast-vs-actual table.
 
 ```
 core/                 governance engine (gate, approval, audit, finops, scanner, reporter)
-core/minusctl.py      safe operator CLI for create, next, readiness, guard, reports, package, and demo
-core/blueprints.py    demo/cached blueprint registry for offline fixtures
-core/intent_resolver.py intent-to-blueprint resolver; never deploys
-core/workflow.py      safe request -> blueprint -> run workspace -> optional Terraform generation
-core/source_guard.py  local source baseline and manual edit diff for generated Terraform
-core/plan_inspector.py inspect services, resources, roles, files, and drift from reports
+core/reporting/minusctl.py      safe operator CLI for create, next, readiness, guard, reports, package, and demo
+core/generation/blueprints.py    demo/cached blueprint registry for offline fixtures
+core/generation/intent_resolver.py intent-to-blueprint resolver; never deploys
+core/generation/workflow.py      safe request -> blueprint -> run workspace -> optional Terraform generation
+core/governance/source_guard.py  local source baseline and manual edit diff for generated Terraform
+core/reporting/plan_inspector.py inspect services, resources, roles, files, and drift from reports
 core/providers/       cloud abstraction (aws implemented; azure/gcp scaffolds)
 app/dashboard_app.py  live control plane and FinOps console (Plotly Dash)
 tools/doctor.ps1      local environment diagnostics

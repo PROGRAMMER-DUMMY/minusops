@@ -19,15 +19,15 @@ grill-me            architect                                   the deploy gate
 | :-- | :-- |
 | Gather functional + non-functional requirements (ISO 25010 / FURPS+, quantified, MoSCoW) | [`grill-me` skill](../.agents/skills/grill-me/SKILL.md) |
 | Research current services + reference architectures, choose best-fit | [`architect` skill](../.agents/skills/architect/SKILL.md) |
-| Resolve authoritative sources for a service (Registry / CLI / pricing URLs) | `core/discovery.py` |
-| Vetted, composable Terraform building blocks + requirement→module matching | `core/modules.py` + `modules/<id>/` |
-| Compose selected modules into a governed Terraform workspace | `core/synthesizer.py` |
-| Reuse an approved composition (cache that grows from real work) | `core/patterns.py` |
-| Govern the result (unchanged) | `core/plan_gate.py` — works on any `--dir` |
+| Resolve authoritative sources for a service (Registry / CLI / pricing URLs) | `core/architecture/discovery.py` |
+| Vetted, composable Terraform building blocks + requirement→module matching | `core/generation/modules.py` + `modules/<id>/` |
+| Compose selected modules into a governed Terraform workspace | `core/generation/synthesizer.py` |
+| Reuse an approved composition (cache that grows from real work) | `core/generation/patterns.py` |
+| Govern the result (unchanged) | `core/governance/plan_gate.py` — works on any `--dir` |
 
 ## The module library (`modules/`)
 
-Small, vetted Terraform modules selected by requirement keywords (`core/modules.py`):
+Small, vetted Terraform modules selected by requirement keywords (`core/generation/modules.py`):
 
 - **storage-medallion-s3** — tiered S3 data lake + KMS, versioning, lifecycle
 - **orchestrator-mwaa** — Managed Airflow (MWAA)
@@ -39,25 +39,25 @@ Small, vetted Terraform modules selected by requirement keywords (`core/modules.
 - **query-athena** — Athena workgroup for analyst/BI SQL
 - **governance-observability** — Budget guardrail + CloudWatch alarm
 
-Add a capability by dropping in `modules/<id>/main.tf` + a row in `core/modules.py` — never by
+Add a capability by dropping in `modules/<id>/main.tf` + a row in `core/generation/modules.py` — never by
 forking a giant recipe.
 
 Installed wheels and the Docker image ship these modules as runtime data files. In source
-checkouts `core/modules.py` reads `./modules`; in installed environments it falls back to the
+checkouts `core/generation/modules.py` reads `./modules`; in installed environments it falls back to the
 packaged data location. `MINUSOPS_MODULES_DIR` can override discovery for a client-specific module
 library.
 
 ## CLI
 
 ```bash
-python core/modules.py match "airflow, lambda architecture, data quality, schema enforcement"
-python core/discovery.py "mwaa airflow" --resource aws_mwaa_environment --service-code AmazonMWAA
-python core/minusctl.py accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
-python core/synthesizer.py "<requirements>" --run <run-id> --requirements-file requirements.json --decision-file architecture_decision.json --owner <team>
-python core/plan_gate.py verify --dir runs/<run-id>/terraform   # govern it (same gate)
-python core/plan_gate.py verify --dir runs/<run-id>/terraform --policy-mode production
+python core/generation/modules.py match "airflow, lambda architecture, data quality, schema enforcement"
+python core/architecture/discovery.py "mwaa airflow" --resource aws_mwaa_environment --service-code AmazonMWAA
+python core/reporting/minusctl.py accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
+python core/generation/synthesizer.py "<requirements>" --run <run-id> --requirements-file requirements.json --decision-file architecture_decision.json --owner <team>
+python core/governance/plan_gate.py verify --dir runs/<run-id>/terraform   # govern it (same gate)
+python core/governance/plan_gate.py verify --dir runs/<run-id>/terraform --policy-mode production
 # production requires checkov or tfsec on PATH and blocks on external findings
-python core/patterns.py match "<requirements>"                  # reuse a prior approved composition
+python core/generation/patterns.py match "<requirements>"                  # reuse a prior approved composition
 ```
 
 ## Requirements and decision gates
@@ -71,16 +71,16 @@ architecture, selected modules, alternatives, assumptions, risks, and sources. `
 **fail-closed**: without both complete records it refuses and lists what's unanswered.
 
 ```bash
-python core/requirements.py template > requirements.json   # grill-me fills this
-python core/requirements.py check requirements.json        # completeness check
-python core/minusctl.py decision template --write           # create run-bound decision record
-python core/architecture_decision.py template --requirements-file requirements.json > architecture_decision.json
-python core/architecture_decision.py set architecture_decision.json --architecture "<selected architecture>" --summary "<why this choice>"
-python core/architecture_decision.py add-module architecture_decision.json <module-id>
-python core/architecture_decision.py add-source architecture_decision.json "<official doc URL>"
-python core/architecture_decision.py add-alternative architecture_decision.json --name "<option>" --decision rejected --reason "<why rejected>"
-python core/architecture_decision.py check architecture_decision.json
-python core/synthesizer.py "<summary>" --run <run-id> --requirements-file requirements.json --decision-file architecture_decision.json --owner <team>
+python core/architecture/requirements.py template > requirements.json   # grill-me fills this
+python core/architecture/requirements.py check requirements.json        # completeness check
+python core/reporting/minusctl.py decision template --write           # create run-bound decision record
+python core/architecture/architecture_decision.py template --requirements-file requirements.json > architecture_decision.json
+python core/architecture/architecture_decision.py set architecture_decision.json --architecture "<selected architecture>" --summary "<why this choice>"
+python core/architecture/architecture_decision.py add-module architecture_decision.json <module-id>
+python core/architecture/architecture_decision.py add-source architecture_decision.json "<official doc URL>"
+python core/architecture/architecture_decision.py add-alternative architecture_decision.json --name "<option>" --decision rejected --reason "<why rejected>"
+python core/architecture/architecture_decision.py check architecture_decision.json
+python core/generation/synthesizer.py "<summary>" --run <run-id> --requirements-file requirements.json --decision-file architecture_decision.json --owner <team>
 ```
 
 So a vague request and an unreviewed module recommendation can't be silently turned into
@@ -107,8 +107,8 @@ gate validates** (module-specific inputs are flagged `REVIEW` in the composed `m
 
 ## Where the blueprint fits
 
-`aws-data-pipeline-standard` (`core/blueprints.py`, `core/terraform_generator.py`) is a
+`aws-data-pipeline-standard` (`core/generation/blueprints.py`, `core/generation/terraform_generator.py`) is a
 **demo / cached fixture** — it powers `minusctl demo` and the golden tests as a reproducible
 worked example. It is not the production generator. Approved syntheses captured via
-`core/patterns.py` are how the reusable-recipe set grows: from real, governed work, not
+`core/generation/patterns.py` are how the reusable-recipe set grows: from real, governed work, not
 hand-authored up front.

@@ -3,8 +3,12 @@ The HCL scanner backs the §5 safety rule ("resolve SEC-* to zero"). The regress
 that matters: SEC-02 must catch a wildcard resource written in HCL bareword form
 (`Resource = "*"`), not only the quoted-JSON form — the old regex missed the former.
 """
+import os
+
 import optimize_analyzer
 import toolpath
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
 def _scan(tmp_path, hcl):
@@ -79,6 +83,103 @@ def test_sec01_clean_with_public_access_block(tmp_path):
     '''
     ids = _scan(tmp_path, hcl)
     assert "SEC-01" not in ids and "COST-01" not in ids
+
+
+def test_sec05_flags_cross_account_trust_without_external_id(tmp_path):
+    hcl = '''
+    data "aws_iam_policy_document" "cross_account" {
+      statement {
+        actions = ["sts:AssumeRole"]
+        principals {
+          type        = "AWS"
+          identifiers = ["arn:aws:iam::414351767826:root"]
+        }
+      }
+    }
+    '''
+    assert "SEC-05" in _scan(tmp_path, hcl)
+
+
+def test_sec05_flags_cross_account_trust_with_wildcard_principal(tmp_path):
+    hcl = '''
+    data "aws_iam_policy_document" "cross_account" {
+      statement {
+        actions = ["sts:AssumeRole"]
+        principals {
+          type        = "AWS"
+          identifiers = ["*"]
+        }
+        condition {
+          test     = "StringEquals"
+          variable = "sts:ExternalId"
+          values   = ["some-external-id"]
+        }
+      }
+    }
+    '''
+    assert "SEC-05" in _scan(tmp_path, hcl)
+
+
+def test_sec05_clean_with_external_id_and_scoped_principal(tmp_path):
+    hcl = '''
+    data "aws_iam_policy_document" "cross_account" {
+      statement {
+        actions = ["sts:AssumeRole"]
+        principals {
+          type        = "AWS"
+          identifiers = ["arn:aws:iam::414351767826:root"]
+        }
+        condition {
+          test     = "StringEquals"
+          variable = "sts:ExternalId"
+          values   = ["some-external-id"]
+        }
+      }
+    }
+    '''
+    assert "SEC-05" not in _scan(tmp_path, hcl)
+
+
+def test_sec05_ignores_same_account_service_role_trust(tmp_path):
+    # This is the existing house pattern (modules/dq-great-expectations/main.tf) -- a same-
+    # account service-role trust must never false-positive as a cross-account finding.
+    hcl = '''
+    data "aws_iam_policy_document" "assume" {
+      statement {
+        actions = ["sts:AssumeRole"]
+        principals {
+          type        = "Service"
+          identifiers = ["glue.amazonaws.com"]
+        }
+      }
+    }
+    '''
+    assert "SEC-05" not in _scan(tmp_path, hcl)
+
+
+def test_sec05_flags_databricks_assume_role_policy_without_external_id(tmp_path):
+    hcl = '''
+    data "databricks_aws_assume_role_policy" "this" {
+    }
+    '''
+    assert "SEC-05" in _scan(tmp_path, hcl)
+
+
+def test_sec05_clean_when_databricks_assume_role_policy_has_external_id(tmp_path):
+    hcl = '''
+    data "databricks_aws_assume_role_policy" "this" {
+      external_id = var.databricks_account_id
+    }
+    '''
+    assert "SEC-05" not in _scan(tmp_path, hcl)
+
+
+def test_sec05_clean_against_the_real_databricks_workspace_module():
+    # Proves the rule against the actual authored HCL, not just a synthetic test string --
+    # modules/databricks-workspace/main.tf really does supply external_id.
+    module_dir = os.path.join(_REPO_ROOT, "modules", "databricks-workspace")
+    findings = optimize_analyzer.scan_hcl_files(module_dir)
+    assert "SEC-05" not in {f["id"] for f in findings}
 
 
 def test_security_findings_are_blocking(tmp_path):

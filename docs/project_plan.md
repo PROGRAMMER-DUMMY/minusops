@@ -32,7 +32,7 @@ gantt
 ---
 
 ## Natural Language Intent Dispatcher
-We deployed a central query parsing coordinator: [dispatcher.py](/core/dispatcher.py).
+We deployed a central query parsing coordinator: [dispatcher.py](/core/reporting/dispatcher.py).
 
 Rather than executing scripts individually, operators can type vague queries. Operational queries still route to the target script:
 * **Query**: `"check if the pipeline is online"` &rarr; triggers `health_checker.py`.
@@ -41,11 +41,11 @@ Rather than executing scripts individually, operators can type vague queries. Op
 * **Query**: `"why did spend spike / find anomalies"` &rarr; triggers `finops_agent.py` (live AWS).
 * **Query**: `"apply the changes"` &rarr; triggers `plan_gate.py run` (the deploy gate).
 
-Creation requests now take a safer enterprise path through [intent_resolver.py](/core/intent_resolver.py) and the requirements/architecture decision record:
+Creation requests now take a safer enterprise path through [intent_resolver.py](/core/generation/intent_resolver.py) and the requirements/architecture decision record:
 * **Query**: `"create a data pipeline"` &rarr; creates a requirements-first run; no production Terraform is generated until requirements and an architecture decision are recorded.
 * The resolver creates a requirements-first path and lists the next safe actions.
 * It does not generate Terraform, plan, or apply infrastructure by itself.
-* The blueprint registry can be checked with `python core/intent_resolver.py --validate-blueprints`.
+* The blueprint registry can be checked with `python core/generation/intent_resolver.py --validate-blueprints`.
 
 ---
 
@@ -58,11 +58,11 @@ Creation requests now take a safer enterprise path through [intent_resolver.py](
    * It remains recoverable from git history if a worked example is needed for reference.
 2. **`agy` Customizations & Diagnostics**:
    * Workspace Rules ([AGENTS.md](/.agents/AGENTS.md)) to enforce safety boundaries.
-   * [audit_logger.py](/core/audit_logger.py) and [plan_gate.py](/core/plan_gate.py) to audit actions and gate mutating deployments (plan-bound, MFA via the cloud CLI).
-   * [approval.py](/core/approval.py) approval gate with selectable `gatekeeper` / `auto-approve` modes for side effects.
-   * [finops_agent.py](/core/finops_agent.py) live cost intelligence over the real account (Cost Explorer, anomalies, CloudTrail correlation).
-   * [optimize_analyzer.py](/core/optimize_analyzer.py) configuration scanner.
-   * [intent_resolver.py](/core/intent_resolver.py) to map short enterprise creation requests to requirements-first runs and architecture decisions.
+   * [audit_logger.py](/core/governance/audit_logger.py) and [plan_gate.py](/core/governance/plan_gate.py) to audit actions and gate mutating deployments (plan-bound, MFA via the cloud CLI).
+   * [approval.py](/core/governance/approval.py) approval gate with selectable `gatekeeper` / `auto-approve` modes for side effects.
+   * [finops_agent.py](/core/reporting/finops_agent.py) live cost intelligence over the real account (Cost Explorer, anomalies, CloudTrail correlation).
+   * [optimize_analyzer.py](/core/reporting/optimize_analyzer.py) configuration scanner.
+   * [intent_resolver.py](/core/generation/intent_resolver.py) to map short enterprise creation requests to requirements-first runs and architecture decisions.
    * Live FinOps operator console ([app/dashboard_app.py](/app/dashboard_app.py)) — a Plotly Dash app rendering real spend, monthly burn, and the anomaly ledger via the active cloud provider.
 
 ---
@@ -71,7 +71,7 @@ Creation requests now take a safer enterprise path through [intent_resolver.py](
 
 What runs end to end, offline, with no cloud credentials:
 
-* Governed production runs start via `core/minusctl.py create ...`; Terraform generation waits for completed requirements and an architecture decision. The no-cloud
+* Governed production runs start via `core/reporting/minusctl.py create ...`; Terraform generation waits for completed requirements and an architecture decision. The no-cloud
   `minusctl demo`, producing the full report bundle (`architecture.svg`, `plan.json`,
   `cost.json`, `plan.html`/`.pdf`, `cost.html`/`.pdf`, `report.html`, and BCM review payloads).
 * PDF rendering has a built-in text fallback when headless Edge/Chrome is unavailable.
@@ -86,10 +86,10 @@ The AWS-side steps require live credentials and Terraform, and are run by the op
 their own account:
 
 ```powershell
-python core/plan_gate.py verify --dir runs/<run-id>/terraform --policy-mode production
-python core/plan_gate.py plan   --dir runs/<run-id>/terraform
-python core/minusctl.py readiness --run <run-id>
-python core/minusctl.py package   --run <run-id>
+python core/governance/plan_gate.py verify --dir runs/<run-id>/terraform --policy-mode production
+python core/governance/plan_gate.py plan   --dir runs/<run-id>/terraform
+python core/reporting/minusctl.py readiness --run <run-id>
+python core/reporting/minusctl.py package   --run <run-id>
 python app/dashboard_app.py
 ```
 
@@ -186,3 +186,93 @@ Snowflake credits are NOT BCM-priceable — for those platforms the cost report 
 "platform compute: not estimated (vendor pricing)" and lean on post-deploy actuals
 (Databricks-on-AWS Marketplace charges DO appear in Cost Explorer). Never hardcode
 DBU/credit rates.
+
+### Phase E addendum — Databricks-on-AWS: build authorized (2026-07-08)
+
+The row above was recommendation-only — no `databricks_workspace` module pack existed
+(tracked as a remaining item in `HANDOFF.md`). That changes: Databricks-on-AWS is now an
+active build target, sequenced behind the VPC/networking module (Databricks requires a
+customer-managed VPC; this also finally closes the deferred MWAA-scratch-VPC gap — see
+`runs/manual-mwaa-network-scratch/RECORD.md`). "AWS" in this project's scope now explicitly
+includes AWS-managed/Marketplace Databricks, not AWS-native services only.
+
+Deployment posture decisions made alongside this (see the MCP integration plan for full
+tradeoffs):
+- **Single AWS account, no landing-zone**, until a second real tenant exists. Per-team
+  isolation for now is Terraform-state/workspace-level, not account-level.
+- **Classic (customer-managed VPC) workspace is the Phase 2 target, not serverless.** The
+  provider supports `compute_mode = "SERVERLESS"`, which needs none of `databricks_mws_credentials`
+  / `databricks_mws_storage_configurations` / `databricks_mws_networks` — but serverless hands
+  networking to Databricks and removes the VPC, subnets, and security groups from this project's
+  governance entirely, which contradicts the whole point of a *governed* control plane. It also
+  removes Phase 1's only consumer: the VPC module is only justified if classic is the target.
+  **Serverless is a deliberate deferral, not a rejection** — record it as a valid Phase 2b path
+  for teams that explicitly don't want to manage networking, at the cost of MinusOps not
+  governing it, same deferred-with-a-reason pattern as SageMaker/EKS/ECS.
+  **Another point for classic, found while scoping Phase 2's live-test teardown story
+  (2026-07-08):** because the VPC is customer-managed, AWS-side teardown (VPC/NAT/IAM/S3) is
+  entirely ours via `networking-vpc`'s own `destroy` — deterministic, no dependency on
+  Databricks' control plane. Only Databricks' own account-level state (workspace object,
+  metastore) goes through Databricks' async/failure-mode-prone deletion path, and that state
+  leaves **no residue in our AWS account** either way. A serverless workspace would hand that
+  AWS-side teardown to Databricks too, losing this contained blast radius.
+- **Minimal VPC-endpoint set** (S3 gateway, STS, Kinesis if needed), not the full
+  PrivateLink/SCC-relay no-egress set — built extensibly so the full set can be added later
+  behind a flag if a real no-egress requirement appears. **This is one decision, not two:**
+  the minimal endpoint set is a direct consequence of assuming no no-egress requirement exists
+  today. They move together — if that assumption changes, the Phase 1 VPC-endpoint set changes
+  with it, not independently of it.
+- **DBU cost policy (decided now, not discovered mid-build):** Databricks is DBU-metered and
+  not in the AWS Price List API, so `coverage_audit.py`'s production-mode unresolved-type block
+  will fire on this module the moment Phase 2 starts — by design, not a bug to work around. DBU-
+  metered resources are reported as **"not priced / metered externally"** in the cost report,
+  never estimated or guessed. Consistent with the existing honesty constraint above (Databricks
+  DBUs/Snowflake credits are not BCM-priceable) — restated here explicitly because this is the
+  decision that makes coverage_audit.py's Phase-2 block expected behavior, not a surprise.
+- **Module content is fetched live only at module-update time**, via a maintainer command
+  (`minus update-module <name>`), never at synthesis/plan time. HashiCorp's Terraform MCP
+  server (provider docs/schema) and AWS's MCP Server (current AWS API/docs) are the fetch
+  sources; the result is committed as a pinned module version and reused byte-for-byte
+  after that, same trust model as every other module in the catalog. This preserves
+  plan-hash reproducibility (identical requests always synthesize identical HCL between
+  updates) and audit-trail integrity (the report reflects what was actually reviewed, not
+  what live docs said on deploy day).
+- **§4.2's cross-account role uses `data "databricks_aws_assume_role_policy"` (`external_id =
+  var.databricks_account_id`), never hand-rolled trust-policy JSON.** Confirmed via the Phase 0
+  smoke test (2026-07-08, `databricks` provider v1.121.0): this data source is Databricks' own
+  canonical generator for that trust policy, external-ID condition included. This removes the
+  highest-risk authoring step at the source instead of catching mistakes after the fact.
+- **`SEC-05` (cross-account trust-policy shape) is a hard prerequisite, and stays even though
+  the data source above removes most of its original reason to exist — with one precision
+  correction.** `databricks_aws_assume_role_policy`'s emitted JSON is computed inside the
+  provider at plan/apply time, invisible to `optimize_analyzer.py`'s static-text scanner — a
+  static rule cannot literally "verify the emitted policy has the external-ID condition." What
+  it *can* and does check: the module actually supplies `external_id` to that data source (the
+  one input the module author controls), plus the original hand-rolled-`aws_iam_policy_document`
+  check as an unconditional backstop against a future maintainer bypassing the data source and
+  hand-rolling JSON again. `terraform validate`/`plan` and the four original `SEC-*` rules still
+  cannot detect a malformed trust policy either way — this rule is still the only thing that can.
+- The **Databricks managed MCP server** (Unity Catalog/SQL/Genie/AI Search endpoints for
+  deployed agents) is a separate, **runtime-only** concern — Public Preview as of Jan 2026,
+  not GA. It has no role in provisioning and is out of scope until a workspace already
+  exists (tracked as its own later phase).
+- **Phase 3 (multi-tenant platform layer) deferred to fast-follow, not day one (2026-07-08).**
+  Rationale: no current second tenant; isolation requirements (workspace- vs account-scoped
+  IAM, shared vs per-tenant metastore, per-team state) are unknown until a real second tenant
+  exists; building now repeats the speculative-infrastructure anti-pattern already rejected
+  this session for landing-zone multi-account, full PrivateLink/no-egress, and AWS MCP Server.
+  Phase 3's design is to be informed by Autoresearch's real usage as the first team onboarded
+  onto the current single-account stack, not designed from guesswork in advance.
+
+**Phase 0 tooling status (2026-07-08):** Terraform MCP server is wired (`docker
+hashicorp/terraform-mcp-server:1.0.0`, `--toolsets=registry`, no credentials, no operations —
+covers provider-schema/module-doc lookups). **AWS MCP Server is deliberately deferred to
+Phase 2**, not Phase 0: AWS's setup docs confirmed it requires valid AWS credentials just to
+initialize the connection (no zero-auth docs-only mode, contrary to the original plan's
+assumption) — the ambient credential chain on this machine is the full-admin `TerraForm-admin`
+identity, and scoping it to genuinely read-only means creating a new IAM identity first, which
+is real AWS infrastructure that belongs behind Terraform + the governed plan/approve/apply
+path, not a raw CLI call made in passing while wiring dev tooling. Phase 0's actual need (live
+provider-schema lookup) is already covered by Terraform MCP alone. Revisit AWS MCP Server when
+Phase 2 needs real account inspection — build its IAM identity as a module, the same way
+everything else in this catalog gets created.

@@ -1,3 +1,5 @@
+import os
+
 import modules
 
 
@@ -25,6 +27,54 @@ def test_module_dir_can_find_installed_data_files(tmp_path, monkeypatch):
     monkeypatch.setattr(modules.sysconfig, "get_path", lambda key: str(data_root) if key == "data" else "")
 
     assert modules.module_dir("query-athena") == str(mod)
+
+
+def test_output_root_prefers_explicit_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINUSOPS_OUTPUT_DIR", str(tmp_path / "explicit"))
+
+    assert modules.output_root() == str(tmp_path / "explicit")
+
+
+def test_output_root_uses_cwd_when_it_looks_like_a_checkout(tmp_path, monkeypatch):
+    monkeypatch.delenv("MINUSOPS_OUTPUT_DIR", raising=False)
+    checkout = tmp_path / "checkout"
+    (checkout / "modules").mkdir(parents=True)
+    monkeypatch.chdir(checkout)
+    monkeypatch.setattr(modules, "REPO_ROOT", str(tmp_path / "not-a-checkout"))
+
+    assert modules.output_root() == str(checkout)
+
+
+def test_output_root_falls_back_to_repo_root_when_cwd_is_not_a_checkout(tmp_path, monkeypatch):
+    monkeypatch.delenv("MINUSOPS_OUTPUT_DIR", raising=False)
+    (tmp_path / "empty-workdir").mkdir()
+    monkeypatch.chdir(tmp_path / "empty-workdir")
+    checkout = tmp_path / "real-checkout"
+    (checkout / "modules").mkdir(parents=True)
+    monkeypatch.setattr(modules, "REPO_ROOT", str(checkout))
+
+    assert modules.output_root() == str(checkout)
+
+
+def test_output_root_never_resolves_into_an_installed_wheel(tmp_path, monkeypatch):
+    # The actual bug this fixes: an installed wheel's REPO_ROOT is naked dirname math off
+    # modules.py's own location (e.g. .../site-packages), which has no modules/ or
+    # pyproject.toml of its own. cwd is also just "wherever the user happened to run the
+    # command from" -- neither looks like a real MinusOps checkout. Must NOT return either one;
+    # must fall back to a guaranteed-writable per-user location instead.
+    monkeypatch.delenv("MINUSOPS_OUTPUT_DIR", raising=False)
+    fake_site_packages = tmp_path / "site-packages"
+    fake_site_packages.mkdir()
+    fake_cwd = tmp_path / "some-random-directory"
+    fake_cwd.mkdir()
+    monkeypatch.chdir(fake_cwd)
+    monkeypatch.setattr(modules, "REPO_ROOT", str(fake_site_packages))
+
+    result = modules.output_root()
+
+    assert result != str(fake_site_packages)
+    assert result != str(fake_cwd)
+    assert result == os.path.join(os.path.expanduser("~"), ".minusops")
 
 
 def test_registry_is_valid_and_terraform_exists():

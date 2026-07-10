@@ -11,10 +11,24 @@ sbom*.json
 # IDE
 .idea/
 # Runtime / logs (regenerated)
-.agents/logs/
-.agents/reports/
+# 2026-07-10 audit finding: patterns with a MIDDLE slash (.agents/logs/, .agents/reports/) are
+# anchored to the repo root by git's own gitignore rules and do NOT match at other depths --
+# confirmed empirically (a nested core/.agents/logs/ was NOT caught by the unprefixed pattern).
+# Several LOG_DIR definitions across core/ resolve via os.getcwd() (not a fixed repo-root
+# anchor), so running any of them from a non-root cwd can write the real audit chain (real
+# approver identities, real plan hashes) to a nested, non-ignored path. runs/ and artifacts/
+# (trailing slash only, no middle slash) already match at any depth by git's own glob rules --
+# confirmed via git check-ignore against a real nested core/runs/ -- so only the two below
+# needed the **/ prefix to close the gap. core/.agents/cache/ (AWS Price List dimension-name
+# cache, non-sensitive, but the same cwd quirk) added as its own entry for the same reason.
+**/.agents/logs/
+**/.agents/reports/
+**/.agents/cache/
 artifacts/
 runs/
+# Ad hoc session pytest-summary logs at repo root (bare pass/fail counts, no paths or
+# identifiers -- still shouldn't be committed as permanent clutter)
+pt_*.log
 # Terraform
 *.tfstate
 *.tfstate.*

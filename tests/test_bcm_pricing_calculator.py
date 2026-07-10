@@ -335,3 +335,38 @@ def test_derive_prices_every_glue_job_and_every_zone():
                                   assumptions={"glue_job_count": 1, "s3_retention_zones": 1})
     assert A2["glue_job_count"] == 1
     assert {u["serviceCode"]: u for u in usage2}["AWSGlue"]["amount"] == round(per_job, 2)
+
+
+def _change(address, rtype, after=None):
+    return {"address": address, "mode": "managed", "type": rtype,
+            "change": {"actions": ["create"], "after": after or {}}}
+
+
+def test_resource_count_dispatcher_prices_kms_key_not_alias():
+    plan = {"resource_changes": [
+        _change("aws_kms_key.lake", "aws_kms_key"),
+        _change("aws_kms_alias.lake", "aws_kms_alias"),
+    ]}
+    A = dict(bcm.DEFAULT_ASSUMPTIONS)
+    assert bcm._amount_for("awskms", {}, A, plan) == 1.0  # only the key counts, not the alias
+
+
+def test_resource_count_dispatcher_matches_prior_mwaa_and_cloudwatch_behavior():
+    # Regression guard for the amount_model refactor: MWAA/CloudWatch amounts must be
+    # byte-identical to the hand-written branches they replaced.
+    plan = {"resource_changes": [
+        _change("aws_mwaa_environment.this", "aws_mwaa_environment"),
+        _change("aws_cloudwatch_metric_alarm.spend", "aws_cloudwatch_metric_alarm"),
+        _change("aws_cloudwatch_metric_alarm.spend2", "aws_cloudwatch_metric_alarm"),
+    ]}
+    A = dict(bcm.DEFAULT_ASSUMPTIONS)
+    assert bcm._amount_for("AmazonMWAA", {}, A, plan) == A["hours_per_month"]
+    assert bcm._amount_for("AmazonCloudWatch", {}, A, plan) == 2.0
+
+
+def test_resource_count_dispatcher_returns_none_when_no_matching_resources():
+    plan = {"resource_changes": [_change("aws_s3_bucket.x", "aws_s3_bucket")]}
+    A = dict(bcm.DEFAULT_ASSUMPTIONS)
+    assert bcm._amount_for("awskms", {}, A, plan) is None
+    assert bcm._amount_for("AmazonMWAA", {}, A, plan) is None
+    assert bcm._amount_for("AmazonCloudWatch", {}, A, plan) is None

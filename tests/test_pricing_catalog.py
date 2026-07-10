@@ -96,3 +96,23 @@ def test_lookup_dimensions_writes_cache_per_service_region(tmp_path, monkeypatch
     assert "Jobrun" in dims["operation"]
     cached = json.loads((tmp_path / "pricing_dims_AWSGlue_us-east-1.json").read_text(encoding="utf-8"))
     assert cached["region_hint"] == "us-east-1"
+
+
+def test_rate_citation_for_sns_is_a_real_dated_catalog_fact_not_a_total():
+    citation = pc.rate_citation_for_service_code("AmazonSNS")
+    assert citation is not None
+    assert "1,000,000" in citation and "free" in citation
+    assert "queried 2026-07-04" in citation
+
+
+def test_rate_citation_is_none_when_not_recorded():
+    assert pc.rate_citation_for_service_code("AWSLambda") is None
+    assert pc.rate_citation_for_service_code("NotARealService") is None
+
+
+def test_entry_for_service_code_prefers_the_more_specific_entry():
+    # aws_cloudwatch_metric_alarm (verified, amount_model) vs. the generic aws_cloudwatch
+    # (unverified) share a service_code -- the specific one must win.
+    entry = pc.entry_for_service_code("AmazonCloudWatch")
+    assert entry["prefix"] == "aws_cloudwatch_metric_alarm"
+    assert entry["verified"] is True

@@ -69,7 +69,7 @@ jobs:
 
       # plan_gate verify == fmt -check + init (no backend) + validate + security scan.
       - name: Verify (gate static checks)
-        run: python core/plan_gate.py verify --dir "${{ inputs.tf_dir }}"
+        run: python core/governance/plan_gate.py verify --dir "${{ inputs.tf_dir }}"
 
   # ---------------------------------------------------------------------------
   # Deploy only when apply=true, AFTER validate, AND after manual approval.
@@ -115,11 +115,11 @@ jobs:
       # prompt, never the hash binding). Apply -> re-checks the hash and applies the
       # EXACT reviewed tfplan, or refuses. Every stage is appended to the audit log.
       - name: Plan (record plan hash)
-        run: python core/plan_gate.py plan --dir "${{ inputs.tf_dir }}"
+        run: python core/governance/plan_gate.py plan --dir "${{ inputs.tf_dir }}"
       - name: Approve (hash-bound; human gate already passed)
-        run: python core/plan_gate.py approve --dir "${{ inputs.tf_dir }}" --mode auto-approve
+        run: python core/governance/plan_gate.py approve --dir "${{ inputs.tf_dir }}" --mode auto-approve
       - name: Apply (exact approved plan only)
-        run: python core/plan_gate.py apply --dir "${{ inputs.tf_dir }}"
+        run: python core/governance/plan_gate.py apply --dir "${{ inputs.tf_dir }}"
 
       - name: Upload audit log + deploy report
         if: always()

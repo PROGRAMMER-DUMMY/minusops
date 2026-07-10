@@ -31,6 +31,8 @@ from concurrent.futures import ThreadPoolExecutor
 # Talk to the active cloud only through the provider abstraction (core/ package).
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "core")
+for _sub in ("generation", "architecture", "governance", "cost", "reporting", "providers"):
+    sys.path.insert(0, os.path.join(SCRIPTS, _sub))
 sys.path.insert(0, SCRIPTS)
 from providers.base import get_provider, active_cloud  # noqa: E402
 import plan_inspector  # noqa: E402
@@ -595,7 +597,7 @@ def run_readiness_card(item):
     else:
         links.append(html.Span("decision missing", className="report-missing"))
     if not item.get("package_md"):
-        links.append(html.Span("run: python core/minusctl.py package", className="report-missing"))
+        links.append(html.Span("run: python core/reporting/minusctl.py package", className="report-missing"))
     first_issue = (blockers or warnings or [{}])[0]
     return html.Div(className=f"run-card {tone}", children=[
         html.Div(className="run-main", children=[
@@ -817,14 +819,14 @@ def control_run_card(item):
         links.append(html.A("latest report", href=f"/runs/{run_id}/reports/{latest['id']}/report.html",
                             target="_blank", className="report-link"))
     commands = [
-        f"python core/requirements.py check {requirements_file}",
-        f"python core/minusctl.py decision template --run {run_id} --write",
-        f"python core/architecture_decision.py set {decision_file} --architecture \"<selected architecture>\" --summary \"<why this choice>\"",
-        f"python core/architecture_decision.py add-module {decision_file} <module-id>",
-        f"python core/architecture_decision.py add-source {decision_file} \"<official doc URL>\"",
-        f"python core/architecture_decision.py check {decision_file}",
-        f"python core/synthesizer.py \"<requirements summary>\" --run {run_id} --requirements-file {requirements_file} --decision-file {decision_file}",
-        f"python core/plan_gate.py verify --dir {run.get('terraform_dir')} --policy-mode production",
+        f"python core/architecture/requirements.py check {requirements_file}",
+        f"python core/reporting/minusctl.py decision template --run {run_id} --write",
+        f"python core/architecture/architecture_decision.py set {decision_file} --architecture \"<selected architecture>\" --summary \"<why this choice>\"",
+        f"python core/architecture/architecture_decision.py add-module {decision_file} <module-id>",
+        f"python core/architecture/architecture_decision.py add-source {decision_file} \"<official doc URL>\"",
+        f"python core/architecture/architecture_decision.py check {decision_file}",
+        f"python core/generation/synthesizer.py \"<requirements summary>\" --run {run_id} --requirements-file {requirements_file} --decision-file {decision_file}",
+        f"python core/governance/plan_gate.py verify --dir {run.get('terraform_dir')} --policy-mode production",
     ]
     return html.Div(className="control-card", children=[
         html.Div(className="control-main", children=[
@@ -858,7 +860,7 @@ def control_plane_panel(selected_run_id=None):
     if not rows:
         body = html.Div(className="empty sage", children=[
             html.Div("No run workspaces", className="empty-title"),
-            html.Div('Run core/minusctl.py create "<request>".', className="empty-sub"),
+            html.Div('Run core/reporting/minusctl.py create "<request>".', className="empty-sub"),
         ])
     else:
         visible_rows = [selected] + [row for row in rows if row is not selected] if selected else rows
@@ -908,7 +910,7 @@ def readiness_panel(selected_run_id=None):
     if not rows:
         body = html.Div(className="empty sage", children=[
             html.Div("No run workspaces", className="empty-title"),
-            html.Div('Run core/minusctl.py create "<request>" to create a requirements-first workspace.', className="empty-sub"),
+            html.Div('Run core/reporting/minusctl.py create "<request>" to create a requirements-first workspace.', className="empty-sub"),
         ])
     else:
         tabs = []
@@ -931,7 +933,7 @@ def readiness_panel(selected_run_id=None):
                 className="run-tabs",
                 children=tabs,
             ),
-            html.Div(f"Showing {len(rows)} selectable run(s). Older runs not shown: {max(total_runs - len(rows), 0)}. Use `python core/minusctl.py runs list` for full history.",
+            html.Div(f"Showing {len(rows)} selectable run(s). Older runs not shown: {max(total_runs - len(rows), 0)}. Use `python core/reporting/minusctl.py runs list` for full history.",
                      className="run-history-note"),
         ])
     return panel("Enterprise readiness", "run history", body)
@@ -1095,10 +1097,10 @@ def scenario_shortcuts_panel(selected_run_id=None):
                 _command_line(cmd),
             ]) for label, cmd in [
                 ("Model Savings Plans / RI commitments (needs your commitments JSON)",
-                 f"python core/bcm_pricing_calculator.py scenario --report-dir {target} --commitments commitments.json"),
+                 f"python core/cost/bcm_pricing_calculator.py scenario --report-dir {target} --commitments commitments.json"),
                 ("Re-price with different usage assumptions",
-                 f"python core/bcm_pricing_calculator.py prepare --report-dir {target} --derive "
-                 f"--assume glue_runs_per_day=48 && python core/bcm_pricing_calculator.py run --report-dir {target}"),
+                 f"python core/cost/bcm_pricing_calculator.py prepare --report-dir {target} --derive "
+                 f"--assume glue_runs_per_day=48 && python core/cost/bcm_pricing_calculator.py run --report-dir {target}"),
             ]
         ]),
     ]))
@@ -1111,7 +1113,7 @@ def deployment_reports_panel(selected_run_id=None):
     if not reports:
         body = html.Div(className="empty sage", children=[
             html.Div("No deployment reports", className="empty-title"),
-            html.Div("Run core/demo.py or plan_gate.py plan to generate report artifacts.", className="empty-sub"),
+            html.Div("Run core/generation/demo.py or plan_gate.py plan to generate report artifacts.", className="empty-sub"),
         ])
     else:
         body = html.Div(className="reports", children=[

@@ -63,7 +63,7 @@ def test_minusctl_next_reports_safe_commands(tmp_path, monkeypatch):
     assert code == 0
     assert "requirements:" in output
     assert "decision   :" in output
-    assert "python core/minusctl.py decision template --write" in output
+    assert "python core/reporting/minusctl.py decision template --write" in output
     assert "--run" in output
     assert "--decision-file" in output
     assert "do not generate Terraform from demo fixtures for production" in output
@@ -104,7 +104,7 @@ def test_minusctl_accelerator_writes_lakehouse_artifacts(tmp_path, monkeypatch):
     assert os.path.exists(data["requirements_file"])
     assert os.path.exists(data["decision_file"])
     assert "storage-medallion-s3" in data["decision"]["selected_modules"]
-    assert "python core/synthesizer.py" in data["next"]
+    assert "python core/generation/synthesizer.py" in data["next"]
 
 
 def test_minusctl_guard_detects_manual_edit(tmp_path, monkeypatch):

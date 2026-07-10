@@ -133,3 +133,71 @@ def test_audit_raises_when_plan_json_missing(tmp_path):
         assert False, "expected FileNotFoundError"
     except FileNotFoundError as exc:
         assert "plan.json" in str(exc)
+
+
+def test_cloudwatch_metric_alarm_verified_but_event_rule_is_not():
+    # The generic aws_cloudwatch prefix covers event_rule/event_target too, but only the
+    # metric_alarm's catalog fields (CW:AlarmMonitorUsage) were actually verified live
+    # (2026-07-04) -- event rules/targets must not inherit that verified status.
+    plan = {"resource_changes": [
+        {"address": "a.event_rule", "mode": "managed", "type": "aws_cloudwatch_event_rule",
+         "change": {"actions": ["create"], "after": {}}},
+        {"address": "a.metric_alarm", "mode": "managed", "type": "aws_cloudwatch_metric_alarm",
+         "change": {"actions": ["create"], "after": {}}},
+    ]}
+    coverage = ca.classify(plan)
+    auto = {r["resource_type"] for r in coverage["auto_priced"]}
+    needs_usage = {r["resource_type"] for r in coverage["catalog_mapped_needs_usage"]}
+    assert "aws_cloudwatch_metric_alarm" in auto
+    assert "aws_cloudwatch_event_rule" in needs_usage
+    assert "aws_cloudwatch_event_rule" not in auto
+
+
+def test_audit_schema_watch_status_is_none_with_no_snapshot(tmp_path, monkeypatch):
+    # Regression proof for the schema_watch.py wiring: with no recent-changes/ snapshot present
+    # (the state of every existing deployment today), the new field is just None -- the four
+    # coverage buckets and the summary counts are completely unaffected.
+    monkeypatch.setattr(ca.module_registry, "output_root", lambda: str(tmp_path))
+    report = tmp_path / "reports" / "abc123"
+    report.mkdir(parents=True)
+    (report / "plan.json").write_text(json.dumps(PLAN), encoding="utf-8")
+
+    coverage = ca.audit(str(report))
+
+    assert coverage["schema_watch_status"] is None
+    assert coverage["summary"]["unresolved"] == 1
+    assert coverage["summary"]["confirmed_free"] == 2
+    assert "schema_watch_status" not in coverage["summary"]
+
+
+def test_audit_schema_watch_status_reflects_latest_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(ca.module_registry, "output_root", lambda: str(tmp_path))
+    provider_dir = tmp_path / "recent-changes" / "aws"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "schema-snapshot.json").write_text("{}", encoding="utf-8")
+    (provider_dir / "20260101T000000Z.json").write_text(json.dumps({
+        "provider": "aws", "resolved_version": "6.1.0", "generated_at": "2026-01-01T00:00:00Z",
+        "findings": [],
+    }), encoding="utf-8")
+    (provider_dir / "20260709T000000Z.json").write_text(json.dumps({
+        "provider": "aws", "resolved_version": "6.54.0", "generated_at": "2026-07-09T00:00:00Z",
+        "findings": [{"finding": "removed", "type": "resource:aws_x"}],
+    }), encoding="utf-8")
+    report = tmp_path / "reports" / "abc123"
+    report.mkdir(parents=True)
+    (report / "plan.json").write_text(json.dumps(PLAN), encoding="utf-8")
+
+    coverage = ca.audit(str(report))
+
+    status = coverage["schema_watch_status"]
+    assert status["resolved_version"] == "6.54.0"  # the later timestamped report, not the earlier
+    assert status["findings_count"] == 1
+
+
+def test_kms_key_auto_priced_live_verified():
+    plan = {"resource_changes": [
+        {"address": "a.key", "mode": "managed", "type": "aws_kms_key",
+         "change": {"actions": ["create"], "after": {}}},
+    ]}
+    coverage = ca.classify(plan)
+    assert {r["resource_type"] for r in coverage["auto_priced"]} == {"aws_kms_key"}

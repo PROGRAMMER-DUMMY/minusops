@@ -66,13 +66,31 @@ jobs:
           cd /tmp/minusops-smoke
           /tmp/minusops-wheel/bin/minusctl --help
           /tmp/minusops-wheel/bin/minus-accelerator --help
+          /tmp/minusops-wheel/bin/minus-update-module --help
+          /tmp/minusops-wheel/bin/minus-schema-watch --help
           /tmp/minusops-wheel/bin/python - <<'PY'
           import os
-          from core import modules
+          from core.generation import modules
           module_path = modules.module_dir("query-athena")
           assert os.path.exists(os.path.join(module_path, "main.tf")), module_path
           assert modules.validate_modules() == []
           print(module_path)
+          PY
+
+      - name: Governance output never lands inside the installed package (REPO_ROOT wheel bug)
+        run: |
+          cd /tmp/minusops-smoke
+          /tmp/minusops-wheel/bin/minus-update-module pin --module query-athena --source ci-wheel-smoke
+          /tmp/minusops-wheel/bin/python - <<'PY'
+          import os
+          from core.generation import modules
+          root = modules.output_root()
+          # A pip-installed wheel's REPO_ROOT is naked dirname math off modules.py's own
+          # location (inside the venv's site-packages) -- output_root() must never resolve
+          # there, or governance artifacts (recent-changes/, upgrades/, the audit log) would
+          # silently write into the Python install instead of a real, findable location.
+          assert "minusops-wheel" not in root, f"output_root() resolved inside the installed venv: {root}"
+          print("output_root ->", root)
           PY
 
   docker:

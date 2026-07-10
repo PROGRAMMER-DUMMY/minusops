@@ -13,7 +13,7 @@ Return shapes (kept identical across clouds so the dashboard/CLI don't branch):
 
 Pre-deploy PRICING methods (separate from the actuals methods above — actuals need live
 resources, pricing does not). These are the onboarding contract for a new cloud: implement all
-four against that cloud's OFFICIAL pricing catalog, then run `core/coverage_audit.py` against
+four against that cloud's OFFICIAL pricing catalog, then run `core/cost/coverage_audit.py` against
 a real plan for that cloud until every resource type is auto_priced / catalog_mapped_needs_usage
 / confirmed_free — never trust a cloud's pricing numbers until coverage_audit shows no
 UNRESOLVED entries. They default to a safe "unknown" return (not @abstractmethod, not a raise)

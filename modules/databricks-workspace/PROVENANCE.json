@@ -1,0 +1,9 @@
+{
+  "module_id": "databricks-workspace",
+  "version": 3,
+  "content_hash": "77435f0b317f17cee8cc5c71d3ca4b43839cc5aac38790aefcea47c0430513a7",
+  "source": "Phase 2b: added databricks_catalog + databricks_sql_endpoint, schema confirmed via Terraform MCP (databricks/databricks v1.121.0) -- both support provider_config{workspace_id} same as metastore_assignment, no aliased provider needed",
+  "provider_version": "databricks/databricks >= 1.0 (schema confirmed against v1.121.0 via Terraform MCP smoke test, 2026-07-08/09)",
+  "notes": "v3: catalog_name (default empty, skip) and create_sql_warehouse (default false) toggles, justified by two real facts from Autoresearch's config/lock.toml (execution=warehouse, catalog=healthdata) -- catalog_name is a plain input, no Autoresearch-specific value hardcoded. Known: creating databricks_catalog removes the auto-created 'default' schema (provider's own documented behavior) -- schema/table setup is application-level, not this module's job. provider_config account-level pattern for both new resources rides the same not-yet-live-proven assumption as metastore_assignment (HANDOFF.md Sec 6 item 10).",
+  "pinned_at": "2026-07-08T21:36:58.275210+00:00"
+}

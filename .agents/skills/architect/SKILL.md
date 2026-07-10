@@ -51,10 +51,10 @@ that eliminate candidates, not as soft preferences.
 Concrete tools back this skill — prefer them over free-form work:
 
 ```bash
-python core/patterns.py match "<requirements>"        # reuse a prior approved composition first
-python core/modules.py  match "<requirements>"        # vetted building blocks for the requirements
-python core/discovery.py "<topic>" --resource aws_<type> --service-code <Code>   # authoritative source URLs
-python core/synthesizer.py "<requirements>" --requirements-file requirements.json --owner <team>
+python core/generation/patterns.py match "<requirements>"        # reuse a prior approved composition first
+python core/generation/modules.py  match "<requirements>"        # vetted building blocks for the requirements
+python core/architecture/discovery.py "<topic>" --resource aws_<type> --service-code <Code>   # authoritative source URLs
+python core/generation/synthesizer.py "<requirements>" --requirements-file requirements.json --owner <team>
 ```
 
 The synthesizer is **fail-closed on the requirements gate**: it refuses to generate without a
@@ -64,7 +64,7 @@ complete `requirements.json` (from grill-me) and lists what's unanswered. Never 
 Start by checking `patterns.py match` (reuse an approved design); then `modules.py match` to pick
 building blocks; use `discovery.py` to ground each new resource in its Registry schema; then
 `synthesizer.py` to compose a run workspace. Add a missing capability by writing a new
-`modules/<id>/main.tf` + a row in `core/modules.py`, not by forking a monolith.
+`modules/<id>/main.tf` + a row in `core/generation/modules.py`, not by forking a monolith.
 
 ## Step 3 — Synthesize governed Terraform
 
@@ -85,11 +85,11 @@ Keep it reviewable: split by concern, no secrets in code.
 The synthesized dir goes through the normal control plane:
 
 ```bash
-python core/plan_gate.py verify --dir <run>/terraform   # fmt + terraform validate + SEC scan (blocks on findings)
-python core/plan_gate.py plan   --dir <run>/terraform   # plan-hash + deploy report (architecture diagram, cost, etc.)
+python core/governance/plan_gate.py verify --dir <run>/terraform   # fmt + terraform validate + SEC scan (blocks on findings)
+python core/governance/plan_gate.py plan   --dir <run>/terraform   # plan-hash + deploy report (architecture diagram, cost, etc.)
 minus-bcm prepare --report-dir <run>/reports/<hash> ... && minus-bcm run ...   # real cost from the BCM Pricing Calculator
-python core/plan_gate.py approve --dir <run>/terraform   # a human reviews the exact plan-hash (RBAC + MFA-backed session)
-python core/plan_gate.py apply   --dir <run>/terraform   # applies ONLY the approved hash; one-shot
+python core/governance/plan_gate.py approve --dir <run>/terraform   # a human reviews the exact plan-hash (RBAC + MFA-backed session)
+python core/governance/plan_gate.py apply   --dir <run>/terraform   # applies ONLY the approved hash; one-shot
 ```
 
 If `verify` fails (a validate error or a `SEC-*` finding), fix the Terraform and re-verify — do

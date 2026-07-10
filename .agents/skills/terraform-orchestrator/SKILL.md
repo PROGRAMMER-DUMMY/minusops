@@ -9,7 +9,7 @@ This skill equips `agy` with the procedures, scripts, and policies needed to saf
 
 ## The Secure Orchestration Loop
 
-All infrastructure changes go through **[core/plan_gate.py](/core/plan_gate.py)** — a plan-bound deploy gate that enforces the loop in code (verify → plan → hash → approve → apply), audits every stage, and refuses to apply any plan whose hash you did not approve.
+All infrastructure changes go through **[core/governance/plan_gate.py](/core/governance/plan_gate.py)** — a plan-bound deploy gate that enforces the loop in code (verify → plan → hash → approve → apply), audits every stage, and refuses to apply any plan whose hash you did not approve.
 
 ```
   verify  -->  plan  -->  approve (review + confirm)  -->  apply (exact tfplan)
@@ -29,13 +29,13 @@ MFA-gated deploy role into your CLI session. MFA is enforced by that role's trus
 workload-agnostic engine; there is no bundled default).
 ```bash
 # stage by stage
-python core/plan_gate.py verify  --dir path/to/your/terraform
-python core/plan_gate.py plan    --dir path/to/your/terraform
-python core/plan_gate.py approve --dir path/to/your/terraform
-python core/plan_gate.py apply   --dir path/to/your/terraform
+python core/governance/plan_gate.py verify  --dir path/to/your/terraform
+python core/governance/plan_gate.py plan    --dir path/to/your/terraform
+python core/governance/plan_gate.py approve --dir path/to/your/terraform
+python core/governance/plan_gate.py apply   --dir path/to/your/terraform
 
 # or all four in sequence (gatekeeper prompts at approve; --mode auto-approve skips the y/N)
-python core/plan_gate.py run     --dir path/to/your/terraform
+python core/governance/plan_gate.py run     --dir path/to/your/terraform
 ```
 
 ### Plan-bound guarantee
@@ -44,7 +44,7 @@ forces a fresh review. `apply` cross-checks the current hash against the approve
 refuses on mismatch. Every stage is written to `.agents/logs/audit.jsonl`.
 
 ### Post-deploy
-Run `python core/health_checker.py` for smoke tests; if a check fails, log it and alert.
+Run `python core/reporting/health_checker.py` for smoke tests; if a check fails, log it and alert.
 
 ---
 
