@@ -13,60 +13,46 @@ SHELL ["/bin/bash", "-c"]
 
 # Pinned external CLIs. Terraform is verified against the official SHA256SUMS.
 #
-# TEMPORARY DIAGNOSTIC (2026-07-12), round 2: round 1 proved the download itself is completely
-# healthy (HTTP 200, all 27714924 bytes, correct URL -- disproving "curl isn't really
-# fetching"/"swallowed HTTP error"). But the build still died right after, with NO `+ ls -l`
-# echo under `set -x` -- the fingerprint of the shell being KILLED outright (OOM or a BuildKit
-# resource ceiling), not a command returning a normal non-zero exit. Split into separate
-# layers (download / checksum / unzip) so whichever operation crosses the ceiling is isolated
-# to its own failing layer, with the actual memory/disk numbers captured BEFORE anything runs,
-# not guessed after the fact.
-RUN set -eux; \
+# TEMPORARY DIAGNOSTIC (2026-07-12), round 3: rounds 1-2 proved the download is completely
+# healthy (HTTP 200, all 27714924 bytes) and ruled out resource ceiling (13GB/16GB memory free,
+# 89G/145G disk free at the checksum layer) -- so the original silent death is a command
+# failing inside the chain, not the runner reaping it. Splitting into separate RUN layers
+# introduced its own artifact (files under /tmp did not persist across a RUN-layer boundary in
+# this environment) that masked the real question, so this reverts to the single-RUN structure
+# that actually ships, instrumented INLINE (no layer crossed) with a sentinel echoing the exit
+# code after every command -- the last sentinel to print pins the death to the very next
+# command, which set -euxo pipefail then stops on for real instead of swallowing.
+RUN set -euxo pipefail; \
     apt-get update; \
-    apt-get install -y --no-install-recommends curl unzip ca-certificates file procps; \
-    rm -rf /var/lib/apt/lists/*
-
-RUN set -euxo pipefail; \
-    echo "DIAG: resource ceiling BEFORE any download"; \
-    free -m; \
-    df -h /; \
-    ulimit -a; \
-    (cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo "DIAG: no cgroup memory limit file found"); \
-    dmesg 2>&1 | tail -20 || echo "DIAG: dmesg unavailable (unprivileged container, expected)"; \
-    echo "DIAG: TERRAFORM_VERSION=${TERRAFORM_VERSION} TARGETARCH=${TARGETARCH} TARGETPLATFORM=${TARGETPLATFORM:-<unset>}"; \
+    apt-get install -y --no-install-recommends curl unzip ca-certificates; \
+    echo "DIAG: which unzip -> $(which unzip)"; \
+    unzip -v | head -1; \
+    echo "DIAG unzip_check=$?"; \
     TF_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip"; \
-    curl -fsSL -w "DIAG: http_code=%{http_code} size_download=%{size_download}\n" -o /tmp/tf.zip "$TF_URL"; \
-    echo "DIAG: download layer completed"; \
+    curl -fsSL -o /tmp/tf.zip "$TF_URL"; \
+    echo "DIAG curl_tf_zip=$?"; \
     ls -l /tmp/tf.zip; \
-    file /tmp/tf.zip; \
-    df -h /tmp
-
-RUN set -euxo pipefail; \
-    echo "DIAG: resource ceiling BEFORE checksum layer"; \
-    free -m; \
-    df -h /; \
-    dmesg 2>&1 | tail -20 || echo "DIAG: dmesg unavailable (unprivileged container, expected)"; \
-    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo /tmp/tf.sums "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"; \
+    echo "DIAG ls_tf_zip=$?"; \
+    curl -fsSL -o /tmp/tf.sums "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"; \
+    echo "DIAG curl_tf_sums=$?"; \
     grep "terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip" /tmp/tf.sums > /tmp/tf.sum.line; \
+    echo "DIAG grep=$?"; \
     test -s /tmp/tf.sum.line; \
+    echo "DIAG test_s=$?"; \
     (cd /tmp && sha256sum -c tf.sum.line); \
-    echo "DIAG: checksum layer completed"
-
-RUN set -euxo pipefail; \
-    echo "DIAG: resource ceiling BEFORE unzip layer"; \
-    free -m; \
-    df -h /; \
-    dmesg 2>&1 | tail -20 || echo "DIAG: dmesg unavailable (unprivileged container, expected)"; \
+    echo "DIAG sha256sum=$?"; \
+    unzip -t /tmp/tf.zip; \
+    echo "DIAG unzip_test=$?"; \
     unzip /tmp/tf.zip -d /usr/local/bin; \
-    echo "DIAG: unzip layer completed"; \
-    terraform version
-
-RUN set -euxo pipefail; \
-    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo /tmp/awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"; \
+    echo "DIAG unzip_extract=$?"; \
+    curl -fsSL -o /tmp/awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"; \
+    echo "DIAG curl_awscli=$?"; \
     unzip -q /tmp/awscli.zip -d /tmp; \
+    echo "DIAG unzip_awscli=$?"; \
     /tmp/aws/install; \
-    rm -rf /tmp/*; \
-    aws --version
+    echo "DIAG aws_install=$?"; \
+    rm -rf /tmp/* /var/lib/apt/lists/*; \
+    terraform version; aws --version
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
