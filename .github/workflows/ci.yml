@@ -92,7 +92,19 @@ jobs:
           cp "/tmp/${asset}" "$HOME/.local/bin/${bin_name}"
           chmod +x "$HOME/.local/bin/${bin_name}"
           rm -f "/tmp/${asset}" "/tmp/${asset}.sha256"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # Real bug caught by the first CI run of this step, not assumed away: on the Windows
+          # runner, git-bash's own PATH lookup (`opa version` inside THIS step) resolves the
+          # POSIX-style path fine, but a plain `/c/Users/...` path written to $GITHUB_PATH does
+          # not translate to a form native Windows child processes (python.exe spawned by a
+          # later bash step) can resolve -- toolpath.find_tool's shutil.which() came back empty
+          # even though the file was genuinely there. Fixed by writing the Windows-native form
+          # (via `cygpath -w`, only present in git-bash on Windows runners) to $GITHUB_PATH
+          # instead of the raw MSYS path.
+          if command -v cygpath >/dev/null 2>&1; then
+            cygpath -w "$HOME/.local/bin" >> "$GITHUB_PATH"
+          else
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
 
       # Proves item 4 of docs/g6_scope.md's proof bar the same way the Terraform checksum fix
       # was proven: not "the step didn't error", but a real assertion that opa is actually
