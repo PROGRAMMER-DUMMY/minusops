@@ -64,6 +64,9 @@ import authz  # noqa: E402
 import destructive_change_gate  # noqa: E402
 import optimize_analyzer  # noqa: E402
 import rego_gate  # noqa: E402
+import intent_assertions  # noqa: E402
+import requirements as reqgate  # noqa: E402
+import architecture_decision as adecision  # noqa: E402
 
 WORKSPACE = os.getcwd()
 LOG_DIR = os.path.join(WORKSPACE, ".agents", "logs")
@@ -375,6 +378,23 @@ def _print_g6_shadow(result):
             print(f"  - {rule_id}: LOST vs regex (regex had it, Rego doesn't): {d['lost_in_regex']}", file=sys.stderr)
     for f in result["unresolved"]:
         print(f"  - {f['id']} unresolved (unknown-until-apply): {f['resource']}", file=sys.stderr)
+
+
+def _print_intent_assertions(result):
+    """Phase 4 (docs/phase4_scope.md, G3/G4): intent-vs-reality advisory findings. ADVISORY
+    ONLY -- printed and audited, never blocks stage_plan, same shadow discipline as G6."""
+    if result.get("evaluation_failed"):
+        print(f"[gate] Phase 4 intent-assertions evaluation failed: "
+              f"{result['findings'][0]['detail'] if result['findings'] else 'unknown'}", file=sys.stderr)
+        return
+    findings = result.get("findings", [])
+    if not findings:
+        print("[gate] Phase 4 intent-assertions: no findings (advisory)")
+        return
+    print(f"[gate] Phase 4 intent-assertions: {len(findings)} finding(s) (advisory, non-blocking)",
+          file=sys.stderr)
+    for f in findings:
+        print(f"  - {f['id']} [{f['finding_kind']}] {f.get('resource')}: {f['detail']}", file=sys.stderr)
 
 
 def _print_classification(classification):
@@ -709,8 +729,32 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     }
     _print_g6_shadow(g6_result)
 
+    # Phase 4 (docs/phase4_scope.md, G3/G4): intent-vs-reality advisory checks. ADVISORY ONLY --
+    # never blocks stage_plan, same shadow discipline as G6. requirements.json/architecture_
+    # decision.json are looked up in dir_'s parent (the run root, matching runs.new_run()'s own
+    # terraform_dir = root/"terraform" convention) -- their absence just means this run isn't
+    # part of the requirements-first workflow, not an error. check_controls (blueprint-specific)
+    # is deliberately NOT wired here: the demo blueprint's own synthetic plan (demo.py's
+    # synthetic_plan(), not a real terraform plan) has no `configuration` key at all, so the two
+    # checks needing sibling-reference tracing (public access blocks, versioning/lifecycle)
+    # would false-positive on every demo run regardless of real correctness -- a real limitation
+    # discovered while wiring this, not silently papered over. check_module_presence and
+    # check_numerics both work correctly here since they need only resource_changes.
+    run_root = os.path.dirname(os.path.normpath(dir_))
+    requirements_record = reqgate.load(run_root)
+    architecture_decision_record = adecision.load(run_root)
+    intent_result = intent_assertions.evaluate(
+        requirements=requirements_record, architecture_decision=architecture_decision_record,
+        plan_json=plan_json_for_g6,
+    ) if plan_json_for_g6 is not None else {
+        "advisory": True, "evaluation_failed": True,
+        "findings": [{"id": "INTENT-PLAN-UNREADABLE", "detail": plan_json_err}],
+    }
+    _print_intent_assertions(intent_result)
+
     _audit("plan", "OK", plan_hash=h, dir=dir_, destroy=destroy,
-           destructive_classification=classification, g6_shadow=g6_result)
+           destructive_classification=classification, g6_shadow=g6_result,
+           intent_assertions=intent_result)
 
     # Auto-generate the versioned deploy report (plan + cost + architecture).
     # Informational — a report failure must never fail the plan.

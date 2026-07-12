@@ -41,6 +41,8 @@ sandbox-workspace apply equivalent to G9 exists.
 import json
 import sys
 
+import plan_reader
+
 _SAFE_ACTIONS = ("create",)
 
 # Scoped deliberately to what MinusOps' own 16 modules can actually produce today (see
@@ -102,14 +104,14 @@ def classify(plan_json):
     the original mode bug -- this function no longer assumes well-formed input anywhere, it
     only classifies a genuinely empty, well-typed `resource_changes: []` as autonomous-eligible
     (a real no-op plan, correctly safe), never a missing/malformed one."""
-    if not isinstance(plan_json, dict):
-        return _fail_closed("plan_json_not_a_dict")
-
-    raw_resource_changes = plan_json.get("resource_changes")
-    if raw_resource_changes is None:
-        return _fail_closed("resource_changes_missing_or_null")
-    if not isinstance(raw_resource_changes, list):
-        return _fail_closed("resource_changes_not_a_list")
+    # plan_reader.py (G4 consolidation, docs/phase4_scope.md) -- shared with architecture_
+    # model.py. G5's own policy (absent resource_changes is a fail-closed BLOCK, not "nothing to
+    # check") is preserved via treat_absent_as_error=True; this is a deliberate difference from
+    # G6's shadow-mode reader, which treats absent as "zero managed changes" -- see plan_reader's
+    # module docstring. Not changed here, not in scope for this consolidation.
+    raw_resource_changes, error = plan_reader.read_resource_changes(plan_json, treat_absent_as_error=True)
+    if error:
+        return _fail_closed(error)
 
     # Exclude mode == "data" only (not: require mode == "managed"). A data source's plan-time
     # "read" is not a resource being changed and must never be treated as a destructive action
@@ -117,15 +119,8 @@ def classify(plan_json):
     # sources. An ALLOWLIST on "managed" would fail OPEN on a missing/unrecognized `mode` field
     # (the original bug this docstring refers to); a DENYLIST on "data" only excludes what
     # we're confident is a non-mutating read, so anything else stays in scope.
-    resource_changes = []
-    findings = []
-    for rc in raw_resource_changes:
-        if not isinstance(rc, dict):
-            findings.append({"address": None, "type": None, "reason": "malformed_resource_change_entry"})
-            continue
-        if rc.get("mode") == "data":
-            continue
-        resource_changes.append(rc)
+    resource_changes, malformed = plan_reader.managed_only(raw_resource_changes)
+    findings = [{"address": None, "type": None, **m} for m in malformed]
 
     for rc in resource_changes:
         address = rc.get("address")

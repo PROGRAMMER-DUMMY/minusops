@@ -523,6 +523,81 @@
 >
 > **Not yet committed.** Per the approved scope's own condition, this is evidence for review —
 > the regex path stays untouched and enforcing, G6 stays shadow-only, until this is reviewed.
+>
+> **Phase 3 (G6) CLOSED (same day)** — proof-bar item 4 (opa availability) fixed and proven on
+> real CI across all 3 platforms (pinned + checksum-verified opa install, a dedicated CI step
+> asserting a real `rego_gate.evaluate()` verdict, not just "opa version didn't error"). A real
+> Windows-only bug surfaced by that same CI run, not before: `opa version` worked inside the
+> install step but a POSIX-style path written to `$GITHUB_PATH` didn't translate for the next
+> step's Python subprocess (`shutil.which` came back empty) — fixed with `cygpath -w`, verified
+> on real Windows runners after the fix. G6 stays **shadow mode**: regex path is still the sole
+> enforcer, nothing retired, nothing flipped. Item 3 (divergence log across real runs) stays
+> open, now achievable since opa actually runs in CI.
+
+> **Follow-up (same day): Phase 4 (G3/G4 — intent-spec + auto-generated assertions) built to the
+> approved `docs/phase4_scope.md`, advisory-only from day one, per its own explicit condition.**
+>
+> **G4 consolidation (condition 1): migrate-now, not tracked-follow-up.** `core/governance/
+> plan_reader.py` is the new shared, fail-closed Python-side plan-JSON reader; both pure-Python
+> consumers (`destructive_change_gate.py`'s `classify()`, `architecture_model.py`'s
+> `extract_resources()`/`module_dependencies()`) were migrated onto it in this same pass, each
+> re-verified with its own full existing test suite (byte-for-byte unchanged behavior — G5's
+> full 16-module baseline + fail-closed sweep, `test_architecture_model.py`, both clean).
+> `rego_gate.py`/`policy/g6/rules.rego`'s Rego-side logic is **excluded, disclosed as a hard
+> language boundary** (Rego cannot import a Python module), not a deferred migration — the
+> shared reader ends up with 3 real consumers (the two migrated sites plus Phase 4's own new
+> module), not "1 shared + 3 legacy."
+>
+> **Real bug caught before anything shipped, not during the sweep**: `_check_scoped_iam`'s first
+> draft silently fell through to "satisfied" when an IAM policy's content was genuinely unknown
+> until apply (`after_unknown.policy == True`, confirmed live against the demo blueprint's own
+> generated Terraform, since its policies reference not-yet-created bucket ARNs) — the exact
+> silent-unknown-passes-as-clean pattern this whole session exists to catch, found in this
+> phase's own first draft before it was ever tested, not by the sweep. Fixed with a third,
+> distinct finding kind (`control_unresolved`, mirroring G6's `field_unresolved`) that must never
+> silently drop to "no finding."
+>
+> **Control-mapping table (condition 2), proven both directions for every one of the 6 mapped
+> controls** (`tests/test_intent_assertions.py`, 33 tests): a clean-case fixture proving the
+> check passes when satisfied, and a deliberately-broken fixture proving it fires when violated.
+> The demo blueprint's own real generated Terraform (real `terraform plan`, dummy AWS
+> credentials) supplied genuine, non-hypothetical evidence for most of these — **two real,
+> previously invisible gaps surfaced**: the blueprint claims "CloudWatch alarms and log
+> retention" but generates an alarm with no log_group at all, and claims "Budget and anomaly
+> detection hooks" but generates only the budget, no `aws_ce_anomaly_*` resource. The 7th
+> control ("Terraform plan hash approval before apply") is a process-level claim, not a
+> plan-JSON property — correctly and loudly logged as `control_unmapped`, never silently passed.
+>
+> **Mock-harness shape question (condition 3), verified live, not assumed**: the existing
+> 16-module `terraform test`/mock_provider baseline harness plans each module **standalone**, no
+> `module.` wrapper at all — the wrong shape for a module-presence check entirely. Confirmed via
+> a real `synthesizer.compose()` composition (dummy AWS credentials) that a genuine multi-module
+> plan carries `module.<label>.*` addresses (hyphens become underscores) with a direct
+> `module_address` field — module-presence proof (`test_real_composed_plan_module_presence_
+> across_catalog`) uses a real 3-module composition (storage-medallion-s3, compaction-glue,
+> query-athena), not the mock harness.
+>
+> **Fail-closed sweep (condition 4), before close**: the sweep itself caught that `check_
+> controls`/`check_numerics` had no malformed-plan guard at all (only `check_module_presence`
+> did) — a wrong-typed `resource_changes` would silently read as an empty plan rather than
+> blocking the assertion pass. Fixed with a shared `_plan_malformed_finding()` guard used by
+> every check function and by `evaluate()` itself (which checks plan validity once upfront,
+> avoiding the same evaluation_failed finding three times over).
+>
+> **Advisory-only, non-blocking (condition 5) — confirmed, not just designed that way.**
+> `check_module_presence` + `check_numerics` are wired into `plan_gate.py`'s `stage_plan()`
+> (real production path); `check_controls` is fully built and tested but **deliberately NOT
+> wired into `demo.py`'s blueprint path** — a real limitation discovered while wiring, not
+> papered over: `demo.py`'s `synthetic_plan()` has no `configuration` key at all, so the two
+> checks needing sibling-reference tracing would false-positive on every demo run regardless of
+> real correctness. Full end-to-end smoke test: a real composed plan with a deliberately
+> mismatched `architecture_decision.json` (one selected module never composed) and an
+> unsatisfied budget declaration — both real findings fired correctly, logged at the top level
+> of the audit-chain entry (`intent_assertions`), and `stage_plan()` still returned `True` —
+> confirmed nothing blocks.
+>
+> Not yet committed at the time this entry was written — same review-before-close discipline as
+> every prior phase this session.
 
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2

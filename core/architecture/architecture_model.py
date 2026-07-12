@@ -23,6 +23,12 @@ import os
 import re
 import sys
 
+_CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _sub in ("generation", "architecture", "governance", "cost", "reporting", "providers"):
+    sys.path.insert(0, os.path.join(_CORE_DIR, _sub))
+sys.path.insert(0, _CORE_DIR)
+import plan_reader  # noqa: E402
+
 # Canonical layers of the analytics reference architecture, in flow order.
 CANONICAL_LAYERS = ["ingestion", "storage", "catalog", "processing", "consumption", "governance"]
 
@@ -114,12 +120,19 @@ def _instance_key(address):
 
 
 def extract_resources(plan):
-    """Flatten a `terraform show -json` plan into classified resource dicts (managed only)."""
+    """Flatten a `terraform show -json` plan into classified resource dicts (managed only).
+
+    plan_reader.py (G4 consolidation, docs/phase4_scope.md) supplies the fail-soft read: a
+    malformed/absent `resource_changes` or a non-dict entry no longer crashes this advisory,
+    reporting-only path (the previous `(plan or {}).get(...)` silently defaulted on absence but
+    would raise on a non-dict entry -- a real, if minor, robustness gap this consolidation
+    fixes, not just a refactor)."""
+    raw_resource_changes, _error = plan_reader.read_resource_changes(plan, treat_absent_as_error=False)
+    resource_changes = raw_resource_changes or []
+    managed, _malformed = plan_reader.managed_only(resource_changes)
     out = []
-    for rc in (plan or {}).get("resource_changes", []):
+    for rc in managed:
         rtype = rc.get("type", "")
-        if rc.get("mode") == "data":
-            continue
         addr = rc.get("address", rtype)
         ikey = _instance_key(addr)
         role = classify_role(rtype, ikey, rc.get("name", ""))
@@ -159,7 +172,7 @@ def module_dependencies(plan):
     Used to answer 'is orchestration actually wired to a processing job?' from the
     plan's real references — never guessed.
     """
-    calls = (plan or {}).get("configuration", {}).get("root_module", {}).get("module_calls", {})
+    calls = plan_reader.module_calls(plan or {})
     deps = {}
     for mname, call in calls.items():
         seen = set()
