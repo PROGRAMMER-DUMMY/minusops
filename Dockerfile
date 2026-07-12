@@ -26,7 +26,7 @@ RUN set -euxo pipefail; \
     apt-get update; \
     apt-get install -y --no-install-recommends curl unzip ca-certificates; \
     echo "DIAG: which unzip -> $(which unzip)"; \
-    unzip -v | head -1; \
+    unzip -v; \
     echo "DIAG unzip_check=$?"; \
     TF_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip"; \
     curl -fsSL -o /tmp/tf.zip "$TF_URL"; \
