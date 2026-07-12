@@ -393,6 +393,42 @@
 > not a security fix. Recorded here so the corrected version is what's on record, not the
 > wrong first draft.
 
+> **Follow-up (2026-07-12): CI reds closed — 8/8 green, first fully clean run this session —
+> and two findings worth carrying forward.**
+>
+> **The wheel-packaging bug and the Dockerfile checksum bug are both closed**, in their own
+> commits (`fix(packaging): databricks-workspace and networking-vpc missing from wheel`,
+> `fix(docker): checksum was never functional, not merely misnamed`). Both real, both found
+> only because a real CI run — not local dogfooding, not a self-audit — forced them out.
+>
+> **Finding worth its own line, not folded into "fixed two bugs": both shipped-artifact
+> defects this session were pre-existing, silent, and already in the distributed product**,
+> not newly introduced regressions. `databricks-workspace`/`networking-vpc` were absent from
+> every wheel a real installer would have gotten since the day they were added — silent
+> because the wheel-build job never got far enough (blocked earlier on the setuptools issue)
+> to exercise the assertion that would have caught it. The Dockerfile's checksum step had
+> **never once actually verified anything** since the file was first written — a filename
+> mismatch made `sha256sum -c` fail closed on every single build with "FAILED open or read",
+> which is why the image never shipped broken — but the *verification itself* had zero
+> real-world coverage the entire time, not a narrow edge case. **The common thread: this
+> session's gates (G2, G5, the fail-closed sweeps) were all under active scrutiny; the defects
+> that actually reached the distributed artifact were sitting in the un-scrutinized
+> packaging/supply-chain path** — `pyproject.toml`'s data-files list and the Dockerfile's own
+> integrity check, neither of which any gate this session built was watching. Sixth instance
+> of "a verifier that passes without verifying" this session (G5's classify(), G2's extractor,
+> the schema-lint fail-closed sweep, the checksum no-op non-fix, the wheel omission, and now
+> this) — and the first of the six that had never verified at all, rather than regressing from
+> a working state.
+>
+> **Audit-chain lock (§6 item 11): now 4 clean Windows CI runs in a row**, zero failures.
+> Still formally UNPROVEN — absence of a race across 4 runs is not proof the race is fixed —
+> but the framing shifts: the evidence increasingly points to a **local Windows environment
+> artifact** in how this was originally observed (this session's own machine/setup), not a
+> **cross-platform defect** the CI matrix would independently reproduce. When this is next
+> scheduled (still gated on positioning, still before any external reliance, still not now),
+> the task is "reproduce locally, confirm it's environmental" — not "hunt a cross-platform
+> race that 4 clean CI runs increasingly suggest doesn't exist on real CI hardware."
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance
