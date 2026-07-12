@@ -6,24 +6,32 @@ FROM python:3.12-slim AS base
 ARG TERRAFORM_VERSION=1.10.5
 ARG TARGETARCH=amd64
 
+# bash, not the default dash /bin/sh, so `set -o pipefail` below actually works -- a failed
+# command inside any pipe can no longer be masked by a later command's exit code, the same
+# swallowed-failure shape the checksum no-op fix already closed once this session.
+SHELL ["/bin/bash", "-c"]
+
 # Pinned external CLIs. Terraform is verified against the official SHA256SUMS.
-# --retry: a CI docker-build failure was traced to "FAILED open or read" unzipping the
-# Terraform release -- consistent with a transient truncated download, not a real corruption
-# (the checksum step below would have caught a corrupted-but-complete file). --retry-all-errors
-# covers a truncated/incomplete transfer that curl's default retry logic (connection-level
-# errors only) wouldn't otherwise retry.
-# The checksum step now writes grep's match to a file and asserts it's non-empty before
-# running sha256sum -c on it, instead of piping grep straight into `sha256sum -c -`. Verified
-# directly (not assumed) that this is a legibility/explicitness improvement, not a fix for a
-# real gap: `sha256sum -c` on empty input already fails loudly ("no properly formatted
-# checksum lines found", exit 1), which combined with this script's `set -e` already aborted
-# the build correctly if grep ever matched zero lines. The explicit test -s just makes that
-# intent readable and gives a clearer failure point, rather than relying on a reader to know
-# sha256sum's own empty-input behavior.
-RUN set -eux; \
+#
+# TEMPORARY DIAGNOSTIC (2026-07-12): a CI docker-build failure ("FAILED open or read" unzipping
+# the Terraform release) is 100% reproducible every run, in well under a second total for the
+# whole apt-get+curl+checksum+unzip chain -- too fast to be a real transient network blip, and
+# a local download+checksum from this same machine is completely healthy (hash matches
+# HashiCorp's official SHA256SUMS exactly). Leading theory: TARGETARCH/the resolved URL isn't
+# what's assumed, or curl's own failure is being swallowed rather than actually stopping the
+# build -- so this instruments the exact failure point instead of guessing further.
+RUN set -euxo pipefail; \
     apt-get update; \
-    apt-get install -y --no-install-recommends curl unzip ca-certificates; \
-    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo /tmp/tf.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip"; \
+    apt-get install -y --no-install-recommends curl unzip ca-certificates file; \
+    echo "DIAG: TERRAFORM_VERSION=${TERRAFORM_VERSION} TARGETARCH=${TARGETARCH} TARGETPLATFORM=${TARGETPLATFORM:-<unset>}"; \
+    TF_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip"; \
+    echo "DIAG: fetching $TF_URL"; \
+    curl -fsSL -w "DIAG: http_code=%{http_code} size_download=%{size_download} url_effective=%{url_effective}\n" -o /tmp/tf.zip "$TF_URL"; \
+    echo "DIAG: post-download inspection"; \
+    ls -l /tmp/tf.zip; \
+    file /tmp/tf.zip; \
+    df -h; \
+    unzip -t /tmp/tf.zip || true; \
     curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo /tmp/tf.sums "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"; \
     grep "terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip" /tmp/tf.sums > /tmp/tf.sum.line; \
     test -s /tmp/tf.sum.line; \
