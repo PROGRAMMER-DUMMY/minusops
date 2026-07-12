@@ -74,7 +74,13 @@ jobs:
 
       - name: Build wheel
         run: |
-          python -m pip install --upgrade pip build
+          # --no-isolation uses the ambient environment instead of a fresh build venv (faster,
+          # and this job is already isolated at the job/container level) -- but that means the
+          # [build-system] requires in pyproject.toml (setuptools>=68, wheel) aren't installed
+          # for it automatically the way an isolated build would; a fresh Python 3.12 CI image
+          # doesn't necessarily bundle setuptools any more. Install them explicitly rather than
+          # dropping --no-isolation, since the isolation itself was never the problem.
+          python -m pip install --upgrade pip build setuptools wheel
           python -m build --wheel --no-isolation
 
       - name: Install wheel outside source checkout
