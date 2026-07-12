@@ -1,0 +1,158 @@
+# Phase 5 scope — G9, ephemeral apply
+
+Scope document only. No implementation until this is reviewed and agreed, same discipline as
+every prior phase this session.
+
+## 0. Premise check — the original "G9 via LocalStack" naming needs re-confirming, not assumed
+
+The G1–G9 taxonomy named G9 "Ephemeral apply via LocalStack, AWS-only" before this scope was
+written. Verified live (not assumed) before drafting anything further: **LocalStack's business
+model changed since that name was set, and it changes what "just use LocalStack" actually means
+for this repo specifically.**
+
+- LocalStack retired its open-source Community Edition; the free "Hobby" tier now requires
+  account registration and is contractually restricted to **non-commercial use**.
+- `pyproject.toml` declares `license = { text = "Proprietary" }` — **not** an OSI-approved
+  license, so MinusOps does not qualify for LocalStack's free Ultimate-tier-for-open-source
+  program (which requires an OSI-approved license, public source, active maintenance).
+- The realistic path to legitimate LocalStack CI usage for a proprietary tool is a **paid Base
+  plan, $39–45/month minimum** — a real, recurring cost this scope should not paper over or
+  assume the user wants to accept.
+- In direct response to this same pricing shift, several new, genuinely free, MIT-licensed,
+  drop-in-compatible alternatives appeared (same port 4566, same Terraform `endpoints{}`
+  pattern, no account/auth token): **MiniStack** (MIT, "free forever," 55–60+ services including
+  confirmed S3/IAM/KMS/Glue/Athena/MWAA/Step Functions/Kinesis/CloudWatch) is the most complete
+  candidate found; Floci is a comparable, narrower alternative. Both are new (first releases
+  March 2026) — genuinely less battle-tested than LocalStack, and neither has been run against
+  this repo's actual modules yet.
+
+**Recommendation, not a unilateral choice**: scope G9 against MiniStack (free, matches this
+project's own no-hardcoded-cost / no-recurring-external-cost posture elsewhere), with the design
+below kept tool-agnostic enough that swapping to paid LocalStack later is a config change, not a
+rewrite, if MiniStack's real coverage (verified per item 2 below) turns out insufficient. This is
+a real decision point for review, not settled by this document — flagging it prominently here
+rather than three sections into a doc that already assumed an answer.
+
+## 1. Structural constraint, verified against GitHub's own docs — G9 is Ubuntu-only
+
+GitHub Actions service containers (and Docker generally) are supported **only on Linux
+(Ubuntu) GitHub-hosted runners** — confirmed directly against GitHub's own documentation:
+*"If your workflows use Docker container actions, job containers, or service containers, then
+you must use a Linux runner... If you are using GitHub-hosted runners, you must use an Ubuntu
+runner."* LocalStack's own docs state the same restriction explicitly for Windows. This is not
+a gap to apologize for — it matches this repo's own existing `docker` (build-smoke) job, which
+already only runs on `ubuntu-latest`, never in the macos/windows legs of the `test` matrix. **G9
+runs in its own ubuntu-only CI job, structurally, the same way the existing docker job does** —
+the cross-platform `test` matrix never attempts it, and that is by design, not an omission to
+justify per-platform later.
+
+## 2. AWS-only / Databricks asymmetry — structural, not a footnote
+
+LocalStack/MiniStack emulate AWS. Neither can stand up a Databricks workspace. A
+Databricks-touching change therefore reaches "ephemeral-apply verified" having passed through
+**one fewer real gate** than an AWS-only change — the exact asymmetry `destructive_change_gate.py`
+(G5) already names structurally via `reduced_assurance` / `databricks_resources` on every plan
+touching a `databricks_*` type.
+
+G9 must **compose with, not silently duplicate or override,** that existing signal:
+
+- G9's own verdict carries an explicit `coverage` field distinguishing three real cases, never
+  collapsed into one boolean: `"full"` (every resource in the plan is an AWS type G9 actually
+  exercised), `"partial"` (a mixed AWS+Databricks plan — G9 ran, but only covers the AWS
+  portion), `"none"` (a Databricks-only plan — G9 never ran at all, not "ran and passed").
+- A `"partial"` or `"none"` verdict must **never be reported or logged as if it carries the same
+  assurance as `"full"`** — the report/audit-chain entry states which resources G9 actually
+  exercised, by address, not just a pass/fail bit.
+- G5's `reduced_assurance` stays the authoritative "does this need the staged path" signal
+  (unchanged, not touched by this phase); G9 adds *why*, concretely, when that flag is set for
+  Databricks reasons — the visibility condition 1 asked for, not two gates independently
+  guessing at the same fact.
+
+## 3. What G9 actually gates on — distinct from G1–G6, not a slower re-run of them
+
+Static analysis (G1 validate, G2 schema lint, G6 OPA policy) already runs pre-apply and catches
+what's derivable from HCL/plan JSON alone. G9's entire reason to exist is the class of failure
+that **only surfaces when resources are actually created, in real dependency order, against a
+real (emulated) provider**:
+
+1. **Dependency-ordering bugs** — an implicit or missing `depends_on` that plans fine (Terraform's
+   graph looks valid) but fails at apply time because a referenced attribute isn't populated yet
+   in the order resources actually get created.
+2. **Real provider-side validation** — schema-valid HCL the emulated (or real) API itself
+   rejects: malformed ARNs, cross-field constraints, resource-specific limits — anything
+   `terraform validate`/G1 cannot catch because it only checks Terraform's own type system, not
+   the provider's runtime behavior.
+3. **Apply-time computed-value resolution** — confirms a module's outputs and interpolations
+   resolve to real, sane values once actual IDs exist (not just that they're syntactically
+   well-formed at plan time, which G1–G2 already cover).
+
+G9 does **not** re-run SEC-*/COST-* checks (G6's job), destructive-action classification (G5's
+job), or schema conformance (G2's job) — a G9 finding is specifically "this failed or produced
+something wrong only once real resources existed," and its findings are tagged distinctly so a
+report reader never confuses a G9 apply-time failure with a G6 policy finding.
+
+## 4. Fail-closed on the apply result — mapped explicitly, same table shape as G6
+
+| Case | Verdict |
+|---|---|
+| Emulator (MiniStack/LocalStack) never starts / health check never passes | **BLOCK** — same as G6's `opa_not_found`: a gate that can't run isn't a gate. |
+| Apply times out before completing | **BLOCK**, distinctly labeled (`apply_timeout`) — not silently treated as "no findings." |
+| Apply partially succeeds (some resources created, then a real failure) | **BLOCK** — a partial apply is evidence of exactly the ordering/validation failure class G9 exists to catch, never read as "mostly fine." |
+| Apply result / emulator output unparseable or malformed | **BLOCK** (`apply_result_malformed`) — same "couldn't verify ≠ verified clean" line G6 and G5 already draw. |
+| A resource type in the plan has no confirmed emulator coverage (not on the reviewed allowlist, item 5) | **BLOCK for that plan** (`resource_type_unverified`) — never silently attempted against an emulator that might not really support it, and never silently falls through to a real endpoint. |
+| Teardown (destroy) itself fails or times out | **BLOCK the run's overall verdict**, surfaced loudly — an ephemeral environment that fails to tear down is a real operational problem (cost, resource leakage), not a footnote. |
+| Everything ran, applied, and tore down cleanly | Real verdict: pass/fail per resource-level check, logged with per-address detail. |
+
+## 5. Endpoint isolation — structural, not "we configured it correctly once"
+
+Both the hand-maintained `endpoints{}` block and the official `tflocal` wrapper have a
+**documented** gap: a service not explicitly overridden falls through to real AWS. This is not
+hypothetical — `tflocal`'s own changelog shows service coverage added incrementally, meaning
+"not all services" is an admitted, current limitation of the *official* tool, not just a risk in
+a hand-rolled config.
+
+The only structurally safe design: G9 maintains its **own reviewed allowlist** of AWS resource
+types confirmed to route correctly to the emulator — the same shape as `destructive_change_
+gate.py`'s existing `STATEFUL_RESOURCE_TYPES`/`IAM_RESOURCE_TYPES` (scoped to what this repo's
+modules can actually produce, extended deliberately when a new type is introduced, never
+guessed). **Every one of the 39 AWS resource types this repo's 16 modules currently declare**
+(enumerated directly via `grep -rhoE '^resource "aws_[a-z_0-9]+"' modules/*/main.tf`, not
+assumed) must be confirmed on that allowlist — with real emulator coverage checked, not read off
+a marketing page — before G9 is trusted to run against a plan containing it. A plan containing
+any resource type NOT on the allowlist blocks (per item 4's table), full stop — it never
+"probably still worked."
+
+Never applies against a real account, by construction, not by convention: the ephemeral-apply
+provider block is generated by G9 itself (dummy credentials, hard-coded emulator endpoint,
+`skip_credentials_validation`), never derived from or falling back to whatever ambient AWS
+credentials the environment happens to have — the same "dummy-credential real-plan" pattern
+already used throughout this session's own verification work, but as the *only* code path G9
+ever constructs, not one of several.
+
+## 6. Proof bar
+
+1. **Per-resource-type coverage, verified live, item by item**: every one of the 39 AWS resource
+   types in the current module catalog, planned and applied against the chosen emulator for
+   real, confirmed to either work or be named as a disclosed gap — not assumed from the
+   emulator's own service list, the same "verify against real behavior" standard every other
+   phase this session used (G6's `for_each` bug, Phase 4's demo-blueprint gaps were both caught
+   exactly this way).
+2. **Fail-closed sweep over every row in section 4's table**, each with its own regression test,
+   before declaring anything done — not after, same timing discipline as G6/Phase 4.
+3. **Prove it runs in CI, on real infrastructure, ubuntu-only**: a real GitHub Actions job that
+   starts the emulator, runs a real ephemeral apply against a real module, tears it down, and
+   asserts a genuine verdict — not "the job didn't error." Given this session's own repeated
+   "correct logic, inert where it ships" pattern (G5 unwired, the Dockerfile checksum, G6 absent
+   from CI), this is the single most load-bearing item on this bar, not a formality.
+4. **Teardown reliability, stress-tested**: repeated create/destroy cycles (mirroring the
+   audit-chain lock's own repeated-stress-run standard) confirming no leaked emulator-side state
+   across runs, and that a failed apply still triggers teardown of whatever partially applied.
+5. **`coverage` field verified on a real mixed AWS+Databricks plan**: a real composed plan
+   touching both an AWS module and `databricks-workspace`, confirming G9's verdict correctly
+   reports `"partial"` with the Databricks resources named, never silently reads as `"full"`.
+
+## Ordering invariant
+
+Phase 5 is next, unblocked now that the audit-chain lock is closed. Phase 4 stays advisory, G6
+stays shadow, catalog teardown (Phase 6) stays last regardless. No implementation starts until
+this scope — including the item-0 tool decision — is agreed.
