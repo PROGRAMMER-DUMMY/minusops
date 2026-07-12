@@ -379,13 +379,19 @@
 >
 > **Phase 2 (G2) is closed.** `docs/g6_scope.md` (Phase 3 / G6 — SEC-*/COST-* rules migrating to
 > OPA/Rego over plan JSON) is drafted and awaiting review; no implementation has started.
-> Two small, decoupled CI-hygiene fixes landed alongside this (not yet committed): the wheel-
-> build job now installs `setuptools`/`wheel` explicitly for its `--no-isolation` build, and the
-> Dockerfile's Terraform/AWS-CLI download gained `curl --retry` (testing the transient-download
-> theory) plus a real hardening independent of that theory — the SHA256SUMS check previously
-> piped `grep` straight into `sha256sum -c -`, which would have silently no-op'd the whole
-> integrity check if grep ever matched zero lines (a future arch/version mismatch), instead of
-> failing loudly.
+> Two small, decoupled CI-hygiene fixes landed in their own commits: the wheel-build job now
+> installs `setuptools`/`wheel` explicitly for its `--no-isolation` build, and the Dockerfile's
+> Terraform/AWS-CLI download gained `curl --retry` (testing the transient-download theory).
+>
+> **Correction, caught before it shipped as a false claim**: an earlier draft of this entry
+> asserted the SHA256SUMS checksum step was silently no-op'ing when `grep` matched zero lines
+> (piped straight into `sha256sum -c -`). Verified directly rather than left as an assumption:
+> `sha256sum -c` on empty input already fails loudly (exit 1, "no properly formatted checksum
+> lines found"), and combined with the script's `set -e`, the original code already aborted
+> correctly on a zero-match grep. Not a 4th fail-open-ingestion instance — the checksum change
+> that shipped is a legibility improvement (an explicit `test -s` before running sha256sum),
+> not a security fix. Recorded here so the corrected version is what's on record, not the
+> wrong first draft.
 
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
