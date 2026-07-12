@@ -23,7 +23,7 @@ SHELL ["/bin/bash", "-c"]
 # not guessed after the fact.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends curl unzip ca-certificates file; \
+    apt-get install -y --no-install-recommends curl unzip ca-certificates file procps; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -euxo pipefail; \
