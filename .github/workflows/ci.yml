@@ -75,6 +75,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      # G2 (core/generation/schema_lint.py) gates the `pin` CLI action against the real, live
+      # provider schema, no bypass flag -- this job's own "Governance output never lands
+      # inside the installed package" step calls `minus-update-module pin`, which now
+      # genuinely requires terraform on PATH wherever pin runs, this smoke job included. Found
+      # by actually running CI, not local dogfooding (which never exercised "pin from a wheel-
+      # installed environment with no terraform").
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false
+
       - name: Build wheel
         run: |
           # --no-isolation uses the ambient environment instead of a fresh build venv (faster,
