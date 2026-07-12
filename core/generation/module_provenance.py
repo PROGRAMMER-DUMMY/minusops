@@ -171,8 +171,26 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.cmd == "pin":
+        # G2 (docs/g2_scope.md): gates the pin CLI action, not the pin() function itself --
+        # pin() stays a pure, offline-testable record-writer (existing tests construct
+        # synthetic modules and pass schema_hash explicitly with no live fetch); the live,
+        # blocking schema check lives here, at the actual operator-facing action, mirroring
+        # how destructive_change_gate.classify() stays pure while plan_gate.py's stage_apply
+        # is what enforces it. Imported lazily to avoid a module-level import cycle (schema_
+        # lint.py itself imports this module, for the previous-schema_hash WARN comparison).
+        import schema_lint
+        lint = schema_lint.gate_module(args.module)
+        if lint["blocking"]:
+            print(f"[module_provenance] G2 REFUSED to pin {args.module!r} -- "
+                  f"{len(lint['findings'])} blocking finding(s):", file=sys.stderr)
+            for f_ in lint["findings"]:
+                print(f"  - {f_}", file=sys.stderr)
+            return 1
+        for w in lint["warnings"]:
+            print(f"[module_provenance] G2 warning: {w}", file=sys.stderr)
+        schema_hash = args.schema_hash if args.schema_hash is not None else lint["schema_hash"]
         record = pin(args.module, args.source, args.provider_version, args.notes,
-                     schema_hash=args.schema_hash)
+                     schema_hash=schema_hash)
         print(json.dumps(record, indent=2))
         return 0
 

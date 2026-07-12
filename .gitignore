@@ -24,6 +24,11 @@ sbom*.json
 **/.agents/logs/
 **/.agents/reports/
 **/.agents/cache/
+# 2026-07-11: TF_PLUGIN_CACHE_DIR (tests/conftest.py) and schema_lint.py's (G2) live-fetch
+# workdir -- both hold only regenerable Terraform provider binaries and throwaway init state,
+# never plan output or test state, same reasoning as the cache/ entry above.
+**/.agents/tf-plugin-cache/
+**/.agents/schema-lint-work/
 artifacts/
 runs/
 # Ad hoc session pytest-summary logs at repo root (bare pass/fail counts, no paths or

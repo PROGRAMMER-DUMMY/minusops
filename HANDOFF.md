@@ -285,6 +285,108 @@
 > B). The audit-chain lock's fix-urgency stays positioning-dependent, untouched this round, per
 > standing instruction.
 
+> **Follow-up (2026-07-11): the G1–G9 gate taxonomy, recorded for the first time.** This
+> numbering has been used throughout the generation-time-authoring pivot but was defined in a
+> working session and never actually written down here — pure tribal knowledge until now.
+> Recorded once so the two framings (gate number vs. phase number) stop drifting apart.
+>
+> | Gate | What it does | Status |
+> |---|---|---|
+> | G1 | fmt + validate | **DONE** (production path) |
+> | G2 | Pre-write schema linter | **IN PROGRESS** (this session — see `docs/g2_scope.md`) |
+> | G3 | Test mechanism + auto-generated assertions | **PARTIAL** — the mechanism exists (`terraform test`, real e2e proofs throughout this repo); auto-generating the assertions themselves is Phase 4, not built |
+> | G4 | Plan-JSON parsing | **PARTIAL/proven for existing paths** — feeds G5 directly, not a standalone deliverable |
+> | G5 | Destructive-change gate | **DONE, enforced** (Phase 1, closed — see above) |
+> | G6 | SEC/COST rules → OPA/Rego over plan JSON | **NOT STARTED** (Phase 3) |
+> | G7 | Checkov + Trivy (the tfsec→Trivy swap) | **NOT STARTED**, low priority (`EXTERNAL_SCANNERS` still `("checkov", "tfsec")`, unchanged) |
+> | G8 | BCM live-API cost forecast (not Infracost) | **HAVE as architecture, unexercised** without a real account to forecast against |
+> | G9 | Ephemeral apply via LocalStack, AWS-only | **NOT STARTED** (Phase 5) |
+>
+> **Six-phase mapping**, so "Phase N" and "G-number" resolve to the same thing every time:
+>
+> | Phase | Maps to |
+> |---|---|
+> | Phase 1 | G5 — **done** |
+> | Phase 2 | G2 — **in progress** |
+> | Phase 3 | G6 (OPA/Rego) |
+> | Phase 4 | Intent-spec + G3 auto-generated assertions |
+> | Phase 5 | G9 (LocalStack ephemeral apply) |
+> | Phase 6 | Generation pipeline / catalog teardown — **last**, regardless of gate progress |
+>
+> **Four phases remain after G2** (3 through 6). Standing disclosed limitations —
+> Databricks-no-real-apply and G9/AWS-only ephemeral-apply coverage — stay disclosed under the
+> compliance-carrying-product posture (2026-07-10) until actually closed, not quietly dropped
+> once they stop being the newest news.
+
+> **Follow-up (2026-07-11/12): Phase 2 (G2, pre-write schema linter) built, dogfooded, closed.**
+> `core/generation/schema_lint.py` gates `module_provenance.py`'s `pin` CLI action (the pure
+> `pin()` function stays untouched/offline-testable; the live, blocking check lives in `main()`'s
+> `pin` subcommand — same pure-classifier/enforcing-caller split G5 already established) against
+> the real, live provider schema, on every call, no diff, no first-run pass, no missing-baseline
+> skip. Proof bar: 73 unit tests (schema_lint's own), a fail-closed sweep covering unreadable
+> module files, malformed/non-dict schema shapes at every level, and a corrupted previous
+> provenance record (all BLOCK or gracefully no-op, never crash) — and the real integration
+> proof this whole pivot exists for: a fixture regressing to `data.aws_region.current.name`
+> (the pre-v6 form) correctly HARD-FAILs as deprecated against the real, live AWS provider
+> (6.54.0), and a second real proof against Databricks (`databricks_mws_credentials.account_id`,
+> a real live deprecation this repo's own module already knew to avoid by comment) confirms G2's
+> fetch/reduce machinery works on both tracked providers, not just AWS — proven, not disclosed.
+>
+> **Dogfooding against the real 16-module catalog (not synthetic fixtures) found and fixed four
+> real bugs before they could ever ship as false positives or false negatives:**
+> 1. Schema-attribute recursion stopped one level deep — missed `statement.principals.type`
+>    (`aws_iam_policy_document`) and three-deep `rule.apply_server_side_encryption_by_default.
+>    sse_algorithm`. Fixed to walk block_types to arbitrary depth, matching schema_watch.py's
+>    own `_deprecated_attrs` recursion.
+> 2. `event_pattern = jsonencode({...})` spanning multiple lines leaked its JSON payload's own
+>    keys (`source`, `detail`) as if they were sibling top-level Terraform attributes — the
+>    multi-line-literal fold only triggered when the RHS *started* with a bracket, and
+>    `jsonencode(` starts with a letter.
+> 3. **A real infinite loop**, not just a slow case: `filter {}` (a valid, real, empty nested
+>    Terraform block — `aws_s3_bucket_lifecycle_configuration`'s rule with no filter criteria)
+>    advanced the line index to its own current line instead of the next one when the block
+>    opened and closed on the same physical line, re-entering forever. Reproduced directly (hung
+>    6+ hours before diagnosis), fixed, and locked down with its own regression test.
+> 4. Index/splat access (`databricks_metastore.this[0].id` — wiring an optional, count-based
+>    resource's output elsewhere, a real and common pattern) was originally treated as always
+>    unparseable/blocking. Corrected: what's inside the brackets only selects *which instance*,
+>    never *which attribute* — the attribute name after the bracket is exactly as statically
+>    knowable as without the index, so it now resolves normally. The genuinely unresolvable case
+>    (kept, and still proven as the required unparseable/BLOCK example) is a `dynamic` block,
+>    whose emitted attributes depend on evaluating its own `for_each`.
+>
+> Final dogfood state: **15 of 16 real modules clean.** The one exception,
+> `table-format-iceberg`, correctly and deliberately BLOCKS — it uses a real
+> `dynamic "columns" { for_each = var.columns ... }` block, which is genuinely unresolvable
+> statically and is exactly the agreed hard-fail case, not a bug. It needs restructuring (or an
+> explicit reviewed exception) before it can be re-pinned under G2 — a real, disclosed
+> consequence of the agreed design, not smoothed over.
+>
+> **A real infrastructure incident, found and fixed along the way, not swept under the rug:**
+> the disk filled to 100% (1.7GB free out of 361GB) mid-session, crashing an unrelated
+> full-suite run with a genuine `OSError: No space left on device` — traced to pytest's own tmp
+> directory (`AppData\Local\Temp\pytest-of-shubh\`) growing to **65GB** from every real-terraform
+> test re-downloading the same provider binaries into a fresh `tmp_path` every run, session after
+> session, with no shared cache. Cleared (confirmed no pytest process running first), and fixed
+> at the root: `tests/conftest.py` now sets `TF_PLUGIN_CACHE_DIR` via `os.environ.setdefault`
+> (never overrides an operator's or CI's own setting) to a stable, gitignored
+> `.agents/tf-plugin-cache/`; `ci.yml`'s `test` job gained the matching `actions/cache` step
+> (mirroring the pattern `schema-watch.yml` already used). This is the same "confirmed the
+> failure was environmental, not code" discipline as the earlier Terraform-version diagnosis —
+> the stale clean-suite signal from before the crash was explicitly not trusted; the suite was
+> re-run **foreground, to a real exit 0** after the fix (**482 passed, 0 failed** — the +9 over
+> the previous 473 is exactly the fail-closed sweep's own new regression tests).
+>
+> **Phase 2 (G2) is closed.** `docs/g6_scope.md` (Phase 3 / G6 — SEC-*/COST-* rules migrating to
+> OPA/Rego over plan JSON) is drafted and awaiting review; no implementation has started.
+> Two small, decoupled CI-hygiene fixes landed alongside this (not yet committed): the wheel-
+> build job now installs `setuptools`/`wheel` explicitly for its `--no-isolation` build, and the
+> Dockerfile's Terraform/AWS-CLI download gained `curl --retry` (testing the transient-download
+> theory) plus a real hardening independent of that theory — the SHA256SUMS check previously
+> piped `grep` straight into `sha256sum -c -`, which would have silently no-op'd the whole
+> integrity check if grep ever matched zero lines (a future arch/version mismatch), instead of
+> failing loudly.
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance
