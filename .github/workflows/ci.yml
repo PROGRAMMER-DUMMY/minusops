@@ -16,13 +16,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.10", "3.12"]
-    env:
-      # Real-terraform tests across the suite (test_databricks_workspace_module.py,
-      # test_schema_lint.py, etc.) each do their own `terraform init` in a fresh tmp_path --
-      # without a shared cache that's a full aws + databricks provider re-download every test,
-      # every run. Same mechanism schema-watch.yml already uses; tests/conftest.py's own
-      # setdefault() only fills this in when it's NOT already set, so this wins.
-      TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +37,8 @@ jobs:
             tf-plugin-cache-${{ runner.os }}-
 
       - name: Ensure plugin cache dir exists
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
         shell: bash
 
@@ -54,9 +49,17 @@ jobs:
         run: minusctl --help
 
       - name: Run test suite
+        # runner.temp is only resolvable in step-level env (job-level env errored: "Unrecognized
+        # named-value: 'runner'" -- confirmed directly against the real GitHub Actions
+        # validator), so this is set per-step rather than once at the job level, matching
+        # schema-watch.yml's own already-working pattern.
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: python -m pytest -q
 
       - name: No-cloud demo end to end (generation + report + audit chain)
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: |
           minusctl demo governed-data-pipeline --owner ci --daily-data-gb 10
           minusctl readiness
