@@ -92,6 +92,8 @@ core = ["py.typed"]
 "modules/compaction-glue" = ["modules/compaction-glue/main.tf"]
 "modules/compaction-glue/scripts" = ["modules/compaction-glue/scripts/compact.py"]
 "modules/governance-observability" = ["modules/governance-observability/main.tf"]
+"modules/databricks-workspace" = ["modules/databricks-workspace/main.tf"]
+"modules/networking-vpc" = ["modules/networking-vpc/main.tf"]
 "docs" = [
     "docs/architecture_synthesis.md",
     "docs/architecture_svg_skeleton.svg",
