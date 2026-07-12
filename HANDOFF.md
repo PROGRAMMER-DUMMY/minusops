@@ -428,6 +428,17 @@
 > scheduled (still gated on positioning, still before any external reliance, still not now),
 > the task is "reproduce locally, confirm it's environmental" — not "hunt a cross-platform
 > race that 4 clean CI runs increasingly suggest doesn't exist on real CI hardware."
+>
+> **Correction (2026-07-12, later): the "4 clean runs" streak above is broken — do not carry the
+> "likely environmental" framing forward as settled.** The CI run for the Phase 4 push (below)
+> hit `test_append_is_safe_under_concurrent_writers`'s known `PermissionError(13, 'Permission
+> denied')` on **both** windows-latest jobs in the same run (not one of two, both) — the
+> strongest real-CI-hardware recurrence observed so far, not weaker evidence. Unrelated to
+> Phase 3/4's own code (only this one pre-existing test failed; everything else, including every
+> new Phase 4/G6 file, passed clean on all 4 non-Windows jobs plus wheel/docker). Not
+> investigated further here — still gated on the same positioning decision, still not now — but
+> the record needs to say "recurred, strongly, on real CI" rather than let the older "likely
+> environmental" entry stand uncorrected.
 
 > **Follow-up (2026-07-12): Phase 3 (G6) implemented to the approved `docs/g6_scope.md`,
 > shadow mode only — evidence gathered against the proof bar, not yet closed.**
