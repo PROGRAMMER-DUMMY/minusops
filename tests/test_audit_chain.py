@@ -3,6 +3,7 @@ The audit trail must be tamper-evident: any edit, deletion, or reorder is detect
 """
 import json
 import threading
+import time
 
 import audit_chain
 
@@ -139,22 +140,125 @@ def test_append_is_safe_under_concurrent_writers(tmp_path):
     ok, chain_errors = audit_chain.verify(str(log))
     assert ok, chain_errors  # the chain stayed linear -- no forked prev_hash from a race
 
-    # The lock's own sidecar file must not be left behind once every writer has finished.
-    assert not (tmp_path / "audit.jsonl.lock").exists()
+    # REAL FIX (2026-07-12): the lock sidecar is now created ONCE and deliberately never
+    # deleted -- acquire/release toggle an OS-native advisory region lock on this persistent
+    # file instead of the file's existence (see audit_chain.py's own module-level comment for
+    # the full root-cause writeup). A prior version of this test asserted the sidecar was gone
+    # after every writer finished; that assumption is now wrong by design, not a regression --
+    # the delete-then-recreate cycle that assumption depended on is exactly what raced on
+    # Windows (PermissionError(13) from a concurrent create), so removing the delete removes
+    # the race it was in.
+    assert (tmp_path / "audit.jsonl.lock").exists()
 
 
-def test_append_lock_times_out_instead_of_hanging_forever(tmp_path, monkeypatch):
+def test_append_lock_serializes_threads_not_just_avoids_exceptions(tmp_path):
+    """A green run because timing happened not to overlap is not proof of mutual exclusion --
+    this directly records enter/exit timestamps around the real critical section (_AppendLock
+    itself, not append()'s higher-level behavior) across many threads and asserts NO TWO
+    INTERVALS OVERLAP. This is the caution the approved fix scope raised explicitly: threads
+    sharing one process are a different hazard than separate processes, and this proves
+    real serialization, not merely "no exception was raised."""
+    log = str(tmp_path / "audit.jsonl")
+    intervals = []
+    intervals_guard = threading.Lock()
+    n_threads = 12
+    iterations = 40
+
+    def worker():
+        for _ in range(iterations):
+            with audit_chain._AppendLock(log):
+                start = time.monotonic()
+                time.sleep(0.001)  # widen the critical section to make an overlap easy to catch
+                end = time.monotonic()
+            with intervals_guard:
+                intervals.append((start, end))
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(intervals) == n_threads * iterations
+    intervals.sort()
+    for (_, prev_end), (next_start, _) in zip(intervals, intervals[1:]):
+        assert next_start >= prev_end, (
+            f"overlapping critical sections detected: {prev_end} (prior exit) > "
+            f"{next_start} (next entry) -- the lock did not serialize these threads"
+        )
+
+
+def test_append_lock_gives_up_when_genuinely_and_persistently_held(tmp_path, monkeypatch):
+    """Rewritten crashed-writer analog (2026-07-12): under OS-level advisory locking, a bare
+    leftover .lock FILE with no live holder is not contended at all -- see the dedicated test
+    below proving exactly that. To prove append() still gives up rather than hangs when a lock
+    is genuinely, persistently held, this holds a REAL, live OS-level lock on a background
+    thread for longer than the (shortened) timeout, then asserts TimeoutError."""
     monkeypatch.setattr(audit_chain, "_LOCK_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(audit_chain, "_LOCK_POLL_SECONDS", 0.01)
     log = tmp_path / "audit.jsonl"
-    stale_lock = tmp_path / "audit.jsonl.lock"
-    stale_lock.write_bytes(b"")  # simulate a crashed writer that never released the lock
 
+    holder_ready = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_lock():
+        with audit_chain._AppendLock(str(log)):
+            holder_ready.set()
+            release_holder.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    holder_ready.wait(timeout=5)
     try:
-        audit_chain.append(str(log), {"action": "should-not-hang"})
-        assert False, "expected TimeoutError"
-    except TimeoutError as exc:
-        assert "audit-chain lock" in str(exc)
+        try:
+            audit_chain.append(str(log), {"action": "should-not-hang"})
+            assert False, "expected TimeoutError"
+        except TimeoutError as exc:
+            assert "audit-chain lock" in str(exc)
+    finally:
+        release_holder.set()
+        holder.join(timeout=5)
+
+
+def test_append_lock_fails_fast_on_a_genuine_access_error_not_a_10s_hang(tmp_path):
+    """Negative control proving fail-loud is real, not traded for a fail-open hang (the core
+    requirement of the approved fix -- broadly catching PermissionError would risk exactly this
+    failing silently for the full timeout). A path whose parent component is itself a FILE, not
+    a directory, can never succeed no matter how long this waits -- confirmed to raise
+    IMMEDIATELY (not after the timeout), because opening the lock file happens once, outside
+    the retry loop, and a genuine failure there is never treated as retriable contention."""
+    import time as _time
+    blocker = tmp_path / "not_a_directory.txt"
+    blocker.write_text("x", encoding="utf-8")
+    bad_log = str(blocker / "subdir" / "audit.jsonl")
+
+    start = _time.monotonic()
+    try:
+        with audit_chain._AppendLock(bad_log):
+            pass
+        assert False, "expected an OSError, not a successful acquire"
+    except TimeoutError:
+        assert False, "a genuine access error must not be retried into a timeout"
+    except OSError:
+        elapsed = _time.monotonic() - start
+        assert elapsed < 1.0, f"took {elapsed}s -- looks like it was retried, not raised immediately"
+
+
+def test_append_lock_stale_leftover_file_needs_no_manual_cleanup(tmp_path):
+    """Real, disclosed behavioral improvement: a bare leftover .lock file with no live process
+    holding the OS-level lock on it (the old crashed-writer failure mode) is simply not
+    contended under the new design -- confirmed directly here, not assumed. The kernel releases
+    a process's advisory locks the moment its descriptors are torn down, including on a crash,
+    so a merely-stale file left behind never needs the "remove it manually" step the old design
+    required."""
+    log = tmp_path / "audit.jsonl"
+    stale_lock = tmp_path / "audit.jsonl.lock"
+    stale_lock.write_bytes(b"")  # a leftover file, but genuinely nobody holds a lock on it
+
+    entry = audit_chain.append(str(log), {"action": "should-not-need-cleanup"})
+    assert entry["entry_hash"]
+    ok, errors = audit_chain.verify(str(log))
+    assert ok, errors
 
 
 def test_chain_status_flags_legacy_record_inserted_after_chaining(tmp_path):
