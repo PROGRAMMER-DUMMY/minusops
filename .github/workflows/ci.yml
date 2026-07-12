@@ -48,6 +48,76 @@ jobs:
       - name: Console scripts are installed
         run: minusctl --help
 
+      # G6 (docs/g6_scope.md, Phase 3) evaluates its Rego rules by shelling out to a real `opa`
+      # binary -- without it on PATH, rego_gate.evaluate() fails closed (opa_not_found) and
+      # tests/test_rego_gate.py's 34 tests silently SKIP rather than run, which is the exact
+      # "gate that's inert where it ships" pattern this session's other fixes exist to close.
+      # Pinned + checksum-verified the same way the Dockerfile's Terraform download is: OPA
+      # publishes a per-binary `.sha256` file (verified live against the real release, not
+      # assumed) in the same `<hash>  <filename>` format `sha256sum -c` expects. Fails loud on
+      # a checksum mismatch or a missing asset -- no silently-absent gate, same discipline as
+      # the checksum-that-never-verified lesson from the Docker fix.
+      - name: Install OPA (pinned, checksum-verified)
+        shell: bash
+        env:
+          OPA_VERSION: "1.18.2"
+        run: |
+          set -euxo pipefail
+          arch="$(uname -m)"
+          case "$(uname -s)" in
+            Linux)
+              case "$arch" in
+                x86_64) asset="opa_linux_amd64" ;;
+                aarch64|arm64) asset="opa_linux_arm64" ;;
+                *) echo "unsupported Linux arch: $arch"; exit 1 ;;
+              esac
+              bin_name="opa" ;;
+            Darwin)
+              case "$arch" in
+                x86_64) asset="opa_darwin_amd64" ;;
+                arm64) asset="opa_darwin_arm64" ;;
+                *) echo "unsupported macOS arch: $arch"; exit 1 ;;
+              esac
+              bin_name="opa" ;;
+            MINGW*|MSYS*|CYGWIN*)
+              asset="opa_windows_amd64.exe"
+              bin_name="opa.exe" ;;
+            *) echo "unsupported OS: $(uname -s)"; exit 1 ;;
+          esac
+          base_url="https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}"
+          curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo "/tmp/${asset}" "${base_url}/${asset}"
+          curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo "/tmp/${asset}.sha256" "${base_url}/${asset}.sha256"
+          (cd /tmp && sha256sum -c "${asset}.sha256")
+          mkdir -p "$HOME/.local/bin"
+          cp "/tmp/${asset}" "$HOME/.local/bin/${bin_name}"
+          chmod +x "$HOME/.local/bin/${bin_name}"
+          rm -f "/tmp/${asset}" "/tmp/${asset}.sha256"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Proves item 4 of docs/g6_scope.md's proof bar the same way the Terraform checksum fix
+      # was proven: not "the step didn't error", but a real assertion that opa is actually
+      # invocable and rego_gate.evaluate() returns a genuine verdict, not opa_not_found.
+      - name: OPA is present and G6 returns a real verdict, not opa_not_found
+        shell: bash
+        run: |
+          set -euxo pipefail
+          opa version
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "core/governance")
+          sys.path.insert(0, "core/reporting")
+          import rego_gate
+          plan = {"resource_changes": [
+              {"address": "aws_s3_bucket.b", "mode": "managed", "type": "aws_s3_bucket",
+               "change": {"actions": ["create"], "after": {}, "after_unknown": {}}},
+          ], "configuration": {"root_module": {"resources": []}}}
+          result = rego_gate.evaluate(plan)
+          assert result["evaluation_failed"] is False, f"G6 did not run: {result}"
+          ids = [f["id"] for f in result["findings"]]
+          assert "SEC-01" in ids and "COST-01" in ids, f"expected SEC-01/COST-01 on an unprotected bucket, got: {result}"
+          print("OPA/G6 verdict:", result)
+          PY
+
       - name: Run test suite
         # runner.temp is only resolvable in step-level env (job-level env errored: "Unrecognized
         # named-value: 'runner'" -- confirmed directly against the real GitHub Actions

@@ -429,6 +429,101 @@
 > the task is "reproduce locally, confirm it's environmental" — not "hunt a cross-platform
 > race that 4 clean CI runs increasingly suggest doesn't exist on real CI hardware."
 
+> **Follow-up (2026-07-12): Phase 3 (G6) implemented to the approved `docs/g6_scope.md`,
+> shadow mode only — evidence gathered against the proof bar, not yet closed.**
+>
+> `policy/g6/rules.rego` (all 8 rule IDs), `core/governance/rego_gate.py` (fail-closed OPA
+> wrapper), wired into `plan_gate.py`'s `stage_plan()` alongside the existing regex scan.
+> **Shadow only**: never blocks, never enforces — `BLOCKING_PREFIXES`/real enforcement is
+> unchanged, exactly per the approved scope's condition to not retire the regex path or flip
+> enforcement before this review.
+>
+> **Fail-closed sweep (proof-bar item 2), done before declaring anything closed, not after**:
+> 34 tests in `tests/test_rego_gate.py` cover every case in the scope doc's §3 table, including
+> a deliberate negative control proving `--strict-builtin-errors` is load-bearing (the exact
+> same malformed-JSON input silently produces zero findings without the flag, hard-fails with
+> it) — SEC-02's `json.unmarshal` risk is real, not decorative.
+>
+> **A real correction found by the sweep itself, not assumed correct from the scope doc's own
+> table**: `resource_changes` being entirely ABSENT from plan JSON (not an empty list) is the
+> normal shape for a data-source-only or genuine no-op plan — confirmed twice live against real
+> `terraform show -json`. The original design blocked on this as `plan_malformed`, over-blocking
+> a common, legitimate case. Fixed: only a *present-but-wrong-typed* `resource_changes` blocks
+> now; absent means "nothing managed to check," not malformed.
+>
+> **Item 5 (unknown-value proof, proof-bar)**: a real, constructed plan — `aws_redshift_cluster.
+> encrypted` derived from `length(aws_kms_key.k.key_id) > 0` on a KMS key created in the same
+> plan — confirmed live (`after.encrypted: null`, `after_unknown.encrypted: true`) and asserted
+> to route to BLOCK (`field_unresolved`), not a silent pass. Permanent regression test, not a
+> one-off.
+>
+> **16-module parity pass (proof-bar item 1): 15/16 verified, NOT 16/16.** Of 16 modules, 11
+> declare a G6-relevant type (the other 5 — `consumption-redshift-serverless`,
+> `governance-observability`, `networking-vpc`, `schema-registry-glue`, `table-format-iceberg` —
+> declare none, vacuous parity, matching the already-known zero-real-coverage finding for
+> SEC-03/04/COST-02/03). Real `terraform plan` + `show -json` per module (dummy AWS/Databricks
+> credentials, `aws_caller_identity` textually patched to a placeholder in 3 modules since it's
+> used only for bucket-name uniqueness, irrelevant to every G6 rule's content — disclosed, not
+> silent). Results:
+> - 8 modules (`compaction-glue`, `compute-emr-serverless`, `compute-glue-etl`,
+>   `dq-great-expectations`, `ingest-firehose`, `orchestrator-mwaa`, `speed-layer-kinesis`,
+>   `query-athena`) plan clean, parity confirmed (zero findings both sides).
+> - **`orchestrator-stepfunctions`: G6 behavior UNVERIFIED on this module, pending real
+>   credentials — not folded into "parity done."** `aws_sfn_state_machine` triggers a real
+>   AWS-side `ValidateStateMachineDefinition` API call at plan time that dummy credentials can't
+>   satisfy, so this module could not be planned standalone at all. Logged in the same
+>   disclosed-gap category as the Databricks live-apply item (§6 item 10) — a real, named,
+>   carried-forward gap, not a passed check. **15 of 16 modules verified, 1 of 16 unverified.**
+> - **`storage-medallion-s3`: a real Rego bug, found and fixed.** Rego false-positived SEC-01/
+>   COST-01 on all three `for_each`-indexed buckets despite the module having genuinely correct
+>   `aws_s3_bucket_public_access_block`/`aws_s3_bucket_lifecycle_configuration` siblings. Root
+>   cause, confirmed against the real plan's `configuration` block: a `for_each` sibling's
+>   `bucket = each.value.id` never resolves to the bucket's address inside `expressions.bucket.
+>   references` (only the symbolic `each.value`); the real reference lives in a separate
+>   `for_each_expression.references` field the code never read, and the expanded instance
+>   address (`aws_s3_bucket.zone["bronze"]`) was never stripped to its base form before
+>   comparing. Fixed in `policy/g6/rules.rego`, re-verified clean against the real plan,
+>   locked down with a permanent regression test.
+> - `databricks-workspace`: one true positive both sides (COST-01, a genuinely missing
+>   lifecycle sibling on `aws_s3_bucket.root_storage_bucket`) and one genuine Rego-only finding
+>   (SEC-02 on `aws_iam_role_policy.cross_account_role` — a real `Resource: "*"` statement in
+>   Databricks' own required AWS cross-account policy, invisible to the old single global regex
+>   since it can't attribute per-resource or see resolved JSON). Confirmed genuine, not a bug,
+>   by reading the real resolved policy — matches the scope doc's anticipated SEC-02
+>   resolved-JSON improvement exactly.
+>
+> **Follow-up (same day): Gap 1 (opa availability, proof-bar item 4) closed.** `opa` was
+> genuinely absent from every CI workflow and the Dockerfile — confirmed the gate was inert
+> there (`opa_not_found`) before fixing it, not assumed. Fixed with the identical discipline as
+> the Terraform checksum fix: pinned version (1.18.2), verified against OPA's own real
+> per-binary `.sha256` (confirmed live — `<hash>  <filename>` format, `sha256sum -c` native),
+> fails loud on a mismatch or unsupported OS/arch, no silently-absent gate.
+> - `.github/workflows/ci.yml`: a cross-platform (`uname`-dispatched) install step in the `test`
+>   matrix job, followed by a dedicated proof step that runs `opa version` and calls
+>   `rego_gate.evaluate()` against a real fixture, asserting `evaluation_failed is False` and
+>   the expected SEC-01/COST-01 findings — not "the step didn't error," an actual verdict
+>   assertion, same standard as "the checksum prints OK." Verified locally before pushing: the
+>   positive case (`sha256sum -c` → `OK` against the live release) and the negative case (hash
+>   corrupted → `FAILED`, script aborts under `set -euxo pipefail`) both proven directly: with
+>   `opa` unavailable, `rego_gate.evaluate()` genuinely returns `opa_not_found` and the assertion
+>   catches it — this is a real trap, not decorative.
+> - `Dockerfile`: the same pinned+verified install added to the existing checksummed-download
+>   block, `opa version` added to the build-time verification line alongside `terraform
+>   version`/`aws --version`. Docker itself could not be run in this local session (no daemon
+>   available) — the download+checksum logic was verified directly on the host with the exact
+>   same commands (real `OK` on the real release, real `FAILED`+abort on a corrupted hash); the
+>   actual image build is proven by the real CI `docker` job once pushed, not assumed from the
+>   host-level check alone.
+>
+> **Proof-bar item 3 (shadow-mode divergence log reviewed across real runs)** stays open,
+> correctly downstream of item 4: now that opa can actually run in CI, real `stage_plan()` calls
+> will start accumulating genuine divergence entries. This item is satisfied by accumulating
+> enough real runs to trust the retirement decision, not by a one-time check — stays open until
+> that real stream exists, deliberately not rushed.
+>
+> **Not yet committed.** Per the approved scope's own condition, this is evidence for review —
+> the regex path stays untouched and enforcing, G6 stays shadow-only, until this is reviewed.
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance

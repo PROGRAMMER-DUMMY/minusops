@@ -4,6 +4,7 @@
 FROM python:3.12-slim AS base
 
 ARG TERRAFORM_VERSION=1.10.5
+ARG OPA_VERSION=1.18.2
 ARG TARGETARCH=amd64
 
 # bash, not the default dash /bin/sh, so `set -o pipefail` below actually works -- a failed
@@ -40,8 +41,17 @@ RUN set -euxo pipefail; \
     curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo /tmp/awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"; \
     unzip -q /tmp/awscli.zip -d /tmp; \
     /tmp/aws/install; \
+    # G6 (docs/g6_scope.md, Phase 3) shells out to `opa`; without it the shadow-mode gate is
+    # inert in this image. Same discipline as the Terraform fix above: pinned version, verified
+    # against OPA's own per-binary `.sha256` (confirmed live, `<hash>  <filename>` format --
+    # sha256sum -c native), fails the build loud on a mismatch rather than shipping silently.
+    OPA_ASSET="opa_linux_${TARGETARCH}"; \
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo "/tmp/${OPA_ASSET}" "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/${OPA_ASSET}"; \
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo "/tmp/${OPA_ASSET}.sha256" "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/${OPA_ASSET}.sha256"; \
+    (cd /tmp && sha256sum -c "${OPA_ASSET}.sha256"); \
+    install -m 0755 "/tmp/${OPA_ASSET}" /usr/local/bin/opa; \
     rm -rf /tmp/* /var/lib/apt/lists/*; \
-    terraform version; aws --version
+    terraform version; aws --version; opa version
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

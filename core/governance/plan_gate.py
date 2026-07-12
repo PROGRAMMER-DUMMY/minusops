@@ -62,6 +62,8 @@ import toolpath  # noqa: E402
 import audit_chain  # noqa: E402
 import authz  # noqa: E402
 import destructive_change_gate  # noqa: E402
+import optimize_analyzer  # noqa: E402
+import rego_gate  # noqa: E402
 
 WORKSPACE = os.getcwd()
 LOG_DIR = os.path.join(WORKSPACE, ".agents", "logs")
@@ -271,6 +273,108 @@ def _classify_plan(dir_):
             "resource_change_count": 0,
         }
     return destructive_change_gate.classify(plan_json)
+
+
+G6_RULE_IDS = ("SEC-01", "COST-01", "SEC-03", "SEC-04", "COST-02", "COST-03", "SEC-05", "SEC-02")
+
+
+def _g6_shadow_eval(dir_, plan_json):
+    """G6 (docs/g6_scope.md): Rego-over-plan-JSON evaluation run in SHADOW MODE alongside the
+    existing regex-over-HCL scan -- logged and printed, never blocks stage_plan, never
+    enforces. `optimize_analyzer.scan_hcl_files(dir_)` is re-run here (a second, redundant,
+    harmless read-only invocation on the same dir -- stage_verify's own call happens earlier,
+    before a plan exists, and can't be reused for a same-moment comparison) so both verdicts
+    are computed against the identical HCL, at the identical point in the pipeline, making the
+    divergence comparison fair.
+
+    Divergence is checked in BOTH directions, never just one: a finding Rego produces that the
+    regex path didn't (documented as a resolved-JSON improvement, e.g. SEC-05b/c, SEC-02 --
+    see docs/g6_scope.md's rule map) AND, more dangerously under this posture, a finding the
+    regex path produced that Rego's resolved-JSON view no longer does -- IAM policy
+    canonicalization (key order, Statement array-vs-object, principal formatting) means
+    "resolved JSON is a strict superset of text matching" is not guaranteed. A disappeared SEC
+    finding is a false-compliance-claim until proven a genuine old-regex false positive, so a
+    lost finding is treated as a bug-until-explained, exactly the same as a new one."""
+    regex_findings = []
+    try:
+        regex_findings = optimize_analyzer.scan_hcl_files(dir_)
+    except Exception as exc:
+        regex_findings = None
+        regex_error = str(exc)
+    else:
+        regex_error = None
+
+    rego_result = rego_gate.evaluate(plan_json)
+
+    if regex_findings is None or rego_result["evaluation_failed"]:
+        return {
+            "comparable": False,
+            "regex_error": regex_error,
+            "rego_evaluation_failed": rego_result["evaluation_failed"],
+            "rego_reason": rego_result.get("reason"),
+            "rego_detail": rego_result.get("detail"),
+        }
+
+    regex_by_rule = {}
+    for f in regex_findings:
+        if f["id"] not in G6_RULE_IDS:
+            continue  # DATA-*/OBS-* stay out of scope for this migration, per the scope doc
+        regex_by_rule.setdefault(f["id"], set()).add(f.get("resource"))
+
+    rego_by_rule = {}
+    unresolved = []
+    for f in rego_result["findings"]:
+        if f.get("finding_kind") == "field_unresolved":
+            unresolved.append(f)
+            continue
+        rego_by_rule.setdefault(f["id"], set()).add(f.get("resource"))
+
+    divergence = {}
+    for rule_id in G6_RULE_IDS:
+        regex_resources = regex_by_rule.get(rule_id, set())
+        rego_resources = rego_by_rule.get(rule_id, set())
+        new_in_rego = sorted(r for r in (rego_resources - regex_resources) if r is not None)
+        lost_in_regex = sorted(r for r in (regex_resources - rego_resources) if r is not None)
+        # A rule whose regex form never attaches a resource at all (the original SEC-02) can't
+        # be compared per-resource -- fall back to a simple presence comparison so this doesn't
+        # silently read as "no divergence" when it's actually incomparable at that grain.
+        regex_had_unattributed = None in regex_resources
+        rego_had_any = bool(rego_resources)
+        if new_in_rego or lost_in_regex or (regex_had_unattributed and not rego_had_any) or (
+            rego_had_any and not regex_had_unattributed and not regex_resources
+        ):
+            divergence[rule_id] = {
+                "new_in_rego": new_in_rego,
+                "lost_in_regex": lost_in_regex,
+                "regex_unattributed_finding": regex_had_unattributed,
+            }
+
+    return {
+        "comparable": True,
+        "divergence": divergence,
+        "unresolved_count": len(unresolved),
+        "unresolved": unresolved,
+    }
+
+
+def _print_g6_shadow(result):
+    if not result["comparable"]:
+        print(f"[gate] G6 shadow evaluation incomplete -- regex_error={result.get('regex_error')} "
+              f"rego_evaluation_failed={result['rego_evaluation_failed']} "
+              f"rego_reason={result.get('rego_reason')}", file=sys.stderr)
+        return
+    if not result["divergence"] and not result["unresolved_count"]:
+        print("[gate] G6 shadow: Rego parity with regex scan, no divergence, no unresolved fields")
+        return
+    print(f"[gate] G6 shadow: {len(result['divergence'])} rule(s) diverge, "
+          f"{result['unresolved_count']} unresolved-field finding(s)", file=sys.stderr)
+    for rule_id, d in result["divergence"].items():
+        if d["new_in_rego"]:
+            print(f"  - {rule_id}: NEW in Rego (not in regex): {d['new_in_rego']}", file=sys.stderr)
+        if d["lost_in_regex"]:
+            print(f"  - {rule_id}: LOST vs regex (regex had it, Rego doesn't): {d['lost_in_regex']}", file=sys.stderr)
+    for f in result["unresolved"]:
+        print(f"  - {f['id']} unresolved (unknown-until-apply): {f['resource']}", file=sys.stderr)
 
 
 def _print_classification(classification):
@@ -590,7 +694,23 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     # autonomous-eligible) lives in stage_apply below, the actual mutation point.
     classification = _classify_plan(dir_)
     _print_classification(classification)
-    _audit("plan", "OK", plan_hash=h, dir=dir_, destroy=destroy, destructive_classification=classification)
+
+    # G6 (docs/g6_scope.md, Phase 3): SEC-*/COST-* rules over real plan JSON via OPA/Rego,
+    # run alongside the existing regex-over-HCL scan (core/reporting/optimize_analyzer.py,
+    # still invoked separately in stage_verify above -- unchanged). SHADOW ONLY: this never
+    # blocks stage_plan and never enforces anything -- BLOCKING_PREFIXES / real enforcement
+    # stays exactly where it already is (optimize_analyzer.py's own SEC- prefix check,
+    # unchanged) until 16-module parity is proven and Phase 3 is explicitly closed for real,
+    # same discipline as G2/G5.
+    plan_json_for_g6, plan_json_err = _plan_json(dir_)
+    g6_result = _g6_shadow_eval(dir_, plan_json_for_g6) if plan_json_for_g6 is not None else {
+        "comparable": False, "regex_error": None,
+        "rego_evaluation_failed": True, "rego_reason": "plan_unreadable", "rego_detail": plan_json_err,
+    }
+    _print_g6_shadow(g6_result)
+
+    _audit("plan", "OK", plan_hash=h, dir=dir_, destroy=destroy,
+           destructive_classification=classification, g6_shadow=g6_result)
 
     # Auto-generate the versioned deploy report (plan + cost + architecture).
     # Informational — a report failure must never fail the plan.
