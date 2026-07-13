@@ -90,7 +90,46 @@ jobs:
           echo "=== host hostname/kernel for comparison ==="
           hostname; uname -a
 
+      - name: Set up host-side canaries BEFORE the hostile attempt
+        run: |
+          set -euxo pipefail
+          # Filesystem canary: a host-only file. If a guest-side local-exec can somehow read/
+          # write it, isolation has failed.
+          echo "HOST_CANARY_SECRET_$(date +%s)" | sudo tee /root/host_only_canary.txt
+          # Network canary: a listener bound to the tap gateway address (172.16.0.1), the ONE
+          # host-side IP the guest's network config could plausibly reach, since that's its
+          # configured default gateway. If a hostile provisioner can connect to this from
+          # inside the guest, that is a real reachable path to a host-side service.
+          (python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(('172.16.0.1', 9999))
+          s.listen(1)
+          conn, addr = s.accept()
+          conn.sendall(b'HOST_REACHED_FROM_GUEST\n')
+          conn.close()
+          " > /tmp/host_listener.log 2>&1 &)
+          sleep 1
+          echo "host canary + listener armed"
+
+      - name: HOSTILE ATTEMPT -- simulate a malicious local-exec provisioner from inside the guest
+        run: |
+          set -uxo pipefail
+          echo "=== attempt 1: can the guest even SEE a host filesystem path? ==="
+          ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "cat /root/host_only_canary.txt 2>&1; ls -la / 2>&1"
+          echo "=== attempt 2: can the guest reach the host listener on the tap gateway? ==="
+          ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "timeout 3 bash -c 'echo probe | nc 172.16.0.1 9999' 2>&1; echo EXIT=\$?"
+          echo "=== attempt 3: can the guest reach the public internet (expected: yes, via NAT -- this is fine, it's not the host) ==="
+          ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "timeout 3 curl -sf https://1.1.1.1 -o /dev/null -w 'HTTP %{http_code}\n' 2>&1"
+
+      - name: Check HOST side for evidence the canary was reached (the actual proof)
+        run: |
+          set -euxo pipefail
+          echo "=== host listener log (if this shows HOST_REACHED_FROM_GUEST, isolation FAILED) ==="
+          cat /tmp/host_listener.log || echo "(no connection was ever accepted -- listener log empty/absent)"
+
       - name: Report findings
         if: always()
         run: |
-          echo "See job output above for boot + SSH results"
+          echo "See job output above for boot + SSH + hostile-escape-attempt results"
