@@ -85,8 +85,7 @@ jobs:
           }
           EOF
           terraform init -input=false
-          terraform apply -auto-approve
-          RESULT=$?
+          if terraform apply -auto-approve; then RESULT=0; else RESULT=$?; fi
           echo "ISSUE_871_RETEST_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [ "$RESULT" -ne 0 ]; then
             echo "::warning::aws_instance apply failed on current Floci -- check output above for the SAME nil-pointer/plugin-crash signature as #871, or a different (possibly more benign) error"
@@ -110,8 +109,7 @@ jobs:
           }
           EOF
           terraform init -input=false
-          terraform apply -auto-approve
-          RESULT=$?
+          if terraform apply -auto-approve; then RESULT=0; else RESULT=$?; fi
           echo "ISSUE_177_RETEST_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [ "$RESULT" -ne 0 ]; then
             echo "::warning::aws_cognito_user_pool apply failed on current Floci -- check for the same read-after-create nil-pointer crash as #177"
@@ -136,8 +134,7 @@ jobs:
           }
           EOF
           terraform init -input=false
-          terraform apply -auto-approve
-          RESULT=$?
+          if terraform apply -auto-approve; then RESULT=0; else RESULT=$?; fi
           echo "ISSUE_28_SNS_RETEST_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
 
       # ---------------------------------------------------------------
@@ -198,8 +195,7 @@ jobs:
           }
           EOF
           terraform init -input=false
-          terraform apply -auto-approve
-          RESULT=$?
+          if terraform apply -auto-approve; then RESULT=0; else RESULT=$?; fi
           echo "IAM_NEGATIVE_APPLY_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [ "$RESULT" -eq 0 ]; then
             echo "::error::Floci ACCEPTED a malformed IAM principal ARN that real AWS rejects -- negative fidelity FAILED for aws_iam_role"
@@ -250,8 +246,7 @@ jobs:
           }
           EOF
           terraform init -input=false
-          terraform apply -auto-approve
-          RESULT=$?
+          if terraform apply -auto-approve; then RESULT=0; else RESULT=$?; fi
           echo "KMS_NEGATIVE_APPLY_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [ "$RESULT" -eq 0 ]; then
             echo "::error::Floci ACCEPTED a KMS key policy missing a root/admin statement, which real AWS rejects -- negative fidelity FAILED for aws_kms_key"
@@ -302,8 +297,7 @@ jobs:
           }
           EOF
           terraform init -input=false
-          terraform apply -auto-approve
-          RESULT=$?
+          if terraform apply -auto-approve; then RESULT=0; else RESULT=$?; fi
           echo "S3_NEGATIVE_APPLY_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [ "$RESULT" -eq 0 ]; then
             echo "::error::Floci ACCEPTED a bucket policy referencing a different bucket's ARN, which real AWS rejects -- negative fidelity FAILED for aws_s3_bucket_policy"

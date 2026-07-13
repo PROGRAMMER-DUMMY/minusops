@@ -125,8 +125,7 @@ jobs:
           }
           EOF
           terraform init -input=false
-          terraform apply -auto-approve
-          RESULT=$?
+          if terraform apply -auto-approve; then RESULT=0; else RESULT=$?; fi
           echo "IAM_NEGATIVE_APPLY_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [ "$RESULT" -eq 0 ]; then
             echo "::error::MiniStack ACCEPTED a malformed IAM principal ARN that real AWS rejects -- negative fidelity FAILED for aws_iam_role"
@@ -181,8 +180,7 @@ jobs:
           }
           EOF
           terraform init -input=false
-          terraform apply -auto-approve
-          RESULT=$?
+          if terraform apply -auto-approve; then RESULT=0; else RESULT=$?; fi
           echo "KMS_NEGATIVE_APPLY_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [ "$RESULT" -eq 0 ]; then
             echo "::error::MiniStack ACCEPTED a KMS key policy missing a root/admin statement, which real AWS rejects -- negative fidelity FAILED for aws_kms_key"
@@ -236,8 +234,7 @@ jobs:
           }
           EOF
           terraform init -input=false
-          terraform apply -auto-approve
-          RESULT=$?
+          if terraform apply -auto-approve; then RESULT=0; else RESULT=$?; fi
           echo "S3_NEGATIVE_APPLY_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [ "$RESULT" -eq 0 ]; then
             echo "::error::MiniStack ACCEPTED a bucket policy referencing a different bucket's ARN, which real AWS rejects -- negative fidelity FAILED for aws_s3_bucket_policy"
@@ -258,10 +255,9 @@ jobs:
           export AWS_DEFAULT_REGION=us-east-1
           # A malformed role ARN: wrong service segment ("s3" instead of "iam"), which real AWS
           # STS rejects outright before ever considering credentials.
-          aws --endpoint-url=http://localhost:4566 sts assume-role \
+          if aws --endpoint-url=http://localhost:4566 sts assume-role \
             --role-arn "arn:aws:s3::000000000000:role/not-a-real-iam-arn" \
-            --role-session-name gauntlet-negative-test
-          RESULT=$?
+            --role-session-name gauntlet-negative-test; then RESULT=0; else RESULT=$?; fi
           echo "STS_980_RETEST_EXIT=$RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [ "$RESULT" -eq 0 ]; then
             echo "::error::MiniStack issued credentials for a malformed (wrong-service) role ARN -- issue #980's fix does NOT hold, or does not cover this shape"
