@@ -290,6 +290,69 @@ Everything else in the approved scope (sections 1–6) stands unchanged — this
 changes how the allowlist is keyed and what the verdict reports, not the fail-closed table's
 other rows, the coverage/Databricks-asymmetry design, or the Ubuntu-only CI placement.
 
+### 7.5 Real gauntlet results (2026-07-13) — MiniStack and Floci, both directions, real CI
+
+Run for real (a temporary scratch CI workflow per emulator, real Docker containers, real
+`terraform init/apply`, iterated on and fixed where the harness itself had bugs, then removed):
+
+**A real bug in the test harness itself, found and fixed first**: the initial gauntlet scripts
+used `set -uxo pipefail` inside GitHub Actions `run:` steps, on the mistaken assumption this
+would let a script continue past a failing `terraform apply` to log the outcome. It does not —
+GitHub Actions' bash wrapper invokes `run:` steps as `bash -e {0}`, and `set -uxo pipefail`
+inside the script only *adds* `-u`/`-x`/pipefail, it does not clear the already-active `-e`
+inherited from that wrapper. This meant any genuinely-failing `terraform apply` (or `aws` CLI
+call) killed the whole step immediately, before the script's own result-logging ever ran —
+confirmed directly: Floci's real `aws_instance` failure stopped its entire job before the
+later IAM/KMS/S3 tests could run at all. Fixed by wrapping each command in an explicit
+`if cmd; then RESULT=0; else RESULT=$?; fi` (exempt from `errexit` by bash's own rules) —
+after which both gauntlets ran to completion cleanly.
+
+**Security-critical types, both directions, both emulators — the mandatory result:**
+
+| Type | MiniStack positive | MiniStack negative | Floci positive | Floci negative |
+|---|---|---|---|---|
+| `aws_iam_role` (trust-policy principal ARN) | ✅ applies cleanly | ❌ **accepted** a malformed principal ARN (`arn:aws:iam::12:root`, a 2-digit non-account-ID) real AWS is documented to reject | ✅ applies cleanly | ❌ **accepted** the same malformed ARN |
+| `aws_kms_key` (key policy) | ✅ applies cleanly | ❌ **accepted** a key policy with no root/admin grant statement at all — real AWS rejects this with "the new key policy will not allow you to update the key policy in the future" | ✅ applies cleanly | ❌ **accepted** the same policy |
+| `aws_s3_bucket_policy` | ✅ applies cleanly | ❌ **accepted** a bucket policy whose `Resource` ARN names a *different* bucket than the one it's attached to — real AWS rejects this as an invalid resource | ✅ applies cleanly | ❌ **accepted** the same mismatched policy |
+
+**Net result: as of this session, NEITHER free emulator passes the mandatory negative-fidelity
+bar for any of the three security-critical types this repo's modules actually use.** Per
+section 7.4's fail-closed table, this means a real plan touching `aws_iam_role`,
+`aws_kms_key`, or `aws_s3_bucket_policy` correctly **BLOCKS** on both MiniStack and Floci today
+(`negative_fidelity_unverified`) — this is the gauntlet doing exactly what it exists to do, not
+a setback: it caught a genuine, false-green-risk permissiveness gap in both free candidates
+before either was trusted, rather than after.
+
+**MiniStack's own historical bug, re-verified — the fix genuinely holds**: issue #980
+(`AssumeRole`/`AssumeRoleWithWebIdentity` previously issued credentials for malformed role ARNs
+without validating them, directly relevant to this repo's Databricks cross-account STS trust)
+was re-tested with a wrong-service-segment ARN (`arn:aws:s3::000000000000:role/...` instead of
+`arn:aws:iam::...`) — MiniStack correctly rejected it (`ValidationError: Invalid RoleArn`), and
+a positive control (a well-formed role ARN) was correctly accepted. This one specific,
+previously-reported gap is confirmed fixed on the current version.
+
+**Floci's own historical bugs, re-tested — the specific crash symptoms are gone, but the
+underlying resource types are still not usable, for different reasons**: issue #871
+(`aws_instance` crashing the provider plugin with a nil-pointer panic) no longer crashes, but
+the instance now goes to a `terminated` state immediately after creation instead of `running`,
+which the AWS provider's own wait-for-state logic then fails on — a different, still-real
+failure. Issue #177 (`aws_cognito_user_pool` crashing the same way) also no longer crashes, but
+now fails with `UnrecognizedClientException: The security token included in the request is
+invalid` — an authentication-layer error, not the original panic. **Neither `aws_instance` nor
+`aws_cognito_user_pool` is in this repo's real 41-type catalog**, so both findings are
+informational (evidence about Floci's overall reliability) rather than blocking for this
+repo's specific needs. Issue #28's S3-catch-all-route concern (a two-segment API path like
+SNS's being silently hijacked by Floci's S3 controller) did **not** reproduce: `aws_sns_topic`
+applied cleanly on Floci in this session's test.
+
+**What this means for the item-0 tool decision, revisited honestly**: the original decision
+(LocalStack paid, for a mature fidelity signal) is *reinforced*, not undermined, by this
+evidence — both free alternatives just failed the mandatory security bar for real, on the exact
+types this repo's modules use most. Whether LocalStack's paid tier would actually pass this same
+negative-fidelity gauntlet is still unverified (no token provisioned this session) — that
+remains the open question a provisioned account would answer, not assumed to be better just
+because it's paid and mature.
+
 ## 8. Scope addition (2026-07-13) — sandbox isolation (security finding, mandatory before close)
 
 Raised on review as a security finding, not a fidelity concern: G9's job is to apply
@@ -385,6 +448,62 @@ normal apply from Terraform's own point of view; the proof has to check the host
 not Terraform's exit code). This is the load-bearing proof for this whole section: it is the
 only test that actually exercises whether the isolation boundary holds against the exact thing
 `terraform apply` is capable of doing on its own, independent of any emulator.
+
+### 8.6 Real proof, run on real CI (2026-07-13) — this is not a design on paper
+
+Built and proven directly against this repo's real `ubuntu-latest` GitHub-hosted runners (a
+temporary scratch workflow, pushed, dispatched, iterated on with real evidence, then removed —
+same discipline as every other proof this session):
+
+1. **KVM confirmed real, not assumed** (section 8.2's claim, now with the actual command
+   output): `/dev/kvm` exists (`crw-rw---- root kvm`), `kvm-ok` reports "KVM acceleration can be
+   used", CPU flags include `svm` (AMD-V). This is the free-tier runner this repo's CI already
+   uses — no paid "larger runners" tier needed.
+2. **Real Firecracker binary + official CI kernel/rootfs artifacts, no third-party wrapper**:
+   downloaded the real `firecracker` release binary (v1.16.1) directly from the official GitHub
+   releases, and the exact kernel (`vmlinux-6.1.102`) + Ubuntu 22.04 rootfs (`ubuntu-22.04.ext4`)
+   + SSH key from Firecracker's own official quickstart CI artifact bucket
+   (`s3.amazonaws.com/spec.ccfc.min`) — confirmed the real object keys directly (an initial
+   guess at the naming pattern was wrong; the real bucket listing was queried and the correct
+   keys used).
+3. **Real, successful boot, confirmed as a genuinely separate machine**: booted via the
+   documented Firecracker REST API over a Unix socket (kernel/rootfs/network-interface
+   configuration, then `InstanceStart`), SSH'd in over a tap-device network interface, and
+   confirmed the guest has its OWN hostname (`ubuntu-fc-uvm`), OWN kernel
+   (`Linux ubuntu-fc-uvm 6.1.102 ...`), OWN OS (`Ubuntu 22.04.5 LTS`) — verifiably distinct from
+   the host runner's own kernel (`6.17.0-1018-azure`) and hostname. Boot-to-SSH-ready took
+   roughly 7 seconds.
+4. **A real gap found, not assumed away, then fixed and re-proven closed**: the first hostile-
+   escape attempt (a simulated `local-exec`-style command run over the guest's SSH session,
+   standing in for what a hostile provisioner would execute) tried two things: (a) read a
+   host-only canary file, (b) connect to a TCP listener bound to the host's own tap-gateway
+   address (172.16.0.1:9999). **(a) was blocked from the very first run** — the guest's root
+   filesystem is a wholly separate disk image with no bind mounts, so a host-only file
+   is simply invisible (`No such file or directory`), and `ls -la /` from inside the guest
+   shows a normal, minimal guest-only filesystem. **(b) SUCCEEDED on the first run** — the
+   guest reached the host's listener and received `HOST_REACHED_FROM_GUEST` back. Root cause:
+   the NAT/forwarding rules set up to let the guest reach the internet only governed the
+   `FORWARD` chain (traffic passing *through* the host to elsewhere); nothing governed the
+   `INPUT` chain (traffic destined *for* the host's own services), so the guest could talk
+   directly to whatever the host had listening on the tap-gateway IP. **Fixed**: `iptables -A
+   INPUT -i tap0 -j DROP` (with `ESTABLISHED,RELATED` explicitly allowed first, so the host's
+   own outbound SSH-into-guest management traffic still gets its return packets). **Re-run
+   after the fix**: the same connection attempt from inside the guest now times out
+   (`EXIT=124`, no `HOST_REACHED_FROM_GUEST` anywhere in the output) — the path is closed.
+5. **What this proves, and what it doesn't yet**: this is real, working proof that (a) a
+   genuine microVM boundary is buildable on this repo's actual CI infrastructure without a paid
+   tier, (b) the specific `local-exec`-shaped host-escape vector this session identified as more
+   fundamental than the docker.sock concern can be closed, and (c) finding a real gap by testing
+   rather than assuming is exactly what this proof-bar item is for — a naive first attempt at
+   this design was NOT secure, and shipping the naive version untested would have been a real
+   vulnerability. What this does **not** yet prove: the fully-wired `ephemeral_apply.py`
+   pipeline (terraform + a real emulator container) running inside this exact microVM boundary
+   end to end — the proof above uses a bare Ubuntu guest and an SSH-driven command to stand in
+   for what a hostile provisioner would attempt, not a full G9 run. Wiring `ephemeral_apply.py`
+   itself to execute inside this boundary (installing terraform + the chosen emulator inside
+   the guest's rootfs or via a startup script, then running the real plan/apply/destroy cycle
+   over the same SSH channel) is real, remaining implementation work — scoped and proven
+   feasible here, not yet built as the shipped mechanism.
 
 ## 9. Design option, not required now — hybrid gating (flagged for later consideration)
 
