@@ -152,19 +152,26 @@ jobs:
           chmod 600 id_rsa
           ls -la vmlinux.bin rootfs.ext4 id_rsa
 
-          # The quickstart CI rootfs is sized for the minimal SSH-probe use case section 8.6
-          # proved isolation with -- installing docker.io (pulls in containerd/runc/iptables)
-          # plus terraform plus this package's Python deps genuinely does not fit. Growing the
-          # rootfs image in place (truncate + e2fsck + resize2fs) was tried and rejected: it left
-          # the guest filesystem corrupted (dpkg's own status file vanished mid-install,
-          # "No such file or directory" on paths that plainly existed moments before) -- a raw
-          # truncate followed by repair is not a safe way to treat a live OS image. A fresh,
-          # separately-formatted scratch disk, attached as its OWN Firecracker drive and mounted
-          # inside the guest (never touching the base rootfs at all), is the safe version of the
-          # same idea.
-          dd if=/dev/zero of=scratch.ext4 bs=1M count=6144 status=none
-          mkfs.ext4 -q scratch.ext4
-          ls -la rootfs.ext4 scratch.ext4
+          # The quickstart CI rootfs is only 300MB -- sized for the minimal SSH-probe use case
+          # section 8.6 proved isolation with. Installing docker.io (pulls in containerd/runc/
+          # iptables) plus terraform plus this package's Python deps genuinely does not fit, on
+          # root OR on a redirected scratch disk (dpkg/apt still unpack the installed program
+          # files themselves onto root, not just their download cache). Two unsafe/incomplete
+          # fixes were tried and rejected first: growing the image in place (truncate + e2fsck +
+          # resize2fs) corrupted the guest filesystem (dpkg's own status file vanished mid-
+          # install); a separate scratch disk only redirects the download cache, not where
+          # installed files actually land. The safe fix: mount the original small image AND a
+          # freshly made bigger one as loopback devices on the HOST, and plain `cp -a` everything
+          # across -- an ordinary file copy, not a live-filesystem resize, so there is no
+          # corruption risk. The bigger image then becomes the root drive outright.
+          mkdir -p /tmp/src_root /tmp/big_root
+          sudo mount -o loop rootfs.ext4 /tmp/src_root
+          dd if=/dev/zero of=bigroot.ext4 bs=1M count=6144 status=none
+          mkfs.ext4 -q bigroot.ext4
+          sudo mount -o loop bigroot.ext4 /tmp/big_root
+          sudo cp -a /tmp/src_root/. /tmp/big_root/
+          sudo umount /tmp/src_root /tmp/big_root
+          ls -la rootfs.ext4 bigroot.ext4
 
       - name: Prepare host-side fixtures for the wired pipeline (smoke + hostile-escape)
         run: |
@@ -261,14 +268,8 @@ jobs:
             --data '{"kernel_image_path":"'"$(pwd)"'/vmlinux.bin","boot_args":"console=ttyS0 reboot=k panic=1 pci=off ip=172.16.0.2::172.16.0.1:255.255.255.252::eth0:off"}' \
             "http://localhost/boot-source"
           sudo curl -sf -X PUT --unix-socket "$API_SOCKET" \
-            --data '{"drive_id":"rootfs","path_on_host":"'"$(pwd)"'/rootfs.ext4","is_root_device":true,"is_read_only":false}' \
+            --data '{"drive_id":"rootfs","path_on_host":"'"$(pwd)"'/bigroot.ext4","is_root_device":true,"is_read_only":false}' \
             "http://localhost/drives/rootfs"
-          # Second drive, registered after rootfs -- Firecracker enumerates virtio-blk devices
-          # inside the guest in registration order, so this becomes /dev/vdb (rootfs is /dev/vda
-          # as the root device). Freshly mkfs'd on the host, never touching the base OS image.
-          sudo curl -sf -X PUT --unix-socket "$API_SOCKET" \
-            --data '{"drive_id":"scratch","path_on_host":"'"$(pwd)"'/scratch.ext4","is_root_device":false,"is_read_only":false}' \
-            "http://localhost/drives/scratch"
           sudo curl -sf -X PUT --unix-socket "$API_SOCKET" \
             --data '{"iface_id":"net1","guest_mac":"06:00:AC:10:00:02","host_dev_name":"tap0"}' \
             "http://localhost/network-interfaces/net1"
@@ -295,26 +296,15 @@ jobs:
           # would follow and fail to overwrite as expected.
           ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2 "rm -f /etc/resolv.conf && echo 'nameserver 8.8.8.8' > /etc/resolv.conf && cat /etc/resolv.conf"
 
-      - name: Mount the scratch disk inside the guest -- everything big lands here, not on rootfs
-        run: |
-          set -euxo pipefail
-          SSH="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2"
-          $SSH "mkdir -p /mnt/scratch && mount /dev/vdb /mnt/scratch && df -h /mnt/scratch"
-          $SSH "mkdir -p /mnt/scratch/docker /mnt/scratch/tmp /mnt/scratch/apt-cache/archives/partial"
-          # Redirect apt's package cache and docker's data-root onto the scratch disk before
-          # either is used -- this is what actually fixes the space problem, not a bigger root.
-          $SSH "mkdir -p /etc/docker && printf '{\"data-root\": \"/mnt/scratch/docker\"}\n' > /etc/docker/daemon.json"
-          $SSH "mkdir -p /var/cache/apt && rm -rf /var/cache/apt/archives && ln -s /mnt/scratch/apt-cache/archives /var/cache/apt/archives"
-
       - name: Provision the guest -- docker, terraform, python, this package (all INSIDE the VM)
         run: |
           set -euxo pipefail
           SSH="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2"
-          # Every remote command below is wrapped in `timeout` -- the earlier iteration of this
+          # Every remote command below is wrapped in `timeout` -- an earlier iteration of this
           # job hung silently for 55 minutes on a stalled apt-get before finally erroring, wasting
           # the whole debugging cycle on one dead command. A bounded failure is diagnosable; a
           # silent one is not.
-          $SSH "timeout 300 bash -c 'TMPDIR=/mnt/scratch/tmp apt-get update -qq && DEBIAN_FRONTEND=noninteractive TMPDIR=/mnt/scratch/tmp apt-get install -y -qq docker.io python3-pip python3-venv unzip' >/tmp/apt.log 2>&1 || (cat /tmp/apt.log; exit 1)"
+          $SSH "timeout 300 bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io python3-pip python3-venv unzip' >/tmp/apt.log 2>&1 || (cat /tmp/apt.log; exit 1)"
           $SSH "timeout 30 systemctl enable --now docker"
           for i in $(seq 1 15); do
             if $SSH "timeout 10 docker info >/dev/null 2>&1"; then break; fi
@@ -329,7 +319,7 @@ jobs:
           ssh $SSH_OPTS root@172.16.0.2 "mkdir -p /root/minusops /root/g9_wired"
           tar -C "$GITHUB_WORKSPACE" -cf - --exclude=.git . | ssh $SSH_OPTS root@172.16.0.2 "tar -C /root/minusops -xf -"
           tar -C /tmp/g9_wired -cf - . | ssh $SSH_OPTS root@172.16.0.2 "tar -C /root/g9_wired -xf -"
-          ssh $SSH_OPTS root@172.16.0.2 "cd /root/minusops && timeout 300 env TMPDIR=/mnt/scratch/tmp pip3 install -q --cache-dir /mnt/scratch/tmp/pip-cache '.[dev]'"
+          ssh $SSH_OPTS root@172.16.0.2 "cd /root/minusops && timeout 300 pip3 install -q '.[dev]'"
 
       - name: Start MiniStack inside the guest (its docker.sock never leaves the VM)
         run: |
