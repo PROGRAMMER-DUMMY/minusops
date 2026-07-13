@@ -189,11 +189,11 @@ RESOURCE_TYPE_ALLOWLIST = {
 }
 
 
-def _fail(reason, detail="", coverage=None, databricks_resources=None):
+def _fail(reason, detail="", coverage=None, databricks_resources=None, emulator=None):
     return {
         "evaluation_failed": True, "reason": reason, "detail": detail,
         "coverage": coverage, "databricks_resources": databricks_resources or [],
-        "findings": [],
+        "findings": [], "emulator": emulator,
     }
 
 
@@ -358,14 +358,15 @@ def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=Non
     """
     if emulator not in SUPPORTED_EMULATORS:
         return _fail("unsupported_emulator",
-                     f"{emulator!r} is not a recognized emulator (supported: {SUPPORTED_EMULATORS})")
+                     f"{emulator!r} is not a recognized emulator (supported: {SUPPORTED_EMULATORS})",
+                     emulator=emulator)
 
     localstack_endpoint = localstack_endpoint or os.environ.get(
         LOCALSTACK_ENDPOINT_ENV, DEFAULT_LOCALSTACK_ENDPOINT)
 
     terraform = toolpath.find_tool("terraform")
     if not terraform:
-        return _fail("terraform_not_found", "terraform binary not found on PATH")
+        return _fail("terraform_not_found", "terraform binary not found on PATH", emulator=emulator)
 
     override_path = os.path.join(dir_, _OVERRIDE_FILE)
     plan_path = os.path.join(dir_, _PLAN_FILE)
@@ -378,10 +379,11 @@ def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=Non
             capture_output=True, text=True, timeout=_INIT_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         _cleanup(override_path, None)
-        return _fail("init_timeout", f"init did not complete within {_INIT_TIMEOUT_SECONDS}s")
+        return _fail("init_timeout", f"init did not complete within {_INIT_TIMEOUT_SECONDS}s",
+                     emulator=emulator)
     if reinit.returncode != 0:
         _cleanup(override_path, None)
-        return _fail("init_failed", (reinit.stderr or "").strip()[:2000])
+        return _fail("init_failed", (reinit.stderr or "").strip()[:2000], emulator=emulator)
 
     try:
         plan_result = subprocess.run(
@@ -389,29 +391,31 @@ def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=Non
             capture_output=True, text=True, timeout=_PLAN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         _cleanup(override_path, plan_path)
-        return _fail("plan_timeout", f"plan did not complete within {_PLAN_TIMEOUT_SECONDS}s")
+        return _fail("plan_timeout", f"plan did not complete within {_PLAN_TIMEOUT_SECONDS}s",
+                     emulator=emulator)
     if plan_result.returncode != 0:
         _cleanup(override_path, plan_path)
-        return _fail("plan_failed", (plan_result.stderr or plan_result.stdout or "").strip()[:2000])
+        return _fail("plan_failed", (plan_result.stderr or plan_result.stdout or "").strip()[:2000],
+                     emulator=emulator)
 
     show_result = subprocess.run(
         [terraform, f"-chdir={dir_}", "show", "-json", _PLAN_FILE],
         capture_output=True, text=True, timeout=60)
     if show_result.returncode != 0:
         _cleanup(override_path, plan_path)
-        return _fail("plan_show_failed", (show_result.stderr or "").strip()[:2000])
+        return _fail("plan_show_failed", (show_result.stderr or "").strip()[:2000], emulator=emulator)
     try:
         plan_json = json.loads(show_result.stdout)
     except json.JSONDecodeError as exc:
         _cleanup(override_path, plan_path)
-        return _fail("plan_malformed", str(exc))
+        return _fail("plan_malformed", str(exc), emulator=emulator)
 
     coverage, databricks_addresses, aws_addresses = classify_coverage(plan_json)
     if coverage == "none":
         # Not a failure -- a structural non-applicability. Reported honestly, never as "passed".
         _cleanup(override_path, plan_path)
         return {
-            "evaluation_failed": False, "coverage": "none",
+            "evaluation_failed": False, "coverage": "none", "emulator": emulator,
             "databricks_resources": databricks_addresses, "aws_resources_applied": [],
             "findings": [],
             "detail": "plan has no AWS resources -- G9 does not run" if not databricks_addresses
@@ -425,7 +429,7 @@ def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=Non
             "resource_type_unverified",
             f"plan contains resource type(s) not confirmed on the reviewed allowlist for "
             f"emulator={emulator!r}: {sorted(unverified)}",
-            coverage=coverage, databricks_resources=databricks_addresses)
+            coverage=coverage, databricks_resources=databricks_addresses, emulator=emulator)
 
     negative_fidelity_gap = negative_fidelity_unverified_types_in_plan(plan_json, emulator)
     if negative_fidelity_gap:
@@ -435,7 +439,7 @@ def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=Non
             f"plan contains security-critical resource type(s) whose emulator={emulator!r} "
             f"has not been proven to REJECT invalid configs (positive-only verification is "
             f"not sufficient for these types): {sorted(negative_fidelity_gap)}",
-            coverage=coverage, databricks_resources=databricks_addresses)
+            coverage=coverage, databricks_resources=databricks_addresses, emulator=emulator)
 
     # Single-exit design, deliberately: a `return` inside a `finally` block silently swallows
     # any real exception raised in the try block (confirmed directly -- a plain `raise
@@ -451,12 +455,14 @@ def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=Non
                 capture_output=True, text=True, timeout=apply_timeout)
         except subprocess.TimeoutExpired:
             verdict = _fail("apply_timeout", f"apply did not complete within {apply_timeout}s",
-                             coverage=coverage, databricks_resources=databricks_addresses)
+                             coverage=coverage, databricks_resources=databricks_addresses,
+                             emulator=emulator)
         else:
             events, parse_error = _parse_apply_json_stream(apply_result.stdout)
             if parse_error:
                 verdict = _fail("apply_result_malformed", parse_error,
-                                 coverage=coverage, databricks_resources=databricks_addresses)
+                                 coverage=coverage, databricks_resources=databricks_addresses,
+                                 emulator=emulator)
             else:
                 outcomes = _resource_outcomes(events)
                 succeeded = sorted(a for a, s in outcomes.items() if s == "complete")
@@ -467,10 +473,11 @@ def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=Non
                         reason,
                         f"succeeded={succeeded} errored={errored} "
                         f"{(apply_result.stderr or '').strip()[:1500]}",
-                        coverage=coverage, databricks_resources=databricks_addresses)
+                        coverage=coverage, databricks_resources=databricks_addresses,
+                        emulator=emulator)
                 else:
                     verdict = {
-                        "evaluation_failed": False, "coverage": coverage,
+                        "evaluation_failed": False, "coverage": coverage, "emulator": emulator,
                         "databricks_resources": databricks_addresses,
                         "aws_resources_applied": succeeded, "findings": [],
                     }
@@ -494,7 +501,7 @@ def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=Non
             # note above this try block) -- just reassigning the variable the function returns
             # once this finally completes.
             verdict = _fail("teardown_failed", teardown_detail, coverage=coverage,
-                             databricks_resources=databricks_addresses)
+                             databricks_resources=databricks_addresses, emulator=emulator)
 
     return verdict
 

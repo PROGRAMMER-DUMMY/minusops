@@ -523,6 +523,46 @@ with section 7's per-`(type, emulator)` matrix (a service-specific emulator is j
 column). Revisit if/when this repo's catalog grows into services those tools cover better than
 LocalStack/MiniStack/Floci do.
 
+## 10. Correction (2026-07-13) — IAM/KMS/S3 security enforcement belongs in G6, not the emulator
+
+Raised on review of section 7.5's negative-fidelity finding: **the emulator gauntlet was answering
+the wrong question for these three types.** Emulator fidelity checks *validity* — would real AWS
+accept this config at all — not *safety* — is this config dangerous. A perfect, 100%-faithful
+emulator would apply a wide-open, `Principal: "*"` IAM trust policy without complaint, because
+real AWS *does* accept it. Negative fidelity on `aws_iam_role`/`aws_kms_key`/`aws_s3_bucket_policy`
+was never going to close this gap, no matter which emulator eventually passes it — it was testing
+the wrong layer for the actual risk.
+
+**The correct owner is G6** (`policy/g6/rules.rego`, OPA over plan JSON) — it already reads the
+*resolved* policy content at plan time, for free, deterministically, with no emulator involved at
+all. This is a routing correction, not new scope: G9 keeps its own job (apply-time-only failures —
+ordering, provider-side validation, computed-value resolution, per section 3) and explicitly does
+**not** own IAM/KMS/S3 *security content* — that responsibility moves to the gate that can actually
+enforce it.
+
+**Queued, in order, after the section-8 isolation boundary is wired into the shipped
+`ephemeral_apply.py` mechanism (G9's own close condition, unaffected by this section):**
+
+1. Extend G6's SEC-* Rego to hard-enforce the security properties an emulator cannot: no
+   `Principal: "*"`, no `Action: "*"` on sensitive resources, KMS key policies that aren't
+   wide-open, S3 bucket policies that deny public access, IAM trust relationships properly scoped.
+   These are security-*content* checks over plan JSON — free, deterministic, no emulator required.
+2. Shadow-mode-then-flip, identical to G6's own existing migration pattern (see the Phase 3
+   HANDOFF entry): the new rules run logging-only first, proven against all 16 real modules in
+   both directions (fires on a real constructed violation, stays silent on a real clean policy,
+   zero false positives) — only then does enforcement flip on. No enforcing on day one.
+3. Disclose the residual boundary honestly, in `HANDOFF.md`, as the G9/G6 coverage split: **G6
+   enforces IAM/KMS/S3 policy *security* statically; no emulator, and nothing else in CI, verifies
+   real apply-time IAM *interaction* fidelity for those three types.** `RESOURCE_TYPE_ALLOWLIST`'s
+   `negative_fidelity_unverified` block for these types stays exactly as-is — G6 taking ownership
+   of the *security* question does not answer or close the *fidelity* question G9 already
+   disclosed. The two gaps are distinct and both stay named, not collapsed into "G6 handles it now."
+
+This makes the disclosed option genuinely real: IAM/KMS/S3 are not dropped from governance, their
+*security* enforcement moves to the layer built to enforce it, while G9 keeps disclosing — rather
+than quietly implying closed — the apply-time fidelity question that belongs to it and remains
+open pending a provisioned LocalStack account.
+
 ## Ordering invariant
 
 Phase 5 is next, unblocked now that the audit-chain lock is closed. Phase 4 stays advisory, G6

@@ -267,6 +267,26 @@ def test_run_blocks_on_unsupported_emulator(tmp_path, monkeypatch):
     result = ea.run_ephemeral_apply(str(tmp_path), emulator="not-a-real-emulator")
     assert result["evaluation_failed"] is True
     assert result["reason"] == "unsupported_emulator"
+    assert result["emulator"] == "not-a-real-emulator"
+
+
+def test_every_verdict_names_its_emulator(tmp_path, monkeypatch):
+    """docs/phase5_scope.md section 7.3: every run_ephemeral_apply() result must carry which
+    emulator produced it -- a MiniStack green and a LocalStack green must never be
+    presentable as the same evidence. Checked across a spread of real exit paths (not just
+    one), since each was a separate dict literal in the source and any one could have been
+    missed when this field was added."""
+    monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: None)
+    result = ea.run_ephemeral_apply(str(tmp_path), emulator="ministack")
+    assert result["reason"] == "terraform_not_found"
+    assert result["emulator"] == "ministack"
+
+    monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
+    with mock.patch.object(ea.subprocess, "run", side_effect=_mock_run_sequence(
+            _completed(returncode=1, stderr="bad init"))):
+        result = ea.run_ephemeral_apply(str(tmp_path), emulator="floci")
+    assert result["reason"] == "init_failed"
+    assert result["emulator"] == "floci"
 
 
 def test_run_blocks_on_negative_fidelity_unverified_security_critical_type(tmp_path, monkeypatch):

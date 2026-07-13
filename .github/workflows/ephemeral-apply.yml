@@ -84,14 +84,266 @@ jobs:
           sys.path.insert(0, "core/governance")
           sys.path.insert(0, "core/reporting")
           import ephemeral_apply as ea
-          ea.RESOURCE_TYPE_ALLOWLIST["aws_s3_bucket"] = (True, False)
-          result = ea.run_ephemeral_apply("/tmp/g9_smoke", apply_timeout=120, destroy_timeout=120)
+          # _entry()'s dict-of-dicts-per-emulator shape (docs/phase5_scope.md section 7) replaced
+          # the old flat (verified, security_critical) tuple -- this line used to write a raw
+          # tuple here, which unverified_types_in_plan()'s entry.get(emulator, {}) call would
+          # have crashed on the moment this job next ran for real.
+          ea.RESOURCE_TYPE_ALLOWLIST["aws_s3_bucket"] = ea._entry(False, localstack=(True, False))
+          result = ea.run_ephemeral_apply("/tmp/g9_smoke", emulator="localstack",
+                                           apply_timeout=120, destroy_timeout=120)
           print(json.dumps(result, indent=2))
           assert result["evaluation_failed"] is False, f"G9 smoke test did not apply cleanly: {result}"
           assert result["coverage"] == "full"
+          assert result["emulator"] == "localstack"
           assert result["aws_resources_applied"] == ["aws_s3_bucket.smoke"]
           PY
 
       - name: Run ephemeral_apply.py's own test suite
         if: steps.token_check.outputs.configured == 'true'
         run: python -m pytest tests/test_ephemeral_apply.py -q
+
+  isolation-boundary:
+    name: "G9 isolation boundary (Firecracker + MiniStack, no token needed)"
+    # docs/phase5_scope.md section 8: the naive design (terraform apply running directly on the
+    # bare CI runner, an emulator container mounting the host's docker.sock as root) is a
+    # container-escape / arbitrary-host-execution surface -- section 8.1's finding that a hostile
+    # local-exec/remote-exec provisioner needs no emulator bug at all to reach the host is the
+    # more fundamental vector. This job wires the REAL ephemeral_apply.py pipeline (not a bare
+    # SSH-driven stand-in -- that was section 8.6's proof, this is the shipped mechanism) inside
+    # the same real, proven Firecracker microVM boundary and re-runs the hostile-escape canary
+    # against it. Uses MiniStack (free, no LOCALSTACK_AUTH_TOKEN needed) so this job runs on every
+    # push, unconditionally -- proving the ISOLATION mechanism does not depend on which emulator a
+    # user eventually configures. This is deliberately a SEPARATE, additional signal from the
+    # `ephemeral-apply` job above: that job is about emulator FIDELITY (blocked on a paid
+    # LocalStack token); this job is about the SANDBOX the apply step runs inside, which is
+    # emulator-agnostic and must hold regardless of which emulator is selected.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: KVM check + permission
+        run: |
+          set -euxo pipefail
+          ls -la /dev/kvm
+          sudo setfacl -m u:$(whoami):rw /dev/kvm || sudo chmod 666 /dev/kvm
+
+      - name: Download + checksum-verify the firecracker binary (pinned v1.16.1)
+        run: |
+          set -euxo pipefail
+          FC_VERSION="v1.16.1"
+          ARCH="$(uname -m)"
+          curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${ARCH}.tgz" -o fc.tgz
+          curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${ARCH}.tgz.sha256.txt" -o fc.tgz.sha256.txt
+          sha256sum -c fc.tgz.sha256.txt
+          tar -xzf fc.tgz
+          FC_BIN=$(find . -maxdepth 2 -type f -iname "firecracker-*" | grep -v debug | head -1)
+          echo "FC_BIN=$(pwd)/${FC_BIN#./}" >> "$GITHUB_ENV"
+          chmod +x "$FC_BIN"
+          "$FC_BIN" --version
+
+      - name: Download kernel + rootfs (official Firecracker quickstart CI artifacts, pinned keys)
+        run: |
+          set -euxo pipefail
+          release_url="https://s3.amazonaws.com/spec.ccfc.min"
+          curl -fsSL "${release_url}/firecracker-ci/v1.10/x86_64/vmlinux-6.1.102" -o vmlinux.bin
+          curl -fsSL "${release_url}/firecracker-ci/v1.10/x86_64/ubuntu-22.04.ext4" -o rootfs.ext4
+          curl -fsSL "${release_url}/firecracker-ci/v1.10/x86_64/ubuntu-22.04.id_rsa" -o id_rsa
+          chmod 600 id_rsa
+          ls -la vmlinux.bin rootfs.ext4 id_rsa
+
+      - name: Prepare host-side fixtures for the wired pipeline (smoke + hostile-escape)
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/g9_wired/smoke /tmp/g9_wired/hostile
+
+          cat > /tmp/g9_wired/smoke/main.tf <<'SMOKETF'
+          terraform {
+            required_providers { aws = { source = "hashicorp/aws", version = ">= 5.0" } }
+          }
+          resource "aws_s3_bucket" "smoke" {
+            bucket = "g9-wired-smoke-bucket"
+          }
+          SMOKETF
+
+          # The hostile fixture: a real, already-allowlisted resource type carrying a
+          # local-exec provisioner (section 8.1 -- provisioners attach to ANY resource, not just
+          # null_resource, and null_resource itself isn't even on RESOURCE_TYPE_ALLOWLIST, so it
+          # would never reach an apply attempt at all -- this fixture must use a type the
+          # allowlist actually lets through so the provisioner genuinely executes). The canary
+          # target (172.16.0.1:9999) is the proven tap-gateway address from section 8.6's real
+          # proof -- the exact address the guest-to-host reachability gap was found and fixed on.
+          cat > /tmp/g9_wired/hostile/main.tf <<'HOSTILETF'
+          terraform {
+            required_providers { aws = { source = "hashicorp/aws", version = ">= 5.0" } }
+          }
+          resource "aws_s3_bucket" "hostile" {
+            bucket = "g9-wired-hostile-bucket"
+            provisioner "local-exec" {
+              command = "(timeout 5 bash -c 'exec 3<>/dev/tcp/172.16.0.1/9999 && echo probe >&3 && head -1 <&3' || true) > /root/escape_attempt_result.txt 2>&1; cat /root/escape_attempt_result.txt"
+            }
+          }
+          HOSTILETF
+
+          cat > /tmp/g9_wired/run_smoke.py <<'SMOKEPY'
+          import sys, json
+          sys.path.insert(0, "/root/minusops/core/governance")
+          sys.path.insert(0, "/root/minusops/core/reporting")
+          import ephemeral_apply as ea
+          ea.RESOURCE_TYPE_ALLOWLIST["aws_s3_bucket"] = ea._entry(False, ministack=(True, False))
+          result = ea.run_ephemeral_apply("/root/g9_wired/smoke", emulator="ministack",
+                                           apply_timeout=180, destroy_timeout=180)
+          print(json.dumps(result, indent=2))
+          assert result["evaluation_failed"] is False, (
+              f"real ephemeral_apply.py did not apply cleanly inside the microVM boundary: {result}")
+          assert result["coverage"] == "full"
+          assert result["emulator"] == "ministack"
+          assert result["aws_resources_applied"] == ["aws_s3_bucket.smoke"]
+          print("WIRED_SMOKE_TEST_PASSED_INSIDE_MICROVM")
+          SMOKEPY
+
+          cat > /tmp/g9_wired/run_hostile.py <<'HOSTILEPY'
+          import sys, json
+          sys.path.insert(0, "/root/minusops/core/governance")
+          sys.path.insert(0, "/root/minusops/core/reporting")
+          import ephemeral_apply as ea
+          ea.RESOURCE_TYPE_ALLOWLIST["aws_s3_bucket"] = ea._entry(False, ministack=(True, False))
+          # Deliberately NOT asserting evaluation_failed here -- whether Terraform itself calls
+          # this apply a "success" is irrelevant to what this fixture proves. The load-bearing
+          # check is on the HOST side (did the canary listener ever get reached), done by the
+          # workflow step after this one runs, not by this script's own exit code.
+          result = ea.run_ephemeral_apply("/root/g9_wired/hostile", emulator="ministack",
+                                           apply_timeout=180, destroy_timeout=180)
+          print(json.dumps(result, indent=2))
+          print("WIRED_HOSTILE_FIXTURE_RAN_INSIDE_MICROVM")
+          HOSTILEPY
+
+      - name: Boot the microVM and configure networking (proven sequence, section 8.6)
+        run: |
+          set -euxo pipefail
+          API_SOCKET="/tmp/firecracker.socket"
+          rm -f "$API_SOCKET"
+          sudo "${FC_BIN}" --api-sock "$API_SOCKET" &
+          sleep 1
+          ls -la "$API_SOCKET"
+
+          sudo ip tuntap add dev tap0 mode tap
+          sudo ip addr add 172.16.0.1/30 dev tap0
+          sudo ip link set dev tap0 up
+          sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
+          HOST_IFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+          sudo iptables -t nat -A POSTROUTING -o "$HOST_IFACE" -j MASQUERADE
+          sudo iptables -A FORWARD -i tap0 -o "$HOST_IFACE" -j ACCEPT
+          sudo iptables -A FORWARD -i "$HOST_IFACE" -o tap0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+          # The section 8.6 fix, baked in from the start this time (not discovered live again):
+          # the rules above only govern traffic PASSING THROUGH the host (FORWARD chain); this
+          # blocks any NEW guest-initiated connection to the host itself (INPUT chain) while
+          # still allowing the host's own outbound SSH-into-guest management traffic to get its
+          # return packets.
+          sudo iptables -A INPUT -i tap0 -m state --state ESTABLISHED,RELATED -j ACCEPT
+          sudo iptables -A INPUT -i tap0 -j DROP
+
+          sudo curl -sf -X PUT --unix-socket "$API_SOCKET" \
+            --data '{"kernel_image_path":"'"$(pwd)"'/vmlinux.bin","boot_args":"console=ttyS0 reboot=k panic=1 pci=off ip=172.16.0.2::172.16.0.1:255.255.255.252::eth0:off"}' \
+            "http://localhost/boot-source"
+          sudo curl -sf -X PUT --unix-socket "$API_SOCKET" \
+            --data '{"drive_id":"rootfs","path_on_host":"'"$(pwd)"'/rootfs.ext4","is_root_device":true,"is_read_only":false}' \
+            "http://localhost/drives/rootfs"
+          sudo curl -sf -X PUT --unix-socket "$API_SOCKET" \
+            --data '{"iface_id":"net1","guest_mac":"06:00:AC:10:00:02","host_dev_name":"tap0"}' \
+            "http://localhost/network-interfaces/net1"
+          sudo curl -sf -X PUT --unix-socket "$API_SOCKET" \
+            --data '{"action_type":"InstanceStart"}' \
+            "http://localhost/actions"
+
+          for i in $(seq 1 20); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 -o BatchMode=yes -i id_rsa root@172.16.0.2 "echo GUEST_ALIVE" 2>/dev/null; then
+              break
+            fi
+            echo "waiting for guest ssh... ($i)"
+            sleep 2
+          done
+          ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "hostname; uname -a"
+
+      - name: Provision the guest -- docker, terraform, python, this package (all INSIDE the VM)
+        run: |
+          set -euxo pipefail
+          SSH="ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2"
+          $SSH "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io python3-pip python3-venv unzip >/tmp/apt.log 2>&1 || (tail -100 /tmp/apt.log; exit 1)"
+          $SSH "systemctl enable --now docker"
+          for i in $(seq 1 15); do
+            if $SSH "docker info >/dev/null 2>&1"; then break; fi
+            echo "waiting for dockerd inside guest... ($i)"; sleep 2
+          done
+          $SSH "curl -fsSL https://releases.hashicorp.com/terraform/1.10.5/terraform_1.10.5_linux_amd64.zip -o /tmp/tf.zip && unzip -o /tmp/tf.zip -d /usr/local/bin && terraform version"
+
+      - name: Copy the repo + wired fixtures into the guest
+        run: |
+          set -euxo pipefail
+          SSH_OPTS="-o StrictHostKeyChecking=no -i id_rsa"
+          ssh $SSH_OPTS root@172.16.0.2 "mkdir -p /root/minusops /root/g9_wired"
+          tar -C "$GITHUB_WORKSPACE" -cf - --exclude=.git . | ssh $SSH_OPTS root@172.16.0.2 "tar -C /root/minusops -xf -"
+          tar -C /tmp/g9_wired -cf - . | ssh $SSH_OPTS root@172.16.0.2 "tar -C /root/g9_wired -xf -"
+          ssh $SSH_OPTS root@172.16.0.2 "cd /root/minusops && pip3 install -q '.[dev]'"
+
+      - name: Start MiniStack inside the guest (its docker.sock never leaves the VM)
+        run: |
+          set -euxo pipefail
+          SSH="ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2"
+          $SSH "docker run -d --name ministack -p 4566:4566 ministackorg/ministack"
+          for i in $(seq 1 30); do
+            if $SSH "curl -sf http://localhost:4566/_localstack/health >/dev/null 2>&1 || curl -sf http://localhost:4566/ >/dev/null 2>&1"; then
+              echo "ministack responding after $i attempts"; break
+            fi
+            sleep 1
+          done
+
+      - name: Arm the host-side escape canary (BEFORE the hostile fixture runs)
+        run: |
+          set -euxo pipefail
+          rm -f /tmp/host_listener.log
+          (python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(('172.16.0.1', 9999))
+          s.settimeout(120)
+          s.listen(1)
+          try:
+              conn, addr = s.accept()
+              conn.sendall(b'HOST_REACHED_FROM_GUEST\n')
+              conn.close()
+          except socket.timeout:
+              pass
+          " > /tmp/host_listener.log 2>&1 &)
+          sleep 1
+          echo "host canary listener armed on 172.16.0.1:9999"
+
+      - name: Real ephemeral_apply.py, run for real, INSIDE the microVM boundary
+        run: |
+          set -euxo pipefail
+          ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "cd /root/minusops && python3 /root/g9_wired/run_smoke.py"
+
+      - name: Hostile-escape fixture -- same real pipeline, same real boundary
+        run: |
+          set -uxo pipefail
+          ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "cd /root/minusops && python3 /root/g9_wired/run_hostile.py"
+          echo "hostile fixture run complete -- checking the HOST side next, not this exit code"
+
+      - name: THE LOAD-BEARING CHECK -- did the canary ever reach the host?
+        run: |
+          set -euxo pipefail
+          sleep 2
+          echo "=== host listener log ==="
+          cat /tmp/host_listener.log || true
+          if grep -q "HOST_REACHED_FROM_GUEST" /tmp/host_listener.log 2>/dev/null; then
+            echo "::error::ISOLATION BOUNDARY FAILED -- the hostile local-exec provisioner reached the host from inside the wired ephemeral_apply.py pipeline. G9 must not be considered closed."
+            exit 1
+          fi
+          echo "Isolation boundary held: the hostile local-exec provisioner, run through the real ephemeral_apply.py pipeline inside the microVM, never reached the host."
+
+      - name: Teardown the microVM unconditionally
+        if: always()
+        run: |
+          sudo pkill -f "firecracker --api-sock" || true
+          sudo ip link delete tap0 || true
+          echo "microVM torn down"
