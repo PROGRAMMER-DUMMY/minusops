@@ -214,6 +214,58 @@ def test_required_external_scanner_blocks_when_missing(tmp_path, monkeypatch):
     assert optimize_analyzer.blocking_findings(findings, external_blocking=True)
 
 
+def test_trivy_findings_parsed_from_the_real_confirmed_json_shape(tmp_path, monkeypatch):
+    """G7 (tfsec -> Trivy swap). The exact nested shape here (Results[].Misconfigurations[]
+    with ID/Title/Message/CauseMetadata.Resource) was verified live against `trivy config -f
+    json` run on a real module in this repo (aws_s3_bucket.zone["bronze"], AWS-0089 "S3 Bucket
+    Logging"), not assumed from documentation -- this fixture is that real output, trimmed."""
+    import json as _json
+    import subprocess as _subprocess
+    from unittest import mock
+
+    real_trivy_output = _json.dumps({
+        "SchemaVersion": 2,
+        "Trivy": {"Version": "0.72.0"},
+        "ArtifactName": "modules/storage-medallion-s3",
+        "ArtifactType": "filesystem",
+        "Results": [
+            {"Target": ".", "Class": "config", "Type": "terraform",
+             "MisconfSummary": {"Successes": 61, "Failures": 0}},
+            {"Target": "main.tf", "Class": "config", "Type": "terraform",
+             "MisconfSummary": {"Successes": 0, "Failures": 1},
+             "Misconfigurations": [{
+                 "Type": "Terraform Security Check", "ID": "AWS-0089",
+                 "Title": "S3 Bucket Logging",
+                 "Description": "Ensures S3 bucket logging is enabled for S3 buckets",
+                 "Message": "Bucket has logging disabled",
+                 "Namespace": "builtin.aws.s3.aws0089", "Severity": "LOW",
+                 "PrimaryURL": "https://avd.aquasec.com/misconfig/aws-0089",
+                 "Status": "FAIL",
+                 "CauseMetadata": {"Resource": 'aws_s3_bucket.zone["bronze"]',
+                                   "Provider": "AWS", "Service": "s3",
+                                   "StartLine": 48, "EndLine": 55},
+             }]},
+        ],
+    })
+    monkeypatch.setattr(toolpath, "find_tool", lambda name: "trivy" if name == "trivy" else None)
+    fake_result = _subprocess.CompletedProcess(args=[], returncode=32, stdout=real_trivy_output, stderr="")
+    with mock.patch.object(optimize_analyzer.subprocess, "run", return_value=fake_result):
+        findings = optimize_analyzer.run_external_scanners(str(tmp_path))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["id"] == "AWS-0089"
+    assert finding["category"] == "External:trivy"
+    assert finding["title"] == "S3 Bucket Logging"
+    assert finding["description"] == "Bucket has logging disabled"
+    assert finding["resource"] == 'aws_s3_bucket.zone["bronze"]'
+    # Real, confirmed behavior: trivy config exits non-zero (32) whenever it finds real
+    # misconfigurations -- this must NOT be treated as a scanner-unavailable error the way a
+    # genuinely failed subprocess would be; the finding above proves it parsed correctly despite
+    # the non-zero returncode.
+    assert finding["id"] != "POLICY-EXT"
+
+
 def test_per_resource_flags_only_uncovered_buckets(tmp_path):
     # The whole-file scanner's blind spot: many buckets, one public-access-block.
     # Per-resource analysis must flag exactly the three unprotected buckets.

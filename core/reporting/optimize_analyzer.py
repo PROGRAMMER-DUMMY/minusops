@@ -6,9 +6,19 @@ bucket needs a public-access-block") are evaluated against each resource block, 
 a directory with four buckets and one public-access-block correctly flags the three
 unprotected buckets — the previous whole-file substring approach missed that.
 
-Optionally merges findings from external policy engines (checkov / tfsec) when
+Optionally merges findings from external policy engines (checkov / trivy) when
 present on PATH. Native SEC-* findings always block; external findings are
 advisory in dev mode and blocking in production policy mode.
+
+G7 (tracked in HANDOFF.md's gate taxonomy): tfsec is retired in favor of Trivy's `config`
+subcommand -- tfsec itself was archived upstream in favor of Trivy, which absorbed its
+Terraform misconfiguration ruleset (aquasecurity/tfsec README: "tfsec is joining Trivy").
+Running an archived scanner would mean this repo's own external-policy layer silently stops
+receiving new checks/CVE-style rule updates -- the same "verifier that quietly stops verifying"
+shape this session has repeatedly found and fixed elsewhere, just for a scanner instead of a
+gate. Trivy's real JSON output shape (`Results[].Misconfigurations[]`) was verified live against
+one of this repo's own real modules, not assumed from documentation, before writing the parser
+below.
 """
 import os
 import re
@@ -19,7 +29,7 @@ import sys
 
 
 BLOCKING_PREFIXES = ("SEC-",)
-EXTERNAL_SCANNERS = ("checkov", "tfsec")
+EXTERNAL_SCANNERS = ("checkov", "trivy")
 SKIP_DIRS = {".terraform", ".git", "__pycache__", ".minus"}
 
 
@@ -218,7 +228,7 @@ def scan_hcl_files(source_dir):
 
 
 # ---------------------------------------------------------------------------
-# Optional external policy engines (checkov / tfsec). Advisory in dev, blocking in production.
+# Optional external policy engines (checkov / trivy). Advisory in dev, blocking in production.
 # ---------------------------------------------------------------------------
 def _scanner_error(scanner, message, required=False):
     severity = "BLOCKING" if required else "EXTERNAL"
@@ -250,28 +260,36 @@ def run_external_scanners(source_dir, required=False):
             findings.append(_scanner_error("checkov", msg, required))
             print(f"[OPTIMIZER] {msg}", file=sys.stderr)
 
-    tfsec = toolpath.find_tool("tfsec")
-    if tfsec:
+    trivy = toolpath.find_tool("trivy")
+    if trivy:
         try:
-            res = subprocess.run([tfsec, source_dir, "-f", "json", "--no-color"],
+            # `trivy config` exits non-zero whenever it finds real misconfigurations (confirmed
+            # live -- exit 32 against a real module with genuine findings, valid JSON on stdout
+            # regardless) -- this is Trivy's normal "findings present" signal, not a run
+            # failure, so returncode is deliberately not checked here; only a genuinely
+            # unparseable/absent stdout (subprocess raising, or malformed JSON) counts as
+            # _scanner_error below.
+            res = subprocess.run([trivy, "config", "-f", "json", source_dir],
                                  capture_output=True, text=True, timeout=120)
             data = json.loads(res.stdout or "{}")
-            for item in (data.get("results") or []):
-                findings.append(_finding(
-                    item.get("rule_id", "TFSEC"), "External:tfsec",
-                    item.get("description", "tfsec finding"),
-                    (item.get("location", {}) or {}).get("filename", ""),
-                    "EXTERNAL", resource=item.get("resource")))
+            for result in (data.get("Results") or []):
+                for item in (result.get("Misconfigurations") or []):
+                    cause = item.get("CauseMetadata") or {}
+                    findings.append(_finding(
+                        item.get("ID", "TRIVY"), "External:trivy",
+                        item.get("Title", "trivy finding"),
+                        item.get("Message", item.get("Description", "")),
+                        "EXTERNAL", resource=cause.get("Resource")))
         except Exception as exc:
-            msg = f"tfsec run failed: {exc}"
-            findings.append(_scanner_error("tfsec", msg, required))
+            msg = f"trivy run failed: {exc}"
+            findings.append(_scanner_error("trivy", msg, required))
             print(f"[OPTIMIZER] {msg}", file=sys.stderr)
 
-    if required and not (checkov or tfsec):
+    if required and not (checkov or trivy):
         findings.append(_scanner_error(
             "required",
             "Production policy mode requires at least one supported external scanner "
-            "(checkov or tfsec) on PATH.",
+            "(checkov or trivy) on PATH.",
             required=True))
 
     return findings
@@ -324,7 +342,7 @@ def main(argv=None):
     parser.add_argument("--report-only", action="store_true",
                         help="Write the report but do not fail on blocking findings")
     parser.add_argument("--external", action="store_true",
-                        help="Also run external policy engines (checkov/tfsec) if present; advisory")
+                        help="Also run external policy engines (checkov/trivy) if present; advisory")
     parser.add_argument("--require-external", action="store_true",
                         help="Require at least one external scanner and make external findings blocking")
     parser.add_argument("--policy-mode", choices=["dev", "production"],
