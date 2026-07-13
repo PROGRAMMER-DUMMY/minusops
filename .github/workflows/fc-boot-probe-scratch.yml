@@ -1,0 +1,46 @@
+name: Firecracker Boot Probe (scratch, temporary)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: KVM check
+        run: |
+          set -euxo pipefail
+          ls -la /dev/kvm
+          sudo setfacl -m u:$(whoami):rw /dev/kvm || sudo chmod 666 /dev/kvm
+
+      - name: Download firecracker binary
+        run: |
+          set -euxo pipefail
+          ARCH="$(uname -m)"
+          release_url="https://github.com/firecracker-microvm/firecracker/releases"
+          latest=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
+          echo "latest=$latest"
+          curl -L ${release_url}/download/${latest}/firecracker-${latest}-${ARCH}.tgz | tar -xz
+          find . -maxdepth 2 -iname "firecracker*"
+          FC_BIN=$(find . -maxdepth 2 -type f -iname "firecracker-*" | grep -v debug | head -1)
+          echo "FC_BIN=$FC_BIN" >> "$GITHUB_ENV"
+          chmod +x "$FC_BIN"
+          "$FC_BIN" --version
+
+      - name: Download kernel + rootfs (official quickstart CI artifacts)
+        run: |
+          set -euxo pipefail
+          ARCH="$(uname -m)"
+          release_url="https://s3.amazonaws.com/spec.ccfc.min"
+          latest_kernel_key=$(curl -s "${release_url}/?prefix=firecracker-ci/v1.10/${ARCH}/vmlinux-6.1" | tr -s '<' '\n' | grep -o "firecracker-ci/v1.10/${ARCH}/vmlinux-6.1[^<]*" | sort -V | tail -1)
+          echo "kernel_key=$latest_kernel_key"
+          curl -fsSL "${release_url}/${latest_kernel_key}" -o vmlinux.bin
+          latest_ubuntu_key=$(curl -s "${release_url}/?prefix=firecracker-ci/v1.10/${ARCH}/ubuntu-24.04.squashfs" | tr -s '<' '\n' | grep -o "firecracker-ci/v1.10/${ARCH}/ubuntu-24.04.squashfs[^<]*" | sort -V | tail -1)
+          echo "ubuntu_key=$latest_ubuntu_key"
+          curl -fsSL "${release_url}/${latest_ubuntu_key}" -o rootfs.squashfs
+          ls -la vmlinux.bin rootfs.squashfs
+
+      - name: Report findings
+        if: always()
+        run: |
+          echo "See job output above for kernel/rootfs discovery results"
