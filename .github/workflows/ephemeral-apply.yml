@@ -152,6 +152,16 @@ jobs:
           chmod 600 id_rsa
           ls -la vmlinux.bin rootfs.ext4 id_rsa
 
+          # The quickstart CI rootfs is sized for the minimal SSH-probe use case section 8.6
+          # proved isolation with -- installing docker.io (pulls in containerd/runc/iptables)
+          # plus terraform plus this package's Python deps genuinely does not fit. Grow the
+          # image file and its filesystem on the HOST before boot (e2fsck first is required by
+          # resize2fs after a raw truncate).
+          truncate -s 6G rootfs.ext4
+          e2fsck -f -y rootfs.ext4 || true
+          resize2fs rootfs.ext4
+          ls -la rootfs.ext4
+
       - name: Prepare host-side fixtures for the wired pipeline (smoke + hostile-escape)
         run: |
           set -euxo pipefail
