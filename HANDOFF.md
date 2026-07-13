@@ -689,6 +689,20 @@
 > **Not closed.** Per the approved scope's own condition, Phase 5 stays open until the token is
 > provisioned and the remaining proof-bar items actually run for real — this is evidence of
 > what's built and correctly gated, not a claim that G9 is verified.
+>
+> **Follow-up (same day): a real CI regression caught and fixed immediately, not left standing.**
+> The push above broke both windows-latest jobs for real — not the pre-existing audit-chain
+> flake, a genuinely new one: the real unreachable-endpoint test leaves an orphaned
+> `terraform-provider-aws` process (Python's subprocess timeout kills the direct `terraform.exe`
+> child but not its own provider-plugin grandchild on Windows), which holds a Windows-only file
+> lock on the *shared* `TF_PLUGIN_CACHE_DIR`, breaking unrelated tests
+> (`test_rego_gate.py`/`test_schema_lint.py`/`test_schema_watch.py`) in the same job.
+> macos-latest and ubuntu-latest both ran the same test clean in the same run — POSIX's
+> lock/unlink semantics for a dead-but-not-yet-reaped process don't have this gap. Fixed by
+> skipping that one subprocess-heavy real test on `win32` specifically (not Linux/macOS) — G9
+> is structurally Ubuntu-only anyway, so this is a consistent scope narrowing, not a workaround.
+> Confirmed on real CI: all 8 jobs green after the fix, both previously-failing Windows jobs
+> included.
 
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
