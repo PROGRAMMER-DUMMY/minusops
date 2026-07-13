@@ -130,6 +130,15 @@ jobs:
       - name: Download + checksum-verify the firecracker binary (pinned v1.16.1)
         run: |
           set -euxo pipefail
+          # Every Firecracker artifact (binary, kernel, rootfs, id_rsa) lives in its OWN
+          # directory outside the checked-out repo -- a real bug, found live, not guessed: the
+          # "Copy the repo" step's `tar -C "$GITHUB_WORKSPACE" .` swept up these files (including
+          # a 10GB scratch disk image) as if they were part of the repo, because they were
+          # downloaded straight into $GITHUB_WORKSPACE with no isolation. That is what was
+          # actually filling up the guest's disk every time, not genuine provisioning overhead --
+          # each "grow the root" fix just made the accidentally-copied artifact bigger too.
+          mkdir -p "$RUNNER_TEMP/fc"
+          cd "$RUNNER_TEMP/fc"
           FC_VERSION="v1.16.1"
           ARCH="$(uname -m)"
           FC_TGZ="firecracker-${FC_VERSION}-${ARCH}.tgz"
@@ -145,6 +154,7 @@ jobs:
       - name: Download kernel + rootfs (official Firecracker quickstart CI artifacts, pinned keys)
         run: |
           set -euxo pipefail
+          cd "$RUNNER_TEMP/fc"
           release_url="https://s3.amazonaws.com/spec.ccfc.min"
           curl -fsSL "${release_url}/firecracker-ci/v1.10/x86_64/vmlinux-6.1.102" -o vmlinux.bin
           curl -fsSL "${release_url}/firecracker-ci/v1.10/x86_64/ubuntu-22.04.ext4" -o rootfs.ext4
@@ -242,6 +252,7 @@ jobs:
       - name: Boot the microVM and configure networking (proven sequence, section 8.6)
         run: |
           set -euxo pipefail
+          cd "$RUNNER_TEMP/fc"
           API_SOCKET="/tmp/firecracker.socket"
           rm -f "$API_SOCKET"
           sudo "${FC_BIN}" --api-sock "$API_SOCKET" &
@@ -296,6 +307,7 @@ jobs:
       - name: Configure DNS inside the guest (NAT alone routes IPs, not names)
         run: |
           set -euxo pipefail
+          cd "$RUNNER_TEMP/fc"
           # The guest can already reach the internet by IP (MASQUERADE + FORWARD ACCEPT), but has
           # no DNS resolver configured -- apt-get's hostname lookups (archive.ubuntu.com) fail
           # with "Temporary failure resolving" until this is set. rm -f first: the base image may
@@ -306,6 +318,7 @@ jobs:
       - name: Initialize dpkg's status database (genuinely absent on this minimal quickstart image)
         run: |
           set -euxo pipefail
+          cd "$RUNNER_TEMP/fc"
           # Confirmed directly, not assumed: "E: flAbsPath on /var/lib/dpkg/status failed --
           # No such file or directory" fires instantly, before any real apt-get work runs (ruled
           # out disk space as the cause once the rootfs was already 6GB) -- this quickstart image
@@ -318,6 +331,7 @@ jobs:
       - name: Provision the guest -- docker, terraform, python, this package (all INSIDE the VM)
         run: |
           set -euxo pipefail
+          cd "$RUNNER_TEMP/fc"
           SSH="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2"
           # Every remote command below is wrapped in `timeout` -- an earlier iteration of this
           # job hung silently for 55 minutes on a stalled apt-get before finally erroring, wasting
@@ -349,6 +363,7 @@ jobs:
       - name: Copy the repo + wired fixtures into the guest
         run: |
           set -euxo pipefail
+          cd "$RUNNER_TEMP/fc"
           SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa"
           ssh $SSH_OPTS root@172.16.0.2 "mkdir -p /root/minusops /root/g9_wired"
           tar -C "$GITHUB_WORKSPACE" -cf - --exclude=.git . | ssh $SSH_OPTS root@172.16.0.2 "tar -C /root/minusops -xf -"
@@ -358,6 +373,7 @@ jobs:
       - name: Start MiniStack inside the guest (its docker.sock never leaves the VM)
         run: |
           set -euxo pipefail
+          cd "$RUNNER_TEMP/fc"
           SSH="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2"
           $SSH "timeout 120 docker run -d --name ministack -p 4566:4566 ministackorg/ministack"
           for i in $(seq 1 30); do
@@ -391,11 +407,13 @@ jobs:
       - name: Real ephemeral_apply.py, run for real, INSIDE the microVM boundary
         run: |
           set -euxo pipefail
+          cd "$RUNNER_TEMP/fc"
           ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2 "cd /root/minusops && timeout 500 python3 /root/g9_wired/run_smoke.py"
 
       - name: Hostile-escape fixture -- same real pipeline, same real boundary
         run: |
           set -uxo pipefail
+          cd "$RUNNER_TEMP/fc"
           ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2 "cd /root/minusops && timeout 500 python3 /root/g9_wired/run_hostile.py"
           echo "hostile fixture run complete -- checking the HOST side next, not this exit code"
 
