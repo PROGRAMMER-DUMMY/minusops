@@ -16,7 +16,7 @@ jobs:
       - name: Scan a real module, capture JSON shape
         run: |
           set -euxo pipefail
-          trivy config -f json modules/storage-medallion-s3 > /tmp/trivy_out.json
+          trivy config -f json modules/storage-medallion-s3 > /tmp/trivy_out.json || true
           cat /tmp/trivy_out.json | python3 -m json.tool | head -80
           echo "--- top level keys ---"
           python3 -c "import json; d=json.load(open('/tmp/trivy_out.json')); print(list(d.keys()))"
