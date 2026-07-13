@@ -21,6 +21,7 @@ should already claim coverage it hasn't earned.
 """
 import json
 import subprocess
+import sys
 import time
 from unittest import mock
 
@@ -389,6 +390,19 @@ def test_exception_in_apply_stage_propagates_not_swallowed_by_teardown(tmp_path,
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Confirmed live, not theoretical: this test caused a REAL regression on "
+           "windows-latest CI (test_rego_gate.py/test_schema_lint.py/test_schema_watch.py all "
+           "failed immediately after it with 'file...being used by another process'). A timed-"
+           "out apply against an unreachable endpoint leaves an orphaned terraform-provider-aws "
+           "process that holds a Windows-only file lock on the SHARED TF_PLUGIN_CACHE_DIR, "
+           "breaking unrelated tests in the same CI job -- Windows' delete/lock semantics for a "
+           "dead-but-not-yet-reaped process differ from POSIX's (macos-latest and ubuntu-latest "
+           "both ran this same test clean in the same CI run). G9 itself is structurally "
+           "Ubuntu-only anyway (docs/phase5_scope.md section 1) -- skipping on Windows only "
+           "is the correct fix, not process-tree-killing on a platform this gate will never "
+           "run on for real.")
 def test_real_apply_against_unreachable_endpoint_blocks_not_hangs_forever(tmp_path):
     """The real test that caught the provider-override-ordering bug in this file's first draft
     (see the module's own run_ephemeral_apply docstring): a genuinely unreachable LocalStack
