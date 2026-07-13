@@ -132,10 +132,11 @@ jobs:
           set -euxo pipefail
           FC_VERSION="v1.16.1"
           ARCH="$(uname -m)"
-          curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${ARCH}.tgz" -o fc.tgz
-          curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${ARCH}.tgz.sha256.txt" -o fc.tgz.sha256.txt
-          sha256sum -c fc.tgz.sha256.txt
-          tar -xzf fc.tgz
+          FC_TGZ="firecracker-${FC_VERSION}-${ARCH}.tgz"
+          curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/${FC_TGZ}" -o "${FC_TGZ}"
+          curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/${FC_TGZ}.sha256.txt" -o "${FC_TGZ}.sha256.txt"
+          sha256sum -c "${FC_TGZ}.sha256.txt"
+          tar -xzf "${FC_TGZ}"
           FC_BIN=$(find . -maxdepth 2 -type f -iname "firecracker-*" | grep -v debug | head -1)
           echo "FC_BIN=$(pwd)/${FC_BIN#./}" >> "$GITHUB_ENV"
           chmod +x "$FC_BIN"
