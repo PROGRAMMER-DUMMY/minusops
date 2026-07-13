@@ -505,6 +505,68 @@ same discipline as every other proof this session):
    over the same SSH channel) is real, remaining implementation work — scoped and proven
    feasible here, not yet built as the shipped mechanism.
 
+### 8.7 The shipped mechanism itself, wired and proven on real CI (2026-07-13) — G9 closes
+
+Section 8.6 proved the isolation boundary was buildable but explicitly flagged what remained:
+wiring the real `ephemeral_apply.py` pipeline (not a bare SSH-driven stand-in) to execute inside
+it. That work is now done, real, and green on this repo's actual CI — `.github/workflows/
+ephemeral-apply.yml`'s `isolation-boundary` job, running on every push, no secrets required
+(MiniStack, free — the isolation boundary is emulator-agnostic by design, so proving it holds
+does not wait on a LocalStack token).
+
+**What the job actually does, end to end, on real infrastructure:**
+1. Boots the same proven Firecracker microVM (KVM, pinned+checksummed v1.16.1 binary, official
+   kernel/rootfs artifacts, the INPUT-chain DROP rule baked in from the start this time).
+2. Provisions the guest **entirely inside itself** — docker, terraform, python, and this
+   repo's own package, installed and running only inside the disposable VM, never on the host.
+3. Runs the real `run_ephemeral_apply()` — the actual shipped function, imported and called
+   directly, not a re-implementation — against a real MiniStack container (`--network host`
+   inside the guest) for a plan containing `aws_s3_bucket.smoke`: real `terraform init/plan/
+   apply/destroy`, a real verdict (`evaluation_failed: false`, `aws_resources_applied:
+   ["aws_s3_bucket.smoke"]`, `emulator: "ministack"`).
+4. Runs the **hostile-escape fixture** through that exact same real pipeline: `aws_s3_bucket.
+   hostile` carrying a `local-exec` provisioner attempting the proven escape vector (a raw TCP
+   connection to the host's own tap-gateway address, 172.16.0.1:9999). The provisioner executes
+   for real, as part of a real `terraform apply` Terraform itself considers successful
+   (`evaluation_failed: false` — a provisioner's own exit status doesn't fail the apply, exactly
+   as real Terraform behaves).
+5. **The load-bearing check runs on the HOST side**, independent of anything Terraform or
+   `ephemeral_apply.py` itself reports: a canary listener armed on the host before the hostile
+   fixture runs, checked after — `grep -q "HOST_REACHED_FROM_GUEST"` against the listener's own
+   log. Real result: **no match** — the canary was never reached. The isolation boundary held
+   against the exact thing a hostile or merely-buggy generated `local-exec` provisioner is
+   capable of doing, exercised through the real, shipped G9 mechanism, not a stand-in.
+
+**Five more real bugs found and fixed getting here, each confirmed via actual CI failures, not
+anticipated in advance** — the pattern holds from every other proof this session: the design was
+sound, but real infrastructure surfaces real gaps a design review can't:
+- A checksum-filename mismatch in the pinned Firecracker download (fixed: name the local file
+  to match what the `.sha256.txt` actually references).
+- No DNS resolver configured in the guest — NAT routes IPs, not hostnames (fixed: `/etc/resolv.
+  conf` pointed at a public resolver).
+- **The real, load-bearing one**: every "grow the disk" fix (resize2fs in place — rejected, it
+  corrupted the guest filesystem; a redirected scratch disk; a bigger root) kept failing at
+  increasing sizes, because the actual bug was that Firecracker's own downloaded artifacts
+  (kernel, rootfs, the multi-GB scratch/root images) lived inside `$GITHUB_WORKSPACE` and were
+  being swept up by the "copy the repo into the guest" step's own `tar` command — each fix made
+  the accidentally-copied file bigger, not the problem smaller. Fixed by moving every Firecracker
+  artifact into `$RUNNER_TEMP/fc`, structurally outside the checked-out repo.
+- Firecracker's own default machine config (1 vCPU / 128MiB RAM, never explicitly set before)
+  silently let the guest go unresponsive mid-`apt-get`; fixed with an explicit `/machine-config`
+  PUT (2 vCPU / 2048MiB).
+- The quickstart rootfs has no dpkg database at all (a bare SSH-probe artifact, not a
+  provisioned OS) and this kernel lacks nftables support (`iptables` defaults to the `nft`
+  backend, which fails outright) — fixed by seeding an empty dpkg status file and switching to
+  the legacy `iptables` backend. Docker's own bridge-networking path needed a further `iptables
+  raw`-table rule this kernel doesn't support either; sidestepped with `--network host` for the
+  single-tenant emulator container, which needs no bridge/NAT path at all.
+
+**G9 (Phase 5) is now genuinely closed.** Both proof-bar items this session's own instructions
+ranked above fidelity are real, not designed-on-paper: the isolation boundary is proven, and it
+is now the actual shipped mechanism, not a standalone probe standing in for it. LocalStack's own
+fidelity column stays honestly unverified pending a provisioned paid account — a real, disclosed,
+separately-tracked gap (item 0), not a blocker to closing the isolation requirement itself.
+
 ## 9. Design option, not required now — hybrid gating (flagged for later consideration)
 
 Raised on review as worth scoping, not building: G9 does not have to run every resource type
@@ -571,3 +633,11 @@ this scope — including the item-0 tool decision, the section-7 emulator-choice
 and the section-8 sandbox-isolation requirement — is agreed. **Section 8 (isolation) is now the
 most load-bearing item on the entire proof bar, above fidelity** — G9 does not close without a
 real, tested isolation boundary, regardless of how complete the fidelity matrix is.
+
+**Status (2026-07-13): Phase 5 (G9) CLOSED.** Section 8.7 is the real, on-CI proof that the
+isolation boundary is not just buildable but is the actual shipped mechanism — the hostile-escape
+canary was checked against a real run of `ephemeral_apply.py` itself, inside the microVM, and
+held. Section 10's correction stands alongside this, not against it: G9 closing means its own
+proof bar (apply-time-only failures, isolation) is satisfied; it does not mean IAM/KMS/S3
+*security* is solved by G9 — that's G6's queued work, tracked separately. LocalStack's fidelity
+column (item 0, section 7) remains open pending a provisioned account — disclosed, not blocking.

@@ -782,6 +782,62 @@
 > wired into the shipped pipeline; the LocalStack column of the fidelity matrix stays unverified
 > pending a provisioned account; both are real, named, remaining work, not silently assumed done.
 
+> **Follow-up (2026-07-13): Phase 5 (G9) — isolation boundary wired into the shipped mechanism
+> for real, on real CI. G9 CLOSED.** Full detail: `docs/phase5_scope.md` section 8.7.
+>
+> **A routing correction, settled before the wiring work started, not after**: the section 7.5
+> negative-fidelity finding (neither free emulator rejects malformed IAM/KMS/S3 policies real AWS
+> rejects) was being answered at the wrong layer. An emulator checks *validity* (would real AWS
+> accept this) — never *safety* (is this dangerous). A perfectly faithful emulator would apply a
+> wide-open `Principal: "*"` policy without complaint, because real AWS does too. That security
+> question belongs to G6 (OPA over plan JSON, which already reads the resolved policy for free,
+> no emulator needed) — queued as G6's next real work (extend SEC-* Rego to hard-enforce IAM/KMS/
+> S3 content, shadow-then-flip against all 16 modules, zero false positives both directions before
+> enforcing), explicitly ordered *after* this isolation-wiring close, not instead of it. This does
+> not touch `RESOURCE_TYPE_ALLOWLIST`'s `negative_fidelity_unverified` block, which stays exactly
+> as-is — G6 taking the security question doesn't answer G9's own disclosed apply-time-fidelity
+> gap; the two stay named separately. `docs/phase5_scope.md` section 10 has the full writeup.
+>
+> **The wiring itself, real and green**: `.github/workflows/ephemeral-apply.yml` gained an
+> `isolation-boundary` job that boots the same proven Firecracker microVM (section 8.6), installs
+> docker/terraform/python **entirely inside the guest**, and calls the actual shipped
+> `run_ephemeral_apply()` — not a re-implementation — against a real MiniStack container for a
+> normal fixture (real `evaluation_failed: false`, real `aws_resources_applied`) and against a
+> **hostile fixture**: a real, allowlisted resource carrying a `local-exec` provisioner that
+> attempts the proven escape vector (a raw connection to the host's own tap-gateway address). The
+> load-bearing check runs on the **host** side, independent of Terraform's own exit code: a canary
+> listener armed before the hostile run, grepped after. Real result: **not reached**. This is the
+> first time the escape test has run against the real pipeline instead of a bare SSH-driven stand-
+> in — proof-bar item 8.5 is now satisfied for the shipped mechanism, not just the design.
+>
+> **Five more real bugs, each found by an actual CI failure, not anticipated**: a checksum-
+> filename mismatch on the pinned Firecracker download; no DNS resolver in the guest (NAT routes
+> IPs, not names); Firecracker's own 128MiB default RAM silently hanging the guest mid-`apt-get`
+> (fixed with an explicit 2 vCPU/2048MiB `/machine-config`); the quickstart rootfs having no dpkg
+> database at all plus lacking nftables support (fixed: seed an empty dpkg status, switch
+> `iptables` to the legacy backend); and Docker's own bridge-networking path needing an `iptables
+> raw`-table rule this kernel doesn't support either (fixed: `--network host`, since this
+> single-tenant guest needs no bridge/NAT path at all). **The one worth flagging on its own**:
+> every "grow the disk" fix (in-place resize2fs — rejected, it corrupted the guest filesystem; a
+> redirected scratch disk; a bigger root, three separate attempts) kept failing at ever-larger
+> sizes because the actual bug had nothing to do with size — Firecracker's own downloaded
+> artifacts lived inside `$GITHUB_WORKSPACE` and were being swept into the guest by the "copy the
+> repo" step's own `tar` command; each size increase just grew the accidentally-copied file.
+> Fixed by moving every Firecracker artifact to `$RUNNER_TEMP/fc`, structurally outside the
+> checked-out repo — the actual fix was isolation of build artifacts, not more disk.
+>
+> Also fixed in the same pass: `run_ephemeral_apply()` now names its `emulator` in every returned
+> verdict (section 7.3's own requirement, previously unimplemented — a real gap, not a rewrite),
+> and the pre-existing LocalStack smoke test's allowlist-patch line was updated for the `_entry()`
+> dict shape (would have crashed the moment that job next ran for real). New regression test
+> (`test_every_verdict_names_its_emulator`) locks the emulator-naming fix down; 37/37 tests green.
+>
+> **Phase 5 (G9) is now genuinely CLOSED**: both proof-bar items ranked above fidelity — the
+> isolation boundary, and its wiring into the actual shipped mechanism — are real, not designed on
+> paper. Still honestly open, disclosed, not silently dropped: LocalStack's own fidelity column
+> (item 0) pending a provisioned paid account, and the G6 IAM/KMS/S3 security-enforcement work
+> queued right behind this close.
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance
