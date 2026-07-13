@@ -26,12 +26,22 @@ for this repo specifically.**
   March 2026) — genuinely less battle-tested than LocalStack, and neither has been run against
   this repo's actual modules yet.
 
-**Recommendation, not a unilateral choice**: scope G9 against MiniStack (free, matches this
-project's own no-hardcoded-cost / no-recurring-external-cost posture elsewhere), with the design
-below kept tool-agnostic enough that swapping to paid LocalStack later is a config change, not a
-rewrite, if MiniStack's real coverage (verified per item 2 below) turns out insufficient. This is
-a real decision point for review, not settled by this document — flagging it prominently here
-rather than three sections into a doc that already assumed an answer.
+**DECIDED: LocalStack, paid Base plan.** Reframed correctly on review: this is not free-vs-$39/mo,
+it's whether G9's fidelity signal stands on a mature, battle-tested emulator or a four-month-old
+one whose behavioral fidelity to real AWS is unproven. G9's entire value is faithfully
+reproducing real apply-time behavior — an emulator that is subtly too permissive produces false
+greens, which under this posture is worse than no gate at all (the gate looks like it verifies
+something and doesn't). Building against the newer free option first and letting a fidelity
+check decide later was considered and rejected: if the free option fails fidelity on any
+security-critical type, all its emulator-specific CI plumbing gets rebuilt for LocalStack
+anyway — verification effort spent twice, for a near-certain rather than merely possible payoff.
+$39–45/month is accepted as the cost of a trustworthy assurance signal, not deferred.
+
+**A real, structural blocker this creates**: a paid LocalStack account requires a
+`LOCALSTACK_AUTH_TOKEN` and a payment method — neither obtainable by an agent. Implementation
+below proceeds up to that boundary (the Python module, CI wiring, allowlist, fail-closed
+handling, everything testable without a live paid instance) with the exact remaining steps that
+need the token called out explicitly, not silently assumed done.
 
 ## 1. Structural constraint, verified against GitHub's own docs — G9 is Ubuntu-only
 
@@ -48,7 +58,7 @@ justify per-platform later.
 
 ## 2. AWS-only / Databricks asymmetry — structural, not a footnote
 
-LocalStack/MiniStack emulate AWS. Neither can stand up a Databricks workspace. A
+LocalStack emulates AWS. It cannot stand up a Databricks workspace. A
 Databricks-touching change therefore reaches "ephemeral-apply verified" having passed through
 **one fewer real gate** than an AWS-only change — the exact asymmetry `destructive_change_gate.py`
 (G5) already names structurally via `reduced_assurance` / `databricks_resources` on every plan
@@ -95,7 +105,7 @@ report reader never confuses a G9 apply-time failure with a G6 policy finding.
 
 | Case | Verdict |
 |---|---|
-| Emulator (MiniStack/LocalStack) never starts / health check never passes | **BLOCK** — same as G6's `opa_not_found`: a gate that can't run isn't a gate. |
+| Emulator (LocalStack) never starts / health check never passes | **BLOCK** — same as G6's `opa_not_found`: a gate that can't run isn't a gate. |
 | Apply times out before completing | **BLOCK**, distinctly labeled (`apply_timeout`) — not silently treated as "no findings." |
 | Apply partially succeeds (some resources created, then a real failure) | **BLOCK** — a partial apply is evidence of exactly the ordering/validation failure class G9 exists to catch, never read as "mostly fine." |
 | Apply result / emulator output unparseable or malformed | **BLOCK** (`apply_result_malformed`) — same "couldn't verify ≠ verified clean" line G6 and G5 already draw. |
@@ -131,12 +141,23 @@ ever constructs, not one of several.
 
 ## 6. Proof bar
 
-1. **Per-resource-type coverage, verified live, item by item**: every one of the 39 AWS resource
-   types in the current module catalog, planned and applied against the chosen emulator for
-   real, confirmed to either work or be named as a disclosed gap — not assumed from the
-   emulator's own service list, the same "verify against real behavior" standard every other
-   phase this session used (G6's `for_each` bug, Phase 4's demo-blueprint gaps were both caught
-   exactly this way).
+1. **Per-resource-type coverage, verified live, item by item, BOTH DIRECTIONS.** Every one of
+   the 39 AWS resource types in the current module catalog, planned and applied against
+   LocalStack for real, confirmed to either work or be named as a disclosed gap — not assumed
+   from the vendor's own service list, the same "verify against real behavior" standard every
+   other phase this session used. "Works" alone is not sufficient proof: an emulator that
+   *accepts* something real AWS would *reject* is a false-accept — G9 goes green, a real apply
+   later fails, and the gate was worthless for that type. Emulators are commonly too permissive
+   (stubbing a response without enforcing the real constraint), which is the fail-open pattern
+   one level down, inside the emulator itself, if not checked for directly. For at least the
+   security-critical types (`aws_iam_role_policy` and any IAM policy document, `aws_kms_key`/
+   its key policy, `aws_s3_bucket_policy`), item 1 requires a **negative fidelity check**: feed
+   LocalStack something real AWS is documented to reject (e.g. a policy with a malformed
+   principal, an invalid KMS key policy) and confirm LocalStack rejects it too — not just that a
+   valid config is accepted. "Coverage" for those types means "enforces the real constraint,"
+   not merely "didn't crash." Recorded per type: which were positively verified, which passed
+   the negative check, which are disclosed gaps (matches G6/Phase 4's own "no coverage, name it"
+   convention rather than silently skipping).
 2. **Fail-closed sweep over every row in section 4's table**, each with its own regression test,
    before declaring anything done — not after, same timing discipline as G6/Phase 4.
 3. **Prove it runs in CI, on real infrastructure, ubuntu-only**: a real GitHub Actions job that
