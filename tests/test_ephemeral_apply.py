@@ -1,10 +1,11 @@
 """
-ephemeral_apply.py is G9 (docs/phase5_scope.md, Phase 5) -- ephemeral create+destroy against
-LocalStack, catching apply-time-only failures static analysis (G1/G2/G6) cannot.
+ephemeral_apply.py is G9 (docs/phase5_scope.md, Phase 5) -- ephemeral create+destroy against a
+real emulator (LocalStack/MiniStack/Floci), catching apply-time-only failures static analysis
+(G1/G2/G6) cannot.
 
 Two kinds of proof here. Most fail-closed paths are proven with mocked subprocess calls -- fast,
 and legitimate for verifying THIS module's own control flow (does a given terraform exit
-code/output shape route to the right verdict), reserving real, live-LocalStack proof for
+code/output shape route to the right verdict), reserving real, live-emulator proof for
 proof-bar item 3 (a real CI run) rather than re-deriving it slowly here. A handful of tests are
 real, not mocked, because they were the actual mechanism that caught real bugs before this
 shipped: the real apply-against-an-unreachable-endpoint test (which surfaced the provider-
@@ -14,10 +15,17 @@ override was written, meaning it wasn't isolated from ambient credentials at all
 `apply_complete`/`apply_errored` shape, including the genuinely-observed case of a crashed
 provider plugin dumping a non-JSON stack trace into the output stream).
 
-Every entry in RESOURCE_TYPE_ALLOWLIST is unverified by design (real per-type + negative-
-fidelity verification needs a paid LocalStack account this session could not provision) -- tests
-that need a "verified" type temporarily monkeypatch one entry, never assume the real allowlist
-should already claim coverage it hasn't earned.
+RESOURCE_TYPE_ALLOWLIST is per-(type, emulator) (docs/phase5_scope.md section 7). LocalStack's
+column is unverified by design (a paid LOCALSTACK_AUTH_TOKEN account this session could not
+provision). MiniStack and Floci needed no token, so BOTH were run through a real gauntlet this
+session (real Docker containers in CI, real terraform apply/destroy) -- the real result for
+security-critical types (aws_iam_role, aws_kms_key, aws_s3_bucket_policy) is `verified=True`
+(positive fixtures apply cleanly) but `negative_fidelity_verified=False` on BOTH emulators (both
+incorrectly accept a malformed config real AWS is documented to reject) -- see
+`test_run_blocks_on_negative_fidelity_unverified_security_critical_type` below, which locks in
+this exact, currently-blocking finding. Tests that need a fully "verified" type for an unrelated
+check temporarily monkeypatch an entry via `ea._entry(...)`, never assuming the real allowlist
+already claims coverage it hasn't earned.
 """
 import json
 import subprocess
@@ -79,23 +87,23 @@ def test_classify_coverage_none_empty_plan():
 def test_unverified_types_flags_every_type_by_design():
     """Every entry in the real allowlist is unverified=False right now -- this is not a bug in
     the test, it's the honest, disclosed state of the module."""
-    unverified = ea.unverified_types_in_plan(_plan([_rc("aws_s3_bucket", "b")]))
+    unverified = ea.unverified_types_in_plan(_plan([_rc("aws_s3_bucket", "b")]), "localstack")
     assert unverified == {"aws_s3_bucket"}
 
 
 def test_unverified_types_flags_unknown_type_too():
-    unverified = ea.unverified_types_in_plan(_plan([_rc("aws_totally_new_type", "x")]))
+    unverified = ea.unverified_types_in_plan(_plan([_rc("aws_totally_new_type", "x")]), "localstack")
     assert unverified == {"aws_totally_new_type"}
 
 
 def test_unverified_types_ignores_databricks():
-    unverified = ea.unverified_types_in_plan(_plan([_rc("databricks_cluster", "c")]))
+    unverified = ea.unverified_types_in_plan(_plan([_rc("databricks_cluster", "c")]), "localstack")
     assert unverified == set()
 
 
 def test_unverified_types_empty_when_type_marked_verified(monkeypatch):
-    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", (True, False))
-    unverified = ea.unverified_types_in_plan(_plan([_rc("aws_s3_bucket", "b")]))
+    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", ea._entry(False, ministack=(True, True), floci=(True, True), localstack=(True, True)))
+    unverified = ea.unverified_types_in_plan(_plan([_rc("aws_s3_bucket", "b")]), "localstack")
     assert unverified == set()
 
 
@@ -254,9 +262,33 @@ def test_run_blocks_on_unverified_resource_type(tmp_path, monkeypatch):
     assert result["coverage"] == "full"
 
 
+def test_run_blocks_on_unsupported_emulator(tmp_path, monkeypatch):
+    monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
+    result = ea.run_ephemeral_apply(str(tmp_path), emulator="not-a-real-emulator")
+    assert result["evaluation_failed"] is True
+    assert result["reason"] == "unsupported_emulator"
+
+
+def test_run_blocks_on_negative_fidelity_unverified_security_critical_type(tmp_path, monkeypatch):
+    """Real, current finding from this session's actual gauntlet run (docs/phase5_scope.md
+    section 7): aws_iam_role applies cleanly on both MiniStack and Floci (verified=True) but
+    BOTH emulators incorrectly accept a malformed trust-policy principal ARN real AWS rejects
+    (negative_fidelity_verified=False on both) -- this must BLOCK, distinctly from
+    resource_type_unverified, even though the type is otherwise "verified"."""
+    monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
+    plan_json = json.dumps(_plan([_rc("aws_iam_role", "r")]))
+    with mock.patch.object(ea.subprocess, "run", side_effect=_mock_run_sequence(
+            _completed(returncode=0), _completed(returncode=0),
+            _completed(returncode=0, stdout=plan_json),
+    )):
+        result = ea.run_ephemeral_apply(str(tmp_path), emulator="ministack")
+    assert result["evaluation_failed"] is True
+    assert result["reason"] == "negative_fidelity_unverified"
+
+
 def test_run_apply_failed_when_nothing_succeeded(tmp_path, monkeypatch):
     monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
-    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", (True, False))
+    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", ea._entry(False, ministack=(True, True), floci=(True, True), localstack=(True, True)))
     plan_json = json.dumps(_plan([_rc("aws_s3_bucket", "b")]))
     apply_output = json.dumps({"type": "apply_errored", "hook": {"resource": {"addr": "aws_s3_bucket.b"}}})
     with mock.patch.object(ea.subprocess, "run", side_effect=_mock_run_sequence(
@@ -273,8 +305,8 @@ def test_run_apply_failed_when_nothing_succeeded(tmp_path, monkeypatch):
 
 def test_run_apply_partial_failure_when_some_succeeded(tmp_path, monkeypatch):
     monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
-    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", (True, False))
-    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_kms_key", (True, True))
+    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", ea._entry(False, ministack=(True, True), floci=(True, True), localstack=(True, True)))
+    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_kms_key", ea._entry(True, ministack=(True, True), floci=(True, True), localstack=(True, True)))
     plan_json = json.dumps(_plan([_rc("aws_s3_bucket", "b"), _rc("aws_kms_key", "k")]))
     apply_output = "\n".join(json.dumps(e) for e in [
         {"type": "apply_complete", "hook": {"resource": {"addr": "aws_s3_bucket.b"}}},
@@ -293,7 +325,7 @@ def test_run_apply_partial_failure_when_some_succeeded(tmp_path, monkeypatch):
 
 def test_run_apply_result_malformed_blocks(tmp_path, monkeypatch):
     monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
-    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", (True, False))
+    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", ea._entry(False, ministack=(True, True), floci=(True, True), localstack=(True, True)))
     plan_json = json.dumps(_plan([_rc("aws_s3_bucket", "b")]))
     with mock.patch.object(ea.subprocess, "run", side_effect=_mock_run_sequence(
             _completed(returncode=0), _completed(returncode=0),
@@ -308,7 +340,7 @@ def test_run_apply_result_malformed_blocks(tmp_path, monkeypatch):
 
 def test_run_apply_timeout_blocks(tmp_path, monkeypatch):
     monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
-    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", (True, False))
+    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", ea._entry(False, ministack=(True, True), floci=(True, True), localstack=(True, True)))
     plan_json = json.dumps(_plan([_rc("aws_s3_bucket", "b")]))
     with mock.patch.object(ea.subprocess, "run", side_effect=_mock_run_sequence(
             _completed(returncode=0), _completed(returncode=0),
@@ -325,7 +357,7 @@ def test_run_teardown_failure_overrides_an_otherwise_clean_verdict(tmp_path, mon
     """A failed teardown must flip an otherwise-successful verdict -- an ephemeral environment
     that fails to tear down is a real operational problem, never a footnote on a green result."""
     monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
-    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", (True, False))
+    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", ea._entry(False, ministack=(True, True), floci=(True, True), localstack=(True, True)))
     plan_json = json.dumps(_plan([_rc("aws_s3_bucket", "b")]))
     apply_output = json.dumps({"type": "apply_complete", "hook": {"resource": {"addr": "aws_s3_bucket.b"}}})
     with mock.patch.object(ea.subprocess, "run", side_effect=_mock_run_sequence(
@@ -341,7 +373,7 @@ def test_run_teardown_failure_overrides_an_otherwise_clean_verdict(tmp_path, mon
 
 def test_run_clean_success_reports_full_coverage_and_applied_resources(tmp_path, monkeypatch):
     monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
-    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", (True, False))
+    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", ea._entry(False, ministack=(True, True), floci=(True, True), localstack=(True, True)))
     plan_json = json.dumps(_plan([_rc("aws_s3_bucket", "b")]))
     apply_output = json.dumps({"type": "apply_complete", "hook": {"resource": {"addr": "aws_s3_bucket.b"}}})
     with mock.patch.object(ea.subprocess, "run", side_effect=_mock_run_sequence(
@@ -362,7 +394,7 @@ def test_exception_in_apply_stage_propagates_not_swallowed_by_teardown(tmp_path,
     in the try block) before writing the single-exit design. A genuine bug during the apply
     stage must still propagate after teardown runs, never be hidden behind cleanup."""
     monkeypatch.setattr(ea.toolpath, "find_tool", lambda name: "terraform")
-    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", (True, False))
+    monkeypatch.setitem(ea.RESOURCE_TYPE_ALLOWLIST, "aws_s3_bucket", ea._entry(False, ministack=(True, True), floci=(True, True), localstack=(True, True)))
     plan_json = json.dumps(_plan([_rc("aws_s3_bucket", "b")]))
 
     def _run(*args, **kwargs):
@@ -417,7 +449,7 @@ resource "aws_s3_bucket" "probe" {
   bucket = "g9-test-unreachable-probe"
 }
 ''', encoding="utf-8")
-    with mock.patch.dict(ea.RESOURCE_TYPE_ALLOWLIST, {"aws_s3_bucket": (True, False)}):
+    with mock.patch.dict(ea.RESOURCE_TYPE_ALLOWLIST, {"aws_s3_bucket": ea._entry(False, ministack=(True, True), floci=(True, True), localstack=(True, True))}):
         start = time.monotonic()
         result = ea.run_ephemeral_apply(str(tmp_path), localstack_endpoint="http://localhost:4566",
                                          apply_timeout=8, destroy_timeout=8)

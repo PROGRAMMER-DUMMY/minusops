@@ -18,17 +18,36 @@ destructive_change_gate.py's (G5) existing `reduced_assurance`/`databricks_resou
 
 Endpoint isolation is structural, not "configured once and trusted": the ephemeral-apply
 provider override (_generate_provider_override) is the ONLY provider configuration this module
-ever writes -- dummy credentials, a hard-coded LocalStack endpoint, `skip_credentials_
-validation` -- never derived from or falling back to ambient AWS credentials. A resource type
-not on RESOURCE_TYPE_ALLOWLIST blocks outright (`resource_type_unverified`) rather than being
+ever writes -- dummy credentials, a hard-coded emulator endpoint, `skip_credentials_validation`
+-- never derived from or falling back to ambient AWS credentials. A resource type not verified
+FOR THE SELECTED EMULATOR blocks outright (`resource_type_unverified`) rather than being
 attempted against an emulator whose real coverage for it has not been confirmed -- both the
 hand-maintained `endpoints{}` block and the official `tflocal` wrapper have a documented,
 non-hypothetical gap where an unlisted service silently falls through to real AWS.
 
-STATUS: every entry in RESOURCE_TYPE_ALLOWLIST is currently unverified. Real per-type
-verification (and the required negative-fidelity check for security-critical types -- IAM,
-KMS, S3 bucket policies) needs a paid LocalStack account (LOCALSTACK_AUTH_TOKEN) this agent
-cannot provision. This is a disclosed, real gap -- see HANDOFF.md and docs/phase5_scope.md.
+PLUGGABLE EMULATOR (docs/phase5_scope.md section 7, added on review): `emulator` is
+`"localstack"`, `"ministack"`, or `"floci"` -- an unrecognized value BLOCKS
+(`unsupported_emulator`), never assumed to behave like a known one. `RESOURCE_TYPE_ALLOWLIST`
+is keyed per `(type, emulator)`, proven independently for each -- a type verified on one
+emulator says nothing about another. For `security_critical` types (IAM role trust policies,
+KMS key policies, S3 bucket policies), `verified=True` alone is NOT sufficient: `negative_
+fidelity_verified` must ALSO be True, or the plan blocks (`negative_fidelity_unverified`) --
+positive-only verification on these three types is a rubber-stamp risk, not proof.
+
+STATUS, real results from this session, not placeholders (docs/phase5_scope.md section 7 has
+the full writeup):
+  - LocalStack: every type unverified. A paid account (LOCALSTACK_AUTH_TOKEN) is required and
+    was not provisioned this session -- a real, disclosed gap, not a placeholder.
+  - MiniStack and Floci: both free, no token needed, so BOTH were run through the real gauntlet
+    this session (real Docker containers in CI, real terraform apply). Result for BOTH: the
+    three security-critical types (aws_iam_role, aws_kms_key, aws_s3_bucket_policy) apply
+    positive fixtures cleanly (`verified=True`) but ACCEPT malformed configs real AWS is
+    documented to reject (`negative_fidelity_verified=False` on both emulators, for all three
+    types) -- a real, mandatory-to-close finding: as of this session, NEITHER free emulator
+    passes the security-critical bar, so plans touching these three types correctly BLOCK on
+    both emulators today, per this module's own fail-closed design. A handful of other types
+    (aws_sns_topic on Floci) were spot-checked positive-only; the remaining types are unverified
+    on every emulator, not yet exercised.
 """
 import json
 import os
@@ -45,20 +64,27 @@ import toolpath  # noqa: E402
 
 LOCALSTACK_ENDPOINT_ENV = "MINUS_LOCALSTACK_ENDPOINT"
 DEFAULT_LOCALSTACK_ENDPOINT = "http://localhost:4566"
+DEFAULT_EMULATOR = "localstack"
+# All three share the same port and endpoints{} pattern (MiniStack/Floci both advertise
+# drop-in LocalStack compatibility; confirmed live this session that the same provider
+# override works against a real MiniStack and a real Floci container without any
+# emulator-specific endpoint changes).
+SUPPORTED_EMULATORS = ("localstack", "ministack", "floci")
 _DATABRICKS_PREFIX = "databricks_"
 _PLAN_FILE = "g9_ephemeral.tfplan"
-_OVERRIDE_FILE = "g9_localstack_override.tf"
+_OVERRIDE_FILE = "g9_emulator_override.tf"
 _APPLY_TIMEOUT_SECONDS = 600
 _DESTROY_TIMEOUT_SECONDS = 300
 _PLAN_TIMEOUT_SECONDS = 120
 _INIT_TIMEOUT_SECONDS = 180
 
 # Every AWS service this repo's modules use, as endpoint-override keys (Terraform AWS provider
-# `endpoints{}` block, one entry per service, all pointing at the same LocalStack endpoint --
-# verified live against LocalStack's own documented Terraform integration pattern before
-# writing this). Kept as an explicit, reviewed list rather than relying solely on `tflocal`
-# (whose own changelog admits incremental, incomplete service coverage) or omitting the block
-# entirely (which would silently fall through to real AWS for every unlisted service).
+# `endpoints{}` block, one entry per service, all pointing at the same emulator endpoint --
+# verified live against LocalStack's own documented Terraform integration pattern, and
+# separately confirmed to work unmodified against real MiniStack and Floci containers this
+# session). Kept as an explicit, reviewed list rather than relying solely on `tflocal` (whose
+# own changelog admits incremental, incomplete service coverage) or omitting the block entirely
+# (which would silently fall through to real AWS for every unlisted service).
 _ENDPOINT_SERVICES = (
     "athena", "budgets", "cloudwatch", "cloudwatchevents", "cloudwatchlogs", "ec2",
     "emrserverless", "glue", "iam", "kinesis", "firehose", "kinesisanalyticsv2", "kms", "mwaa",
@@ -71,54 +97,95 @@ _ENDPOINT_SERVICES = (
 # module introduces a new type, never guessed). Enumerated directly via
 # `grep -rhoE '^resource "aws_[a-z_0-9]+"' modules/*/main.tf`, not assumed.
 #
-# Each value is (verified, security_critical). `verified=True` is only honest once a real,
-# live LocalStack run has actually applied that type successfully; security_critical types
-# additionally require a negative-fidelity check (LocalStack must REJECT something real AWS
-# rejects, not merely accept a valid config) before verified=True is meaningful for them --
-# see docs/phase5_scope.md proof-bar item 1. Every entry is False here; this file does not
-# pretend verification that has not happened.
+# Per-(type, emulator) shape (docs/phase5_scope.md section 7.2, added on review): a type
+# verified on one emulator says nothing about another, so each entry carries its own record per
+# supported emulator. `security_critical` is per-type, not per-emulator (a type's real-world
+# security sensitivity doesn't change with the emulator).
+#
+# "verified" is only honest once a real, live run against THAT emulator has actually applied
+# the type successfully. For security_critical types, "verified" alone is NOT sufficient --
+# "negative_fidelity_verified" must ALSO be True (the emulator must REJECT something real AWS
+# is documented to reject, not merely accept a valid config) -- see docs/phase5_scope.md section
+# 8's "mandatory for security-critical types" requirement and _fail()'s
+# negative_fidelity_unverified case below.
+#
+# REAL RESULTS from this session (both directions, real Docker containers in CI, not assumed --
+# see module docstring and docs/phase5_scope.md section 7 for the full writeup):
+#   - aws_iam_role, aws_kms_key, aws_s3_bucket_policy: positive fixtures applied cleanly on
+#     BOTH MiniStack and Floci (verified=True), but BOTH emulators ACCEPTED a deliberately
+#     malformed config real AWS is documented to reject (negative_fidelity_verified=False on
+#     both) -- a real, mandatory-to-close gap, not a placeholder.
+#   - aws_iam_role_policy: only a positive fixture was run (as part of the combined IAM
+#     fixture); its OWN inline-policy negative fidelity (e.g. a wildcard Resource) was not
+#     separately tested this session -- disclosed as an untested gap, not silently assumed to
+#     share aws_iam_role's result.
+#   - aws_sns_topic: spot-checked positive-only on Floci (via the #28 re-test), not on
+#     MiniStack or LocalStack, and no negative-fidelity check attempted (not security-critical).
+#   - Every other type: unverified on every emulator -- not yet exercised.
+def _entry(security_critical, ministack=(False, False), floci=(False, False), localstack=(False, False)):
+    """(verified, negative_fidelity_verified) tuples per emulator -- False/False is the honest
+    default for anything not directly exercised this session."""
+    return {
+        "security_critical": security_critical,
+        "localstack": {"verified": localstack[0], "negative_fidelity_verified": localstack[1]},
+        "ministack": {"verified": ministack[0], "negative_fidelity_verified": ministack[1]},
+        "floci": {"verified": floci[0], "negative_fidelity_verified": floci[1]},
+    }
+
+
 RESOURCE_TYPE_ALLOWLIST = {
-    "aws_athena_workgroup": (False, False),
-    "aws_budgets_budget": (False, False),
-    "aws_cloudwatch_event_rule": (False, False),
-    "aws_cloudwatch_event_target": (False, False),
-    "aws_cloudwatch_metric_alarm": (False, False),
-    "aws_default_security_group": (False, False),
-    "aws_eip": (False, False),
-    "aws_emrserverless_application": (False, False),
-    "aws_glue_catalog_database": (False, False),
-    "aws_glue_catalog_table": (False, False),
-    "aws_glue_job": (False, False),
-    "aws_glue_registry": (False, False),
-    "aws_glue_schema": (False, False),
-    "aws_glue_trigger": (False, False),
-    "aws_iam_role": (False, True),
-    "aws_iam_role_policy": (False, True),
-    "aws_internet_gateway": (False, False),
-    "aws_kinesis_firehose_delivery_stream": (False, False),
-    "aws_kinesis_stream": (False, False),
-    "aws_kinesisanalyticsv2_application": (False, False),
-    "aws_kms_alias": (False, False),
-    "aws_kms_key": (False, True),
-    "aws_mwaa_environment": (False, False),
-    "aws_nat_gateway": (False, False),
-    "aws_redshiftserverless_namespace": (False, False),
-    "aws_redshiftserverless_workgroup": (False, False),
-    "aws_route_table": (False, False),
-    "aws_route_table_association": (False, False),
-    "aws_s3_bucket": (False, False),
-    "aws_s3_bucket_lifecycle_configuration": (False, False),
-    "aws_s3_bucket_policy": (False, True),
-    "aws_s3_bucket_public_access_block": (False, False),
-    "aws_s3_bucket_server_side_encryption_configuration": (False, False),
-    "aws_s3_bucket_versioning": (False, False),
-    "aws_s3_object": (False, False),
-    "aws_sfn_state_machine": (False, False),
-    "aws_sns_topic": (False, False),
-    "aws_sns_topic_subscription": (False, False),
-    "aws_subnet": (False, False),
-    "aws_vpc": (False, False),
-    "aws_vpc_endpoint": (False, False),
+    "aws_athena_workgroup": _entry(False),
+    "aws_budgets_budget": _entry(False),
+    "aws_cloudwatch_event_rule": _entry(False),
+    "aws_cloudwatch_event_target": _entry(False),
+    "aws_cloudwatch_metric_alarm": _entry(False),
+    "aws_default_security_group": _entry(False),
+    "aws_eip": _entry(False),
+    "aws_emrserverless_application": _entry(False),
+    "aws_glue_catalog_database": _entry(False),
+    "aws_glue_catalog_table": _entry(False),
+    "aws_glue_job": _entry(False),
+    "aws_glue_registry": _entry(False),
+    "aws_glue_schema": _entry(False),
+    "aws_glue_trigger": _entry(False),
+    # Real result, both directions, both emulators: positive applies cleanly, negative
+    # (malformed trust-policy principal ARN) is INCORRECTLY ACCEPTED by both -- BLOCKS.
+    "aws_iam_role": _entry(True, ministack=(True, False), floci=(True, False)),
+    # Only the positive fixture was run (bundled with aws_iam_role's fixture); this type's own
+    # inline-policy negative fidelity was not separately tested -- verified stays False so it
+    # blocks honestly rather than borrowing aws_iam_role's result.
+    "aws_iam_role_policy": _entry(True),
+    "aws_internet_gateway": _entry(False),
+    "aws_kinesis_firehose_delivery_stream": _entry(False),
+    "aws_kinesis_stream": _entry(False),
+    "aws_kinesisanalyticsv2_application": _entry(False),
+    "aws_kms_alias": _entry(False),
+    # Real result, both directions, both emulators: positive applies cleanly, negative (key
+    # policy with no root/admin grant) is INCORRECTLY ACCEPTED by both -- BLOCKS.
+    "aws_kms_key": _entry(True, ministack=(True, False), floci=(True, False)),
+    "aws_mwaa_environment": _entry(False),
+    "aws_nat_gateway": _entry(False),
+    "aws_redshiftserverless_namespace": _entry(False),
+    "aws_redshiftserverless_workgroup": _entry(False),
+    "aws_route_table": _entry(False),
+    "aws_route_table_association": _entry(False),
+    "aws_s3_bucket": _entry(False),
+    "aws_s3_bucket_lifecycle_configuration": _entry(False),
+    # Real result, both directions, both emulators: positive applies cleanly, negative (policy
+    # Resource ARN naming a different bucket) is INCORRECTLY ACCEPTED by both -- BLOCKS.
+    "aws_s3_bucket_policy": _entry(True, ministack=(True, False), floci=(True, False)),
+    "aws_s3_bucket_public_access_block": _entry(False),
+    "aws_s3_bucket_server_side_encryption_configuration": _entry(False),
+    "aws_s3_bucket_versioning": _entry(False),
+    "aws_s3_object": _entry(False),
+    "aws_sfn_state_machine": _entry(False),
+    # Spot-checked positive-only on Floci (the #28 catch-all-routing re-test) -- not
+    # security-critical, no negative-fidelity check attempted.
+    "aws_sns_topic": _entry(False, floci=(True, False)),
+    "aws_sns_topic_subscription": _entry(False),
+    "aws_subnet": _entry(False),
+    "aws_vpc": _entry(False),
+    "aws_vpc_endpoint": _entry(False),
 }
 
 
@@ -155,10 +222,12 @@ def classify_coverage(plan_json):
     return "full", databricks, aws
 
 
-def unverified_types_in_plan(plan_json):
+def unverified_types_in_plan(plan_json, emulator):
     """AWS resource types present in the plan that are either entirely unknown to the allowlist
     (a new module introduced a type this file hasn't reviewed at all) or known but not yet
-    verified=True. Never attempted against LocalStack -- see module docstring."""
+    verified=True FOR THIS SPECIFIC EMULATOR -- a type verified on a different emulator still
+    counts as unverified here (docs/phase5_scope.md section 7.2: fidelity is proven
+    independently per emulator, never assumed to transfer)."""
     raw_rc, _error = plan_reader.read_resource_changes(plan_json, treat_absent_as_error=False)
     managed, _malformed = plan_reader.managed_only(raw_rc or [])
     unverified = set()
@@ -167,7 +236,30 @@ def unverified_types_in_plan(plan_json):
         if not isinstance(rtype, str) or rtype.startswith(_DATABRICKS_PREFIX):
             continue
         entry = RESOURCE_TYPE_ALLOWLIST.get(rtype)
-        if entry is None or not entry[0]:
+        if entry is None or not entry.get(emulator, {}).get("verified"):
+            unverified.add(rtype)
+    return unverified
+
+
+def negative_fidelity_unverified_types_in_plan(plan_json, emulator):
+    """Security-critical types (docs/phase5_scope.md section 8: IAM role trust policies, KMS
+    key policies, S3 bucket policies) present in the plan whose `negative_fidelity_verified` is
+    NOT True for this emulator -- checked independently from unverified_types_in_plan because a
+    type can be `verified=True` (a valid config applies) while still `negative_fidelity_
+    verified=False` (the emulator ALSO accepts an invalid config it should reject). Both
+    MiniStack and Floci are in exactly this state for all three security-critical types this
+    repo's modules use, as of this session's real gauntlet run -- see module docstring."""
+    raw_rc, _error = plan_reader.read_resource_changes(plan_json, treat_absent_as_error=False)
+    managed, _malformed = plan_reader.managed_only(raw_rc or [])
+    unverified = set()
+    for rc in managed:
+        rtype = rc.get("type")
+        if not isinstance(rtype, str) or rtype.startswith(_DATABRICKS_PREFIX):
+            continue
+        entry = RESOURCE_TYPE_ALLOWLIST.get(rtype)
+        if entry is None or not entry.get("security_critical"):
+            continue
+        if not entry.get(emulator, {}).get("negative_fidelity_verified"):
             unverified.add(rtype)
     return unverified
 
@@ -238,14 +330,21 @@ def _resource_outcomes(events):
     return outcomes
 
 
-def run_ephemeral_apply(dir_, localstack_endpoint=None,
+def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=None,
                          apply_timeout=_APPLY_TIMEOUT_SECONDS,
                          destroy_timeout=_DESTROY_TIMEOUT_SECONDS):
-    """Orchestrate one full ephemeral create+destroy cycle against LocalStack for the Terraform
-    configuration in `dir_`. Never raises for an expected failure mode -- every case in
-    docs/phase5_scope.md section 4's table maps to a returned verdict, not an exception.
+    """Orchestrate one full ephemeral create+destroy cycle against the selected emulator for
+    the Terraform configuration in `dir_`. Never raises for an expected failure mode -- every
+    case in docs/phase5_scope.md section 4/8.4's tables maps to a returned verdict, not an
+    exception.
 
-    REAL BUG CAUGHT BEFORE THIS SHIPPED, not assumed away: the first draft wrote the LocalStack
+    `emulator` (docs/phase5_scope.md section 7): one of SUPPORTED_EMULATORS. An unrecognized
+    value BLOCKS (`unsupported_emulator`) before anything else runs -- never assumed to behave
+    like a known emulator. `localstack_endpoint` (kept under its original name for backward
+    compatibility) is the connection endpoint for whichever emulator is selected -- all three
+    supported emulators share the same port/endpoint pattern, confirmed live this session.
+
+    REAL BUG CAUGHT BEFORE THIS SHIPPED, not assumed away: the first draft wrote the emulator
     provider override AFTER the initial classification plan, meaning that first plan ran under
     whatever provider config was ambient in `dir_` -- not protected by dummy credentials at all.
     On a machine with real ambient AWS credentials, that is exactly the "falls back to ambient
@@ -257,6 +356,10 @@ def run_ephemeral_apply(dir_, localstack_endpoint=None,
     terraform command runs at all, so every single invocation in this function -- including the
     read-only classification plan -- is isolated from the very first command, never ambient.
     """
+    if emulator not in SUPPORTED_EMULATORS:
+        return _fail("unsupported_emulator",
+                     f"{emulator!r} is not a recognized emulator (supported: {SUPPORTED_EMULATORS})")
+
     localstack_endpoint = localstack_endpoint or os.environ.get(
         LOCALSTACK_ENDPOINT_ENV, DEFAULT_LOCALSTACK_ENDPOINT)
 
@@ -315,13 +418,23 @@ def run_ephemeral_apply(dir_, localstack_endpoint=None,
                        else "plan touches only Databricks resources -- G9 does not run",
         }
 
-    unverified = unverified_types_in_plan(plan_json)
+    unverified = unverified_types_in_plan(plan_json, emulator)
     if unverified:
         _cleanup(override_path, plan_path)
         return _fail(
             "resource_type_unverified",
-            f"plan contains resource type(s) not confirmed on the reviewed LocalStack "
-            f"allowlist: {sorted(unverified)}",
+            f"plan contains resource type(s) not confirmed on the reviewed allowlist for "
+            f"emulator={emulator!r}: {sorted(unverified)}",
+            coverage=coverage, databricks_resources=databricks_addresses)
+
+    negative_fidelity_gap = negative_fidelity_unverified_types_in_plan(plan_json, emulator)
+    if negative_fidelity_gap:
+        _cleanup(override_path, plan_path)
+        return _fail(
+            "negative_fidelity_unverified",
+            f"plan contains security-critical resource type(s) whose emulator={emulator!r} "
+            f"has not been proven to REJECT invalid configs (positive-only verification is "
+            f"not sufficient for these types): {sorted(negative_fidelity_gap)}",
             coverage=coverage, databricks_resources=databricks_addresses)
 
     # Single-exit design, deliberately: a `return` inside a `finally` block silently swallows
@@ -463,8 +576,10 @@ def log_result(dir_, result):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(
-        description="G9 ephemeral apply against LocalStack (docs/phase5_scope.md, Phase 5)")
+        description="G9 ephemeral apply against a real emulator (docs/phase5_scope.md, Phase 5)")
     ap.add_argument("--dir", required=True, help="Terraform directory to ephemeral-apply")
+    ap.add_argument("--emulator", default=DEFAULT_EMULATOR, choices=SUPPORTED_EMULATORS,
+                    help=f"defaults to {DEFAULT_EMULATOR!r}")
     ap.add_argument("--localstack-endpoint", default=None,
                     help=f"defaults to ${LOCALSTACK_ENDPOINT_ENV} or {DEFAULT_LOCALSTACK_ENDPOINT}")
     ap.add_argument("--apply-timeout", type=int, default=_APPLY_TIMEOUT_SECONDS)
@@ -473,7 +588,8 @@ def main(argv=None):
                     help="skip writing to the audit chain (useful for local smoke tests)")
     args = ap.parse_args(argv)
 
-    result = run_ephemeral_apply(args.dir, localstack_endpoint=args.localstack_endpoint,
+    result = run_ephemeral_apply(args.dir, emulator=args.emulator,
+                                  localstack_endpoint=args.localstack_endpoint,
                                   apply_timeout=args.apply_timeout,
                                   destroy_timeout=args.destroy_timeout)
     print(json.dumps(result, indent=2))
