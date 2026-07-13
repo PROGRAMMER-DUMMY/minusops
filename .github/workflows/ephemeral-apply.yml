@@ -375,7 +375,16 @@ jobs:
           set -euxo pipefail
           cd "$RUNNER_TEMP/fc"
           SSH="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2"
-          $SSH "timeout 120 docker run -d --name ministack -p 4566:4566 ministackorg/ministack"
+          # Real cause, found live: Docker's bridge-networking path additionally needs the
+          # iptables `raw` table (a newer per-container "direct access filtering" isolation
+          # rule) -- this minimal kernel doesn't have that netfilter module at all ("Table does
+          # not exist"), and it's a monolithic CI kernel with no loadable-module support to add
+          # it. This guest exists to run exactly one container with no other tenants to isolate
+          # from, so the bridge/NAT path isn't needed at all -- --network host binds the
+          # container straight to the guest's own network namespace, sidestepping Docker's
+          # iptables-managed bridge entirely. No -p mapping needed or allowed in this mode: the
+          # container's own bound port 4566 IS the guest's port 4566 directly.
+          $SSH "timeout 120 docker run -d --name ministack --network host ministackorg/ministack"
           for i in $(seq 1 30); do
             if $SSH "timeout 10 bash -c 'curl -sf http://localhost:4566/_localstack/health >/dev/null 2>&1 || curl -sf http://localhost:4566/ >/dev/null 2>&1'"; then
               echo "ministack responding after $i attempts"; break
