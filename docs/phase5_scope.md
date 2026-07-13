@@ -217,6 +217,16 @@ a real capability matrix (resource type × emulator × verified/gap), not a sing
 — this is what makes the user's emulator choice an *informed* one rather than blind trust in
 whichever name they picked.
 
+**Negative fidelity is MANDATORY-to-close for security-critical types, best-effort for the
+rest — not spread thin equally across all 41.** A rubber-stamp emulator on a Glue job is an
+annoyance; a rubber-stamp on an IAM policy is a false-green in the security gate itself. So a
+`security_critical=True` type requires **both** `verified=True` **and**
+`negative_fidelity_verified=True` on the chosen emulator before it counts as fidelity-proven —
+`verified=True` alone is not sufficient for these three types (IAM role policies, KMS key
+policies, S3 bucket policies) the way it is for the other 38. A security-critical type with
+`verified=True` but `negative_fidelity_verified=False` is **not** a passing state; see 7.4's
+table for the exact verdict.
+
 ### 7.3 The verdict must name the emulator and its fidelity, every time
 
 Every `run_ephemeral_apply()` result carries `"emulator": "localstack" | "ministack"`. For each
@@ -238,6 +248,8 @@ per-emulator rather than global:
 |---|---|
 | `emulator` argument is not a recognized value | **BLOCK** (`unsupported_emulator`) — never assumed to behave like a known one. |
 | A resource type in the plan is unverified **for the emulator selected** (even if verified for the other one) | **BLOCK** (`resource_type_unverified`, now scoped to `(type, emulator)`, not just `type`) — a type's LocalStack fidelity proof does not transfer to a MiniStack run, or vice versa. |
+| A **security-critical** type (`aws_iam_role_policy`, `aws_kms_key`, `aws_s3_bucket_policy`) has `verified=True` but `negative_fidelity_verified=False` on the selected emulator | **BLOCK/reduced-assurance** (`negative_fidelity_unverified`) — distinct from `resource_type_unverified`, and just as blocking. Positive verification alone is never sufficient for these three types; an emulator that accepts everything is a rubber stamp, and a rubber stamp on the security-critical types is a false-green in the gate that exists specifically to catch that. |
+| A **non-security-critical** type has `verified=True` but `negative_fidelity_verified=False` | Not a failure — negative fidelity is best-effort for these 38 types, not gating. Recorded in the matrix honestly, but does not block. |
 
 Everything else in the approved scope (sections 1–6) stands unchanged — this addition only
 changes how the allowlist is keyed and what the verdict reports, not the fail-closed table's
