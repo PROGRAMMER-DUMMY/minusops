@@ -323,7 +323,12 @@ jobs:
           # job hung silently for 55 minutes on a stalled apt-get before finally erroring, wasting
           # the whole debugging cycle on one dead command. A bounded failure is diagnosable; a
           # silent one is not.
-          $SSH "timeout 300 bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io python3-pip python3-venv unzip' >/tmp/apt.log 2>&1 || (cat /tmp/apt.log; exit 1)"
+          # Real progress this time: 2000+ files unpacked, then dpkg stopped dead on an
+          # interactive conffile prompt (/etc/security/namespace.init, shipped by both the base
+          # image and the incoming libpam-modules package) -- DEBIAN_FRONTEND=noninteractive
+          # silences apt's OWN prompts but does not stop dpkg's separate conffile-conflict
+          # prompt; that needs its own explicit flags.
+          $SSH "timeout 300 bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold docker.io python3-pip python3-venv unzip' >/tmp/apt.log 2>&1 || (cat /tmp/apt.log; exit 1)"
           $SSH "timeout 30 systemctl enable --now docker"
           for i in $(seq 1 15); do
             if $SSH "timeout 10 docker info >/dev/null 2>&1"; then break; fi
