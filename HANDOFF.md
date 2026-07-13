@@ -716,6 +716,72 @@
 > handle on something another test also touches?** Worth a real audit of this pattern specifically
 > if a third instance shows up, rather than fixing each occurrence as a one-off surprise.
 
+> **Follow-up (2026-07-13): Phase 5 (G9) advanced on two fronts run in parallel — sandbox
+> isolation (security floor, settled first) and emulator fidelity (optimization, inside that
+> sandbox) — plus G7 (tfsec→Trivy) and Phase 4's HANDOFF debt cleared alongside, per the user's
+> explicit "parallelize what's decoupled" instruction. Full detail: `docs/phase5_scope.md`
+> sections 7–9 (pushed and re-pushed as real evidence accumulated, not drafted once and left).
+>
+> **Decision 1 (isolation) — real proof, not a design on paper.** G9 executes AI-generated
+> infrastructure; both free emulators get real-Docker fidelity via the host's own Docker socket
+> mounted as root, and — a more fundamental vector found while scoping this, independent of any
+> emulator — Terraform's own `local-exec`/`remote-exec` provisioners already execute arbitrary
+> shell commands directly on whatever runs `terraform apply`, meaning the isolation boundary has
+> to wrap the *whole* apply process, not just the emulator's container. Verified live (a
+> temporary scratch CI workflow, pushed/iterated/removed): `/dev/kvm` is genuinely available on
+> this repo's real, free-tier `ubuntu-latest` runners (not gated behind a paid tier, contrary to
+> some secondhand reports); a real Firecracker microVM boots from the official release binary +
+> official CI kernel/rootfs artifacts and is confirmed as a genuinely separate machine (own
+> kernel, own hostname, ~7s to SSH-ready). **A real escape gap was found on the first hostile-
+> escape attempt, not assumed safe**: filesystem isolation was total from the start, but the
+> guest could reach a TCP listener bound to the host's own tap-gateway address — the NAT/forward
+> rules governed traffic *through* the host, not traffic *to* the host itself. Fixed
+> (`iptables -A INPUT -i tap0 -j DROP`, with `ESTABLISHED,RELATED` allowed first so host-
+> initiated management traffic still works) and re-verified closed (the same attempt now times
+> out, no reachability). This proves the design is buildable and provably closeable on real
+> infrastructure; wiring the full `ephemeral_apply.py` pipeline to actually run inside this
+> boundary is real, disclosed remaining work, not yet built.
+>
+> **Decision 2 (fidelity) — real gauntlet, both directions, both free emulators, real CI.**
+> MiniStack and Floci both need no account/token, so both were run for real (real Docker
+> containers, real `terraform apply`). A real bug in the gauntlet scripts themselves was found
+> and fixed first: `set -uxo pipefail` does not clear GitHub Actions' own inherited `-e`, so a
+> genuinely-failing apply killed the whole job before result-logging ran (fixed with explicit
+> `if/else` around each command, exempt from `errexit`). **Mandatory finding: neither MiniStack
+> nor Floci currently passes negative fidelity for any of the three security-critical types this
+> repo's modules use** — `aws_iam_role` (malformed trust-policy principal ARN), `aws_kms_key`
+> (key policy missing any root/admin grant), and `aws_s3_bucket_policy` (policy naming the wrong
+> bucket's ARN) are all **incorrectly accepted** by both emulators, when real AWS is documented
+> to reject each. Per G9's own fail-closed design, a plan touching any of these three types now
+> correctly BLOCKS (`negative_fidelity_unverified`) on both emulators — the gauntlet did exactly
+> what it exists to do, catching a real false-green risk before either emulator was trusted, not
+> a setback. Separately: MiniStack's own historical STS ARN-validation bug (#980) is confirmed
+> genuinely fixed on the current version (directly relevant to this repo's Databricks cross-
+> account trust); Floci's two historical crash bugs (#871 `aws_instance`, #177
+> `aws_cognito_user_pool`) no longer crash but the underlying resource types still fail
+> differently today — informational only, since neither type is in this repo's real catalog.
+> **This reinforces, not undermines, the earlier LocalStack-paid tool decision** — both free
+> alternatives just failed the mandatory bar for real; whether LocalStack's paid tier would pass
+> is still the open, unanswered question a provisioned account would resolve.
+>
+> `core/governance/ephemeral_apply.py` now supports a pluggable `emulator=` parameter
+> (`localstack`/`ministack`/`floci`, `SUPPORTED_EMULATORS`), and `RESOURCE_TYPE_ALLOWLIST`
+> restructured to a real per-`(type, emulator)` matrix carrying the results above — LocalStack's
+> own column stays honestly unverified (no token provisioned). New fail-closed cases
+> (`unsupported_emulator`, `negative_fidelity_unverified`) each have a real regression test.
+>
+> **G7 (tfsec → Trivy) closed in parallel**, self-contained, different files: tfsec was archived
+> upstream in Trivy's favor, so `optimize_analyzer.py`'s external-scanner path would have
+> silently stopped receiving new checks — the same "quietly stops verifying" shape this session
+> keeps finding, just for a scanner. Trivy's real JSON shape (`Results[].Misconfigurations[]`)
+> was verified live against a real module in this repo (not assumed from docs), including the
+> real, confirmed behavior that `trivy config` exits non-zero (32) on genuine findings — its
+> normal "findings present" signal, correctly not treated as a scanner failure.
+>
+> Not closed: Phase 5 (G9) stays open. The isolation boundary is proven feasible but not yet
+> wired into the shipped pipeline; the LocalStack column of the fidelity matrix stays unverified
+> pending a provisioned account; both are real, named, remaining work, not silently assumed done.
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance
