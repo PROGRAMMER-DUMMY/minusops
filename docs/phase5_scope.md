@@ -125,7 +125,7 @@ The only structurally safe design: G9 maintains its **own reviewed allowlist** o
 types confirmed to route correctly to the emulator — the same shape as `destructive_change_
 gate.py`'s existing `STATEFUL_RESOURCE_TYPES`/`IAM_RESOURCE_TYPES` (scoped to what this repo's
 modules can actually produce, extended deliberately when a new type is introduced, never
-guessed). **Every one of the 39 AWS resource types this repo's 16 modules currently declare**
+guessed). **Every one of the 41 AWS resource types this repo's 16 modules currently declare**
 (enumerated directly via `grep -rhoE '^resource "aws_[a-z_0-9]+"' modules/*/main.tf`, not
 assumed) must be confirmed on that allowlist — with real emulator coverage checked, not read off
 a marketing page — before G9 is trusted to run against a plan containing it. A plan containing
@@ -142,7 +142,7 @@ ever constructs, not one of several.
 ## 6. Proof bar
 
 1. **Per-resource-type coverage, verified live, item by item, BOTH DIRECTIONS.** Every one of
-   the 39 AWS resource types in the current module catalog, planned and applied against
+   the 41 AWS resource types in the current module catalog, planned and applied against
    LocalStack for real, confirmed to either work or be named as a disclosed gap — not assumed
    from the vendor's own service list, the same "verify against real behavior" standard every
    other phase this session used. "Works" alone is not sufficient proof: an emulator that

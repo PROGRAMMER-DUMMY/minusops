@@ -638,6 +638,58 @@
 > crashed-writer test rewritten to hold a real live lock (a bare stale file is now confirmed to
 > need no manual cleanup — the OS releases advisory locks automatically on process death).
 
+> **Follow-up (2026-07-13): Phase 5 (G9, ephemeral apply) built to the approved
+> `docs/phase5_scope.md`, up to a real, disclosed blocker — not fully closeable this session.**
+>
+> **Item 0 (tool decision) resolved: LocalStack, paid Base plan** — reframed correctly on
+> review as a fidelity question (a subtly-too-permissive free/new emulator produces false
+> greens, worse than no gate), not a cost one. This creates a real, structural blocker: a paid
+> LocalStack account needs a `LOCALSTACK_AUTH_TOKEN` and a payment method, neither obtainable by
+> an agent. Everything buildable/testable without a live paid instance was built and proven;
+> everything that genuinely needs one is named explicitly, not silently skipped.
+>
+> **Built and tested**: `core/governance/ephemeral_apply.py` — resource-type allowlist (all 41
+> real AWS types this repo's modules declare, every one honestly `unverified` right now, same
+> shape as `destructive_change_gate.py`'s `STATEFUL_RESOURCE_TYPES`), the dummy-credential-only
+> LocalStack provider-override generator (the sole credential path, never ambient), the full
+> fail-closed apply/destroy orchestration (33 tests, `tests/test_ephemeral_apply.py`), and a
+> `coverage` (full/partial/none) classifier composing visibly with G5's `reduced_assurance`
+> (`compose_with_g5()` — a "none"/"partial" verdict is structurally incapable of reading as
+> "passed").
+>
+> **A real bug caught before this shipped, not during the sweep**: the first draft ran the
+> read-only classification plan *before* writing the LocalStack provider override, meaning that
+> first `terraform plan` call was not isolated from ambient credentials at all — exactly the
+> violation condition 5 (structural endpoint isolation) exists to prevent, even though `plan`
+> itself never mutates anything. Caught by an actual end-to-end smoke test that produced a
+> confusing `teardown_failed` verdict traced back to an orphaned provider-plugin process holding
+> the state lock. Fixed: the override is now written first, before any terraform command runs.
+>
+> **Real, live proof obtained without needing a LocalStack account at all**: the "emulator
+> unreachable" fail-closed path (proof-bar item, section 4's table) doesn't need a paid or even
+> a running LocalStack to prove — a genuinely unreachable endpoint is real regardless. Confirmed
+> live: a real `terraform apply` against `http://localhost:4566` with nothing listening blocks
+> in bounded time (`apply_timeout`), never hangs forever, never silently proceeds. Also verified
+> live (not assumed): the real `terraform apply -json` event shape (`apply_start`/
+> `apply_complete`/`apply_errored`), including a genuinely-observed case where a crashed provider
+> plugin dumps a non-JSON Go panic stack trace into the output stream — locked in as the
+> `apply_result_malformed` regression test.
+>
+> **Blocked on the token, named explicitly, not silently assumed done**:
+> - Proof-bar item 1 (per-resource-type coverage, all 41 types, both directions including the
+>   negative-fidelity check on IAM/KMS/S3 policies) — cannot run without a live paid instance.
+>   `RESOURCE_TYPE_ALLOWLIST` stays honestly all-`False` until this happens for real.
+> - Proof-bar item 3 (real CI run) — `.github/workflows/ephemeral-apply.yml` is built (Ubuntu-
+>   only, matches the `docker` job's own placement; official `LocalStack/setup-localstack`
+>   action) but skips loudly (`::warning::`, not a silent pass) when `LOCALSTACK_AUTH_TOKEN` is
+>   absent, which it is until the user configures it as a repo secret.
+> - Proof-bar item 4 (teardown reliability stress test) and item 5 (`coverage` field on a real
+>   mixed AWS+Databricks plan applied against LocalStack) — both need the same live instance.
+>
+> **Not closed.** Per the approved scope's own condition, Phase 5 stays open until the token is
+> provisioned and the remaining proof-bar items actually run for real — this is evidence of
+> what's built and correctly gated, not a claim that G9 is verified.
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance

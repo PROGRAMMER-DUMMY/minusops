@@ -1,0 +1,97 @@
+name: Ephemeral Apply (G9)
+
+# G9 (docs/phase5_scope.md, Phase 5): ephemeral create+destroy against LocalStack, catching
+# apply-time-only failures static analysis (G1/G2/G6) cannot. Structurally Ubuntu-only --
+# confirmed directly against GitHub's own docs: service containers/Docker are only supported on
+# Linux GitHub-hosted runners, never macOS or Windows -- matching this repo's existing
+# docker-build-smoke job's own placement.
+#
+# Requires a PAID LocalStack account (LOCALSTACK_AUTH_TOKEN repo secret) -- see docs/
+# phase5_scope.md's item 0. If that secret is not configured, this job skips loudly rather than
+# silently passing: "the secret is absent" and "G9 ran and found nothing wrong" must never look
+# the same in the Actions log.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  ephemeral-apply:
+    name: "G9 ephemeral apply (LocalStack)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false
+
+      - name: Check LOCALSTACK_AUTH_TOKEN is configured
+        id: token_check
+        run: |
+          if [ -z "${{ secrets.LOCALSTACK_AUTH_TOKEN }}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: G9 not configured -- skipped loudly, not silently passed
+        if: steps.token_check.outputs.configured != 'true'
+        run: |
+          echo "::warning::G9 (ephemeral apply) SKIPPED -- LOCALSTACK_AUTH_TOKEN is not configured. This is NOT the same as G9 passing; no ephemeral-apply verification ran on this commit. See docs/phase5_scope.md item 0."
+          exit 0
+
+      - name: Start LocalStack
+        if: steps.token_check.outputs.configured == 'true'
+        uses: LocalStack/setup-localstack@v0.2.2
+        with:
+          image-tag: "latest"
+        env:
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+
+      - name: Install package
+        if: steps.token_check.outputs.configured == 'true'
+        run: python -m pip install ".[dev]"
+
+      # Proof-bar item 3 (docs/phase5_scope.md): a real assertion that G9 actually runs and
+      # returns a genuine verdict -- not "the job didn't error." Uses a minimal, disposable
+      # fixture and temporarily marks exactly the one type it exercises as verified for the
+      # purpose of this smoke test -- the SHIPPED RESOURCE_TYPE_ALLOWLIST stays fully
+      # unverified (see ephemeral_apply.py's own module docstring) until real per-type +
+      # negative-fidelity verification actually happens against this same LocalStack instance
+      # (proof-bar item 1, tracked separately, not yet done).
+      - name: G9 smoke test -- real ephemeral apply against LocalStack
+        if: steps.token_check.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/g9_smoke
+          cat > /tmp/g9_smoke/main.tf <<'EOF'
+          terraform {
+            required_providers { aws = { source = "hashicorp/aws", version = ">= 5.0" } }
+          }
+          resource "aws_s3_bucket" "smoke" {
+            bucket = "g9-ci-smoke-bucket"
+          }
+          EOF
+          python - <<'PY'
+          import sys, json
+          sys.path.insert(0, "core/governance")
+          sys.path.insert(0, "core/reporting")
+          import ephemeral_apply as ea
+          ea.RESOURCE_TYPE_ALLOWLIST["aws_s3_bucket"] = (True, False)
+          result = ea.run_ephemeral_apply("/tmp/g9_smoke", apply_timeout=120, destroy_timeout=120)
+          print(json.dumps(result, indent=2))
+          assert result["evaluation_failed"] is False, f"G9 smoke test did not apply cleanly: {result}"
+          assert result["coverage"] == "full"
+          assert result["aws_resources_applied"] == ["aws_s3_bucket.smoke"]
+          PY
+
+      - name: Run ephemeral_apply.py's own test suite
+        if: steps.token_check.outputs.configured == 'true'
+        run: python -m pytest tests/test_ephemeral_apply.py -q
