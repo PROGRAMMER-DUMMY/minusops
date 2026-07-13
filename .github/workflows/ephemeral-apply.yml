@@ -303,6 +303,18 @@ jobs:
           # would follow and fail to overwrite as expected.
           ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2 "rm -f /etc/resolv.conf && echo 'nameserver 8.8.8.8' > /etc/resolv.conf && cat /etc/resolv.conf"
 
+      - name: Initialize dpkg's status database (genuinely absent on this minimal quickstart image)
+        run: |
+          set -euxo pipefail
+          # Confirmed directly, not assumed: "E: flAbsPath on /var/lib/dpkg/status failed --
+          # No such file or directory" fires instantly, before any real apt-get work runs (ruled
+          # out disk space as the cause once the rootfs was already 6GB) -- this quickstart image
+          # is a bare kernel-boot+SSH probe artifact, never fully provisioned with a dpkg
+          # database at all. An empty-but-well-formed status file (zero packages known) is a
+          # valid starting state and is what dpkg/apt expect to find, not a workaround.
+          SSH="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2"
+          $SSH "mkdir -p /var/lib/dpkg/info /var/lib/dpkg/updates /var/lib/dpkg/triggers && touch /var/lib/dpkg/status /var/lib/dpkg/available && ls -la /var/lib/dpkg/status"
+
       - name: Provision the guest -- docker, terraform, python, this package (all INSIDE the VM)
         run: |
           set -euxo pipefail
