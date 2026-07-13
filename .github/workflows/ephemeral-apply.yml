@@ -264,6 +264,13 @@ jobs:
           sudo iptables -A INPUT -i tap0 -m state --state ESTABLISHED,RELATED -j ACCEPT
           sudo iptables -A INPUT -i tap0 -j DROP
 
+          # Firecracker's own default (never set explicitly until now) is 1 vCPU / 128MiB RAM --
+          # nowhere near enough to apt-get install docker.io (containerd/runc/iptables) without
+          # the guest silently going unresponsive mid-install (observed directly: SSH itself
+          # stopped responding, "Timeout, server ... not responding", partway through apt-get).
+          sudo curl -sf -X PUT --unix-socket "$API_SOCKET" \
+            --data '{"vcpu_count": 2, "mem_size_mib": 2048}' \
+            "http://localhost/machine-config"
           sudo curl -sf -X PUT --unix-socket "$API_SOCKET" \
             --data '{"kernel_image_path":"'"$(pwd)"'/vmlinux.bin","boot_args":"console=ttyS0 reboot=k panic=1 pci=off ip=172.16.0.2::172.16.0.1:255.255.255.252::eth0:off"}' \
             "http://localhost/boot-source"
