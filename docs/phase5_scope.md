@@ -201,21 +201,56 @@ MiniStack's half of section 7.2's fidelity matrix is buildable and provable **ri
 without waiting on `LOCALSTACK_AUTH_TOKEN` — the token blocks LocalStack's half specifically,
 not this whole scope addition.
 
+**Floci added as a third candidate on review, evidence-based, not reputation-based.** Also
+free, no token, drop-in port-4566-compatible. Checked directly against its own public issue
+tracker (not assumed from its README) before adding it to `SUPPORTED_EMULATORS`:
+- Two closed, real bugs directly in G9's target surface: `aws_instance` crashed the AWS
+  provider plugin with a nil-pointer panic during the read-after-create step (issue #871,
+  closed), and `aws_cognito_user_pool` crashed the same way, with the reporter confirming the
+  identical Terraform config worked against real AWS (issue #177, closed) — both are exactly the
+  class of apply-time-only failure G9 exists to catch, meaning Floci itself has shipped bugs of
+  the kind it's meant to help find elsewhere.
+- A separate, independent structural review recorded in issue #28 (from an early user, not this
+  session) raised real, specific concerns: no public CI/test gate on pull requests at the time
+  ("the README states 408/408 SDK tests passing, but these tests are not in the repository and
+  there is no visible regression gate"), an S3 catch-all route that silently hijacked other
+  services' endpoints, and several Lambda API gaps that would abort a real Terraform apply.
+- Both #871 and #177 are closed (2026-05-29 and 2026-04-03 respectively), and the project has
+  shipped ~50 releases since with substantial, apparently real feature work (confirmed via its
+  release notes, not just commit counts). Closed-with-time-since is evidence the specific
+  reported bugs were addressed; it is **not** evidence the underlying reliability concern (this
+  project's own users have flagged it as feeling AI-generated and undertested) no longer
+  applies more broadly — the closed-issue count is a starting signal, not a substitute for
+  running the same gauntlet against it that LocalStack/MiniStack get.
+
+**Net for all three**: MiniStack shipped a real STS `AssumeRole` validation gap until 2026-06-24
+(issue #980 — `AssumeRole`/`AssumeRoleWithWebIdentity` accepted malformed, wrong-service,
+wrong-account role ARNs and issued credentials anyway, before that fix landed) — directly
+relevant since this repo's Databricks cross-account trust setup is exactly this kind of STS
+call. Floci has the two closed apply-crash bugs above. **Every young, free emulator considered
+here has real, historical correctness bugs in exactly the surface G9 exists to verify.** This is
+the argument *for* running the both-direction negative-fidelity gauntlet as mandatory rather
+than diligence theater — it is the only thing that distinguishes "the changelog says fixed" from
+"is fixed for the specific types this repo's modules actually produce." No emulator is ranked
+by stars, release cadence, or service-count claims; the matrix in 7.2 is the only ranking that
+counts, and `SUPPORTED_EMULATORS` becomes `{"localstack", "ministack", "floci"}`.
+
 ### 7.2 Per-emulator fidelity matrix — proven, not assumed, for each emulator independently
 
 `RESOURCE_TYPE_ALLOWLIST` restructures from a flat `type -> (verified, security_critical)` map
 into a per-emulator shape: for every one of the 41 resource types, a `security_critical` flag
-(unchanged) plus a per-emulator record — `{"localstack": {"verified": bool, "negative_fidelity_
-verified": bool}, "ministack": {same shape}}`. Every cell starts `False`; nothing here is
-assumed complete because a name is now in the table.
+(unchanged) plus one record per entry in `SUPPORTED_EMULATORS` — `{"localstack": {"verified":
+bool, "negative_fidelity_verified": bool}, "ministack": {same shape}, "floci": {same shape}}`.
+Every cell starts `False`; nothing here is assumed complete because a name is now in the table.
 
 Proof-bar item 1 (both directions, including the negative rejects-what-real-AWS-rejects check
-on IAM/KMS/S3) runs **per emulator, per type** — the verification workload is not halved by
-adding a free option, it's run twice, once per emulator, since a type verified on LocalStack
-tells you nothing about whether MiniStack enforces the same real-AWS constraint. The output is
-a real capability matrix (resource type × emulator × verified/gap), not a single "G9 works" bit
-— this is what makes the user's emulator choice an *informed* one rather than blind trust in
-whichever name they picked.
+on IAM/KMS/S3) runs **per emulator, per type** — the verification workload is not reduced by
+adding free options, it's run once per emulator (three times now, not two), since a type
+verified on LocalStack tells you nothing about whether MiniStack or Floci enforces the same
+real-AWS constraint. The output is a real capability matrix (resource type × emulator ×
+verified/gap), not a single "G9 works" bit — this is what makes the user's emulator choice an
+*informed* one rather than blind trust in whichever name they picked, and what lets the matrix
+itself — not stars, release cadence, or service-count claims — rank the three candidates.
 
 **Negative fidelity is MANDATORY-to-close for security-critical types, best-effort for the
 rest — not spread thin equally across all 41.** A rubber-stamp emulator on a Glue job is an
@@ -255,9 +290,125 @@ Everything else in the approved scope (sections 1–6) stands unchanged — this
 changes how the allowlist is keyed and what the verdict reports, not the fail-closed table's
 other rows, the coverage/Databricks-asymmetry design, or the Ubuntu-only CI placement.
 
+## 8. Scope addition (2026-07-13) — sandbox isolation (security finding, mandatory before close)
+
+Raised on review as a security finding, not a fidelity concern: G9's job is to apply
+AI-generated infrastructure. That is executing untrusted, machine-generated code, and the
+naive design (a sidecar emulator container with the host's Docker socket mounted, run as root)
+is a container-escape / arbitrary-host-execution surface — a different, more severe class of
+risk than the cost/blast-radius isolation `_generate_provider_override()` already provides
+(dummy credentials, never touches real AWS). This section is mandatory-to-close, and now
+outranks fidelity on the proof bar per explicit instruction.
+
+### 8.1 A more direct escape vector than the one raised, found while scoping this
+
+The docker-socket-as-root concern is real, but verified research surfaced a **more
+fundamental** one that exists independent of any emulator choice or Docker configuration at
+all: **Terraform's own `local-exec` and `remote-exec` provisioners execute arbitrary shell
+commands directly on whatever machine runs `terraform apply`.** A hostile (or merely buggy)
+AI-generated `null_resource` with a `local-exec` provisioner needs no emulator bug, no
+docker.sock, and no container escape — it runs on the host the instant `terraform apply`
+executes it, because that is literally what the provisioner is designed to do. `ephemeral_
+apply.py`'s current design calls `subprocess.run([terraform, ..., "apply", ...])` directly on
+the CI runner — meaning **today, before any of this section's isolation work, a generated
+`local-exec` provisioner already has unmediated host access**, regardless of which emulator (or
+none) is configured.
+
+This changes the isolation boundary's target: it is not sufficient to sandbox "the emulator
+container." **The isolation boundary must wrap the entire ephemeral-apply process** — the
+`terraform` binary, every provider plugin it launches, and any provisioner it executes — not
+merely the Docker container the AWS/emulator provider talks to over HTTP. A design that only
+hardens the emulator's container (e.g. gVisor on the LocalStack/MiniStack/Floci container alone)
+would leave `local-exec` completely unmitigated, since `terraform apply` itself would still be
+running directly on the bare host.
+
+### 8.2 Feasibility, verified live on this repo's real CI, not assumed from secondhand reports
+
+Checked directly (a temporary scratch workflow, pushed, run via `workflow_dispatch`, then
+removed) rather than trusted from conflicting online reports about GitHub Actions KVM support:
+**`/dev/kvm` exists and `kvm-ok` reports KVM acceleration usable on this repo's real, free-tier
+`ubuntu-latest` GitHub-hosted runners, right now** (CPU has `svm` virtualization flags; group
+`kvm` on the device). This means a genuine microVM boundary (Firecracker or equivalent) is
+feasible on the exact runners this repo's CI already uses, not gated behind GitHub's paid
+"larger runners" tier as some secondhand sources claimed — confirmed, not assumed.
+
+### 8.3 Design: the whole apply step runs inside a disposable Firecracker microVM
+
+Given 8.1's finding, the design that actually matches the requirement is a real VM boundary
+around the entire ephemeral-apply step, not container-runtime hardening alone (gVisor-style
+syscall interception was considered and is a real, well-established technology, but it protects
+against a compromised *container* escaping outward — it does nothing for `terraform apply`
+running directly on the bare runner and executing a `local-exec` provisioner, which is 8.1's
+actual finding). Per run:
+
+1. Boot a disposable, network-isolated microVM (via an established toolkit built on Firecracker
+   — e.g. `firecracker-containerd` or Weaveworks `ignite` — not a from-scratch Firecracker
+   integration; KVM is confirmed present, so this is an integration/configuration task, not a
+   from-scratch VMM build).
+2. Inside that microVM: install `terraform`, the chosen emulator (LocalStack/MiniStack/Floci,
+   itself run as a Docker container *inside* the VM — its docker.sock, if any, lives inside the
+   disposable VM and is destroyed with it, never touches the host), and run the full plan →
+   apply → destroy cycle from `ephemeral_apply.py` entirely inside that boundary.
+3. Destroy the microVM unconditionally after the run, success or failure — this also
+   strengthens proof-bar item 4 (teardown reliability): a resource leaked inside a destroyed VM
+   cannot persist, the same way a killed process's advisory lock releases automatically (see
+   the audit-chain lock fix), by construction rather than by a `terraform destroy` call that
+   could itself fail.
+4. The CI job (`.github/workflows/ephemeral-apply.yml`) is responsible for provisioning and
+   tearing down the microVM around the existing `ephemeral_apply.py` invocation — this is
+   infrastructure the CI job owns, not a code change to `ephemeral_apply.py`'s own control flow
+   beyond accepting that it now runs inside a different environment.
+
+**Real engineering cost, disclosed plainly**: this is a genuine build — kernel/rootfs image
+selection, VM lifecycle management in a CI step, networking for the emulator port inside the
+VM — more than a config change, less than a from-scratch Firecracker integration given an
+established toolkit. Scoped here for review before that work starts, same as every other
+phase.
+
+### 8.4 Fail-closed addition
+
+| Case | Verdict |
+|---|---|
+| The microVM fails to boot, or the isolation boundary cannot be established for any reason | **BLOCK** (`isolation_unavailable`) — G9 must never silently fall back to running the apply step unsandboxed. A gate whose isolation can't be confirmed is not a gate; this is the same "can't verify ≠ verified clean" line drawn everywhere else in this scope. |
+| The hostile-resource escape test (8.5) fails — a canary escape attempt succeeds | **BLOCK the entire G9 mechanism**, not just that one run — an escape that succeeds once means the isolation boundary itself is not trustworthy, and G9 cannot be closed until it's rebuilt and reproven. |
+
+### 8.5 New proof-bar item — the hostile-resource escape test (mandatory, above fidelity)
+
+A deliberately-hostile fixture: a Terraform configuration containing a `null_resource` with a
+`local-exec` provisioner that attempts a concrete, checkable host-escape canary — e.g. writing a
+sentinel file to a path outside the microVM (a host-only bind mount never exposed inside the
+VM), or attempting to reach a host-only network address/service that only exists outside the
+VM boundary. Run this fixture through the full `ephemeral_apply.py` pipeline inside the real
+isolation boundary from 8.3, on real CI, and assert the canary **never** appears on the host —
+not "the apply step didn't error" (a `local-exec` provisioner succeeding looks identical to a
+normal apply from Terraform's own point of view; the proof has to check the host side directly,
+not Terraform's exit code). This is the load-bearing proof for this whole section: it is the
+only test that actually exercises whether the isolation boundary holds against the exact thing
+`terraform apply` is capable of doing on its own, independent of any emulator.
+
+## 9. Design option, not required now — hybrid gating (flagged for later consideration)
+
+Raised on review as worth scoping, not building: G9 does not have to run every resource type
+through one general-purpose emulator. A layered design was suggested:
+- `terraform validate` (free, local, no emulator, already G1) as the always-on first gate —
+  unchanged, already exists.
+- The general emulator (LocalStack/MiniStack/Floci, per section 7's matrix) for resource types
+  that genuinely need a real apply cycle to catch ordering/validation/computed-value bugs.
+- Service-specific, higher-fidelity emulators (e.g. ElasticMQ for SQS, DynamoDB Local for
+  DynamoDB) for the specific services where general-purpose AWS emulators are documented to be
+  weakest, if this repo's module catalog ever grows to include those services (it currently does
+  not — no SQS, no DynamoDB in any of the 41 real resource types).
+
+Not required for G9's close — flagged here so it isn't lost, and because it composes naturally
+with section 7's per-`(type, emulator)` matrix (a service-specific emulator is just another
+column). Revisit if/when this repo's catalog grows into services those tools cover better than
+LocalStack/MiniStack/Floci do.
+
 ## Ordering invariant
 
 Phase 5 is next, unblocked now that the audit-chain lock is closed. Phase 4 stays advisory, G6
 stays shadow, catalog teardown (Phase 6) stays last regardless. No implementation starts until
-this scope — including the item-0 tool decision and the section-7 emulator-choice addition —
-is agreed.
+this scope — including the item-0 tool decision, the section-7 emulator-choice/Floci addition,
+and the section-8 sandbox-isolation requirement — is agreed. **Section 8 (isolation) is now the
+most load-bearing item on the entire proof bar, above fidelity** — G9 does not close without a
+real, tested isolation boundary, regardless of how complete the fidelity matrix is.
