@@ -119,7 +119,7 @@ jobs:
           echo "=== attempt 1: can the guest even SEE a host filesystem path? ==="
           ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "cat /root/host_only_canary.txt 2>&1; ls -la / 2>&1"
           echo "=== attempt 2: can the guest reach the host listener on the tap gateway? ==="
-          ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "timeout 3 bash -c 'echo probe | nc 172.16.0.1 9999' 2>&1; echo EXIT=\$?"
+          ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "timeout 3 bash -c 'exec 3<>/dev/tcp/172.16.0.1/9999 && echo probe >&3 && head -1 <&3' 2>&1; echo EXIT=\$?"
           echo "=== attempt 3: can the guest reach the public internet (expected: yes, via NAT -- this is fine, it's not the host) ==="
           ssh -o StrictHostKeyChecking=no -i id_rsa root@172.16.0.2 "timeout 3 curl -sf https://1.1.1.1 -o /dev/null -w 'HTTP %{http_code}\n' 2>&1"
 
