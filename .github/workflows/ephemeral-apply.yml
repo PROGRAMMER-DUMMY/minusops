@@ -329,6 +329,12 @@ jobs:
           # silences apt's OWN prompts but does not stop dpkg's separate conffile-conflict
           # prompt; that needs its own explicit flags.
           $SSH "timeout 300 bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold docker.io python3-pip python3-venv unzip' >/tmp/apt.log 2>&1 || (cat /tmp/apt.log; exit 1)"
+          # Real cause, found via the journalctl dump above, not guessed: this minimal
+          # quickstart kernel has no nf_tables support, so iptables' default nft backend fails
+          # ("Failed to initialize nft: Protocol not supported"), and Docker's bridge driver
+          # needs iptables to create its NAT chain. Switch to the legacy xtables backend, which
+          # this kernel's older netfilter modules do support.
+          $SSH "update-alternatives --set iptables /usr/sbin/iptables-legacy || true; update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy || true"
           $SSH "timeout 30 systemctl enable --now docker || (journalctl -xeu docker.service --no-pager | tail -100; dockerd --version; exit 1)"
           for i in $(seq 1 15); do
             if $SSH "timeout 10 docker info >/dev/null 2>&1"; then break; fi
