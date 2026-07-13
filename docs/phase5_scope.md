@@ -172,8 +172,80 @@ ever constructs, not one of several.
    touching both an AWS module and `databricks-workspace`, confirming G9's verdict correctly
    reports `"partial"` with the Databricks resources named, never silently reads as `"full"`.
 
+## 7. Scope addition (2026-07-13) — pluggable emulator (LocalStack | MiniStack)
+
+Raised on review, after the build above: make the emulator a user choice rather than
+hardcoded to LocalStack. Fits the already-tool-agnostic design (item 0's own framing —
+"swapping to paid LocalStack later is a config change, not a rewrite" — cuts both ways) and
+matches real user diversity (pay for LocalStack's maturity, or take MiniStack's free, unproven
+alternative). The hard requirement, stated explicitly on review and non-negotiable: **the
+choice must be visible in the assurance, never a silent config toggle that makes two
+different-confidence verdicts look identical.**
+
+### 7.1 Mechanism
+
+`run_ephemeral_apply(dir_, emulator="localstack", ...)` — `emulator` is `"localstack"` or
+`"ministack"`, validated against a fixed `SUPPORTED_EMULATORS` set. An unrecognized value
+**blocks** (`unsupported_emulator`), not "assume it behaves like one of the known ones" — the
+same fail-closed posture as an unrecognized resource type. LocalStack and MiniStack share the
+same port (4566) and the same Terraform `endpoints{}` pattern (confirmed for MiniStack this
+session — "drop-in replacement for LocalStack," no endpoint reconfiguration needed), so
+`_generate_provider_override()` needs no emulator-specific branching *for the endpoint shape*
+— but this must be confirmed live per emulator, not assumed identical just because the marketing
+copy says so, the same discipline every other "verify against real behavior" item in this
+scope already applies.
+
+**MiniStack needs no account or token at all** (confirmed directly earlier this session — no
+API key, no auth, dummy credentials only) — unlike LocalStack's paid Base plan. This means
+MiniStack's half of section 7.2's fidelity matrix is buildable and provable **right now**,
+without waiting on `LOCALSTACK_AUTH_TOKEN` — the token blocks LocalStack's half specifically,
+not this whole scope addition.
+
+### 7.2 Per-emulator fidelity matrix — proven, not assumed, for each emulator independently
+
+`RESOURCE_TYPE_ALLOWLIST` restructures from a flat `type -> (verified, security_critical)` map
+into a per-emulator shape: for every one of the 41 resource types, a `security_critical` flag
+(unchanged) plus a per-emulator record — `{"localstack": {"verified": bool, "negative_fidelity_
+verified": bool}, "ministack": {same shape}}`. Every cell starts `False`; nothing here is
+assumed complete because a name is now in the table.
+
+Proof-bar item 1 (both directions, including the negative rejects-what-real-AWS-rejects check
+on IAM/KMS/S3) runs **per emulator, per type** — the verification workload is not halved by
+adding a free option, it's run twice, once per emulator, since a type verified on LocalStack
+tells you nothing about whether MiniStack enforces the same real-AWS constraint. The output is
+a real capability matrix (resource type × emulator × verified/gap), not a single "G9 works" bit
+— this is what makes the user's emulator choice an *informed* one rather than blind trust in
+whichever name they picked.
+
+### 7.3 The verdict must name the emulator and its fidelity, every time
+
+Every `run_ephemeral_apply()` result carries `"emulator": "localstack" | "ministack"`. For each
+resource type actually exercised in that plan, the verdict states whether that (type, emulator)
+pair is `verified` (and, for security-critical types, `negative_fidelity_verified`) — not just a
+single aggregate coverage bit. `compose_with_g5()`'s summary states the emulator and names any
+unverified-for-this-emulator type explicitly (e.g. "G9 ran on MiniStack; `aws_iam_role_policy`
+is fidelity-verified on LocalStack but NOT on MiniStack for this plan"). A MiniStack green and a
+LocalStack green must never be presentable as the same evidence — a report reader who only
+glances at "G9: PASS" without the emulator/fidelity annotation is exactly the failure mode this
+requirement exists to prevent.
+
+### 7.4 Fail-closed, unchanged in spirit, now emulator-aware
+
+Section 4's table gains one more row, and the existing `resource_type_unverified` row becomes
+per-emulator rather than global:
+
+| Case | Verdict |
+|---|---|
+| `emulator` argument is not a recognized value | **BLOCK** (`unsupported_emulator`) — never assumed to behave like a known one. |
+| A resource type in the plan is unverified **for the emulator selected** (even if verified for the other one) | **BLOCK** (`resource_type_unverified`, now scoped to `(type, emulator)`, not just `type`) — a type's LocalStack fidelity proof does not transfer to a MiniStack run, or vice versa. |
+
+Everything else in the approved scope (sections 1–6) stands unchanged — this addition only
+changes how the allowlist is keyed and what the verdict reports, not the fail-closed table's
+other rows, the coverage/Databricks-asymmetry design, or the Ubuntu-only CI placement.
+
 ## Ordering invariant
 
 Phase 5 is next, unblocked now that the audit-chain lock is closed. Phase 4 stays advisory, G6
 stays shadow, catalog teardown (Phase 6) stays last regardless. No implementation starts until
-this scope — including the item-0 tool decision — is agreed.
+this scope — including the item-0 tool decision and the section-7 emulator-choice addition —
+is agreed.
