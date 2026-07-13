@@ -166,7 +166,7 @@ jobs:
           # corruption risk. The bigger image then becomes the root drive outright.
           mkdir -p /tmp/src_root /tmp/big_root
           sudo mount -o loop rootfs.ext4 /tmp/src_root
-          dd if=/dev/zero of=bigroot.ext4 bs=1M count=6144 status=none
+          dd if=/dev/zero of=bigroot.ext4 bs=1M count=10240 status=none
           mkfs.ext4 -q bigroot.ext4
           sudo mount -o loop bigroot.ext4 /tmp/big_root
           sudo cp -a /tmp/src_root/. /tmp/big_root/
@@ -291,7 +291,7 @@ jobs:
             echo "waiting for guest ssh... ($i)"
             sleep 2
           done
-          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2 "hostname; uname -a"
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i id_rsa root@172.16.0.2 "hostname; uname -a; df -h /"
 
       - name: Configure DNS inside the guest (NAT alone routes IPs, not names)
         run: |
@@ -329,6 +329,7 @@ jobs:
           # silences apt's OWN prompts but does not stop dpkg's separate conffile-conflict
           # prompt; that needs its own explicit flags.
           $SSH "timeout 300 bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold docker.io python3-pip python3-venv unzip' >/tmp/apt.log 2>&1 || (cat /tmp/apt.log; exit 1)"
+          $SSH "apt-get clean"
           # Real cause, found via the journalctl dump above, not guessed: this minimal
           # quickstart kernel has no nf_tables support, so iptables' default nft backend fails
           # ("Failed to initialize nft: Protocol not supported"), and Docker's bridge driver
@@ -341,6 +342,9 @@ jobs:
             echo "waiting for dockerd inside guest... ($i)"; sleep 2
           done
           $SSH "timeout 60 curl -fsSL https://releases.hashicorp.com/terraform/1.10.5/terraform_1.10.5_linux_amd64.zip -o /tmp/tf.zip && unzip -o /tmp/tf.zip -d /usr/local/bin && terraform version"
+          # Diagnostic, not a fix -- the 6GB root has run out of space at this point before,
+          # need real numbers rather than another guess: what's actually consuming it.
+          $SSH "df -h /; du -sh /var/lib/docker /var/cache/apt/archives /usr 2>/dev/null | sort -rh"
 
       - name: Copy the repo + wired fixtures into the guest
         run: |
