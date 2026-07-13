@@ -703,6 +703,18 @@
 > is structurally Ubuntu-only anyway, so this is a consistent scope narrowing, not a workaround.
 > Confirmed on real CI: all 8 jobs green after the fix, both previously-failing Windows jobs
 > included.
+>
+> **Pattern flag, not just a one-off**: this is the SECOND Windows file-lock-on-a-shared-resource
+> bug this session, not an isolated fluke. The first was the audit-chain lock (§6 item 11):
+> `os.remove()` racing a concurrent `os.open(O_CREAT|O_EXCL)` on the same lock filename. This one:
+> a killed process's surviving grandchild holding a lock on a shared cached file. Different
+> mechanism, same root shape — Windows' file-handle/lock semantics under concurrency (whether
+> from threads racing a lock file, or a subprocess tree outliving its parent) do not behave like
+> POSIX's, and this repo's test suite spawns real subprocesses and shares real files (the
+> plugin cache, lock sidecars) constantly. **Standing check for every future test that spawns a
+> subprocess or touches a shared file: does a timeout/kill path leave anything alive holding a
+> handle on something another test also touches?** Worth a real audit of this pattern specifically
+> if a third instance shows up, rather than fixing each occurrence as a one-off surprise.
 
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
