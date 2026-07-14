@@ -915,6 +915,52 @@
 > `G6_RULE_IDS` regression) combined with the pre-existing `test_intent_assertions.py` (31) and
 > `test_destructive_change_gate.py` (36) all pass locally against the real `opa`/`terraform`
 > binaries. **Phase 6 (catalog teardown) still not started, per standing instruction.**
+>
+> **Pattern flag, worst variant yet, not just a one-off (independent review, 2026-07-14).** The
+> `G6_RULE_IDS` bug above is the same "a verifier that passes without verifying" shape this
+> session has hit five times before (G5's `classify()`, G2's extractor, the schema-lint
+> fail-closed sweep, the Dockerfile checksum non-fix, the wheel-packaging omission) — but this is
+> the sharpest version: the rule did not fail to fire, and it did not fail to detect a real
+> violation. **It fired correctly, produced a correct finding, and that finding was then
+> silently discarded before it ever reached the divergence report or the audit chain** — a
+> verifier succeeding and its result being thrown away one hop downstream, not a verifier that
+> never ran. **Standing checklist item, binding on every future G6 rule addition, not advisory**:
+> before considering any new rule ID done, trace it all the way to the audit chain — confirm a
+> constructed real violation for that rule ID actually appears in `_g6_shadow_eval()`'s
+> `divergence` output (or whatever the equivalent reporting path is at the time), not just that
+> `rego_gate.evaluate()` returns the finding. "The rule fires" and "the finding is recorded" are
+> two different claims, and this session now has direct proof they can silently diverge.
+>
+> **Known recurring session hazard, flagged so it isn't rediscovered as a surprise**: this
+> repo's real-terraform-heavy testing (this session's own parity passes, the `pytest-of-shubh`
+> tmp tree, and Terraform's own per-invocation provider-binary extraction into the OS Temp root)
+> has now filled the local Windows dev machine's C: drive to **0 bytes free** at least twice this
+> session — once documented in the audit-chain-lock era (`pytest-of-shubh` alone reaching 65GB),
+> once during this G6 extension (a combination of `pytest-of-shubh` regrowth plus 400+ stray
+> `terraform-provider*` binaries directly in Temp root, ~46GB, plus this session's own ad hoc
+> parity-test scratch directories bypassing the shared plugin cache). `tests/conftest.py`'s
+> `TF_PLUGIN_CACHE_DIR` mitigation only caches the *downloaded* provider package — it does not
+> stop Terraform's own per-run extraction of the provider binary into Temp root. **Before any
+> future terraform-plan-heavy session (a new gauntlet, a new parity pass, a new module sweep):
+> check `df -h` first**, and if low, clear `pytest-of-shubh` and stray `terraform-provider*`
+> files in Temp root — both confirmed safe, disposable, and the actual recurring culprits, not a
+> one-off.
+
+> **Follow-up (2026-07-14): two decisions explicitly recorded as open, not Phase 6, not left to
+> drift.**
+>
+> 1. **The all-of-G6 enforcement flip.** Every G6 rule — the original SEC-01/COST-01/SEC-03/
+>    SEC-04/COST-02/COST-03/SEC-02/SEC-05 set from Phase 3, and this round's SEC-02/SEC-05
+>    extensions plus SEC-06/SEC-07 — stays shadow-only. Flipping any of it to enforcing is a
+>    single, still-undecided, later decision (`docs/g6_scope.md` section 2, item 3 of that
+>    scope's own proof bar) that needs the accumulated real shadow-divergence log as its
+>    evidence base, not a per-rule decision made piecemeal as rules are added.
+> 2. **G9's LocalStack fidelity column, and the IAM/KMS/S3 apply-fidelity gap specifically.**
+>    `RESOURCE_TYPE_ALLOWLIST`'s LocalStack entries stay unverified; `aws_iam_role`/`aws_kms_key`/
+>    `aws_s3_bucket_policy` stay `negative_fidelity_unverified` on both free emulators. This is a
+>    **permanent disclosed limitation unless the paid-LocalStack posture changes** — resolvable
+>    only by provisioning the paid account this session deliberately chose not to buy (`docs/
+>    phase5_scope.md` item 0), not by any further code in this repo.
 
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
