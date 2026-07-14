@@ -1206,6 +1206,36 @@
 > shadow-only status and its own separate, still-open enforcement-flip decision are unaffected
 > by any of this.
 
+> **STATED LOUDLY, on review, because it was previously only disclosed in passing:
+> Phase 6's actual delivered capability, as of Step 1, is a validated, safety-netted
+> AUTHORED-CONTENT COMPOSITION pipeline — NOT a generation engine.**
+> `synthesizer.synthesize(authored_content=...)` takes HCL text a human or an external agent
+> already wrote and validates + composes it (G1/G2 schema-lint, G5 classification, G6 shadow,
+> G9 apply-fidelity, all wired). Nothing in this codebase decides *what* HCL to write from a
+> free-text requirement — there is no LLM call, no template engine, no authoring decision logic
+> anywhere. This was true the moment Step 1 was built (a deliberate choice, avoiding speculative
+> infrastructure) but was stated once, mid-paragraph, in the prior entry — restated here as its
+> own headline so it cannot be misread as "we generate infrastructure now." We validate and
+> compose infrastructure text supplied by something else; that something else does not exist yet.
+>
+> **Follow-up: Phase 6 Step 5 (catalog teardown) — SCOPED, not built, and its central finding is
+> a decision for the user, not a recommendation this agent finalized.** Full detail: `docs/
+> phase6_step5_teardown_scope.md`. The scope's own key question, surfaced explicitly rather than
+> resolved quietly underneath a "capability-equivalent path" claim: **does the 16-module catalog
+> come out now, or does it stay as the real composition source until a real authoring mechanism
+> exists to supersede it?** Recorded reasoning for a lean toward **keeping the catalog as the
+> real composition source for now** (Option B in the scope doc): the regression-baseline harness
+> the scope defines proves the PIPE — that validated composition of caller-supplied content works
+> as well as catalog-copy composition did — it does not and cannot prove anything can *supply*
+> that content without the catalog already existing to draw it from. Retiring the catalog's
+> composition-source role on the strength of a plumbing proof, with no generator on the other end
+> of the pipe, would remove a working, load-bearing asset to claim a milestone that isn't true
+> yet. `module_provenance.py`'s retirement (its pin-once-trust-forever model subsumed by
+> re-verifying live at every draw) and `match_modules()`'s repurposing toward retrieval are both
+> scoped as correct and worth doing regardless of that decision. **Nothing has been deleted,
+> relocated, or retired — this is scope only, awaiting the user's explicit call on the one
+> open decision, per their own explicit instruction not to default either way.**
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance
