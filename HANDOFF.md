@@ -962,6 +962,121 @@
 >    only by provisioning the paid account this session deliberately chose not to buy (`docs/
 >    phase5_scope.md` item 0), not by any further code in this repo.
 
+> **Follow-up (2026-07-14): Phase 6 scoped — the generation pipeline + conditional catalog
+> teardown — and its own key question answered honestly, not glossed over. Full detail: `docs/
+> phase6_scope.md`.**
+>
+> Read directly against `synthesizer.py`/`modules.py`/`module_provenance.py`/`architecture_
+> decision.py`, not the original plan from memory: **today's "generation" is selection and
+> verbatim copy of pre-vetted, human-authored modules, not authoring.** `compose()` does
+> `shutil.copytree` on already-pinned files; no HCL is generated anywhere in the current path.
+> `match_modules()`'s keyword scorer is real, reusable code, but as a final-selection mechanism
+> today, not a generative one — it's the thing that gets repurposed into retrieval-for-grounding
+> once real authoring exists, not discarded.
+>
+> **The key question — are the built gates (G1/G2/G5/G6/G9 + advisory Phase 4) sufficient for
+> the autonomy boundary once generation moves past the fixed catalog — got a real answer: no,
+> and the reason is concrete, not a hedge.** `destructive_change_gate.classify()`'s autonomy
+> boundary is **fail-open by construction**: a resource type absent from `STATEFUL_RESOURCE_
+> TYPES`/`IAM_RESOURCE_TYPES` (explicitly scoped, per the module's own prior docstring, to "what
+> MinusOps' own 16 modules can actually produce today") produces zero findings and auto-ships if
+> create-only. Since generation-time authoring's entire purpose is producing resource types
+> outside today's 41, this is the one gate standing between "generated" and "auto-shipped to
+> real AWS," and it would silently wave through the first novel stateful/sensitive resource type
+> it met. G6 compounds this (rules enumerated per named resource type, and shadow-only
+> regardless of coverage). G9 is fail-closed and well-designed but confirmed, by direct grep,
+> disconnected from the real flow entirely — nothing calls `ephemeral_apply.py` outside its own
+> CI job. Phase 4 and G1 are not safety gates and were never meant to be (intent-fidelity and
+> type-system validity, respectively). **This finding was ratified as the single most important
+> finding of the project** — the ordering invariant that kept catalog teardown last caught this
+> on paper instead of in production, exactly what it was for.
+>
+> Phase 6 was split on review: the G5 fail-open fix becomes its own standalone prerequisite
+> ("Step 0"), closed and proven before any authoring work starts — see the next entry. Teardown
+> stays the literal last step, gated on a concrete regression-baseline proof bar (`docs/
+> phase6_scope.md` section 5), not "the new pipeline seems to work."
+
+> **Follow-up (2026-07-14): G5 Step 0 — the autonomy boundary inverted from fail-open to
+> fail-closed on unknown resource type — scoped, built, and proven standalone against the real
+> 16-module catalog. Full detail: `docs/g5_autonomy_boundary_scope.md`.**
+>
+> **Design decision, evaluated against real evidence, not asserted**: a reviewed allowlist of
+> types *confirmed safe* to auto-ship (`AUTO_SHIP_ELIGIBLE_TYPES`, the same shape as
+> `ephemeral_apply.py`'s `RESOURCE_TYPE_ALLOWLIST`), not a shape/name heuristic. Settled by a
+> real case this session's own cross-reference found, not a hypothetical: `aws_s3_bucket_policy`
+> was in neither `STATEFUL_RESOURCE_TYPES` nor `IAM_RESOURCE_TYPES` — its schema is a single
+> opaque policy string with no stateful shape at all, yet its *content* is exactly what this
+> session's own G6 SEC-07 rule exists to catch (a bare `Principal: "*"` grants public access). A
+> heuristic keyed on type name/schema shape would very plausibly miss it; an explicit review
+> does not, because nobody had reviewed it as safe.
+>
+> **The real, deliberate 30/2-then-31/2 review, not a wholesale migration**: of the 41 real AWS
+> resource types, 9 were already correctly staged (`STATEFUL_RESOURCE_TYPES`/`IAM_RESOURCE_
+> TYPES`, unchanged). Of the remaining 32, two were explicitly excluded with recorded reasoning
+> rather than migrated in: `aws_s3_bucket_policy` (above), and **`aws_default_security_group`**
+> — decided, not defaulted, per explicit instruction: confirmed live against this repo's own
+> `modules/networking-vpc/main.tf` that even the *correct*, intended configuration here sets
+> `egress { cidr_blocks = ["0.0.0.0/0"] }` — an unrestricted CIDR block present in real, sanctioned
+> usage, not a hypothetical misconfiguration, and the classifier (type + action only) has no way
+> to distinguish that from a hypothetical wide-open *ingress* rule. Asymmetric downside decided
+> it: staging a genuine hardening change costs one glance; auto-shipping the one that opens
+> inbound to the world is the exact failure this fix exists to prevent. A new, distinct reason,
+> `reviewed_unsafe_resource_type`, was added (a real code improvement the build itself
+> surfaced) so an audit-chain reader can tell "reviewed and rejected" apart from "never
+> reviewed" (`unreviewed_resource_type`) and from the pre-existing known-dangerous categories.
+>
+> **Config-dependent entries flagged for Phase 6 Step 1, not resolved now, as requested**: seven
+> types (`aws_glue_job`, `aws_kinesisanalyticsv2_application`, `aws_sfn_state_machine` — each
+> carries executable logic of its own; `aws_redshiftserverless_workgroup.publicly_accessible`,
+> `aws_subnet.map_public_ip_on_launch`, `aws_s3_object.acl` — each a real, schema-verified
+> attribute that flips public exposure without changing resource type) are reviewed safe *in
+> this repo's current real configurations*, not safe *by type* independent of configuration —
+> marked inline in `destructive_change_gate.py` as `# CONFIG-DEPENDENT` for re-examination once
+> generation can produce novel configurations of these same types.
+>
+> **Three real bugs, all caught by the proof itself, not the design** (the exact discipline this
+> whole session runs on): (1) `random_id` — this repo's own pre-existing action-shape tests use
+> it as a zero-cloud-footprint stand-in; never reviewed, it broke an existing green test on the
+> first run, fixed by reviewing and adding it with explicit test-utility reasoning. (2)
+> `aws_route_table` — reviewed safe in the scope doc's own written reasoning, but only `aws_
+> route_table_association` made it into the actual frozenset; a real transcription gap, caught
+> immediately by `networking-vpc`'s own real baseline plan failing the new regression test, not
+> a hypothetical. (3) Databricks double-flagging — `databricks_mws_credentials` (absent from
+> `STATEFUL_RESOURCE_TYPES`) fell through to `unreviewed_resource_type` on the first full run;
+> this scope was explicitly AWS-only (matching G9's own AWS-only boundary), and every
+> `databricks_*` type is already, unconditionally, never autonomous-eligible via the pre-existing
+> `reduced_assurance` mechanism — fixed by skipping the new checks for any Databricks type
+> entirely, not silently declaring Databricks resource-type review done by an AWS-only fix.
+>
+> **Both-direction proof, complete and real**: `aws_dynamodb_table` (genuinely stateful, never
+> declared anywhere in this repo's real catalog, confirmed by direct grep) classified
+> `autonomous_eligible=True` on the *unmodified* classifier — captured as real, executed
+> evidence before any code changed, not just argued — and `False` with reason
+> `unreviewed_resource_type` after. A second, different novel type (`aws_secretsmanager_secret`)
+> confirms this is a real default, not a special case for one hardcoded example. The real
+> 16-module baseline (`test_every_current_module_plans_as_create_only`), extended with an
+> assertion that no real module's real plan produces an `unreviewed_resource_type` finding, ran
+> clean for all 16 modules after the three fixes above (in batches, due to this session's own
+> environment constraints — see the disk-hazard note below, not a scoping shortcut).
+> `test_destructive_change_gate.py`: 42 tests total, all passing; `test_plan_gate.py` (33,
+> downstream consumer of `classify()`) unaffected, all passing.
+>
+> **G5 Step 0 is CLOSED.** Phase 6 Step 1 (the authoring pipeline) does not start until this
+> entry's own reviewer sign-off; this fix does not touch G6's shadow status or its own separate,
+> still-open enforcement-flip decision.
+>
+> **The recurring disk hazard flagged earlier this session recurred again, exactly as
+> predicted, not a new surprise**: `pytest-of-shubh` regrew to 37GB and the C: drive hit 90%
+> used (38GB free) mid-way through this exact work, on top of a *separate* instance, caught by
+> another agent in this same session, of 180 stray `terraform-provider*` binaries (~46GB)
+> extracted directly into Temp root by repeated real `terraform init`/`apply` runs. Both are the
+> same already-documented, already-safe-to-clear culprits — cleared again (`pytest-of-shubh`
+> directly; the Temp-root stray-binary sweep was performed by a separate agent/session, not
+> this one, since a wildcard delete in a shared OS directory the user hadn't directly authorized
+> to *this* agent was correctly held back by the permission classifier). Restated once more,
+> plainly, since two recurrences in one session confirms it's not going away on its own: **check
+> `df -h` before, during, and after any terraform-plan-heavy stretch of work**, not just before.
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance

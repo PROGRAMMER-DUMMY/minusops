@@ -190,6 +190,79 @@ asserting the migration is safe by construction.
    repo's real 16-module catalog, so the "before" state genuinely represents today's fail-open
    gap and not a fixture that happens to collide with something already covered.
 
+## 7. Results (2026-07-14) — built, proven, both directions, three real bugs caught by the proof itself
+
+### 7.1 `aws_default_security_group` — decided, not defaulted
+
+**Excluded.** Confirmed live against this repo's own `modules/networking-vpc/main.tf` before
+deciding: even this repo's correctly-configured usage sets
+`egress { cidr_blocks = ["0.0.0.0/0"] }` — an unrestricted CIDR block is present in the type's
+real, intended configuration here, not a hypothetical misconfiguration. This *strengthens* the
+exclusion rather than complicating it: the classifier reads only resource type and action, never
+rule content, so it cannot distinguish this repo's own safe pattern (self-referencing ingress,
+open egress) from a hypothetical future occurrence that opens ingress to `0.0.0.0/0` — the exact
+content-blindness section 1 named as heuristics' structural weakness applies to this classifier
+itself for this one type. Staged, reason `reviewed_unsafe_resource_type` (see 7.2).
+
+### 7.2 A real code improvement the build itself surfaced: `reviewed_unsafe_resource_type`
+
+Implementing section 3's two exclusions (`aws_s3_bucket_policy`, `aws_default_security_group`)
+against the real 16-module baseline immediately produced a real, confirmed finding for
+`databricks-workspace`'s own `aws_s3_bucket_policy.root_storage_bucket` — correct behavior, but
+tagged identically (`unreviewed_resource_type`) to a genuinely-never-reviewed type, collapsing
+"reviewed and rejected" into "nobody looked at this," the exact distinction section 2 called for.
+Fixed with a third set, `REVIEWED_UNSAFE_TYPES`, and its own reason,
+`reviewed_unsafe_resource_type` — an audit-chain reader can now tell "known-dangerous"
+(`stateful_resource_type`/`iam_resource_type`), "reviewed, rejected" (`reviewed_unsafe_
+resource_type`), and "never reviewed" (`unreviewed_resource_type`) apart, three distinct facts
+instead of two.
+
+### 7.3 Two more real bugs, both caught by the regression proof itself, neither hypothetical
+
+- **`random_id` regression**: this repo's own pre-existing action-shape tests
+  (`test_real_create_only_plan_is_autonomous_eligible` et al.) use `hashicorp/random`'s
+  `random_id` as a zero-cloud-footprint stand-in for create/delete/replace testing. Never
+  reviewed (it isn't a cloud resource), it fell through to `unreviewed_resource_type` and broke
+  an existing, previously-green test on the very first run. Reviewed and added to
+  `AUTO_SHIP_ELIGIBLE_TYPES` with explicit reasoning (genuinely zero cloud footprint, a test
+  utility, not a real-world safety judgment).
+- **`aws_route_table` omission**: section 3's own review classified `aws_route_table` as safe
+  ("a networking primitive whose own risk is realized only through a separate, separately-
+  classified resource"), but the actual `AUTO_SHIP_ELIGIBLE_TYPES` frozenset only got
+  `aws_route_table_association` — a real transcription gap between the review and the code,
+  caught immediately by `networking-vpc`'s own real baseline plan failing the regression test.
+  Fixed; re-verified against a full re-cross-reference of all 41 real AWS types against the four
+  classification sets (`STATEFUL_RESOURCE_TYPES ∪ IAM_RESOURCE_TYPES ∪ REVIEWED_UNSAFE_TYPES ∪
+  AUTO_SHIP_ELIGIBLE_TYPES`) confirming zero gaps remain.
+- **Databricks double-flagging (a scope-boundary bug, not a safety bug)**: `databricks-
+  workspace`'s own `databricks_mws_credentials` — a real Databricks type absent from
+  `STATEFUL_RESOURCE_TYPES` — fell through to `unreviewed_resource_type` on the first full
+  16-module run. This scope was explicitly AWS-only (section 1 evaluates AWS types only, matching
+  G9's own AWS-only boundary); Databricks types are already, unconditionally, never
+  autonomous-eligible via the pre-existing `databricks_resources`/`reduced_assurance` mechanism,
+  regardless of this fix. Fixed by skipping the new checks entirely for any `databricks_*`
+  prefixed type — not silently declaring Databricks resource-type review done by an AWS-only fix.
+
+### 7.4 Both-direction proof, complete
+
+- **The fix closes the gap**: `aws_dynamodb_table` and `aws_secretsmanager_secret` (confirmed
+  absent from the real catalog by direct grep, neither ever declared anywhere in
+  `modules/*/main.tf`) — both `autonomous_eligible=True` on the unmodified classifier (the
+  `aws_dynamodb_table` case captured as real, executed evidence before any code changed), both
+  `False` with reason `unreviewed_resource_type` after.
+- **Nothing that should auto-ship today regresses**: the real 16-module baseline
+  (`test_every_current_module_plans_as_create_only`), extended with an assertion that no real
+  module's real plan produces an `unreviewed_resource_type` finding, run against real Terraform
+  for all 16 modules (in batches, due to this session's own environment constraints, not a
+  scoping shortcut) — clean, after the three fixes above. `test_destructive_change_gate.py`:
+  42 tests total (26 fast + 16 real-module), all passing. `test_plan_gate.py` (33 tests,
+  downstream consumer of `classify()`) unaffected, all passing.
+
+Net: the fix works exactly as designed, and the process of proving it — not the design itself —
+is what surfaced three real, concrete bugs (one test-fixture regression, one transcription gap,
+one scope-boundary leak) before any of them could ship. Exactly the discipline this whole
+session has run on since Phase 1.
+
 ## Ordering invariant
 
 This closes standalone, proven against the current 16-module catalog, **before** `docs/

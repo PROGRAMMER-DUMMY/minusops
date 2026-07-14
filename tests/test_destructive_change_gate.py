@@ -1,15 +1,24 @@
 """
 destructive_change_gate.py is the plan-JSON classifier deciding autonomous-ship-on-green vs.
-staged/guarded path. Two kinds of proof here, both real, neither mocked at the classifier level:
+staged/guarded path. Three kinds of proof here, all real, neither mocked at the classifier level:
 
 1. Action-shape fixtures: real `terraform show -json` output from a local-only resource
    (hashicorp/random's random_id, no cloud credentials, no cost) forced through create, delete,
    and BOTH replace orderings (destroy-then-create and create_before_destroy) -- reproducing the
    live probe that grounded destructive_change_gate.py's docstring before any code was written.
+1b. docs/g5_autonomy_boundary_scope.md (Phase 6 Step 0, 2026-07-14): the autonomy boundary
+   inverted from allowlist-of-danger (fail-OPEN on any type STATEFUL_RESOURCE_TYPES/
+   IAM_RESOURCE_TYPES don't name) to AUTO_SHIP_ELIGIBLE_TYPES, a reviewed allowlist of types
+   confirmed safe (fail-CLOSED on anything unreviewed). The gap this closed was verified live,
+   manually, against the unmodified classifier before any code changed -- see the tests in that
+   section for the permanent regression lock.
 2. All-16-modules baseline: real Terraform plan JSON (via `terraform test -json -verbose`'s
    `test_plan` event, which carries the same resource_changes shape as `terraform show -json`)
    for every module in modules/*/main.tf under mock_provider -- proving today's catalog only
-   ever proposes creates, the regression baseline the classifier exists to protect.
+   ever proposes creates, the regression baseline the classifier exists to protect. Extended
+   (section 1b's fix) to also assert no real module's real plan produces an
+   `unreviewed_resource_type` finding -- the "nothing that should auto-ship today regresses"
+   half of that fix's own proof bar, checked against real plans, not just hand-built fixtures.
 
 The all-16-modules run itself caught a real classifier bug on its first pass (not a fixture
 issue): dq-great-expectations' plan includes a data source read (data.aws_iam_policy_document.dq,
@@ -328,6 +337,124 @@ def test_fail_closed_sweep_does_not_break_a_genuine_create_only_plan():
 
 
 # ---------------------------------------------------------------------------
+# 1b. docs/g5_autonomy_boundary_scope.md -- the autonomy boundary inverted from
+# allowlist-of-danger (fail-OPEN on any unrecognized type) to a reviewed allowlist of types
+# confirmed SAFE to auto-ship (fail-CLOSED on anything not reviewed). STATEFUL_RESOURCE_TYPES/
+# IAM_RESOURCE_TYPES alone used to be the entire gate -- a type in neither produced no finding
+# at all. Confirmed live, manually, BEFORE this fix existed (recorded here, not just asserted):
+# a plan containing only a create-only aws_dynamodb_table -- genuinely stateful, never declared
+# anywhere in this repo's real catalog -- classified autonomous_eligible=True on the unmodified
+# classifier. The tests below are the permanent regression lock for that real, confirmed gap.
+# ---------------------------------------------------------------------------
+
+def test_novel_stateful_type_now_stages_the_gap_this_fix_closes():
+    """The specific case that was manually verified, live, against the unmodified classifier
+    before AUTO_SHIP_ELIGIBLE_TYPES existed: aws_dynamodb_table -- not in STATEFUL_RESOURCE_TYPES,
+    not in IAM_RESOURCE_TYPES (this repo's catalog has never declared it, confirmed by grep
+    across modules/*/main.tf, docs/g5_autonomy_boundary_scope.md proof-bar item 4) -- used to
+    classify autonomous_eligible=True. Must now stage, tagged distinctly from a known-dangerous
+    finding."""
+    assert "aws_dynamodb_table" not in gate.STATEFUL_RESOURCE_TYPES
+    assert "aws_dynamodb_table" not in gate.IAM_RESOURCE_TYPES
+    assert "aws_dynamodb_table" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    plan = {"resource_changes": [
+        {"address": "aws_dynamodb_table.sessions", "mode": "managed", "type": "aws_dynamodb_table",
+         "change": {"actions": ["create"]}},
+    ]}
+    result = gate.classify(plan)
+    assert result["autonomous_eligible"] is False
+    assert result["findings"][0]["reason"] == "unreviewed_resource_type"
+
+
+def test_a_second_genuinely_novel_type_also_stages_not_just_the_one_hardcoded_example():
+    """Proves the FIX is a real default, not a special case bolted on for one type. A
+    completely different, also-never-declared type (docs/g5_autonomy_boundary_scope.md proof-bar
+    item 4 -- confirmed absent from the real catalog by the same grep) must land on the exact
+    same fail-closed path."""
+    assert "aws_secretsmanager_secret" not in gate.STATEFUL_RESOURCE_TYPES
+    assert "aws_secretsmanager_secret" not in gate.IAM_RESOURCE_TYPES
+    assert "aws_secretsmanager_secret" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    plan = {"resource_changes": [
+        {"address": "aws_secretsmanager_secret.x", "mode": "managed", "type": "aws_secretsmanager_secret",
+         "change": {"actions": ["create"]}},
+    ]}
+    result = gate.classify(plan)
+    assert result["autonomous_eligible"] is False
+    assert result["findings"][0]["reason"] == "unreviewed_resource_type"
+
+
+def test_default_security_group_decision_is_excluded_not_defaulted():
+    """docs/g5_autonomy_boundary_scope.md's own explicitly-decided call, locked in: confirmed
+    live against this repo's real modules/networking-vpc/main.tf that even the CORRECT,
+    intended configuration of this type sets an unrestricted egress CIDR block -- content risk
+    this classifier (type + action only) cannot see, so it stages rather than auto-ships.
+    Reason is reviewed_unsafe_resource_type, not unreviewed_resource_type -- this type WAS
+    reviewed; the review's answer was no."""
+    assert "aws_default_security_group" in gate.REVIEWED_UNSAFE_TYPES
+    assert "aws_default_security_group" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    plan = {"resource_changes": [
+        {"address": "aws_default_security_group.this", "mode": "managed",
+         "type": "aws_default_security_group", "change": {"actions": ["create"]}},
+    ]}
+    result = gate.classify(plan)
+    assert result["autonomous_eligible"] is False
+    assert result["findings"][0]["reason"] == "reviewed_unsafe_resource_type"
+
+
+def test_s3_bucket_policy_is_reviewed_unsafe_not_merely_unreviewed():
+    """Section 1's own live finding, locked in: aws_s3_bucket_policy has no stateful schema
+    shape but its CONTENT can grant public access (the exact case G6's SEC-07 rule exists for).
+    Confirmed for real against databricks-workspace's own baseline plan (this repo's one real
+    module declaring this type) during this fix's own regression proof."""
+    assert "aws_s3_bucket_policy" in gate.REVIEWED_UNSAFE_TYPES
+    assert "aws_s3_bucket_policy" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    plan = {"resource_changes": [
+        {"address": "aws_s3_bucket_policy.root_storage_bucket", "mode": "managed",
+         "type": "aws_s3_bucket_policy", "change": {"actions": ["create"]}},
+    ]}
+    result = gate.classify(plan)
+    assert result["autonomous_eligible"] is False
+    assert result["findings"][0]["reason"] == "reviewed_unsafe_resource_type"
+
+
+def test_databricks_type_not_in_stateful_set_is_not_double_flagged_unreviewed():
+    """Real bug found running this fix's own 16-module regression proof: databricks-workspace
+    declares databricks_mws_credentials, a real Databricks type absent from
+    STATEFUL_RESOURCE_TYPES -- without an explicit skip, it fell through to
+    unreviewed_resource_type, redundant with (and out of scope of) the existing, unconditional
+    databricks_resources/reduced_assurance mechanism below, which already, correctly, never
+    lets ANY databricks_* type autonomous-ship regardless of this AWS-only review."""
+    assert "databricks_mws_credentials" not in gate.STATEFUL_RESOURCE_TYPES
+    assert "databricks_mws_credentials" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    plan = {"resource_changes": [
+        {"address": "databricks_mws_credentials.this", "mode": "managed",
+         "type": "databricks_mws_credentials", "change": {"actions": ["create"]}},
+    ]}
+    result = gate.classify(plan)
+    assert result["findings"] == []  # no unreviewed_resource_type finding for this type
+    assert result["autonomous_eligible"] is False  # still never eligible -- databricks_resources
+    assert result["reduced_assurance"] is True
+    assert result["databricks_resources"] == ["databricks_mws_credentials.this"]
+
+
+def test_random_id_stays_eligible_not_a_regression_in_the_existing_action_shape_tests():
+    """random_id (hashicorp/random, zero cloud footprint) is this test file's OWN pre-existing
+    stand-in for action-shape testing (section 1 above) -- reviewed and added to
+    AUTO_SHIP_ELIGIBLE_TYPES as a test-utility exception, not a real-world safety judgment. This
+    is the regression this fix's own first implementation attempt hit for real: adding the
+    fail-closed default without this entry broke test_real_create_only_plan_is_autonomous_
+    eligible, since random_id had never been reviewed either."""
+    assert "random_id" in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    plan = {"resource_changes": [
+        {"address": "random_id.probe", "mode": "managed", "type": "random_id",
+         "change": {"actions": ["create"]}},
+    ]}
+    result = gate.classify(plan)
+    assert result["autonomous_eligible"] is True
+    assert result["findings"] == []
+
+
+# ---------------------------------------------------------------------------
 # 2. All-16-modules baseline: real plan JSON via `terraform test -json -verbose`
 # ---------------------------------------------------------------------------
 
@@ -504,4 +631,17 @@ run "baseline_plan" {
             assert finding["reason"] != "non_create_action", (
                 f"{module_id} produced a non-create action in its baseline plan: {finding} "
                 "-- today's catalog should only ever propose creates."
+            )
+            # docs/g5_autonomy_boundary_scope.md's own regression requirement, proven against
+            # the real 16-module catalog, not just a synthetic fixture: every resource type this
+            # repo's real modules actually produce was reviewed -- into AUTO_SHIP_ELIGIBLE_TYPES
+            # (still eligible), REVIEWED_UNSAFE_TYPES (a real, deliberate exclusion -- e.g.
+            # databricks-workspace's own aws_s3_bucket_policy.root_storage_bucket, found by this
+            # very test run and confirmed intentional, not a bug), or already, correctly, a
+            # known-dangerous stateful/IAM type. `unreviewed_resource_type` specifically means
+            # "the seed-list review never looked at this real type at all" -- that, and only
+            # that, is the real regression this assertion exists to catch.
+            assert finding["reason"] != "unreviewed_resource_type", (
+                f"{module_id} produced a resource type not yet reviewed at all: {finding} -- "
+                "this is a real gap in the seed-list review, not an expected staged finding."
             )
