@@ -444,3 +444,114 @@ jobs:
           sudo pkill -f "firecracker --api-sock" || true
           sudo ip link delete tap0 || true
           echo "microVM torn down"
+
+  g9-catches-a-real-failure:
+    name: "G9 catches what G1/G2 structurally cannot (MiniStack, no token needed)"
+    # docs/phase6_step1_authoring_scope.md section 5, proof-bar item 6 (added on review, not in
+    # the original scope): proof-bar item 4 above/isolation-boundary only prove G9's WIRING runs
+    # -- that the pipe carries a verdict, not that the verdict is ever load-bearing. This job
+    # proves it catches the thing it exists for: a plan that passes G1 (terraform validate) and
+    # G2 (schema lint) cleanly but fails at G9, the same standard isolation-boundary already
+    # holds G9's hostile-escape proof to. Real, executed evidence (2026-07-14, local MiniStack
+    # container, not asserted): the fixture below validated clean, schema-linted clean
+    # (gate_content: blocking=False, zero findings), then G9's real apply against MiniStack
+    # returned {"evaluation_failed": true, "reason": "apply_partial_failure", "detail":
+    # "succeeded=['aws_s3_bucket.real'] errored=['aws_s3_object.orphan']"} -- this job commits
+    # that same fixture as a permanent regression proof, re-verified on every push.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false
+
+      - name: Install package
+        run: python -m pip install ".[dev]"
+
+      - name: Start MiniStack
+        run: |
+          set -euxo pipefail
+          docker run -d --name ministack -p 4566:4566 ministackorg/ministack
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4566/_localstack/health >/dev/null 2>&1; then
+              echo "ministack responding after $i attempts"; break
+            fi
+            sleep 2
+          done
+
+      - name: Write the fixture -- an aws_s3_object whose bucket is never created in this plan
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/g9_catches
+          cat > /tmp/g9_catches/main.tf <<'EOF'
+          terraform {
+            required_providers { aws = { source = "hashicorp/aws", version = ">= 5.0" } }
+          }
+
+          resource "aws_s3_bucket" "real" {
+            bucket = "g9-proof-real-bucket-minusops"
+          }
+
+          # Deliberately NOT referencing aws_s3_bucket.real -- a hardcoded, never-created bucket
+          # name. Valid HCL, valid schema (bucket/key/content are all plain strings) -- G1
+          # (terraform validate) and G2 (schema lint) both have no way to know this bucket
+          # doesn't exist anywhere in this configuration. Only a real apply, in real dependency
+          # order, against a real (emulated) S3 API can discover the PutObject call fails
+          # because the target bucket was never created.
+          resource "aws_s3_object" "orphan" {
+            bucket  = "g9-proof-bucket-that-is-never-created-anywhere"
+            key     = "orphan.txt"
+            content = "this object's bucket does not exist"
+          }
+          EOF
+
+      - name: G1 -- terraform validate must pass cleanly
+        run: |
+          set -euxo pipefail
+          cd /tmp/g9_catches
+          terraform init -input=false
+          terraform validate
+
+      - name: G2 -- schema_lint.gate_content() must pass cleanly (zero findings)
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import sys, json
+          sys.path.insert(0, "core/generation")
+          import schema_lint
+          content = open("/tmp/g9_catches/main.tf", encoding="utf-8").read()
+          result = schema_lint.gate_content(content, "g9_catches_fixture")
+          print(json.dumps(result, indent=2))
+          assert result["blocking"] is False, f"G2 should pass cleanly on this fixture: {result}"
+          assert result["findings"] == []
+          PY
+
+      - name: G9 -- the real ephemeral apply must genuinely fail
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import sys, json
+          sys.path.insert(0, "core/governance")
+          sys.path.insert(0, "core/reporting")
+          import ephemeral_apply as ea
+          # Scoped to this proof only (same precedent as the smoke test above and the
+          # isolation-boundary job) -- the shipped RESOURCE_TYPE_ALLOWLIST stays fully
+          # unverified until real per-type + negative-fidelity verification actually happens.
+          ea.RESOURCE_TYPE_ALLOWLIST["aws_s3_bucket"] = ea._entry(False, ministack=(True, False))
+          ea.RESOURCE_TYPE_ALLOWLIST["aws_s3_object"] = ea._entry(False, ministack=(True, False))
+          result = ea.run_ephemeral_apply("/tmp/g9_catches", emulator="ministack",
+                                           apply_timeout=120, destroy_timeout=120)
+          print(json.dumps(result, indent=2))
+          assert result["evaluation_failed"] is True, (
+              f"G9 was expected to catch this real apply-time failure, but it didn't: {result}")
+          assert result["reason"] == "apply_partial_failure", result
+          assert "aws_s3_bucket.real" in result["detail"]
+          assert "aws_s3_object.orphan" in result["detail"]
+          print("G9_CAUGHT_WHAT_G1_G2_COULD_NOT")
+          PY

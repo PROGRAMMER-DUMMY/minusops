@@ -67,6 +67,7 @@ import rego_gate  # noqa: E402
 import intent_assertions  # noqa: E402
 import requirements as reqgate  # noqa: E402
 import architecture_decision as adecision  # noqa: E402
+import ephemeral_apply  # noqa: E402
 
 WORKSPACE = os.getcwd()
 LOG_DIR = os.path.join(WORKSPACE, ".agents", "logs")
@@ -279,7 +280,7 @@ def _classify_plan(dir_):
 
 
 G6_RULE_IDS = ("SEC-01", "COST-01", "SEC-03", "SEC-04", "COST-02", "COST-03", "SEC-05", "SEC-02",
-               "SEC-06", "SEC-07")
+               "SEC-06", "SEC-07", "SEC-08", "SEC-09", "SEC-10")
 # SEC-06/SEC-07 (docs/g6_iam_extension_scope.md) have NO regex counterpart at all -- a real bug
 # found running the extension's own parity pass, not anticipated in the scope doc: leaving a new
 # rule ID out of this tuple doesn't just skip a comparison, it silently drops that rule's real
@@ -388,6 +389,69 @@ def _print_g6_shadow(result):
             print(f"  - {rule_id}: LOST vs regex (regex had it, Rego doesn't): {d['lost_in_regex']}", file=sys.stderr)
     for f in result["unresolved"]:
         print(f"  - {f['id']} unresolved (unknown-until-apply): {f['resource']}", file=sys.stderr)
+
+
+G9_EMULATOR_ENV = "MINUS_G9_EMULATOR"
+# Explicit opt-in, not a default-on assumption: G9 (docs/phase6_step1_authoring_scope.md
+# section 3) runs a real terraform init/plan/apply/destroy cycle against a real emulator
+# container -- calling that unconditionally on every stage_plan() invocation would make the
+# entire existing test suite (hundreds of calls, none of which run Docker) depend on emulator
+# infrastructure that doesn't exist in most environments this gate runs in, including this
+# session's own. Setting MINUS_G9_EMULATOR to a supported emulator name is what actually turns
+# real ephemeral-apply invocation on; unset means "not configured" -- SYNCHRONOUS (docs/
+# phase6_step1_authoring_scope.md section 3's own recorded decision), fail-CLOSED at the
+# auto-approve enforcement boundary (see _reject_if_g9_not_clean_and_auto_approve below), never
+# silently treated as "nothing to check, must be safe."
+
+
+def _g9_eval(dir_, plan_json):
+    """G9 (docs/phase5_scope.md Phase 5, wired into the real flow per docs/
+    phase6_step1_authoring_scope.md section 3): real ephemeral-apply verdict for the current
+    plan, computed once here at plan time and carried through the approval record to apply time
+    (the same "computed once at plan, reused at apply" shape destroy already uses) rather than
+    re-run at apply time, since a real init/apply/destroy cycle is genuinely expensive -- running
+    it twice per deploy for no new information would be pure waste, not extra safety.
+
+    Coverage "none" (no AWS content in the plan at all -- a Databricks-only or
+    zero-cloud-footprint plan like the terraform_data-based e2e fixtures) means G9 has nothing
+    to prove here and is skipped cleanly -- matches ephemeral_apply.py's own honest "none"
+    verdict, never silently reported as if G9 ran and passed.
+
+    No emulator configured (MINUS_G9_EMULATOR unset -- the disclosed, real, current-environment
+    state: no LocalStack token is provisioned this session, and both evaluated free emulators
+    (MiniStack, Floci) already failed IAM/KMS/S3 negative-fidelity -- docs/phase5_scope.md
+    section 7.5/8.6) returns a synthetic, always-non-clean verdict in the same {evaluation_failed,
+    reason, ...} shape ephemeral_apply.py's own _fail() produces for `terraform_not_found`, so
+    downstream code (the enforcement check, the audit record) treats it identically to any other
+    G9 failure -- never a special-cased "skip because it's not set up" path.
+    """
+    if plan_json is None:
+        return {"evaluation_failed": True, "reason": "plan_unreadable", "detail": "",
+                "coverage": None, "databricks_resources": [], "findings": [], "emulator": None}
+    coverage, databricks_addresses, _aws_addresses = ephemeral_apply.classify_coverage(plan_json)
+    if coverage == "none":
+        return {"evaluation_failed": False, "reason": None, "detail": "no AWS content in plan",
+                "coverage": "none", "databricks_resources": databricks_addresses,
+                "findings": [], "emulator": None}
+    emulator = os.environ.get(G9_EMULATOR_ENV, "").strip().lower()
+    if not emulator:
+        return {"evaluation_failed": True, "reason": "g9_not_configured",
+                "detail": f"{G9_EMULATOR_ENV} is not set -- no emulator configured for this "
+                          "plan's real ephemeral-apply check", "coverage": coverage,
+                "databricks_resources": databricks_addresses, "findings": [], "emulator": None}
+    return ephemeral_apply.run_ephemeral_apply(dir_, emulator=emulator)
+
+
+def _print_g9_result(result):
+    if result.get("coverage") == "none":
+        print("[gate] G9: no AWS content in plan -- ephemeral apply does not apply here")
+        return
+    if result.get("evaluation_failed"):
+        print(f"[gate] G9 FAILED: reason={result.get('reason')} detail={result.get('detail')}",
+              file=sys.stderr)
+        return
+    print(f"[gate] G9: real ephemeral apply clean (emulator={result.get('emulator')}, "
+          f"coverage={result.get('coverage')})")
 
 
 def _print_intent_assertions(result):
@@ -739,6 +803,31 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     }
     _print_g6_shadow(g6_result)
 
+    # G9 (docs/phase5_scope.md Phase 5, wired into the real flow per docs/
+    # phase6_step1_authoring_scope.md section 3): unlike G6, this is NOT shadow-only -- a
+    # not-clean verdict blocks the auto-approve enforcement path below (see
+    # _reject_if_g9_not_clean_and_auto_approve in stage_apply). Skipped for destroy plans (same
+    # reasoning as the cost-coverage skip below: G9 exists to catch CREATE-order apply-time
+    # failures; a teardown has nothing new for it to check). Computed once here, carried through
+    # the pending record -> approval record -> stage_apply, never re-run at apply time (a real
+    # init/apply/destroy cycle is genuinely expensive; re-running it a second time per deploy for
+    # no new information would be pure waste, not extra safety -- docs/
+    # phase6_step1_authoring_scope.md section 3's own recorded sync/async decision).
+    g9_result = _g9_eval(dir_, plan_json_for_g6) if not destroy else {
+        "evaluation_failed": False, "reason": None, "detail": "destroy plan -- G9 not applicable",
+        "coverage": None, "databricks_resources": [], "findings": [], "emulator": None,
+    }
+    _print_g9_result(g9_result)
+    # Merge into the pending record already written above rather than recomputing it (planner
+    # identity can be a real AWS STS call -- doing that twice per plan would be pure waste).
+    try:
+        pending_for_update = json.load(open(_pending_path(dir_), encoding="utf-8"))
+    except Exception:
+        pending_for_update = {}
+    pending_for_update["g9_result"] = g9_result
+    with open(_pending_path(dir_), "w", encoding="utf-8") as f:
+        json.dump(pending_for_update, f, indent=2)
+
     # Phase 4 (docs/phase4_scope.md, G3/G4): intent-vs-reality advisory checks. ADVISORY ONLY --
     # never blocks stage_plan, same shadow discipline as G6. requirements.json/architecture_
     # decision.json are looked up in dir_'s parent (the run root, matching runs.new_run()'s own
@@ -764,7 +853,7 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
 
     _audit("plan", "OK", plan_hash=h, dir=dir_, destroy=destroy,
            destructive_classification=classification, g6_shadow=g6_result,
-           intent_assertions=intent_result)
+           g9_result=g9_result, intent_assertions=intent_result)
 
     # Auto-generate the versioned deploy report (plan + cost + architecture).
     # Informational — a report failure must never fail the plan.
@@ -919,6 +1008,10 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
         # from teardown without cross-referencing the earlier plan record. Threading it through
         # the approval record (the thing stage_apply actually reads) closes that gap.
         "destroy": pending.get("destroy", False),
+        # Carried forward the same way, for the same reason (docs/
+        # phase6_step1_authoring_scope.md section 3): stage_apply's auto-approve enforcement
+        # reads this rather than re-running a real, expensive ephemeral-apply cycle.
+        "g9_result": pending.get("g9_result"),
     }
     os.makedirs(_approval_dir(dir_), exist_ok=True)
     with open(_approved_path(dir_, h), "w", encoding="utf-8") as f:
@@ -966,6 +1059,33 @@ def _reject_if_destructive_and_auto_approve(dir_, mode, classification, destroy)
     return True
 
 
+def _reject_if_g9_not_clean_and_auto_approve(dir_, mode, g9_result, destroy):
+    """Same hard, non-overridable shape as _reject_if_destructive_and_auto_approve above, for
+    the same reason: mode="auto-approve" means no human reviews this plan before it applies, so
+    an unproven-at-apply-time plan must not slip through. `g9_result` is the verdict recorded at
+    plan time (see _g9_eval), carried through the approval record -- never recomputed here.
+
+    Covers every non-clean shape the same way, no special case for "not configured": coverage
+    "none"/destroy-skip (evaluation_failed=False) always passes; anything with
+    evaluation_failed=True blocks, whether the reason is a real apply-time failure
+    (resource_type_unverified, negative_fidelity_unverified, a genuine apply error) or the
+    disclosed current-environment gap (g9_not_configured -- no LocalStack token provisioned,
+    both free emulators already failed IAM/KMS/S3 negative-fidelity this session). This is the
+    real, present-tense consequence of wiring G9 in today: an AWS-touching auto-approve plan
+    stages rather than auto-ships until a fidelity-proven emulator is actually configured."""
+    if mode != "auto-approve" or destroy:
+        return False
+    if g9_result is None or g9_result.get("evaluation_failed"):
+        print("[gate] REFUSING auto-approve apply — G9 (ephemeral apply) did not return a clean "
+              "verdict for this plan:", file=sys.stderr)
+        _print_g9_result(g9_result or {"evaluation_failed": True, "reason": "g9_result_missing"})
+        print("[gate] Re-run with --mode gatekeeper for human review. There is no bypass flag "
+              "for this check.", file=sys.stderr)
+        _audit("apply", "REJECTED", reason="g9_not_clean", dir=dir_, destroy=destroy, g9_result=g9_result)
+        return True
+    return False
+
+
 def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
     policy_mode = _policy_mode(policy_mode)
     print("== apply ==")
@@ -995,6 +1115,9 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
         print("[gate] approval record unreadable. Re-run `approve`.", file=sys.stderr)
         _clear_approvals(dir_, current)
         return False
+    # Same shadow-visibility principle as classification above: a gatekeeper-mode operator sees
+    # the recorded G9 verdict too, even though only auto-approve mode can be blocked by it.
+    _print_g9_result(approval.get("g9_result") or {"evaluation_failed": True, "reason": "g9_result_missing"})
     # 2026-07-06, Item 6 finding 1: the apply-stage audit record used to say nothing about
     # direction -- a reviewer reading only this record couldn't tell create/modify from
     # teardown without cross-referencing the plan-stage record. destroy now rides along on
@@ -1030,6 +1153,9 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
         return False  # approval kept; apply as the identity that actually approved this
 
     if _reject_if_destructive_and_auto_approve(dir_, mode, classification, destroy):
+        return False  # approval kept; re-run apply with --mode gatekeeper for human review
+
+    if _reject_if_g9_not_clean_and_auto_approve(dir_, mode, approval.get("g9_result"), destroy):
         return False  # approval kept; re-run apply with --mode gatekeeper for human review
 
     print(f"[gate] applying approved plan (hash {current[:16]}...) as {account} ...")

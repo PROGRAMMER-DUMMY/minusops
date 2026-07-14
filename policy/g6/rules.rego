@@ -516,6 +516,82 @@ sec07_findings contains f if {
 }
 
 # ---------------------------------------------------------------------------
+# SEC-08 (new) -- Redshift Serverless workgroup publicly accessible.
+# docs/phase6_step1_authoring_scope.md section 4.2: one of the 7 config-dependent
+# AUTO_SHIP_ELIGIBLE_TYPES types (destructive_change_gate.py) reviewed safe "in this repo's
+# current real configurations" only -- this rule closes that gap so a generated
+# aws_redshiftserverless_workgroup with publicly_accessible = true is caught on content, not
+# waved through on type alone.
+#
+# Verified live against a real plan (not assumed): publicly_accessible is schema `optional`,
+# NOT `computed` -- an unset attribute resolves to a KNOWN `null` in after (never
+# after_unknown), confirmed against a real terraform plan with the attribute omitted. AWS's
+# own CreateWorkgroup API reference sample response (a create call with no publiclyAccessible
+# argument at all) shows the service assigns "publiclyAccessible": false -- real, documented
+# evidence the default path is the safe one, not an assumption. No finding_unresolved case
+# exists for this field: `== true` alone is correct and complete (null and false both fail
+# the check, exactly as they should).
+# ---------------------------------------------------------------------------
+
+sec08_findings contains f if {
+	some rc in managed("aws_redshiftserverless_workgroup")
+	rc.change.after.publicly_accessible == true
+	f := finding("SEC-08", "Security", "Redshift Serverless Workgroup Publicly Accessible",
+		"aws_redshiftserverless_workgroup sets publicly_accessible = true -- the workgroup is reachable from the public internet, not just from within the VPC.",
+		"HIGH", rc.address)
+}
+
+# ---------------------------------------------------------------------------
+# SEC-09 (new) -- Subnet auto-assigns public IPs to every instance launched into it. Same
+# 4.2 gap as SEC-08, applied to aws_subnet.
+#
+# Verified live: map_public_ip_on_launch is schema `optional`, NOT `computed` -- an unset
+# attribute resolves to a KNOWN `false` in after (never after_unknown), confirmed against a
+# real terraform plan with the attribute omitted. No finding_unresolved case needed.
+# ---------------------------------------------------------------------------
+
+sec09_findings contains f if {
+	some rc in managed("aws_subnet")
+	rc.change.after.map_public_ip_on_launch == true
+	f := finding("SEC-09", "Security", "Subnet Auto-Assigns Public IPs",
+		"aws_subnet sets map_public_ip_on_launch = true -- every instance launched into this subnet gets a public IP by default.",
+		"MEDIUM", rc.address)
+}
+
+# ---------------------------------------------------------------------------
+# SEC-10 (new) -- S3 object ACL set to a public-shaped canned value. Same 4.2 gap as
+# SEC-08/SEC-09, applied to aws_s3_object.
+#
+# Verified live: unlike SEC-08/SEC-09's fields, acl is schema `optional` AND `computed` --
+# an unset attribute resolves to after_unknown.acl == true in a real plan (confirmed live,
+# same shape SEC-06/SEC-07 already established for aws_kms_key.policy /
+# aws_s3_bucket_policy.policy). Fail-closed the same way: never read the unresolved case as
+# "no ACL, safe" just because AWS's documented default (private) would, in fact, be safe --
+# this rule can't see AWS's server-side default from plan JSON alone, only that the value
+# isn't known yet, so it routes to field_unresolved rather than asserting the default held.
+# "authenticated-read" is included alongside the two public-* canned values deliberately: it
+# grants read access to any authenticated AWS account globally, not just this account -- a
+# real, well-known S3 antipattern, not meaningfully private.
+# ---------------------------------------------------------------------------
+
+public_acl_values := {"public-read", "public-read-write", "authenticated-read"}
+
+sec10_findings contains f if {
+	some rc in managed("aws_s3_object")
+	is_unknown(rc, "acl")
+	f := finding_unresolved("SEC-10", "Security", "S3 Object ACL Public Access", rc.address)
+}
+
+sec10_findings contains f if {
+	some rc in managed("aws_s3_object")
+	not is_unknown(rc, "acl")
+	object.get(rc.change.after, "acl", null) in public_acl_values
+	f := finding("SEC-10", "Security", "S3 Object ACL Public Access",
+		"aws_s3_object sets acl to a public-shaped canned ACL -- this object is publicly readable (or writable) independent of bucket-level Block Public Access settings.",
+		"HIGH", rc.address)
+}
+
+# ---------------------------------------------------------------------------
 # SEC-02 -- Wildcard IAM Resource
 #
 # Two shapes, per docs/g6_scope.md: a data.aws_iam_policy_document's structured .statement
@@ -622,3 +698,9 @@ findings contains f if some f in sec02_findings
 findings contains f if some f in sec06_findings
 
 findings contains f if some f in sec07_findings
+
+findings contains f if some f in sec08_findings
+
+findings contains f if some f in sec09_findings
+
+findings contains f if some f in sec10_findings

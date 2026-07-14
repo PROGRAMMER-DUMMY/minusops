@@ -800,3 +800,26 @@ def test_real_aws_clean_module_is_not_blocking(fake_module, monkeypatch):
     result = schema_lint.gate_module("widget")
 
     assert result["blocking"] is False
+
+
+# ---------------------------------------------------------------------------
+# gate_content()/gate_module() parity (docs/phase6_step1_authoring_scope.md section 2, proof-bar
+# item 3): the refactor split gate_module()'s disk-read from its linting logic into a thin
+# wrapper calling gate_content() -- this proves the split changed NOTHING about the verdict,
+# against every one of this repo's 16 real, currently-pinned modules, not a synthetic sample.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+@pytest.mark.parametrize("module_id", [m["id"] for m in module_registry.list_modules()])
+def test_gate_content_is_byte_identical_to_gate_module_for_every_real_module(module_id):
+    main_tf_path = os.path.join(module_registry.module_dir(module_id), "main.tf")
+    with open(main_tf_path, encoding="utf-8") as f:
+        content = f.read()
+
+    via_module = schema_lint.gate_module(module_id)
+    via_content = schema_lint.gate_content(content, module_id)
+
+    assert via_content == via_module, (
+        f"{module_id}: gate_content() diverged from gate_module() -- the disk-read/lint-logic "
+        f"split changed behavior.\nvia_module={via_module}\nvia_content={via_content}"
+    )

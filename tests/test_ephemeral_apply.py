@@ -84,6 +84,34 @@ def test_classify_coverage_none_empty_plan():
     assert db == [] and aws == []
 
 
+def test_classify_coverage_none_for_provider_neutral_test_utility_types():
+    """Real bug caught while wiring G9 into the real flow (docs/
+    phase6_step1_authoring_scope.md section 3), not hypothetical: `terraform_data` and
+    `random_id` are neither aws_* nor databricks_* -- the `aws` bucket used to be defined as
+    merely "not databricks", which swept these in as if they were real AWS content, misreporting
+    "full" coverage for a plan G9 has nothing to actually verify. tests/test_gate_e2e.py's own
+    real auto-approve fixture uses terraform_data specifically because it has zero cloud
+    footprint; this must stay "none" for G9 to correctly skip it."""
+    coverage, db, aws = ea.classify_coverage(_plan([_rc("terraform_data", "demo")]))
+    assert coverage == "none"
+    assert db == [] and aws == []
+
+    coverage, db, aws = ea.classify_coverage(_plan([_rc("random_id", "probe")]))
+    assert coverage == "none"
+    assert db == [] and aws == []
+
+
+def test_classify_coverage_full_ignores_a_mixed_in_test_utility_type():
+    """The same fix, the other direction: a real AWS resource alongside a provider-neutral
+    test-utility one still correctly reports "full" (the test-utility type is simply irrelevant
+    to coverage, not something that dilutes or blocks it)."""
+    coverage, db, aws = ea.classify_coverage(
+        _plan([_rc("aws_s3_bucket", "b"), _rc("terraform_data", "demo")]))
+    assert coverage == "full"
+    assert db == []
+    assert aws == ["aws_s3_bucket.b"]
+
+
 def test_unverified_types_flags_every_type_by_design():
     """Every entry in the real allowlist is unverified=False right now -- this is not a bug in
     the test, it's the honest, disclosed state of the module."""

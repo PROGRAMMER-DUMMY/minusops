@@ -7,6 +7,7 @@ root that wires the obvious shared inputs and flags the rest for review. The out
 *scaffold the architect refines and the deploy gate validates* — never an apply-without-review
 shortcut. It replaces the single hardcoded blueprint with requirement-driven composition.
 """
+import hashlib
 import os
 import re
 import json
@@ -25,6 +26,7 @@ import audit_chain
 import modules as module_registry
 import requirements as reqgate
 import runs
+import schema_lint
 import source_guard
 
 LOG_DIR = os.path.join(os.getcwd(), ".agents", "logs")
@@ -295,8 +297,13 @@ parse_budget_usd = reqgate.parse_budget_usd
 
 def compose(module_ids, name_prefix, out_dir, owner="", request="",
             run_id="", daily_data_gb=0, volume_source="",
-            monthly_budget_usd=0, budget_source=""):
-    """Write a composed Terraform root into out_dir from the selected modules."""
+            monthly_budget_usd=0, budget_source="", authored_resources=None):
+    """Write a composed Terraform root into out_dir from the selected modules, plus any
+    generation-time-authored novel resources (docs/phase6_step1_authoring_scope.md section 2).
+    `authored_resources` is a list of {resource_type, content, justification, decision_source,
+    content_hash} -- already lint-checked by the caller (synthesize()), never linted here; this
+    function only writes what it's given."""
+    authored_resources = authored_resources or []
     chosen = [module_registry.get_module(i) for i in module_ids]
     chosen = [m for m in chosen if m]
     if not chosen:
@@ -334,6 +341,19 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
                       + (f'  # from requirements: "{volume_source}" (upper bound)' if volume_source else ""))
     _w("terraform.tfvars", "\n".join(tfvars) + "\n")
 
+    # Authored (novel) resources -- each gets its own file at the composition root: a discrete,
+    # independently reviewable unit (docs/phase6_step1_authoring_scope.md section 2 item 1), not
+    # folded into main.tf and not wrapped in a synthetic child module -- these are typically
+    # standalone resources, and inventing a variables.tf/module-input contract for a resource
+    # type nobody has designed call-site wiring for yet would be scope creep past what this
+    # step actually needs. Written before the fmt pass below so authored HCL gets the same
+    # fmt-clean treatment as every catalog module's rendered output.
+    for entry in authored_resources:
+        text = entry["content"]
+        if not text.endswith("\n"):
+            text += "\n"
+        _w(f"authored_{entry['resource_type']}.tf", text)
+
     # Emit fmt-clean output so `plan_gate verify` (terraform fmt -check) passes without a
     # manual formatting step. Best-effort: composition still succeeds without terraform.
     try:
@@ -361,6 +381,13 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
     doc += ["", "## Review before deploy", "",
             "Wire these module inputs to real values (the architect/operator completes them):", ""]
     doc += [f"- `{r}`" for r in review] or ["- (none — common inputs auto-wired)"]
+    if authored_resources:
+        doc += ["", "## Authored (novel) resources", "",
+                "Generated for a requirement no catalog module covers -- reviewed the same way "
+                "a new module would be, not exempted for being newly authored:", ""]
+        for entry in authored_resources:
+            doc.append(f"- **{entry['resource_type']}** (`authored_{entry['resource_type']}.tf`) "
+                       f"-- {entry.get('justification') or '(no justification recorded)'}")
     doc += ["", "## Next", "",
             "```bash", f"python core/governance/plan_gate.py verify --dir {out_dir} --policy-mode production",
             f"python core/governance/plan_gate.py plan   --dir {out_dir}", "```",
@@ -368,7 +395,16 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
             "production external scanner evidence + plan-hash approval + BCM cost). Nothing applies without human review."]
     _w("COMPOSITION.md", "\n".join(doc) + "\n")
 
-    return {"out_dir": out_dir, "modules": [m["id"] for m in chosen], "review": review}
+    return {
+        "out_dir": out_dir,
+        "modules": [m["id"] for m in chosen],
+        "review": review,
+        "authored_resources": [
+            {"resource_type": e["resource_type"], "decision_source": e["decision_source"],
+             "content_hash": e["content_hash"]}
+            for e in authored_resources
+        ],
+    }
 
 
 def _ensure_empty_or_overwrite(terraform_dir, overwrite=False):
@@ -389,13 +425,17 @@ def _write_manifest(terraform_dir, result, requirements_text, decision=None):
         "requirements": requirements_text,
         "architecture": (decision or {}).get("selected_architecture", ""),
         "modules": result["modules"],
+        "authored_resources": result.get("authored_resources", []),
         "review": result["review"],
         "files": files,
     }
     with open(os.path.join(terraform_dir, "minus-generated.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         f.write("\n")
-    source_guard.write_baseline(terraform_dir, label="synthesized", extra={"modules": result["modules"]})
+    source_guard.write_baseline(terraform_dir, label="synthesized", extra={
+        "modules": result["modules"],
+        "authored_resources": result.get("authored_resources", []),
+    })
     return manifest
 
 
@@ -420,9 +460,64 @@ def _update_workflow(run, result):
     return record
 
 
+def _validate_novel_resources(decision, authored_content):
+    """Resolve architecture_decision.json's `novel_resources` (docs/
+    phase6_step1_authoring_scope.md section 1) against caller-supplied `authored_content` --
+    real HCL text for each declared novel resource type, keyed by `resource_type`. Fail-closed,
+    unconditionally, before anything else runs (section 2 item 3):
+
+      - A novel_resources entry with no matching authored_content -> hard block. This is what
+        keeps `novel_resources` a human-reviewed DECISION record, never a generation trigger by
+        itself: declaring intent to add a resource type is not the same as it being safe to
+        write, and synthesis refuses to fill the gap silently.
+      - Authored content declaring zero resource/data blocks at all -> hard block. gate_content()
+        itself must stay silent on this for gate_module()'s sake (a hand-pinned module with zero
+        blocks is a real, if rare, non-blocking case there) -- but an authoring-step call site
+        was asked to produce exactly one resource, so zero blocks IS the failure, checked here
+        rather than inside gate_content()'s own general contract.
+      - Anything that parses and resolves to a real type flows into gate_content() (G2) for the
+        actual schema-content check -- a hallucinated/nonexistent type surfaces there as
+        `unknown_type`, already blocking.
+
+    Returns the list of authored_resources dicts `compose()`/`_write_manifest()` expect.
+    """
+    novel_resources = (decision or {}).get("novel_resources") or []
+    authored_content = authored_content or {}
+    authored_resources = []
+    for i, entry in enumerate(novel_resources):
+        resource_type = entry.get("resource_type", "")
+        content = authored_content.get(resource_type)
+        if content is None:
+            raise ValueError(
+                f"novel_resources entry '{resource_type}' has no matching authored_content -- "
+                "fail-closed: synthesis refuses to proceed without authored HCL for every "
+                "declared novel resource"
+            )
+        source_label = f"novel_resources[{i}]:{resource_type}"
+        if not list(schema_lint.iter_hcl_blocks(content)):
+            raise ValueError(
+                f"authored content for novel resource '{resource_type}' declares no "
+                f"resource/data blocks at all -- refusing to synthesize (source: {source_label})"
+            )
+        lint_result = schema_lint.gate_content(content, source_label)
+        if lint_result["blocking"]:
+            raise ValueError(
+                f"authored content for novel resource '{resource_type}' failed G2 schema lint "
+                f"({source_label}): {lint_result['findings']}"
+            )
+        authored_resources.append({
+            "resource_type": resource_type,
+            "content": content,
+            "justification": entry.get("justification", ""),
+            "decision_source": f"novel_resources[{i}]",
+            "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        })
+    return authored_resources
+
+
 def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=False,
                name_prefix=None, explicit_ids=None, owner="data-platform", cloud="aws",
-               target_run=None, overwrite=False, validate=False):
+               target_run=None, overwrite=False, validate=False, authored_content=None):
     """
     End-to-end: enforce the requirements and architecture decision gates -> select the modules
     approved in that decision -> create a run workspace -> compose Terraform into it, and record
@@ -432,6 +527,12 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     without complete requirements and a complete architecture decision it raises the matching
     gate exception listing what's unanswered. `allow_incomplete` is an explicit, audited override
     (demo/testing only).
+
+    `authored_content` (docs/phase6_step1_authoring_scope.md section 1/2) is an optional
+    `{resource_type: hcl_text}` map supplying real, already-authored HCL for every entry in
+    `decision["novel_resources"]` -- this function does not itself author anything; it only
+    validates and composes what a caller's authoring step already produced. See
+    `_validate_novel_resources()` for the fail-closed contract.
     """
     if not allow_incomplete:
         reqgate.require(spec or {})        # raises RequirementsIncomplete(missing) -> caller surfaces it
@@ -447,6 +548,7 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
         raise ValueError("unknown selected module(s): " + ", ".join(unknown_ids))
     if not chosen:
         raise ValueError("no modules matched the requirements; refine the request or pass --module")
+    authored_resources = _validate_novel_resources(decision, authored_content)
     run = target_run or runs.new_run(blueprint="synthesized", request=requirements_text, cloud=cloud)
     if allow_incomplete:
         _audit_allow_incomplete_bypass(requirements_text, spec, decision, run)
@@ -461,7 +563,8 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     result = compose([m["id"] for m in chosen], prefix, run["terraform_dir"], owner=owner,
                      request=requirements_text, run_id=run.get("run_id", ""),
                      daily_data_gb=daily_gb, volume_source=volume_source,
-                     monthly_budget_usd=budget_usd, budget_source=budget_source)
+                     monthly_budget_usd=budget_usd, budget_source=budget_source,
+                     authored_resources=authored_resources)
     result["manifest"] = _write_manifest(run["terraform_dir"], result, requirements_text, decision=decision)
     result["workflow"] = _update_workflow(run, result)
     result["run"] = run

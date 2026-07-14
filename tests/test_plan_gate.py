@@ -29,6 +29,25 @@ PLAN_B = {
     ],
     "output_changes": {},
 }
+# aws_athena_workgroup: G5-eligible (AUTO_SHIP_ELIGIBLE_TYPES, not stateful/IAM) create-only --
+# isolates the G9 wiring tests below from destructive_change_gate's OWN check (aws_s3_bucket
+# above is stateful and would already block auto-approve before G9 is ever reached).
+PLAN_G9_ELIGIBLE = {
+    "resource_changes": [
+        {"address": "aws_athena_workgroup.wg", "type": "aws_athena_workgroup",
+         "name": "wg", "change": {"actions": ["create"]}}
+    ],
+    "output_changes": {},
+}
+# terraform_data: neither aws_* nor databricks_* -- classify_coverage() reports "none" (the
+# real bug this session fixed in ephemeral_apply.py while wiring G9 in).
+PLAN_NO_AWS = {
+    "resource_changes": [
+        {"address": "terraform_data.demo", "type": "terraform_data",
+         "name": "demo", "change": {"actions": ["create"]}}
+    ],
+    "output_changes": {},
+}
 
 
 @pytest.fixture
@@ -128,6 +147,92 @@ def test_approve_then_apply_happy_path(gate_env, monkeypatch):
     # Apply against the SAME plan succeeds and consumes (clears) the approval.
     assert plan_gate.stage_apply("d") is True
     assert not os.path.exists(plan_gate._approved_path("d", current))
+
+
+# ---------------------------------------------------------------------------
+# G9 wiring into the real flow (docs/phase6_step1_authoring_scope.md section 3): stage_plan()
+# computes a real G9 verdict (or a synthetic "not configured" one), carries it through the
+# approval record, and stage_apply(mode="auto-approve") refuses to proceed unless it's clean.
+# ---------------------------------------------------------------------------
+
+def test_auto_approve_apply_refuses_when_g9_not_configured(gate_env, monkeypatch):
+    """The disclosed, real, current-environment consequence of wiring G9 in today: no
+    LocalStack token is provisioned, and both free emulators (MiniStack, Floci) already failed
+    IAM/KMS/S3 negative-fidelity this session -- MINUS_G9_EMULATOR is deliberately left unset
+    here (the default state), not stubbed away, so this proves the actual disclosed behavior,
+    not a hypothetical one."""
+    monkeypatch.delenv(plan_gate.G9_EMULATOR_ENV, raising=False)
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_G9_ELIGIBLE))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+
+    assert plan_gate.stage_plan("d") is True
+    pending = json.load(open(plan_gate._pending_path("d"), encoding="utf-8"))
+    assert pending["g9_result"]["evaluation_failed"] is True
+    assert pending["g9_result"]["reason"] == "g9_not_configured"
+
+    assert plan_gate.stage_approve("d", mode="auto-approve") is True
+    assert plan_gate.stage_apply("d", mode="auto-approve") is False
+
+    audit_lines = [json.loads(line) for line in
+                   open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8")
+                   if line.strip()]
+    refused = [e for e in audit_lines if e.get("action") == "apply" and e.get("status") == "REJECTED"
+               and e.get("reason") == "g9_not_clean"]
+    assert refused, "expected a g9_not_clean rejection record"
+
+
+def test_auto_approve_apply_succeeds_when_g9_clean(gate_env, monkeypatch):
+    """The other half of the same proof (docs/g5_autonomy_boundary_scope.md's own both-
+    direction discipline, applied here to G9): a clean G9 verdict does not block auto-approve --
+    this is a staging gate for an UNPROVEN plan, not a blanket ban on autonomy once G9 actually
+    passes. _g9_eval itself is stubbed here (its own "is an emulator actually configured"
+    behavior is proven separately above and in test_ephemeral_apply.py) to isolate the
+    enforcement/threading logic: pending -> approval -> stage_apply's check."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_G9_ELIGIBLE))
+    monkeypatch.setattr(plan_gate, "_apply_with_json_capture",
+                        _stub_apply_success(applied=("aws_athena_workgroup.wg",)))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_g9_eval", lambda dir_, plan_json: {
+        "evaluation_failed": False, "reason": None, "detail": "",
+        "coverage": "full", "databricks_resources": [], "findings": [], "emulator": "ministack",
+    })
+
+    assert plan_gate.stage_plan("d") is True
+    assert plan_gate.stage_approve("d", mode="auto-approve") is True
+    assert plan_gate.stage_apply("d", mode="auto-approve") is True
+
+
+def test_auto_approve_apply_unaffected_when_plan_has_no_aws_content(gate_env, monkeypatch):
+    """coverage="none" plans (no AWS content at all) must not be swept up by the new G9
+    enforcement -- the same zero-cloud-footprint shape tests/test_gate_e2e.py's real
+    terraform_data fixture relies on, proven hermetically here instead."""
+    monkeypatch.delenv(plan_gate.G9_EMULATOR_ENV, raising=False)
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_NO_AWS))
+    monkeypatch.setattr(plan_gate, "_apply_with_json_capture",
+                        _stub_apply_success(applied=("terraform_data.demo",)))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+
+    assert plan_gate.stage_plan("d") is True
+    pending = json.load(open(plan_gate._pending_path("d"), encoding="utf-8"))
+    assert pending["g9_result"]["coverage"] == "none"
+    assert pending["g9_result"]["evaluation_failed"] is False
+
+    assert plan_gate.stage_approve("d", mode="auto-approve") is True
+    assert plan_gate.stage_apply("d", mode="auto-approve") is True
+
+
+def test_destroy_plan_skips_g9(gate_env, monkeypatch):
+    """G9 exists to catch CREATE-order apply-time failures (docs/phase5_scope.md); a destroy
+    plan has nothing new for it to check, same reasoning the pre-existing cost-coverage skip
+    already uses for destroy plans."""
+    monkeypatch.delenv(plan_gate.G9_EMULATOR_ENV, raising=False)
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_G9_ELIGIBLE))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+
+    assert plan_gate.stage_plan("d", destroy=True) is True
+    pending = json.load(open(plan_gate._pending_path("d"), encoding="utf-8"))
+    assert pending["g9_result"]["evaluation_failed"] is False
+    assert "not applicable" in pending["g9_result"]["detail"]
 
 
 def test_apply_refuses_when_plan_drifted(gate_env, monkeypatch):

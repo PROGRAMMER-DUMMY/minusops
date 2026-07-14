@@ -362,13 +362,10 @@ def _shape_hash(reduced):
 
 
 def gate_module(module_id):
-    """The G2 verdict for one module. Returns:
-
-        {"blocking": bool, "findings": [...], "warnings": [...], "schema_hash": str}
-
-    `findings` entries that make `blocking` True: schema_fetch_failed, schema_malformed,
-    unknown_type, unknown_attribute, deprecated_attribute_in_use, type_mismatch,
-    unparseable_reference. `warnings` (never blocking): schema_shape_changed_no_signal.
+    """The G2 verdict for one on-disk pinned module. Reads `modules/<module_id>/main.tf` and
+    delegates everything else to `gate_content()` -- see that function for the full contract.
+    `source_label` there is `module_id`, since that's also the key `module_provenance.show()`
+    uses to find the prior pin's schema_hash for the shape-changed WARN signal.
     """
     module_dir = os.path.join(module_registry.MODULES_DIR, module_id)
     main_tf_path = os.path.join(module_dir, "main.tf")
@@ -383,7 +380,29 @@ def gate_module(module_id):
         return {"blocking": True,
                 "findings": [{"finding": "module_unreadable", "detail": str(exc)}],
                 "warnings": [], "schema_hash": None}
+    return gate_content(content, module_id)
 
+
+def gate_content(content, source_label):
+    """The real G2 linting entry point (docs/phase6_step1_authoring_scope.md section 2):
+    everything `gate_module()` used to do inline, from HCL-block extraction through the final
+    verdict, taking raw HCL text directly rather than reading it off disk first -- so
+    generation-time-authored content (not yet written to any `modules/` directory) gets the
+    exact same schema-content check a pinned module gets, with zero new lint logic. Returns:
+
+        {"blocking": bool, "findings": [...], "warnings": [...], "schema_hash": str}
+
+    `findings` entries that make `blocking` True: schema_fetch_failed, schema_malformed,
+    unknown_type, unknown_attribute, deprecated_attribute_in_use, type_mismatch,
+    unparseable_reference. `warnings` (never blocking): schema_shape_changed_no_signal.
+
+    `source_label` is used only for the shape-changed WARN signal's prior-pin lookup
+    (`module_provenance.show(source_label)`) -- for a real module id this finds that module's
+    last pinned schema_hash; for a synthetic label (e.g. an authoring-step call site's own
+    `novel_resources[N]`-shaped identifier) `show()` simply finds no file at that path and
+    returns None, which is indistinguishable from -- and handled identically to -- a real
+    module's first-ever pin: no prior baseline, no WARN, never a blocking condition either way.
+    """
     declared = list(iter_hcl_blocks(content))
     findings = []
     warnings = []
@@ -488,7 +507,7 @@ def gate_module(module_id):
         # which is already a legitimate no-signal case (first-ever pin), never a reason to
         # block or crash.
         try:
-            previous = module_provenance.show(module_id)
+            previous = module_provenance.show(source_label)
         except Exception:
             previous = None
         prev_hash = (previous or {}).get("schema_hash")

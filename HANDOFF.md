@@ -1113,6 +1113,99 @@
 > since two recurrences in one session confirms it's not going away on its own: **check
 > `df -h` before, during, and after any terraform-plan-heavy stretch of work**, not just before.
 
+> **Follow-up (2026-07-14): Phase 6 Step 1 (the authoring pipeline) — BUILT and PROVEN.**
+> Full detail, section-by-section, in `docs/phase6_step1_authoring_scope.md`'s own Results
+> sections. Summary of what actually shipped:
+>
+> **G6 gains SEC-08/09/10** (`policy/g6/rules.rego`), closing the exact content-blindness gap
+> `docs/g5_autonomy_boundary_scope.md` section 3 named for `aws_default_security_group`, now
+> applied to three of the `# CONFIG-DEPENDENT` types on G5's own safe list:
+> `aws_redshiftserverless_workgroup.publicly_accessible`, `aws_subnet.map_public_ip_on_launch`,
+> `aws_s3_object.acl` (schema-verified live against the real AWS provider before writing the
+> rule — `acl` is `computed=true`, so an unset value is `after_unknown`, handled the same
+> fail-closed way SEC-06/SEC-07 already handle `aws_kms_key.policy`/`aws_s3_bucket_policy.
+> policy`; the other two are plain optional, non-computed fields, confirmed to resolve as a
+> KNOWN `null`/`false` when unset, never `after_unknown`). `G6_RULE_IDS` updated the same push
+> (the standing checklist item from Step 0, applied to itself immediately, not deferred).
+>
+> **Count correction, not deferred**: Step 0's own `# CONFIG-DEPENDENT` comment said "seven"
+> types were flagged; the real count has always been six. The other three
+> (`aws_glue_job`, `aws_kinesisanalyticsv2_application`, `aws_sfn_state_machine`) got a
+> different, reasoned disposition: **no new G6 rule, stays eligible** — each carries an
+> arbitrary executable payload whose risk is in what it *does*, not in any plan-time-checkable
+> attribute; the real privilege boundary is the IAM role each one assumes, already covered by
+> SEC-02/SEC-05 if that role is newly authored. Full reasoning in `destructive_change_gate.py`'s
+> `AUTO_SHIP_ELIGIBLE_TYPES` docstring.
+>
+> **`architecture_decision.json` gains `novel_resources`** (additive, same completeness bar
+> `alternatives` already gets), and `synthesizer.synthesize()` gains an `authored_content`
+> parameter (`{resource_type: hcl_text}`) — the function does not author anything itself, only
+> validates (fail-closed: no matching authored_content, zero declared HCL blocks, or a G2
+> schema-lint block all hard-refuse synthesis before any run workspace is even created) and
+> composes what a caller's authoring step already produced, each novel resource its own
+> `authored_<type>.tf` file at the composition root — a discrete, independently reviewable unit,
+> not a synthetic child module whose input-variable contract nothing has designed yet.
+>
+> **`schema_lint.py` split into `gate_content(content, source_label)` (the real linting logic)
+> and a thin `gate_module(module_id)` wrapper** (disk read + delegate) — proof-bar item 3
+> satisfied for real: byte-identical findings between the two call paths across all 16 real
+> modules, live-schema-verified, not asserted.
+>
+> **G9 wired into the real flow** — `plan_gate.py stage_plan()` now calls a real `_g9_eval()`
+> whenever plan coverage is `full`/`partial` (skipped for destroy plans, same reasoning the
+> pre-existing cost-coverage skip already uses), stores the verdict in the pending record,
+> carries it through the approval record to `stage_apply()`, which now refuses an
+> `auto-approve` apply unless that stored verdict is clean — same hard, non-overridable shape as
+> the existing G5 auto-approve check, proven both directions (a clean G9 verdict does not
+> block; a not-clean one does) plus the destroy-skip and no-AWS-content cases, all hermetically
+> in `tests/test_plan_gate.py`, no Docker required for the wiring tests themselves.
+>
+> **Sync, not async — decided explicitly, before implementation, as required.** `stage_plan()`
+> blocks on the real ephemeral-apply cycle rather than polling a background job: this repo has
+> no job-store/polling infrastructure anywhere else, `plan_gate.py` is a CLI/pipeline gate with
+> nothing downstream waiting on a sub-second response, and building async now would be exactly
+> the "infrastructure for a hypothetical requirement" pattern this session has rejected
+> elsewhere. Full paragraph in the scope doc section 3.
+>
+> **The real, present-tense consequence, stated plainly, as required — not left to surprise
+> anyone**: **G9-in-real-flow is fidelity-limited for IAM/KMS/S3 until a paid emulator is
+> provisioned; those plans stage rather than auto-ship.** No `LOCALSTACK_AUTH_TOKEN` is
+> provisioned, and both free emulators (MiniStack, Floci) already failed IAM/KMS/S3
+> negative-fidelity this session (`docs/phase5_scope.md` section 7.5/8.6). Concretely, today:
+> `MINUS_G9_EMULATOR` is unset in every real environment this repo runs in, so `_g9_eval()`
+> returns `g9_not_configured` for every plan with any AWS content, and every such
+> `auto-approve` apply is refused, forcing gatekeeper/staged human review — correct, disclosed,
+> fail-closed behavior, not a bug, but a real operational cost of this wiring existing at all.
+>
+> **A real bug found WHILE wiring this in, not assumed away**: `ephemeral_apply.classify_
+> coverage()`'s "aws" bucket was defined as "not Databricks," not "actually `aws_`-prefixed" —
+> `terraform_data` (zero-cloud-footprint, used as `test_gate_e2e.py`'s own real fixture
+> specifically because it has no cloud footprint) fell into that bucket and was misclassified
+> `"full"` AWS coverage, which made G9 try to run against a plan with no AWS content at all and
+> broke the real end-to-end auto-approve test on first wiring attempt. Fixed to check the real
+> `aws_` prefix (matching `RESOURCE_TYPE_ALLOWLIST`'s own aws_*-only keys); regression tests
+> added (`test_classify_coverage_none_for_provider_neutral_test_utility_types`).
+>
+> **Proof-bar item 6, added on review — "G9 must CATCH, not just RUN"**: real, executed
+> evidence, not asserted, gathered locally against a real MiniStack container (Docker Desktop
+> started, `ministackorg/ministack` run, health-checked) then committed as a permanent CI
+> regression job (`g9-catches-a-real-failure` in `.github/workflows/ephemeral-apply.yml`).
+> Fixture: an `aws_s3_bucket` plus an `aws_s3_object` whose `bucket` argument is a hardcoded,
+> never-created bucket name (no Terraform reference between them — a missing-`depends_on`-
+> shaped bug, exactly the failure class G9's own module docstring names). Result, captured
+> verbatim: `terraform validate` → `Success!` (G1 clean); `schema_lint.gate_content()` →
+> `{"blocking": false, "findings": []}` (G2 clean, zero findings); `ephemeral_apply.
+> run_ephemeral_apply()` against real MiniStack → `{"evaluation_failed": true, "reason":
+> "apply_partial_failure", "detail": "succeeded=['aws_s3_bucket.real'] errored=['aws_s3_object.
+> orphan']"}`. G1 and G2 structurally cannot see this failure; only a real apply, in real
+> dependency order, against a real (emulated) provider can — which is exactly what G9 exists
+> for, proven, not argued.
+>
+> **Phase 6 Step 1 is BUILT and PROVEN.** Teardown (`docs/phase6_scope.md` Step 5) stays last,
+> gated on the regression-baseline proof bar, reachable only now that Step 1 is closed. G6's
+> shadow-only status and its own separate, still-open enforcement-flip decision are unaffected
+> by any of this.
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance

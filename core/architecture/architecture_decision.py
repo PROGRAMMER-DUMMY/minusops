@@ -34,6 +34,7 @@ def template(requirements_file="requirements.json"):
         "selected_architecture": "",
         "decision_summary": "",
         "selected_modules": [],
+        "novel_resources": [],
         "alternatives": [
             {"name": "", "decision": "rejected", "reason": ""}
         ],
@@ -59,6 +60,16 @@ def _valid_alternative(item):
     return _answered(item.get("name")) and _answered(item.get("decision")) and _answered(item.get("reason"))
 
 
+def _valid_novel_resource(item):
+    if not isinstance(item, dict):
+        return False
+    return (
+        _answered(item.get("resource_type"))
+        and _answered(item.get("justification"))
+        and _nonempty_list(item.get("alternatives_considered"))
+    )
+
+
 def validate(data):
     missing = []
     if not isinstance(data, dict):
@@ -74,6 +85,22 @@ def validate(data):
     for field in ("assumptions", "risks", "sources"):
         if not _nonempty_list(data.get(field)):
             missing.append(f"{field} (at least one item)")
+    # novel_resources (docs/phase6_step1_authoring_scope.md section 1) is additive and OPTIONAL
+    # at the record level -- a decision with no novel resources needs no entries here at all.
+    # But once present, every entry is held to the same completeness bar _valid_alternative
+    # already enforces above: an incomplete entry (missing justification, or no
+    # alternatives_considered answered) fails validation exactly like an incomplete
+    # `alternatives` entry does, rather than silently passing through as a lesser-checked field.
+    novel_resources = data.get("novel_resources") or []
+    if not isinstance(novel_resources, list):
+        missing.append("novel_resources (must be a list)")
+    else:
+        for item in novel_resources:
+            if not _valid_novel_resource(item):
+                missing.append(
+                    "novel_resources entry incomplete (needs resource_type, justification, "
+                    "and at least one alternatives_considered item): " + json.dumps(item)
+                )
     return (not missing), missing
 
 
@@ -188,6 +215,25 @@ def add_alternative(path, name, decision, reason):
     return data
 
 
+def add_novel_resource(path, resource_type, justification, alternatives_considered, grounding_examples=None):
+    data = load_or_template(path)
+    novel_resources = [
+        item for item in (data.get("novel_resources") or [])
+        if _valid_novel_resource(item)
+    ]
+    entry = {
+        "resource_type": resource_type,
+        "justification": justification,
+        "alternatives_considered": list(alternatives_considered),
+        "grounding_examples": list(grounding_examples or []),
+    }
+    if entry not in novel_resources:
+        novel_resources.append(entry)
+    data["novel_resources"] = novel_resources
+    save(path, data)
+    return data
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="Architecture decision gate")
@@ -218,6 +264,12 @@ def main(argv=None):
     alt.add_argument("--name", required=True)
     alt.add_argument("--decision", required=True)
     alt.add_argument("--reason", required=True)
+    nr = sub.add_parser("add-novel-resource")
+    nr.add_argument("path")
+    nr.add_argument("--resource-type", required=True)
+    nr.add_argument("--justification", required=True)
+    nr.add_argument("--alternative-considered", dest="alternatives_considered", action="append", required=True)
+    nr.add_argument("--grounding-example", dest="grounding_examples", action="append", default=[])
     args = ap.parse_args(argv)
 
     if args.cmd == "template":
@@ -249,6 +301,11 @@ def main(argv=None):
             data = add_list_item(args.path, "risks", args.risk)
         elif args.cmd == "add-alternative":
             data = add_alternative(args.path, args.name, args.decision, args.reason)
+        elif args.cmd == "add-novel-resource":
+            data = add_novel_resource(
+                args.path, args.resource_type, args.justification,
+                args.alternatives_considered, args.grounding_examples,
+            )
         else:
             return 1
     except ValueError as exc:

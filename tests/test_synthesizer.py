@@ -219,6 +219,127 @@ def test_synthesize_refuses_unknown_decision_module(tmp_path, monkeypatch):
     assert "unknown selected module" in str(exc.value)
 
 
+# ---------------------------------------------------------------------------
+# novel_resources / authored_content (docs/phase6_step1_authoring_scope.md sections 1/2):
+# nothing a generator produces auto-ships on its first real appearance -- synthesize() itself
+# only validates and composes what a caller's authoring step already produced, fail-closed on
+# every way that step's own output could be wrong. Real `opa`/`terraform` not needed for these
+# (gate_content()'s schema check needs the real `terraform providers schema -json` fetch, same
+# skip condition schema_lint's own tests use).
+# ---------------------------------------------------------------------------
+import toolpath
+
+TERRAFORM = toolpath.find_tool("terraform")
+
+_NOVEL_DECISION = dict(COMPLETE_DECISION, novel_resources=[{
+    "resource_type": "aws_dynamodb_table",
+    "justification": "Requirement needs a low-latency key-value store; no catalog module provides one.",
+    "alternatives_considered": ["aws_elasticache_cluster (rejected: overkill for this access pattern)"],
+    "grounding_examples": ["storage-medallion-s3"],
+}])
+
+_VALID_DYNAMODB_HCL = (
+    'resource "aws_dynamodb_table" "novel" {\n'
+    '  name         = "novel-table"\n'
+    '  billing_mode = "PAY_PER_REQUEST"\n'
+    '  hash_key     = "id"\n'
+    '  attribute {\n'
+    '    name = "id"\n'
+    '    type = "S"\n'
+    '  }\n'
+    '}\n'
+)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_synthesize_composes_a_valid_authored_novel_resource(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    res = synthesizer.synthesize(
+        "airflow pipeline needing a low-latency lookup table",
+        spec=COMPLETE_SPEC, decision=_NOVEL_DECISION, owner="data-platform",
+        authored_content={"aws_dynamodb_table": _VALID_DYNAMODB_HCL},
+    )
+
+    authored_file = os.path.join(res["out_dir"], "authored_aws_dynamodb_table.tf")
+    assert os.path.exists(authored_file)
+    assert 'resource "aws_dynamodb_table" "novel"' in open(authored_file, encoding="utf-8").read()
+    assert res["authored_resources"][0]["resource_type"] == "aws_dynamodb_table"
+    assert res["authored_resources"][0]["decision_source"] == "novel_resources[0]"
+    assert res["manifest"]["authored_resources"] == res["authored_resources"]
+
+
+def test_synthesize_refuses_novel_resource_with_no_matching_authored_content(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    with pytest.raises(ValueError) as exc:
+        synthesizer.synthesize(
+            "airflow pipeline needing a low-latency lookup table",
+            spec=COMPLETE_SPEC, decision=_NOVEL_DECISION, owner="data-platform",
+            authored_content=None,
+        )
+
+    assert "no matching authored_content" in str(exc.value)
+    assert not os.path.isdir(tmp_path / "runs")  # fails BEFORE any run workspace is created
+
+
+def test_synthesize_refuses_authored_content_with_no_declared_blocks(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    with pytest.raises(ValueError) as exc:
+        synthesizer.synthesize(
+            "airflow pipeline needing a low-latency lookup table",
+            spec=COMPLETE_SPEC, decision=_NOVEL_DECISION, owner="data-platform",
+            authored_content={"aws_dynamodb_table": "# not actually any HCL block at all\n"},
+        )
+
+    assert "declares no" in str(exc.value)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_synthesize_refuses_authored_content_with_hallucinated_type(tmp_path, monkeypatch):
+    """The authoring step's own output resolving to a type that doesn't exist in any live
+    provider schema this repo tracks -- stricter than G2's usual unknown_attribute case, this is
+    the type itself being nonexistent (a typo/hallucination), not merely unreviewed."""
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    with pytest.raises(ValueError) as exc:
+        synthesizer.synthesize(
+            "airflow pipeline needing a low-latency lookup table",
+            spec=COMPLETE_SPEC, decision=_NOVEL_DECISION, owner="data-platform",
+            authored_content={"aws_dynamodb_table": (
+                'resource "aws_totally_made_up_type" "novel" {\n  name = "x"\n}\n'
+            )},
+        )
+
+    assert "failed G2 schema lint" in str(exc.value)
+
+
+def test_synthesize_with_no_novel_resources_is_unaffected(tmp_path, monkeypatch):
+    """Backward-compatible: a decision with no novel_resources key at all (every requirement
+    fully covered by the catalog, which is every requirement before this scope existed) composes
+    exactly as before -- authored_resources is simply empty."""
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    res = synthesizer.synthesize(
+        "airflow pipeline with data quality and schema enforcement",
+        spec=COMPLETE_SPEC, decision=COMPLETE_DECISION, owner="data-platform",
+    )
+
+    assert res["authored_resources"] == []
+    assert res["manifest"]["authored_resources"] == []
+
+
 def test_parse_daily_gb_takes_upper_bound_and_converts_tb():
     import synthesizer as s
     gb, src = s.parse_daily_gb({"data_pipeline": {"data_volume": "Large: 10 to 100 GB of sales data per day"}})

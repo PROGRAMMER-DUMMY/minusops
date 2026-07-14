@@ -133,20 +133,33 @@ REVIEWED_UNSAFE_TYPES = frozenset({
 # RESOURCE_TYPE_ALLOWLIST) one type at a time, not migrated wholesale from "not currently
 # flagged".
 #
-# CONFIG-DEPENDENT ENTRIES, flagged for Step-1 (generation-era) re-examination, not a Step-0
-# blocker: reviewed here as safe *in this repo's current real configurations*, not safe *by
-# type* independent of configuration -- a freshly-generated instance of these could carry real
-# content risk this classifier (type + action only) structurally cannot see. Verified live
-# against the real AWS provider schema, not assumed: `aws_redshiftserverless_workgroup.
-# publicly_accessible`, `aws_subnet.map_public_ip_on_launch`, and `aws_s3_object.acl` are all
-# real, present, boolean/string-flag schema attributes that flip a resource's public exposure
-# without changing its resource type at all. `aws_glue_job`, `aws_kinesisanalyticsv2_
-# application`, and `aws_sfn_state_machine` each carry executable logic/definitions of their
-# own (a Spark/Flink/state-machine payload) -- their risk is in what that payload does, not in
-# the resource type existing. Marked inline below with `# CONFIG-DEPENDENT`, not excluded now:
-# this repo's own real configurations of every one of these are genuinely safe, reviewed
-# directly, and Step 1 needs to either extend G6 coverage for the content risk or re-review
-# once generation can produce novel configurations of these same types.
+# CONFIG-DEPENDENT ENTRIES -- RESOLVED (docs/phase6_step1_authoring_scope.md section 4.2,
+# 2026-07-14). 6 entries were flagged at Step 0 for Step-1 re-examination before generation
+# could produce novel configurations of them (the scope doc's own prose said "7"; the actual
+# count in this set has always been 6 -- a real miscount in the scope doc, corrected here
+# rather than silently carried forward). Each got its own per-type disposition, same standard
+# `aws_default_security_group`'s exclusion was held to above -- decided, not left implicit:
+#
+#   (a) NEW G6 RULE, stays eligible -- `aws_redshiftserverless_workgroup`, `aws_subnet`,
+#       `aws_s3_object`. Each has a real, schema-verified boolean/string attribute that flips
+#       public exposure without changing resource type (`publicly_accessible`,
+#       `map_public_ip_on_launch`, `acl`). SEC-08/SEC-09/SEC-10 (policy/g6/rules.rego) now
+#       check exactly those attributes, shadow-proven zero-FP the same way SEC-06/SEC-07 were.
+#       A generated instance setting the risky attribute is caught on CONTENT by G6, even
+#       though G5 still only sees the type and stays silent.
+#   (b) NO G6 RULE POSSIBLE, stays eligible on reasoned exception -- `aws_glue_job`,
+#       `aws_kinesisanalyticsv2_application`, `aws_sfn_state_machine`. Each carries an
+#       arbitrary executable payload (a Spark script, a Flink/SQL app, a state-machine
+#       definition) whose risk is in what it DOES at runtime, not in any single attribute a
+#       plan-time Rego rule could pattern-match -- there is no attribute-content check
+#       equivalent to SEC-08/09/10 to write here. The actual privilege boundary for all three
+#       is the IAM role each one assumes: a genuinely new role attached to one of these is
+#       itself a separate `aws_iam_role`/`aws_iam_policy` resource, independently caught by
+#       SEC-02/SEC-05 (wildcard resource/action, missing external ID) if it's newly authored.
+#       Accepted as the real, disclosed boundary -- not a gap silently left open -- because
+#       the alternative (moving all three to REVIEWED_UNSAFE_TYPES) would stage every future
+#       occurrence of an already-reviewed-safe type shape for a risk this gate structurally
+#       cannot see any better staged than un-staged.
 AUTO_SHIP_ELIGIBLE_TYPES = frozenset({
     "aws_athena_workgroup",
     "aws_budgets_budget",
@@ -156,26 +169,26 @@ AUTO_SHIP_ELIGIBLE_TYPES = frozenset({
     "aws_eip",
     "aws_emrserverless_application",
     "aws_glue_catalog_database",
-    "aws_glue_job",                        # CONFIG-DEPENDENT: runs an arbitrary Spark script
+    "aws_glue_job",                        # CONFIG-DEPENDENT (b): no G6 rule, IAM role bounds it
     "aws_glue_registry",
     "aws_glue_schema",
     "aws_glue_trigger",
     "aws_internet_gateway",
-    "aws_kinesisanalyticsv2_application",  # CONFIG-DEPENDENT: runs an arbitrary Flink/SQL app
+    "aws_kinesisanalyticsv2_application",  # CONFIG-DEPENDENT (b): no G6 rule, IAM role bounds it
     "aws_kms_alias",
     "aws_nat_gateway",
-    "aws_redshiftserverless_workgroup",    # CONFIG-DEPENDENT: publicly_accessible flag
+    "aws_redshiftserverless_workgroup",    # CONFIG-DEPENDENT (a): G6 SEC-08 covers publicly_accessible
     "aws_route_table",                     # real bug: reviewed safe, initially left out of this set
     "aws_route_table_association",
     "aws_s3_bucket_lifecycle_configuration",
     "aws_s3_bucket_public_access_block",
     "aws_s3_bucket_server_side_encryption_configuration",
     "aws_s3_bucket_versioning",
-    "aws_s3_object",                       # CONFIG-DEPENDENT: acl/content could be public/sensitive
-    "aws_sfn_state_machine",               # CONFIG-DEPENDENT: definition can invoke anything its role allows
+    "aws_s3_object",                       # CONFIG-DEPENDENT (a): G6 SEC-10 covers acl
+    "aws_sfn_state_machine",               # CONFIG-DEPENDENT (b): no G6 rule, IAM role bounds it
     "aws_sns_topic",
     "aws_sns_topic_subscription",
-    "aws_subnet",                          # CONFIG-DEPENDENT: map_public_ip_on_launch flag
+    "aws_subnet",                          # CONFIG-DEPENDENT (a): G6 SEC-09 covers map_public_ip_on_launch
     "aws_vpc",
     "aws_vpc_endpoint",
     # Not cloud resources -- test-utility types with zero cloud footprint, used by this repo's

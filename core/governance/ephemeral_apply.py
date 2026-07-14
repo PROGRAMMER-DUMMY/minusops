@@ -197,12 +197,28 @@ def _fail(reason, detail="", coverage=None, databricks_resources=None, emulator=
     }
 
 
+_AWS_PREFIX = "aws_"
+
+
 def classify_coverage(plan_json):
     """Return (coverage, databricks_addresses, aws_addresses). "none" means every managed
-    resource in the plan is Databricks -- G9 never runs. "partial" means a genuine mix. "full"
-    means AWS-only. Uses plan_reader.py's shared, fail-closed managed-resource read (absent
-    resource_changes is a legitimate zero-managed-changes plan, not an error, matching G6's own
-    shadow-reader policy -- this is an advisory classification, not G5's enforcing gate)."""
+    resource in the plan is Databricks (or neither AWS nor Databricks -- see below) -- G9 never
+    runs. "partial" means a genuine AWS+Databricks mix. "full" means AWS-only. Uses
+    plan_reader.py's shared, fail-closed managed-resource read (absent resource_changes is a
+    legitimate zero-managed-changes plan, not an error, matching G6's own shadow-reader policy --
+    this is an advisory classification, not G5's enforcing gate).
+
+    REAL BUG CAUGHT while wiring G9 into the real flow (docs/phase6_step1_authoring_scope.md
+    section 3), not assumed away: the `aws` bucket used to be defined as "not Databricks" rather
+    than "actually aws_*-prefixed" -- a plan containing only `terraform_data` (Terraform's own
+    built-in, zero-cloud-footprint resource, used as the real e2e test fixture precisely because
+    it has no cloud footprint) fell into that bucket and was misclassified "full" AWS coverage,
+    which made G9 attempt a real ephemeral-apply cycle for a plan with no AWS content at all --
+    confirmed live via tests/test_gate_e2e.py's auto-approve fixture failing exactly this way the
+    first time G9 was wired in. Fixed to check the real `aws_` prefix, matching
+    RESOURCE_TYPE_ALLOWLIST's own aws_*-only keys above -- a type that is neither AWS- nor
+    Databricks-prefixed (terraform_data, random_id, and any other provider-neutral test-utility
+    type) is simply irrelevant to G9's cloud-fidelity coverage and counted in neither bucket."""
     raw_rc, _error = plan_reader.read_resource_changes(plan_json, treat_absent_as_error=False)
     managed, _malformed = plan_reader.managed_only(raw_rc or [])
     databricks = sorted(
@@ -211,7 +227,7 @@ def classify_coverage(plan_json):
     )
     aws = sorted(
         rc.get("address") for rc in managed
-        if isinstance(rc.get("type"), str) and not rc["type"].startswith(_DATABRICKS_PREFIX)
+        if isinstance(rc.get("type"), str) and rc["type"].startswith(_AWS_PREFIX)
     )
     if not managed:
         return "none", databricks, aws

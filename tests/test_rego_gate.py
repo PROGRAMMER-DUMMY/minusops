@@ -516,6 +516,95 @@ def test_sec07_unknown_policy_routes_to_field_unresolved_not_silent_pass():
 
 
 # ---------------------------------------------------------------------------
+# SEC-08 (new, docs/phase6_step1_authoring_scope.md section 4.2) -- Redshift Serverless
+# workgroup publicly accessible
+# ---------------------------------------------------------------------------
+
+def test_sec08_flags_publicly_accessible_true():
+    plan = _plan(resource_changes=[_rc("managed", "aws_redshiftserverless_workgroup", "aws_redshiftserverless_workgroup.bad",
+                                        after={"publicly_accessible": True})])
+    result = rego_gate.evaluate(plan)
+    assert len(_findings_by_id(result, "SEC-08")) == 1
+
+
+def test_sec08_clean_when_false():
+    plan = _plan(resource_changes=[_rc("managed", "aws_redshiftserverless_workgroup", "aws_redshiftserverless_workgroup.ok",
+                                        after={"publicly_accessible": False})])
+    result = rego_gate.evaluate(plan)
+    assert _findings_by_id(result, "SEC-08") == []
+
+
+def test_sec08_clean_when_omitted_resolves_to_known_null_not_unresolved():
+    """Live-verified (not assumed): publicly_accessible is optional but NOT computed, so an
+    omitted attribute resolves to a KNOWN null in `after`, never after_unknown -- unlike SEC-06/
+    SEC-07's policy fields. No field_unresolved case exists for this rule."""
+    plan = _plan(resource_changes=[_rc("managed", "aws_redshiftserverless_workgroup", "aws_redshiftserverless_workgroup.unset",
+                                        after={"publicly_accessible": None})])
+    result = rego_gate.evaluate(plan)
+    assert _findings_by_id(result, "SEC-08") == []
+
+
+# ---------------------------------------------------------------------------
+# SEC-09 (new, docs/phase6_step1_authoring_scope.md section 4.2) -- Subnet auto-assigns
+# public IPs
+# ---------------------------------------------------------------------------
+
+def test_sec09_flags_map_public_ip_on_launch_true():
+    plan = _plan(resource_changes=[_rc("managed", "aws_subnet", "aws_subnet.bad",
+                                        after={"map_public_ip_on_launch": True})])
+    result = rego_gate.evaluate(plan)
+    assert len(_findings_by_id(result, "SEC-09")) == 1
+
+
+def test_sec09_clean_when_omitted_resolves_to_known_false():
+    """Live-verified: map_public_ip_on_launch is optional, NOT computed -- an omitted
+    attribute resolves to a KNOWN false in `after`, never after_unknown."""
+    plan = _plan(resource_changes=[_rc("managed", "aws_subnet", "aws_subnet.ok",
+                                        after={"map_public_ip_on_launch": False})])
+    result = rego_gate.evaluate(plan)
+    assert _findings_by_id(result, "SEC-09") == []
+
+
+# ---------------------------------------------------------------------------
+# SEC-10 (new, docs/phase6_step1_authoring_scope.md section 4.2) -- S3 object ACL public
+# ---------------------------------------------------------------------------
+
+def test_sec10_flags_public_read_acl():
+    plan = _plan(resource_changes=[_rc("managed", "aws_s3_object", "aws_s3_object.bad",
+                                        after={"acl": "public-read"})])
+    result = rego_gate.evaluate(plan)
+    assert len(_findings_by_id(result, "SEC-10")) == 1
+
+
+def test_sec10_flags_authenticated_read_acl():
+    plan = _plan(resource_changes=[_rc("managed", "aws_s3_object", "aws_s3_object.bad2",
+                                        after={"acl": "authenticated-read"})])
+    result = rego_gate.evaluate(plan)
+    assert len(_findings_by_id(result, "SEC-10")) == 1
+
+
+def test_sec10_clean_when_private():
+    plan = _plan(resource_changes=[_rc("managed", "aws_s3_object", "aws_s3_object.ok",
+                                        after={"acl": "private"})])
+    result = rego_gate.evaluate(plan)
+    assert _findings_by_id(result, "SEC-10") == []
+
+
+def test_sec10_unset_acl_routes_to_field_unresolved_not_silent_pass():
+    """Live-verified: acl is schema optional AND computed -- an omitted attribute resolves to
+    after_unknown.acl=True in a real plan, the same shape SEC-06/SEC-07 established for
+    aws_kms_key.policy/aws_s3_bucket_policy.policy. Never silently read as "no ACL, private,
+    safe" -- AWS's documented default being safe is not something this rule can verify from
+    plan JSON alone."""
+    plan = _plan(resource_changes=[_rc("managed", "aws_s3_object", "aws_s3_object.unset",
+                                        after_unknown={"acl": True})])
+    result = rego_gate.evaluate(plan)
+    findings = _findings_by_id(result, "SEC-10")
+    assert len(findings) == 1
+    assert findings[0]["finding_kind"] == "field_unresolved"
+
+
+# ---------------------------------------------------------------------------
 # SEC-02 -- Wildcard IAM Resource: structured .statement.resources for data sources, and
 # json.unmarshal of the .policy string for managed aws_iam_policy/aws_iam_role_policy
 # ---------------------------------------------------------------------------

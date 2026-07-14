@@ -146,10 +146,32 @@ automatically, no new logic needed in `ephemeral_apply.py` itself.
 
 **Real, disclosed cost, not hand-waved**: this makes every real `stage_plan()` call that reaches
 this point take as long as a real terraform init/apply/destroy cycle against a live emulator —
-minutes, not seconds, a genuine change to the interactive gate's own responsiveness. Named here
-as a real design tradeoff for implementation to resolve (e.g., async/background execution with a
-polling verdict, vs. a synchronous wait) — not resolved by this scope, but not silently ignored
-either.
+minutes, not seconds, a genuine change to the interactive gate's own responsiveness.
+
+**Decision (2026-07-14): synchronous, not async.** `stage_plan()` calls `run_ephemeral_apply()`
+and blocks until it returns, the same shape `_g6_shadow_eval()` already uses for G6. Reasoning:
+`plan_gate.py` is a CLI/tooling gate invoked from a pipeline step, not a low-latency interactive
+UI request path — nothing downstream of it is waiting on a sub-second response.
+`ephemeral_apply.py` already works as a blocking call standalone (its own `main()` runs init/
+apply/destroy and returns a verdict; no job-store or polling layer exists anywhere in this repo).
+Building async now — a job queue, a polling endpoint, a verdict store keyed by request ID — would
+be new infrastructure invented for a requirement nobody has yet: no caller today needs a
+non-blocking gate, and inventing one speculatively is exactly the "building for a hypothetical
+future requirement" this session has repeatedly rejected elsewhere (`docs/
+g5_autonomy_boundary_scope.md`'s own heuristic-vs-allowlist call made the same kind of argument).
+A multi-minute cost per AWS-touching plan is an acceptable, disclosed price for a governance gate
+to pay, not a UX-critical path — if a real need for non-blocking invocation ever materializes,
+that is a separate, later, evidence-driven change, not a default assumed in now.
+
+**Named consequence of the current environment (state this plainly, don't let it surprise
+anyone)**: no LocalStack token is provisioned this session, and both evaluated free emulators
+(MiniStack, Floci — `docs/phase5_scope.md` section 7.5/8.6) already confirmed failing
+IAM/KMS/S3 negative-fidelity in this same gauntlet. Wiring G9 into the real flow per this section
+means, concretely, today: **G9-in-real-flow is fidelity-limited for IAM/KMS/S3 until a paid
+emulator is provisioned; those plans stage rather than auto-ship.** This is correct, intended,
+fail-closed behavior — the `opa_not_found`/`terraform_not_found`-style fail-closed path applies
+here too — but it is a real, present-tense operational consequence of shipping this wiring today,
+not a hypothetical, and must be visible in HANDOFF.md, not left to surprise someone later.
 
 **Emulator choice for this wiring is not this scope's decision to re-litigate**: `docs/
 phase5_scope.md` already settled that LocalStack (paid) is the right choice for a trustworthy
@@ -192,15 +214,51 @@ exact same content-blindness `docs/g5_autonomy_boundary_scope.md` section 3 name
 `aws_default_security_group` was excluded, now applying to types that ARE on the safe list.
 
 **Concrete requirement, not deferred further**: before generation-time authoring is trusted to
-produce novel *configurations* of these 7 types (not just novel resource types), one of two
-things must be true for each: (a) a new G6 rule checks the specific risky attribute (a real,
-scoped addition — e.g. a new rule flagging `aws_s3_object.acl` set to a public-shaped value, or
+produce novel *configurations* of these types (not just novel resource types), one of two things
+must be true for each: (a) a new G6 rule checks the specific risky attribute (a real, scoped
+addition — e.g. a new rule flagging `aws_s3_object.acl` set to a public-shaped value, or
 `aws_subnet.map_public_ip_on_launch == true`, mirroring SEC-06/SEC-07's own shape exactly), or
 (b) the type is moved from `AUTO_SHIP_ELIGIBLE_TYPES` to `REVIEWED_UNSAFE_TYPES` until such a
 rule exists, forcing staged review for any plan touching it regardless of configuration. This
-scope does not pre-decide which of the 7 gets (a) vs (b) — that is real per-type review work,
-same discipline as Step 0's own 30-type review — but it does require the decision be made and
+scope does not pre-decide which gets (a) vs (b) — that is real per-type review work, same
+discipline as Step 0's own 30-type review — but it does require the decision be made and
 recorded before authoring can produce novel configurations of any of them, not left implicit.
+
+### Results (2026-07-14)
+
+**Count correction**: `destructive_change_gate.py`'s own `# CONFIG-DEPENDENT` comment (written
+at Step 0 close) said "7" types were flagged; the actual set has always had 6
+(`aws_glue_job`, `aws_kinesisanalyticsv2_application`, `aws_sfn_state_machine`,
+`aws_redshiftserverless_workgroup`, `aws_subnet`, `aws_s3_object`). A real miscount, corrected
+in the code comment rather than carried forward silently.
+
+Each of the 6 got its own reasoned disposition:
+
+- **(a) new G6 rule, stays eligible** — `aws_redshiftserverless_workgroup` (SEC-08,
+  `publicly_accessible == true`), `aws_subnet` (SEC-09, `map_public_ip_on_launch == true`),
+  `aws_s3_object` (SEC-10, `acl` in a public-shaped canned-ACL set, fail-closed to
+  `field_unresolved` when `acl` is unset — verified live that this field is schema `computed`,
+  so an omitted value is `after_unknown`, the same shape SEC-06/SEC-07 already established for
+  `aws_kms_key.policy`/`aws_s3_bucket_policy.policy`). All three rules are shadow-only, same as
+  every G6 rule, and added to `G6_RULE_IDS` in `plan_gate.py` so they are not silently dropped
+  from the divergence report/audit chain — the exact bug class the `G6_RULE_IDS` standing
+  checklist item exists to prevent.
+- **(b) no G6 rule, stays eligible on a reasoned exception** — `aws_glue_job`,
+  `aws_kinesisanalyticsv2_application`, `aws_sfn_state_machine`. Each carries an arbitrary
+  executable payload; the risk is in what that payload does at runtime, not in any single
+  plan-time attribute a Rego rule could pattern-match the way SEC-08/09/10 do. The real
+  privilege boundary is the IAM role each one assumes — a genuinely new role is itself a
+  separate `aws_iam_role`/`aws_iam_policy` resource, independently caught by SEC-02/SEC-05 if
+  newly authored. None were moved to `REVIEWED_UNSAFE_TYPES`: staging every future occurrence
+  of an already-reviewed-safe type shape buys nothing against a risk this gate structurally
+  cannot see any better staged than un-staged.
+
+Full reasoning recorded in `core/governance/destructive_change_gate.py`'s
+`AUTO_SHIP_ELIGIBLE_TYPES` docstring, same standard as the `aws_default_security_group`
+exclusion. SEC-08/09/10 unit tests (`tests/test_rego_gate.py`) proven green against a real
+`opa` binary — both-direction coverage per rule (flags the dangerous value, clean on the safe/
+default value, and, for SEC-10 only, routes the schema-computed unset case to
+`field_unresolved`).
 
 ## 5. Proof bar
 
@@ -219,9 +277,87 @@ recorded before authoring can produce novel configurations of any of them, not l
 4. **G9 wiring proof**: a real `stage_plan()` call, with a real (free) emulator configured,
    actually invokes `ephemeral_apply.py` and its verdict is visible in the same output/audit
    trail G5/G6 already use — proven against a real plan, not asserted from reading the diff.
-5. **The 7 config-dependent types' disposition is explicitly decided**, per type, with reasoning
+5. **The config-dependent types' disposition is explicitly decided**, per type, with reasoning
    recorded — same standard `aws_default_security_group`'s exclusion was held to in Step 0, not
-   silently left `# CONFIG-DEPENDENT` forever.
+   silently left `# CONFIG-DEPENDENT` forever. **CLOSED, see section 4.2 Results.**
+6. **G9 must be shown to CATCH, not just RUN** (added on review, not in the original scope):
+   proof-bar item 4 above only proves the wiring exists — that the pipe carries a verdict, not
+   that the verdict is ever load-bearing. Required: at least one real case where a plan passes
+   G1 (`terraform validate`) and G2 (schema lint) cleanly but FAILS at G9 — a real apply-time
+   failure the static gates structurally cannot see — same standard G9's own hostile-escape
+   proof was already held to (`docs/phase5_scope.md`): prove it catches the thing it exists
+   for, not merely that it runs.
+
+## Results (2026-07-14) — all six proof-bar items closed
+
+1. **`novel_resources` completeness, both directions**: `tests/test_architecture_decision.py`
+   — a complete entry validates, an incomplete one (blank `justification`, empty
+   `alternatives_considered`) fails with the same shape as an incomplete `alternatives` entry.
+   `test_architecture_decision_with_no_novel_resources_still_validates` proves backward
+   compatibility (every pre-existing record, with no `novel_resources` key at all, is
+   unaffected).
+2. **Fail-closed sweep on the authoring step's own output**: `tests/test_synthesizer.py` —
+   `test_synthesize_refuses_novel_resource_with_no_matching_authored_content` (missing
+   authored_content), `test_synthesize_refuses_authored_content_with_no_declared_blocks` (empty/
+   garbage output), `test_synthesize_refuses_authored_content_with_hallucinated_type` (a real,
+   nonexistent type, caught by G2's own `unknown_type` finding) — all three block *before* any
+   run workspace is created, proven with real constructed fixtures.
+3. **`gate_content()`/`gate_module()` parity**: `test_gate_content_is_byte_identical_to_gate_
+   module_for_every_real_module`, parametrized over all 16 real modules, live-schema-verified
+   (`opa`/real `terraform providers schema -json`) — byte-identical `{blocking, findings,
+   warnings, schema_hash}` for every one, both call paths.
+4. **G9 wiring proof**: `tests/test_plan_gate.py`'s new suite drives the real `stage_plan()` ->
+   `stage_approve()` -> `stage_apply(mode="auto-approve")` flow with a G5-eligible plan
+   (`aws_athena_workgroup`, isolating this check from G5's own) — the G9 verdict is computed at
+   plan time, stored in the pending record, carried through approval, and read at apply time,
+   visible in the audit trail (`reason="g9_not_clean"` on refusal).
+5. **Config-dependent types' disposition**: closed, see section 4.2 Results above — the real
+   count was 6, not 7 (a genuine miscount in the original scope prose, corrected); 3 got new G6
+   rules (SEC-08/09/10), 3 stay eligible on a recorded, reasoned exception (arbitrary-code-
+   execution risk gated by IAM role review, not by any plan-time-checkable attribute).
+6. **G9 catches something real** (the hardest bar, added on review): real, executed evidence —
+   not asserted — gathered against a real MiniStack container (Docker Desktop started locally,
+   `ministackorg/ministack` run and health-checked). Fixture: `aws_s3_bucket.real` (created) +
+   `aws_s3_object.orphan` whose `bucket` argument is a hardcoded, never-created bucket name (no
+   Terraform reference between them at all — a missing-`depends_on`-shaped bug). Captured
+   verbatim: `terraform validate` → `Success! The configuration is valid.` (G1 clean);
+   `schema_lint.gate_content()` → `{"blocking": false, "findings": [], "warnings": []}` (G2
+   clean, zero findings — G2 cannot see a hardcoded string is a bucket that doesn't exist, only
+   that it's a validly-typed string); `ephemeral_apply.run_ephemeral_apply(emulator="ministack")`
+   → `{"evaluation_failed": true, "reason": "apply_partial_failure", "detail":
+   "succeeded=['aws_s3_bucket.real'] errored=['aws_s3_object.orphan']", "coverage": "full",
+   "emulator": "ministack"}`. Committed as a permanent CI regression job
+   (`g9-catches-a-real-failure`, `.github/workflows/ephemeral-apply.yml`), re-verified on every
+   push, not a one-time local claim.
+
+**A real bug found while wiring this in, not assumed away**: `ephemeral_apply.classify_
+coverage()`'s "aws" bucket was defined as "not Databricks," not "actually `aws_`-prefixed" —
+`terraform_data` (zero-cloud-footprint, `tests/test_gate_e2e.py`'s own real auto-approve
+fixture, chosen specifically because it has no cloud footprint) fell into that bucket and was
+misclassified `"full"` AWS coverage, which made G9 attempt a real ephemeral-apply cycle for a
+plan with no AWS content at all — caught immediately (first wiring attempt broke the real e2e
+test), fixed to check the real `aws_` prefix, regression-tested
+(`test_classify_coverage_none_for_provider_neutral_test_utility_types`,
+`test_classify_coverage_full_ignores_a_mixed_in_test_utility_type`).
+
+**The real, present-tense consequence, stated plainly (not left to surprise anyone)**:
+`MINUS_G9_EMULATOR` is unset in every real environment this repo runs in by default — no
+`LOCALSTACK_AUTH_TOKEN` is provisioned, and both free emulators (MiniStack, Floci) already
+failed IAM/KMS/S3 negative-fidelity this session. **G9-in-real-flow is fidelity-limited for
+IAM/KMS/S3 until a paid emulator is provisioned; those plans stage rather than auto-ship** —
+every `auto-approve` apply touching AWS content is refused today, forcing gatekeeper/staged
+human review. Correct, disclosed, fail-closed behavior, not a bug — but a real operational cost
+of this wiring existing, logged in `HANDOFF.md`, not buried in a diff.
+
+**Phase 6 Step 1 is BUILT and PROVEN.** Every affected test file was enumerated and run locally
+before push (the standing checklist item from Step 0, applied to itself): `test_rego_gate.py`
+(59), `test_plan_gate.py` (37), `test_architecture_decision.py` (8), `test_schema_lint.py` (all,
+including the new parity parametrization), `test_synthesizer.py` (21), `test_ephemeral_apply.py`
+(all, including 3 new `classify_coverage` tests), `test_gate_e2e.py`, `test_credentials.py`,
+`test_reporter.py`, `test_module_provenance.py`, `test_dashboard.py`, `test_intent_assertions.py`,
+`test_schema_watch.py` — all green locally. Teardown (`docs/phase6_scope.md` Step 5) stays last,
+gated on the regression-baseline proof bar, reachable only now that Step 1 is closed. G6's
+shadow-only status and its own separate, still-open enforcement-flip decision are unaffected.
 
 ## Ordering invariant
 
