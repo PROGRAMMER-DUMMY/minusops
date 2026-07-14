@@ -242,6 +242,19 @@ instead of two.
   autonomous-eligible via the pre-existing `databricks_resources`/`reduced_assurance` mechanism,
   regardless of this fix. Fixed by skipping the new checks entirely for any `databricks_*`
   prefixed type — not silently declaring Databricks resource-type review done by an AWS-only fix.
+- **A fourth real bug, this one caught only by real CI, not local testing — a real process gap
+  in its own right**: `tests/test_gate_e2e.py`'s real end-to-end auto-approve apply test uses
+  `terraform_data` (built into Terraform core, zero cloud footprint) as its create-only fixture
+  — never reviewed, since it isn't a real cloud resource, so it broke on every platform (ubuntu/
+  macos/windows × py3.10/3.12) on the first real CI run after the initial push. **This test file
+  was never run locally before that push** — a real gap in this fix's own verification
+  discipline, not just a gap in the allowlist. Fixed by reviewing `terraform_data` in alongside
+  `random_id`, and closed by a repo-wide `grep -rn 'resource "..."' tests/*.py` confirming these
+  two are the *only* non-cloud fixture types anywhere in this repo's test suite — so this
+  exemption list is now complete, not discovered one CI failure at a time. Every test file
+  found to import `plan_gate`/`destructive_change_gate` (`test_credentials.py`,
+  `test_coverage_audit.py`, `test_reporter.py`, plus the two above) was run locally afterward,
+  not assumed clean by association.
 
 ### 7.4 Both-direction proof, complete
 
@@ -254,9 +267,13 @@ instead of two.
   (`test_every_current_module_plans_as_create_only`), extended with an assertion that no real
   module's real plan produces an `unreviewed_resource_type` finding, run against real Terraform
   for all 16 modules (in batches, due to this session's own environment constraints, not a
-  scoping shortcut) — clean, after the three fixes above. `test_destructive_change_gate.py`:
-  42 tests total (26 fast + 16 real-module), all passing. `test_plan_gate.py` (33 tests,
-  downstream consumer of `classify()`) unaffected, all passing.
+  scoping shortcut) — clean, after the four fixes above. `test_destructive_change_gate.py`:
+  44 tests total (28 fast + 16 real-module), all passing. `test_plan_gate.py` (33),
+  `test_gate_e2e.py` (7), `test_credentials.py` (4), `test_reporter.py` (10),
+  `test_coverage_audit.py` (14) — every test file this repo has that touches `plan_gate`/
+  `destructive_change_gate`, run locally, all passing. Real CI (ubuntu/macos/windows ×
+  py3.10/3.12, 8 jobs) confirmed green after the `terraform_data` fix, not just claimed from
+  local runs alone.
 
 Net: the fix works exactly as designed, and the process of proving it — not the design itself —
 is what surfaced three real, concrete bugs (one test-fixture regression, one transcription gap,

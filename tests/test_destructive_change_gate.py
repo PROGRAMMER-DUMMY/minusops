@@ -454,6 +454,24 @@ def test_random_id_stays_eligible_not_a_regression_in_the_existing_action_shape_
     assert result["findings"] == []
 
 
+def test_terraform_data_stays_eligible_not_a_regression_in_gate_e2e():
+    """The second real gap this fix's own real CI run caught, not local testing (a real process
+    gap in itself -- this repo's test suite was never run exhaustively against the fixed
+    classifier before the first push): tests/test_gate_e2e.py's real end-to-end auto-approve
+    apply test uses terraform_data (built into Terraform core, zero cloud footprint) as its
+    create-only fixture. Confirmed via a repo-wide grep across every tests/*.py file that
+    random_id and terraform_data are the only two non-cloud fixture types in use anywhere,
+    so this exemption list is now complete, not partial."""
+    assert "terraform_data" in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    plan = {"resource_changes": [
+        {"address": "terraform_data.demo", "mode": "managed", "type": "terraform_data",
+         "change": {"actions": ["create"]}},
+    ]}
+    result = gate.classify(plan)
+    assert result["autonomous_eligible"] is True
+    assert result["findings"] == []
+
+
 # ---------------------------------------------------------------------------
 # 2. All-16-modules baseline: real plan JSON via `terraform test -json -verbose`
 # ---------------------------------------------------------------------------

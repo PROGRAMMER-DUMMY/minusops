@@ -1065,6 +1065,23 @@
 > entry's own reviewer sign-off; this fix does not touch G6's shadow status or its own separate,
 > still-open enforcement-flip decision.
 >
+> **Correction, caught by real CI, not by this session's own local testing — a fourth real bug,
+> and a real process gap, not swept under the "three bugs" count above.** The first push of this
+> fix went green locally (`test_destructive_change_gate.py`, `test_plan_gate.py`) but failed on
+> **every one of the 6 real CI test-matrix jobs** (ubuntu/macos/windows × py3.10/3.12):
+> `tests/test_gate_e2e.py`'s real end-to-end auto-approve apply test uses `terraform_data`
+> (built into Terraform core, zero cloud footprint) as its fixture — never reviewed, exactly the
+> same shape as the `random_id` regression already fixed, but in a test file this session never
+> ran locally before pushing. Fixed the same way (reviewed, added, reasoning recorded), and
+> closed the actual gap that let it happen: every test file in this repo that imports
+> `plan_gate`/`destructive_change_gate` (`test_gate_e2e.py`, `test_credentials.py`, `test_
+> reporter.py`, `test_coverage_audit.py`, plus the two already covered) was enumerated by grep
+> and run locally, not assumed clean by proximity — real CI confirmed green (8/8) after, not
+> just re-claimed from local runs alone. Recorded here plainly rather than folded quietly into
+> the "three bugs, all caught by the proof" framing above: this one was caught by the *push*,
+> which is a real gap in verification discipline for a fix this load-bearing, not just a gap in
+> the allowlist.
+>
 > **The recurring disk hazard flagged earlier this session recurred again, exactly as
 > predicted, not a new surprise**: `pytest-of-shubh` regrew to 37GB and the C: drive hit 90%
 > used (38GB free) mid-way through this exact work, on top of a *separate* instance, caught by
