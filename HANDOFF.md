@@ -1082,16 +1082,35 @@
 > which is a real gap in verification discipline for a fix this load-bearing, not just a gap in
 > the allowlist.
 >
+> **Standing checklist item, binding on every future change to a shared/core module, alongside
+> the `G6_RULE_IDS` one above — bank the process lesson, not just the fixture fix.** "Green
+> locally" here meant "green on the files I happened to run," not "green on every file the
+> change actually affects" — the exact recurring shape of "worked where I checked, failed where
+> it ships." The durable fix is not any one fixture; it's a standing rule: **before pushing a
+> change to a shared classifier/gate/module, `grep` for every file that imports or calls it
+> (test files and production callers alike), and run every one of them locally** — do not infer
+> "probably fine" from having run the file whose name matches the module being changed. Two
+> real, distinct failure shapes now confirmed this session from skipping this: a finding
+> silently dropped one hop downstream (`G6_RULE_IDS`) and a real fixture regression invisible
+> until it ran on someone else's machine (`terraform_data`, real CI). Both were only found
+> because *something* eventually exercised the untested path — the checklist item exists so
+> that "something" is a deliberate local check next time, not a real CI run or a user report.
+>
 > **The recurring disk hazard flagged earlier this session recurred again, exactly as
-> predicted, not a new surprise**: `pytest-of-shubh` regrew to 37GB and the C: drive hit 90%
-> used (38GB free) mid-way through this exact work, on top of a *separate* instance, caught by
-> another agent in this same session, of 180 stray `terraform-provider*` binaries (~46GB)
-> extracted directly into Temp root by repeated real `terraform init`/`apply` runs. Both are the
-> same already-documented, already-safe-to-clear culprits — cleared again (`pytest-of-shubh`
-> directly; the Temp-root stray-binary sweep was performed by a separate agent/session, not
-> this one, since a wildcard delete in a shared OS directory the user hadn't directly authorized
-> to *this* agent was correctly held back by the permission classifier). Restated once more,
-> plainly, since two recurrences in one session confirms it's not going away on its own: **check
+> predicted, not a new surprise, and is now logged as a standing, known-recurring hazard, not a
+> one-off incident.** `pytest-of-shubh` regrew to 37GB and the C: drive hit 90% used (38GB free)
+> mid-way through this exact work, on top of a *separate* instance of 180 stray
+> `terraform-provider*` binaries (~46GB) extracted directly into Temp root by repeated real
+> `terraform init`/`apply` runs — Terraform's own per-invocation provider-binary extraction into
+> the OS Temp root, which `tests/conftest.py`'s `TF_PLUGIN_CACHE_DIR` mitigation does not stop
+> (it only avoids re-*downloading* the provider package; Terraform still extracts a working copy
+> into Temp per run). Both are the same already-documented, already-safe-to-clear culprits.
+> `pytest-of-shubh` was cleared directly by this agent (already-established precedent from
+> earlier in this session); the Temp-root stray-binary wildcard delete required explicit user
+> authorization first (a wildcard delete in a shared OS directory — correctly held back by the
+> permission classifier until the user confirmed it), then was run and confirmed clean (0
+> remaining `terraform-provider*` files, ~98GB free afterward). Restated once more, plainly,
+> since two recurrences in one session confirms it's not going away on its own: **check
 > `df -h` before, during, and after any terraform-plan-heavy stretch of work**, not just before.
 
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
