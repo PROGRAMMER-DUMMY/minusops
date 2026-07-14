@@ -278,7 +278,17 @@ def _classify_plan(dir_):
     return destructive_change_gate.classify(plan_json)
 
 
-G6_RULE_IDS = ("SEC-01", "COST-01", "SEC-03", "SEC-04", "COST-02", "COST-03", "SEC-05", "SEC-02")
+G6_RULE_IDS = ("SEC-01", "COST-01", "SEC-03", "SEC-04", "COST-02", "COST-03", "SEC-05", "SEC-02",
+               "SEC-06", "SEC-07")
+# SEC-06/SEC-07 (docs/g6_iam_extension_scope.md) have NO regex counterpart at all -- a real bug
+# found running the extension's own parity pass, not anticipated in the scope doc: leaving a new
+# rule ID out of this tuple doesn't just skip a comparison, it silently drops that rule's real
+# (non-unresolved) findings from BOTH the divergence report AND the audit chain entirely, since
+# _g6_shadow_eval's divergence loop only ever iterates this tuple. The one thing that WOULD still
+# surface for an unlisted rule is its field_unresolved findings (a separate, unfiltered list) --
+# meaning the uncertain case would have been visible while the confirmed-violation case silently
+# wasn't, backwards from what the whole shadow mechanism exists to guarantee. Every new rule ID
+# must be added here the moment it's added to rules.rego, not deferred.
 
 
 def _g6_shadow_eval(dir_, plan_json):

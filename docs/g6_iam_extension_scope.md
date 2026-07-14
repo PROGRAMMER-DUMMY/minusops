@@ -185,6 +185,102 @@ disclosed, open gap (`negative_fidelity_unverified` for these same three types, 
 provisioned LocalStack account). A reader of HANDOFF must come away with both facts, never one
 implying the other is closed.
 
+## 7. Results (2026-07-14) — real, built to this scope, shadow-proven, NOT enforcing
+
+Implemented exactly as scoped: `policy/g6/rules.rego` gained the SEC-02/SEC-05 extensions and
+the new SEC-06/SEC-07 rules, `tests/test_rego_gate.py` gained 15 new tests (50 total, all
+passing against the real `opa` binary), and a real bug found while proving this — not while
+designing it — was fixed in `core/governance/plan_gate.py`. **This is proven-in-shadow, not
+enforcing** — see section 4 and the note at the end of this section; the two are being kept
+deliberately separate, per explicit review instruction.
+
+### 7.1 The two verify-first items, resolved with real evidence, not assumption
+
+1. **Same-account-vs-cross-account detection**: confirmed live, exactly as flagged as a risk —
+   `data.aws_caller_identity.current` is a genuine STS API call that fails outright
+   (`InvalidClientTokenId`) under the dummy credentials this repo's own real-plan testing uses,
+   even with `skip_credentials_validation`/`skip_requesting_account_id` set (those affect the
+   *provider's* own init, not an explicit data source read). Confirmed via a real `terraform
+   plan`: a role depending on that data source is dropped from `resource_changes` entirely when
+   the read fails, while an independent role with no such dependency plans fine. **Design
+   decision made from this evidence**: SEC-05's extension does not attempt account comparison at
+   all — it falls back to literal-ARN matching (any 12-digit-account-shaped ARN is treated as
+   external), the documented fallback section 3 named as the alternative if this happened.
+2. **SEC-02's unconditional `Action == "*"` fire on identity policies**: the 16-module parity
+   pass (7.2 below) is the actual test of this, per the review instruction ("let shadow evidence
+   on the 16 modules confirm no legitimate use before it's ever enforced") — result: zero
+   real modules tripped it. Confirmed, not merely asserted.
+
+### 7.2 Zero-FP proof across the real 16-module catalog, per-type where declared
+
+Real `terraform plan` + `show -json`, dummy AWS/Databricks credentials (no `mock_provider`,
+no `terraform test` — the same real-provider method the original Phase 3 parity pass used, since
+`mock_provider` supplies synthetic computed values that would misrepresent the exact
+`after_unknown` behavior this extension's design depends on). Two real bugs in the test harness
+itself found and fixed before trusting any result, same discipline as every other proof this
+session: `data.aws_caller_identity` blocks needed removing outright, not just their attribute
+references patched (Terraform reads every declared data source at plan time regardless of
+whether its output is used); the Databricks provider was being required unconditionally for
+every module, breaking `storage-medallion-s3` (which needs no Databricks provider at all) on an
+unrelated registry timeout.
+
+| Module | Types declared | Result |
+|---|---|---|
+| `compaction-glue`, `compute-emr-serverless`, `compute-glue-etl`, `dq-great-expectations`, `ingest-firehose`, `orchestrator-mwaa`, `speed-layer-kinesis` | `aws_iam_role`/`aws_iam_role_policy` | Zero findings on any extended/new rule — clean. |
+| `databricks-workspace` | `aws_iam_role`/`aws_iam_role_policy`, `aws_s3_bucket_policy` | One SEC-02 finding — confirmed the **pre-existing** `Resource == "*"` finding already known and explained since Phase 3 (verified by its description text, not the new `Action == "*"` wording), not a new false positive. One SEC-07 `field_unresolved` on `aws_s3_bucket_policy.root_storage_bucket` — the predicted dominant outcome for a bucket+policy created together, confirmed real, not a false positive (a `field_unresolved` is an honest "can't verify," not a violation claim). |
+| `storage-medallion-s3` | `aws_kms_key` | One SEC-06 `field_unresolved` on `aws_kms_key.lake` — the section 2 finding confirmed for real: this module doesn't set `policy` explicitly, so it's genuinely unknown until apply, exactly as predicted before any code was written. |
+| `orchestrator-stepfunctions` | `aws_iam_role`/`aws_iam_role_policy` | **Unverified, same pre-existing disclosed gap as Phase 3** — `aws_sfn_state_machine` triggers a real `ValidateStateMachineDefinition` AWS API call at plan time that dummy credentials can't satisfy, so this module cannot be planned standalone at all. Not a new gap this extension introduced; carried forward unchanged. |
+| (remaining 5 modules) | none of `aws_iam_role`/`aws_kms_key`/`aws_s3_bucket_policy` | Vacuous — nothing for these rules to check, same disclosed shape as Phase 3's own five vacuous-coverage modules. |
+
+**Net: zero new false positives across every module that could be planned.** Every finding that
+fired is either the already-known, pre-existing SEC-02 case, or a `field_unresolved` exactly
+matching this scope's own predicted dominant real-world outcome — not a single incorrectly-flagged
+clean configuration.
+
+### 7.3 SEC-07 proven both ways, per explicit review instruction — real integration test, not just unit fixtures
+
+`tests/test_rego_gate.py::test_real_plan_s3_bucket_policy_both_ways_fresh_create_vs_preexisting_bucket`
+plans both shapes in the same real Terraform run: a bucket and its policy created together
+(policy interpolates the bucket's own ARN) alongside a policy written against a bucket referenced
+by a literal, fixed name (the "already exists / referenced by convention" pattern). Confirmed
+live: the fresh-create policy resolves `after_unknown.policy = true` (routes to
+`field_unresolved`); the literal-name policy resolves fully and produces a real `standard`
+finding (a deliberate public-Allow statement, proving the "real verdict" path genuinely fires,
+not just "didn't block"). Both assertions pass against real Terraform, not a hand-built shape.
+
+### 7.4 A real bug found running this, not designing it — `plan_gate.py`'s `G6_RULE_IDS`
+
+`_g6_shadow_eval()`'s divergence computation only ever iterates a fixed tuple, `G6_RULE_IDS`.
+Adding SEC-06/SEC-07 to `rules.rego` without adding them to that tuple would have meant: a real,
+confirmed SEC-06/SEC-07 **violation** (not the uncertain `field_unresolved` case) would be
+computed, silently absent from the divergence report, and absent from the audit chain
+entirely — while the *uncertain* case (`field_unresolved`, logged via a separate, unfiltered
+list) would still have surfaced. That is exactly backwards from what shadow mode exists to
+guarantee: the confirmed-dangerous case invisible, the merely-uncertain one visible. Found by
+tracing the real code path while building the parity harness, fixed on the spot (`G6_RULE_IDS`
+now includes `"SEC-06"`, `"SEC-07"`), and locked in with a new regression test
+(`tests/test_plan_gate.py::test_g6_shadow_surfaces_a_real_sec06_finding_not_just_field_unresolved`)
+that constructs a real wide-open KMS policy and asserts it appears in the divergence report.
+
+### 7.5 What this is, and what it deliberately is not
+
+**Proven in shadow. Not enforcing.** `rego_gate.evaluate()` was already the sole, already-
+shadow-only call site before this addition (`plan_gate.py:310`) — these new/extended rules flow
+into the exact same non-blocking path automatically, no new wiring, no new flag. The all-of-G6
+enforcement flip (`docs/g6_scope.md` section 2, item 3 of that scope's own proof bar) remains a
+single, separate, still-open decision covering every G6 rule at once — this addition adds more
+shadow evidence to that same pile; it does not bring the flip closer or decide it, and closing
+this task must never be read as "G6 now enforces IAM/KMS/S3 content."
+
+### 7.6 Disclosure (section 6's own hard done-condition) — recorded in `HANDOFF.md`
+
+Both facts stated together, neither implying the other: G6 (once eventually flipped to
+enforcing — still undecided) would enforce IAM/KMS/S3 policy *security content*, statically,
+over resolved plan JSON. It does **not** verify apply-time IAM *interaction* — ARN validity,
+assumability, resource-creation-ordering effects on a policy's own references — which remains
+G9's own disclosed, open gap (`negative_fidelity_unverified` for these same three types, pending
+a provisioned LocalStack account). See `HANDOFF.md`'s corresponding entry.
+
 ## Ordering invariant
 
 Queued after Phase 5 (G9)'s isolation-boundary close, which is done. G6's **existing** rules

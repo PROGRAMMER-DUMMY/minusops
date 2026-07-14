@@ -4,6 +4,11 @@
 # (core/governance/rego_gate.py is the enforcing/never-enforcing wrapper; this file only
 # computes findings against whatever `input` it's given).
 #
+# EXTENSION (docs/g6_iam_extension_scope.md): SEC-02/SEC-05 extended, SEC-06/SEC-07 added, to
+# cover IAM/KMS/S3 security CONTENT the G9 emulator gauntlet cannot -- an emulator checks
+# VALIDITY (would real AWS accept this), never SAFETY (is this dangerous). Still shadow-only,
+# same as every other rule in this file; joins the same unflipped pile, no new enforcement.
+#
 # Input contract: `input` is a real `terraform show -json` plan document (the full document --
 # both `resource_changes` and `configuration` are read; see the reference-tracing helper
 # below). Every rule here is fail-CLOSED on unknown-until-apply values: a presence-based check
@@ -340,6 +345,177 @@ has_external_id_condition(stmt) if {
 }
 
 # ---------------------------------------------------------------------------
+# Shared helpers for RAW JSON policy documents (docs/g6_iam_extension_scope.md section 2/3):
+# aws_iam_role.assume_role_policy, aws_kms_key.policy, aws_s3_bucket_policy.policy are all
+# declared plain `string`-typed schema attributes (verified live against the real AWS provider
+# schema) -- an unparsed JSON string needing json.unmarshal, never the already-decomposed
+# `.statement` shape aws_iam_policy_document's data source gets. Distinct from
+# has_wildcard_principal/has_aws_principal above, which only understand that structured shape.
+# ---------------------------------------------------------------------------
+
+as_list(x) := x if is_array(x)
+
+as_list(x) := [x] if not is_array(x)
+
+is_wildcard_principal_raw(p) if p == "*"
+
+is_wildcard_principal_raw(p) if {
+	is_object(p)
+	some v in as_list(object.get(p, "AWS", []))
+	v == "*"
+}
+
+# A literal external-AWS-account ARN principal. Verify-first item confirmed live before
+# implementing (docs/g6_iam_extension_scope.md section 3): comparing against a resolved
+# `data.aws_caller_identity.current.account_id` to determine same-account-vs-cross-account was
+# considered and rejected -- confirmed via a real `terraform plan` that this data source is a
+# genuine STS API call that fails outright (InvalidClientTokenId) under the dummy credentials
+# this repo's own real-plan testing uses, and would couple every real customer's plan to a
+# live STS call succeeding just to run a governance check. Falls back to literal-ARN matching
+# instead: any AWS-account-shaped ARN (a 12-digit account number) is treated as external,
+# regardless of which account it actually is -- service principals ("glue.amazonaws.com")
+# never match this pattern and are unaffected. A same-account root/role ARN written as a
+# literal ARN (rather than via a data source) is a real, disclosed false-positive risk this
+# design accepts; the 16-module zero-FP shadow proof is what actually tests whether this
+# repo's real modules trip it.
+is_external_account_arn(p) if {
+	is_string(p)
+	regex.match(`^arn:aws:iam::[0-9]{12}:`, p)
+}
+
+has_external_account_principal_raw(p) if is_external_account_arn(p)
+
+has_external_account_principal_raw(p) if {
+	is_object(p)
+	some v in as_list(object.get(p, "AWS", []))
+	is_external_account_arn(v)
+}
+
+has_external_id_condition_raw(stmt) if {
+	some _, ops in object.get(stmt, "Condition", {})
+	is_object(ops)
+	some k, _ in ops
+	lower(k) == "sts:externalid"
+}
+
+statement_actions(stmt) := as_list(object.get(stmt, "Action", []))
+
+is_assume_role_statement_raw(stmt) if {
+	stmt.Effect == "Allow"
+	"sts:AssumeRole" in statement_actions(stmt)
+}
+
+# ---------------------------------------------------------------------------
+# SEC-05 (extended) -- aws_iam_role.assume_role_policy set directly as raw JSON (jsonencode(...)
+# or a hard-coded string), not only via data.aws_iam_policy_document. Real, common pattern in
+# this repo's own modules, verified by grep before scoping (9 of 16 declare aws_iam_role).
+# ---------------------------------------------------------------------------
+
+sec05_findings contains f if {
+	some rc in managed("aws_iam_role")
+	is_unknown(rc, "assume_role_policy")
+	f := finding_unresolved("SEC-05", "Security", "IAM Role Trust Policy", rc.address)
+}
+
+sec05_findings contains f if {
+	some rc in managed("aws_iam_role")
+	not is_unknown(rc, "assume_role_policy")
+	policy_text := object.get(rc.change.after, "assume_role_policy", "")
+	is_string(policy_text)
+	policy_text != ""
+	parsed := json.unmarshal(policy_text)
+	some stmt in object.get(parsed, "Statement", [])
+	is_object(stmt)
+	is_assume_role_statement_raw(stmt)
+	is_wildcard_principal_raw(object.get(stmt, "Principal", null))
+	f := finding("SEC-05", "Security", "IAM Trust Policy Has Wildcard Principal",
+		"An assume_role_policy grants Principal \"*\" (or AWS: \"*\"), allowing any AWS principal to assume this role.",
+		"HIGH", rc.address)
+}
+
+sec05_findings contains f if {
+	some rc in managed("aws_iam_role")
+	not is_unknown(rc, "assume_role_policy")
+	policy_text := object.get(rc.change.after, "assume_role_policy", "")
+	is_string(policy_text)
+	policy_text != ""
+	parsed := json.unmarshal(policy_text)
+	some stmt in object.get(parsed, "Statement", [])
+	is_object(stmt)
+	is_assume_role_statement_raw(stmt)
+	has_external_account_principal_raw(object.get(stmt, "Principal", null))
+	not has_external_id_condition_raw(stmt)
+	f := finding("SEC-05", "Security", "Cross-Account IAM Trust Policy Missing External ID",
+		"An assume_role_policy trusts an external AWS account ARN with no sts:ExternalId condition -- without one, the role can be assumed by anyone who later controls that account/ARN.",
+		"HIGH", rc.address)
+}
+
+# ---------------------------------------------------------------------------
+# SEC-06 (new) -- KMS key policy wide open: an Allow statement granting a wildcard principal a
+# wildcard (or kms:*-shaped) action. docs/g6_iam_extension_scope.md section 2: aws_kms_key.
+# policy is schema `computed = true` -- confirmed live that an unset policy (the common real
+# pattern; storage-medallion-s3 does exactly this) resolves as after_unknown.policy == true,
+# never a knowable default. Never read that as "no policy, safe."
+# ---------------------------------------------------------------------------
+
+sec06_findings contains f if {
+	some rc in managed("aws_kms_key")
+	is_unknown(rc, "policy")
+	f := finding_unresolved("SEC-06", "Security", "KMS Key Policy Wide Open", rc.address)
+}
+
+sec06_findings contains f if {
+	some rc in managed("aws_kms_key")
+	not is_unknown(rc, "policy")
+	policy_text := object.get(rc.change.after, "policy", "")
+	is_string(policy_text)
+	policy_text != ""
+	parsed := json.unmarshal(policy_text)
+	some stmt in object.get(parsed, "Statement", [])
+	is_object(stmt)
+	stmt.Effect == "Allow"
+	is_wildcard_principal_raw(object.get(stmt, "Principal", null))
+	kms_action_is_broad(stmt)
+	f := finding("SEC-06", "Security", "KMS Key Policy Wide Open",
+		"A KMS key policy grants a wildcard principal a wildcard (or kms:*) action -- any AWS principal can fully control this key.",
+		"HIGH", rc.address)
+}
+
+kms_action_is_broad(stmt) if "*" in statement_actions(stmt)
+
+kms_action_is_broad(stmt) if "kms:*" in statement_actions(stmt)
+
+# ---------------------------------------------------------------------------
+# SEC-07 (new) -- S3 bucket policy allows public access: an Allow statement granting a
+# wildcard principal. docs/g6_iam_extension_scope.md section 2's own load-bearing finding: a
+# policy that interpolates its own bucket's ARN (the common create-together pattern) comes
+# back after_unknown.policy == true -- this rule predominantly BLOCKs on a fresh apply,
+# proven both ways in tests/test_rego_gate.py, not assumed away.
+# ---------------------------------------------------------------------------
+
+sec07_findings contains f if {
+	some rc in managed("aws_s3_bucket_policy")
+	is_unknown(rc, "policy")
+	f := finding_unresolved("SEC-07", "Security", "S3 Bucket Policy Allows Public Access", rc.address)
+}
+
+sec07_findings contains f if {
+	some rc in managed("aws_s3_bucket_policy")
+	not is_unknown(rc, "policy")
+	policy_text := object.get(rc.change.after, "policy", "")
+	is_string(policy_text)
+	policy_text != ""
+	parsed := json.unmarshal(policy_text)
+	some stmt in object.get(parsed, "Statement", [])
+	is_object(stmt)
+	stmt.Effect == "Allow"
+	is_wildcard_principal_raw(object.get(stmt, "Principal", null))
+	f := finding("SEC-07", "Security", "S3 Bucket Policy Allows Public Access",
+		"A bucket policy grants Principal \"*\" with Effect \"Allow\" -- this bucket policy itself grants public access; rely on Block Public Access settings, not a public Allow statement.",
+		"HIGH", rc.address)
+}
+
+# ---------------------------------------------------------------------------
 # SEC-02 -- Wildcard IAM Resource
 #
 # Two shapes, per docs/g6_scope.md: a data.aws_iam_policy_document's structured .statement
@@ -384,6 +560,45 @@ resource_has_wildcard(stmt) if stmt.Resource == "*"
 
 resource_has_wildcard(stmt) if "*" in stmt.Resource
 
+# Extension (docs/g6_iam_extension_scope.md section 3): Action == "*" alongside the existing
+# Resource == "*" check, same two statement shapes. Fires unconditionally on these two
+# IDENTITY-based policy types (aws_iam_policy/aws_iam_role_policy, and the trust-policy-
+# document data source), not only when paired with a wildcard principal -- an identity policy
+# has no Principal field of its own; the attached role/user already fixes it, so a wildcard
+# Action here is over-broad regardless. A real, legitimate exception this session did not
+# anticipate is exactly what the 16-module zero-FP shadow proof exists to catch before this
+# ever enforces, not something asserted safe here.
+
+sec02_findings contains f if {
+	some rc in data_sources("aws_iam_policy_document")
+	some stmt in object.get(rc.change.after, "statement", [])
+	is_object(stmt)
+	"*" in object.get(stmt, "actions", [])
+	f := finding("SEC-02", "Security", "Wildcard IAM Policy Action",
+		"IAM statements should target specific actions; avoid Action = \"*\".",
+		"MEDIUM", rc.address)
+}
+
+sec02_findings contains f if {
+	some rc in input.resource_changes
+	rc.mode == "managed"
+	rc.type in {"aws_iam_policy", "aws_iam_role_policy"}
+	policy_text := object.get(rc.change.after, "policy", "")
+	is_string(policy_text)
+	policy_text != ""
+	parsed := json.unmarshal(policy_text)
+	some stmt in object.get(parsed, "Statement", [])
+	is_object(stmt)
+	action_has_wildcard(stmt)
+	f := finding("SEC-02", "Security", "Wildcard IAM Policy Action",
+		"IAM statements should target specific actions; avoid Action = \"*\".",
+		"MEDIUM", rc.address)
+}
+
+action_has_wildcard(stmt) if stmt.Action == "*"
+
+action_has_wildcard(stmt) if "*" in stmt.Action
+
 # ---------------------------------------------------------------------------
 # Aggregate
 # ---------------------------------------------------------------------------
@@ -403,3 +618,7 @@ findings contains f if some f in cost03_findings
 findings contains f if some f in sec05_findings
 
 findings contains f if some f in sec02_findings
+
+findings contains f if some f in sec06_findings
+
+findings contains f if some f in sec07_findings

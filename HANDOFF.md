@@ -838,6 +838,84 @@
 > (item 0) pending a provisioned paid account, and the G6 IAM/KMS/S3 security-enforcement work
 > queued right behind this close.
 
+> **Follow-up (2026-07-14): G6 extended for IAM/KMS/S3 security CONTENT (option (c)) — built to
+> `docs/g6_iam_extension_scope.md`, proven in shadow with zero false positives, NOT enforcing.**
+>
+> **The routing correction this executes**: the G9 emulator gauntlet's negative-fidelity finding
+> (neither free emulator rejects a malformed IAM/KMS/S3 policy real AWS would) was answering a
+> *validity* question, never a *safety* one — a perfectly faithful emulator would apply a
+> wide-open `Principal: "*"` policy without complaint, because real AWS does too. That security
+> question belongs to G6, which reads the fully resolved plan JSON for free, no emulator needed.
+>
+> **What was built**: `policy/g6/rules.rego` — SEC-02 extended to also flag `Action == "*"` (not
+> only the pre-existing `Resource == "*"`); SEC-05 extended to evaluate `aws_iam_role.assume_
+> role_policy` set directly as raw JSON (most of this repo's own modules write trust policies
+> this way, not via `data.aws_iam_policy_document`, confirmed by grep before scoping); two new
+> rules, SEC-06 (KMS key policy wide open) and SEC-07 (S3 bucket policy allows public access).
+>
+> **The two verify-first items review required before coding, resolved with real evidence**:
+> (1) same-account-vs-cross-account detection for SEC-05 was considered via `data.aws_caller_
+> identity.current.account_id` and confirmed, live, to fail — a genuine STS call that errors
+> under this repo's own dummy-credential testing (and would couple every real customer's plan to
+> a live STS call succeeding just to run a governance check) — so SEC-05 falls back to literal-
+> ARN matching instead, the documented fallback. (2) SEC-02's unconditional `Action == "*"` fire
+> on identity policies was left for the 16-module parity pass to confirm, not asserted safe in
+> advance — zero real modules tripped it.
+>
+> **The load-bearing empirical finding, confirmed exactly as predicted before any code was
+> written** (`docs/g6_iam_extension_scope.md` section 2): a real `terraform plan` showed
+> `aws_kms_key.policy` (schema `computed = true`; `storage-medallion-s3` doesn't set it, the
+> common real pattern) and `aws_s3_bucket_policy.policy` (whenever it interpolates its own
+> bucket's ARN — the majority real pattern for a bucket+policy created together) both resolve
+> as `after_unknown: true`. Routing unknown → BLOCK (`field_unresolved`) is the only correct
+> answer, and this session could only know it was the *dominant* real-world outcome — not a rare
+> edge case — by testing a real plan, not from provider docs. Confirmed against the real
+> 16-module catalog: `storage-medallion-s3` produced exactly the predicted SEC-06
+> `field_unresolved`; `databricks-workspace` produced exactly the predicted SEC-07
+> `field_unresolved` on its bucket+policy pair created together. SEC-07 proven **both ways** in
+> one real integration test, per explicit review instruction: a fresh-create policy → `field_
+> unresolved`; a policy against a bucket referenced by literal name (already-exists pattern) →
+> a real `standard` finding, proving the "real verdict" path genuinely fires, not just "didn't
+> block."
+>
+> **Zero-FP proof, all 16 real modules, per-type where declared**: 7 of 9 `aws_iam_role`-
+> declaring modules planned clean with zero findings on any extended/new rule.
+> `databricks-workspace`'s one SEC-02 finding is confirmed the **pre-existing**, already-known
+> `Resource == "*"` finding from Phase 3 (verified by its exact description text), not a new
+> false positive from this extension. `orchestrator-stepfunctions` stays **unverified**, same
+> pre-existing disclosed gap as Phase 3 (`aws_sfn_state_machine` triggers a real AWS validation
+> API call at plan time dummy credentials can't satisfy) — not a new gap this extension caused.
+>
+> **A real bug found running this, not designing it, fixed on the spot**: `plan_gate.py`'s
+> `G6_RULE_IDS` is a fixed tuple `_g6_shadow_eval()`'s divergence computation iterates over.
+> Leaving SEC-06/SEC-07 out of it (an easy thing to forget when adding a rule) would have meant a
+> real, confirmed violation for either rule was silently absent from both the divergence report
+> and the audit chain — while the *uncertain* `field_unresolved` case (a separate, unfiltered
+> list) would still have surfaced. Exactly backwards from what shadow mode exists to guarantee:
+> the confirmed-dangerous case invisible, the merely-uncertain one visible. Fixed (`G6_RULE_IDS`
+> now includes both), locked in with a new regression test that constructs a real wide-open KMS
+> policy and asserts it actually appears in the divergence report.
+>
+> **Proven in shadow. NOT enforcing — kept deliberately separate, per explicit review
+> instruction.** `rego_gate.evaluate()` was already the sole, already-shadow-only call site
+> before this addition; these rules flow into the exact same non-blocking path automatically, no
+> new wiring. The all-of-G6 enforcement flip (`docs/g6_scope.md`'s own still-open item 3) remains
+> a single, separate decision covering every G6 rule at once — this closes as "proven-in-shadow
+> with zero false positives," not "G6 now enforces."
+>
+> **The disclosure this closure's own done-condition requires, stated as two separate facts,
+> neither implying the other**: G6 (once eventually flipped to enforcing — still undecided)
+> would enforce IAM/KMS/S3 policy *security content*, statically, over resolved plan JSON. It
+> does **not** verify apply-time IAM *interaction* — ARN validity, assumability, resource-
+> creation-ordering effects on a policy's own references — which remains G9's own disclosed,
+> open gap (`negative_fidelity_unverified` for these same three types, pending a provisioned
+> LocalStack account). Neither fact closes the other.
+>
+> 65 tests in `tests/test_rego_gate.py` (50) + `tests/test_plan_gate.py` (33, includes the new
+> `G6_RULE_IDS` regression) combined with the pre-existing `test_intent_assertions.py` (31) and
+> `test_destructive_change_gate.py` (36) all pass locally against the real `opa`/`terraform`
+> binaries. **Phase 6 (catalog teardown) still not started, per standing instruction.**
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance

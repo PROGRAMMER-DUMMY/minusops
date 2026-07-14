@@ -9,6 +9,9 @@ import os
 import pytest
 
 import plan_gate
+import toolpath
+
+OPA = toolpath.find_tool("opa")
 
 
 # Two distinct canned `terraform show -json` payloads -> two distinct plan hashes.
@@ -596,3 +599,36 @@ def test_non_destroy_apply_audit_record_says_destroy_false(gate_env, monkeypatch
     terminal = [r for r in audit_lines if r.get("action") == "apply"][-1]
     assert terminal["status"] == "OK"
     assert terminal["destroy"] is False
+
+
+@pytest.mark.skipif(OPA is None, reason="opa CLI not installed")
+def test_g6_shadow_surfaces_a_real_sec06_finding_not_just_field_unresolved(tmp_path):
+    """Real bug found running docs/g6_iam_extension_scope.md's own parity pass, fixed on the
+    spot: G6_RULE_IDS is a fixed tuple _g6_shadow_eval's divergence loop iterates over -- adding
+    a rule to rules.rego without adding its ID here means the divergence loop never looks at it
+    at all. A field_unresolved finding for that rule would still surface (a separate, unfiltered
+    list), but a real STANDARD finding -- the confirmed-violation case, not the uncertain one --
+    would be silently dropped from both the divergence report and the audit chain. Backwards
+    from what shadow mode exists to guarantee: the uncertain case visible, the dangerous one not.
+    Proves SEC-06 (added by this same change) is NOT in that blind spot."""
+    plan_json = {
+        "resource_changes": [{
+            "address": "aws_kms_key.wide_open", "mode": "managed", "type": "aws_kms_key",
+            "name": "wide_open",
+            "change": {
+                "actions": ["create"],
+                "after": {"policy": json.dumps({
+                    "Version": "2012-10-17",
+                    "Statement": [{"Effect": "Allow", "Principal": "*", "Action": "kms:*", "Resource": "*"}],
+                })},
+                "after_unknown": {},
+            },
+        }],
+        "configuration": {"root_module": {"resources": []}},
+        "prior_state": {"values": {"root_module": {"resources": []}}},
+    }
+    result = plan_gate._g6_shadow_eval(str(tmp_path), plan_json)
+    assert result["comparable"] is True
+    assert "SEC-06" in result["divergence"], (
+        f"SEC-06 finding was silently dropped from the divergence report: {result}")
+    assert result["divergence"]["SEC-06"]["new_in_rego"] == ["aws_kms_key.wide_open"]

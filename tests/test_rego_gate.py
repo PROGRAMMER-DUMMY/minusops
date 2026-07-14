@@ -375,6 +375,147 @@ def test_sec05_clean_with_proper_condition_and_specific_principal():
 
 
 # ---------------------------------------------------------------------------
+# SEC-05 (extended, docs/g6_iam_extension_scope.md) -- aws_iam_role.assume_role_policy set
+# directly as raw JSON, not only via data.aws_iam_policy_document. Real shape verified live
+# before writing this (a genuine terraform plan, not assumed): a jsonencode()'d trust policy
+# resolves as a plain JSON string in after.assume_role_policy, same json.unmarshal path as
+# SEC-02's managed-resource case.
+# ---------------------------------------------------------------------------
+
+def _assume_role_policy(statement):
+    return json.dumps({"Version": "2012-10-17", "Statement": [statement]})
+
+
+def test_sec05_raw_flags_wildcard_principal():
+    policy = _assume_role_policy({
+        "Effect": "Allow", "Principal": {"AWS": "*"}, "Action": "sts:AssumeRole",
+    })
+    plan = _plan(resource_changes=[_rc("managed", "aws_iam_role", "aws_iam_role.bad",
+                                        after={"assume_role_policy": policy})])
+    result = rego_gate.evaluate(plan)
+    findings = _findings_by_id(result, "SEC-05")
+    assert len(findings) == 1
+    assert "Wildcard Principal" in findings[0]["title"]
+
+
+def test_sec05_raw_flags_cross_account_missing_external_id():
+    """The verify-first item this scope required before coding: same-account-vs-cross-account
+    cannot be determined by resolving data.aws_caller_identity (confirmed live -- it's a real
+    STS call that fails under this repo's own dummy-credential testing), so this falls back to
+    literal-ARN matching: any 12-digit-account-shaped ARN is treated as external."""
+    policy = _assume_role_policy({
+        "Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+        "Action": "sts:AssumeRole",
+    })
+    plan = _plan(resource_changes=[_rc("managed", "aws_iam_role", "aws_iam_role.cross",
+                                        after={"assume_role_policy": policy})])
+    result = rego_gate.evaluate(plan)
+    findings = _findings_by_id(result, "SEC-05")
+    assert len(findings) == 1
+    assert "Missing External ID" in findings[0]["title"]
+
+
+def test_sec05_raw_clean_for_service_principal_and_scoped_cross_account_with_external_id():
+    service_policy = _assume_role_policy({
+        "Effect": "Allow", "Principal": {"Service": "glue.amazonaws.com"}, "Action": "sts:AssumeRole",
+    })
+    cross_account_ok = _assume_role_policy({
+        "Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+        "Action": "sts:AssumeRole",
+        "Condition": {"StringEquals": {"sts:ExternalId": "abc123"}},
+    })
+    plan = _plan(resource_changes=[
+        _rc("managed", "aws_iam_role", "aws_iam_role.svc", after={"assume_role_policy": service_policy}),
+        _rc("managed", "aws_iam_role", "aws_iam_role.cross_ok", after={"assume_role_policy": cross_account_ok}),
+    ])
+    result = rego_gate.evaluate(plan)
+    assert _findings_by_id(result, "SEC-05") == []
+
+
+def test_sec05_raw_unknown_assume_role_policy_routes_to_field_unresolved():
+    plan = _plan(resource_changes=[_rc("managed", "aws_iam_role", "aws_iam_role.unknown",
+                                        after_unknown={"assume_role_policy": True})])
+    result = rego_gate.evaluate(plan)
+    findings = _findings_by_id(result, "SEC-05")
+    assert len(findings) == 1
+    assert findings[0]["finding_kind"] == "field_unresolved"
+
+
+# ---------------------------------------------------------------------------
+# SEC-06 (new, docs/g6_iam_extension_scope.md) -- KMS key policy wide open
+# ---------------------------------------------------------------------------
+
+def test_sec06_flags_wildcard_principal_and_action():
+    policy = json.dumps({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Principal": "*", "Action": "kms:*", "Resource": "*"},
+    ]})
+    plan = _plan(resource_changes=[_rc("managed", "aws_kms_key", "aws_kms_key.bad",
+                                        after={"policy": policy})])
+    result = rego_gate.evaluate(plan)
+    assert len(_findings_by_id(result, "SEC-06")) == 1
+
+
+def test_sec06_clean_when_principal_is_scoped():
+    policy = json.dumps({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::000000000000:root"}, "Action": "kms:*", "Resource": "*"},
+    ]})
+    plan = _plan(resource_changes=[_rc("managed", "aws_kms_key", "aws_kms_key.ok",
+                                        after={"policy": policy})])
+    result = rego_gate.evaluate(plan)
+    assert _findings_by_id(result, "SEC-06") == []
+
+
+def test_sec06_unset_policy_routes_to_field_unresolved_not_silent_pass():
+    """The load-bearing, live-verified finding this whole rule design is built around
+    (docs/g6_iam_extension_scope.md section 2): aws_kms_key.policy is schema computed=true, so
+    a module that doesn't set it at all (the common real pattern -- storage-medallion-s3 does
+    exactly this) resolves as after_unknown.policy=True, not a knowable "no policy" default.
+    Must never be silently read as safe."""
+    plan = _plan(resource_changes=[_rc("managed", "aws_kms_key", "aws_kms_key.unset",
+                                        after_unknown={"policy": True})])
+    result = rego_gate.evaluate(plan)
+    findings = _findings_by_id(result, "SEC-06")
+    assert len(findings) == 1
+    assert findings[0]["finding_kind"] == "field_unresolved"
+
+
+# ---------------------------------------------------------------------------
+# SEC-07 (new, docs/g6_iam_extension_scope.md) -- S3 bucket policy allows public access
+# ---------------------------------------------------------------------------
+
+def test_sec07_flags_public_allow_statement():
+    policy = json.dumps({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Principal": "*", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*"},
+    ]})
+    plan = _plan(resource_changes=[_rc("managed", "aws_s3_bucket_policy", "aws_s3_bucket_policy.bad",
+                                        after={"policy": policy})])
+    result = rego_gate.evaluate(plan)
+    assert len(_findings_by_id(result, "SEC-07")) == 1
+
+
+def test_sec07_clean_when_principal_is_scoped():
+    policy = json.dumps({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::000000000000:root"}, "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*"},
+    ]})
+    plan = _plan(resource_changes=[_rc("managed", "aws_s3_bucket_policy", "aws_s3_bucket_policy.ok",
+                                        after={"policy": policy})])
+    result = rego_gate.evaluate(plan)
+    assert _findings_by_id(result, "SEC-07") == []
+
+
+def test_sec07_unknown_policy_routes_to_field_unresolved_not_silent_pass():
+    """Mirrors SEC-06's own load-bearing case: a bucket policy that interpolates its own
+    bucket's ARN (the common create-together pattern) is unknown until apply -- proven live
+    against a real plan in the integration test below, not just this hand-built fixture."""
+    plan = _plan(resource_changes=[_rc("managed", "aws_s3_bucket_policy", "aws_s3_bucket_policy.unknown",
+                                        after_unknown={"policy": True})])
+    result = rego_gate.evaluate(plan)
+    findings = _findings_by_id(result, "SEC-07")
+    assert len(findings) == 1
+    assert findings[0]["finding_kind"] == "field_unresolved"
+
+
+# ---------------------------------------------------------------------------
 # SEC-02 -- Wildcard IAM Resource: structured .statement.resources for data sources, and
 # json.unmarshal of the .policy string for managed aws_iam_policy/aws_iam_role_policy
 # ---------------------------------------------------------------------------
@@ -400,6 +541,45 @@ def test_sec02_flags_wildcard_resource_in_managed_policy_json():
 
 
 def test_sec02_clean_when_resource_is_scoped():
+    policy = json.dumps({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::bucket/*"},
+    ]})
+    plan = _plan(resource_changes=[_rc("managed", "aws_iam_role_policy", "aws_iam_role_policy.p",
+                                        after={"policy": policy})])
+    result = rego_gate.evaluate(plan)
+    assert _findings_by_id(result, "SEC-02") == []
+
+
+# ---------------------------------------------------------------------------
+# SEC-02 (extended, docs/g6_iam_extension_scope.md) -- Action == "*" alongside the pre-existing
+# Resource == "*" check, same two statement shapes.
+# ---------------------------------------------------------------------------
+
+def test_sec02_flags_wildcard_action_in_data_source_statement():
+    plan = _plan(prior_state_resources=[
+        _data_resource("data.aws_iam_policy_document.p", "aws_iam_policy_document", {
+            "statement": [{"actions": ["*"], "resources": ["arn:aws:s3:::bucket/*"]}],
+        }),
+    ])
+    result = rego_gate.evaluate(plan)
+    findings = _findings_by_id(result, "SEC-02")
+    assert len(findings) == 1
+    assert "Action" in findings[0]["title"]
+
+
+def test_sec02_flags_wildcard_action_in_managed_policy_json():
+    policy = json.dumps({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "*", "Resource": "arn:aws:s3:::bucket/*"},
+    ]})
+    plan = _plan(resource_changes=[_rc("managed", "aws_iam_role_policy", "aws_iam_role_policy.p",
+                                        after={"policy": policy})])
+    result = rego_gate.evaluate(plan)
+    findings = _findings_by_id(result, "SEC-02")
+    assert len(findings) == 1
+    assert "Action" in findings[0]["title"]
+
+
+def test_sec02_clean_when_action_is_scoped():
     policy = json.dumps({"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::bucket/*"},
     ]})
@@ -575,3 +755,130 @@ data "aws_iam_policy_document" "wildcard" {
     result = rego_gate.evaluate(plan_json, opa_bin=OPA)
     assert result["evaluation_failed"] is False
     assert len(_findings_by_id(result, "SEC-02")) == 1
+
+
+@pytest.mark.skipif(TERRAFORM is None or OPA is None, reason="terraform and/or opa CLI not installed")
+def test_real_plan_unset_kms_policy_is_unknown_not_a_knowable_default(tmp_path):
+    """docs/g6_iam_extension_scope.md section 2's own load-bearing, live-verified finding: an
+    aws_kms_key with no `policy` argument at all (schema computed=true; storage-medallion-s3
+    does exactly this in this repo's real catalog) resolves as after.policy=None,
+    after_unknown.policy=True -- AWS assigns a default at apply time this rule cannot see at
+    plan time. Confirmed live here, not assumed from the schema alone, and asserted to route
+    to BLOCK (field_unresolved), never read as "no policy set, nothing to check.\""""
+    (tmp_path / "main.tf").write_text('''
+terraform {
+  required_providers { aws = { source = "hashicorp/aws", version = ">= 5.0" } }
+}
+provider "aws" {
+  region = "us-east-1"
+  access_key = "test"
+  secret_key = "test"
+  skip_credentials_validation = true
+  skip_requesting_account_id = true
+  skip_metadata_api_check = true
+}
+resource "aws_kms_key" "k" {
+  description = "probe"
+}
+''', encoding="utf-8")
+    subprocess.run([TERRAFORM, f"-chdir={tmp_path}", "init", "-input=false"],
+                   capture_output=True, text=True, check=True)
+    subprocess.run([TERRAFORM, f"-chdir={tmp_path}", "plan", "-out=tfplan"],
+                   capture_output=True, text=True, check=True)
+    show = subprocess.run([TERRAFORM, f"-chdir={tmp_path}", "show", "-json", "tfplan"],
+                          capture_output=True, text=True, check=True)
+    plan_json = json.loads(show.stdout)
+    kms = next(rc for rc in plan_json["resource_changes"] if rc["type"] == "aws_kms_key")
+    assert kms["change"]["after"].get("policy") is None
+    assert kms["change"]["after_unknown"].get("policy") is True
+
+    result = rego_gate.evaluate(plan_json, opa_bin=OPA)
+    assert result["evaluation_failed"] is False
+    findings = _findings_by_id(result, "SEC-06")
+    assert len(findings) == 1
+    assert findings[0]["finding_kind"] == "field_unresolved"
+
+
+@pytest.mark.skipif(TERRAFORM is None or OPA is None, reason="terraform and/or opa CLI not installed")
+def test_real_plan_s3_bucket_policy_both_ways_fresh_create_vs_preexisting_bucket(tmp_path):
+    """Proof-bar item required by review before this could be called done: SEC-07 proven BOTH
+    ways against real Terraform, not just hand-built fixtures.
+
+    Fresh-create (the majority real pattern -- a bucket policy referencing the ARN of a bucket
+    created in the SAME plan): docs/g6_iam_extension_scope.md section 2's own finding,
+    confirmed live -- the whole assembled policy string is unknown until apply, because one of
+    its interpolated inputs (the bucket's own ARN) is. Routes to field_unresolved, not a
+    silent pass, even though every literal piece of the policy is fully known.
+
+    Pre-existing bucket (a policy written against a bucket referenced by a literal ARN/name,
+    not this plan's own resource attribute -- the real pattern once a bucket already exists in
+    state, or is referenced by fixed convention): the policy resolves fully at plan time, and
+    SEC-07 produces a real content verdict, not field_unresolved -- proven here with a genuine
+    public-Allow statement so the "real verdict" path actually fires the finding, not just
+    "didn't block."
+    """
+    (tmp_path / "main.tf").write_text('''
+terraform {
+  required_providers { aws = { source = "hashicorp/aws", version = ">= 5.0" } }
+}
+provider "aws" {
+  region = "us-east-1"
+  access_key = "test"
+  secret_key = "test"
+  skip_credentials_validation = true
+  skip_requesting_account_id = true
+  skip_metadata_api_check = true
+  s3_use_path_style = true
+}
+
+resource "aws_s3_bucket" "fresh" {
+  bucket = "g6-probe-fresh-bucket"
+}
+
+resource "aws_s3_bucket_policy" "fresh_policy" {
+  bucket = aws_s3_bucket.fresh.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow", Principal = "*", Action = "s3:GetObject"
+      Resource = "${aws_s3_bucket.fresh.arn}/*"
+    }]
+  })
+}
+
+resource "aws_s3_bucket_policy" "preexisting_policy" {
+  bucket = "g6-probe-already-existing-bucket"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow", Principal = "*", Action = "s3:GetObject"
+      Resource = "arn:aws:s3:::g6-probe-already-existing-bucket/*"
+    }]
+  })
+}
+''', encoding="utf-8")
+    subprocess.run([TERRAFORM, f"-chdir={tmp_path}", "init", "-input=false"],
+                   capture_output=True, text=True, check=True)
+    subprocess.run([TERRAFORM, f"-chdir={tmp_path}", "plan", "-out=tfplan"],
+                   capture_output=True, text=True, check=True)
+    show = subprocess.run([TERRAFORM, f"-chdir={tmp_path}", "show", "-json", "tfplan"],
+                          capture_output=True, text=True, check=True)
+    plan_json = json.loads(show.stdout)
+
+    fresh = next(rc for rc in plan_json["resource_changes"]
+                 if rc["address"] == "aws_s3_bucket_policy.fresh_policy")
+    assert fresh["change"]["after"].get("policy") is None
+    assert fresh["change"]["after_unknown"].get("policy") is True
+
+    preexisting = next(rc for rc in plan_json["resource_changes"]
+                        if rc["address"] == "aws_s3_bucket_policy.preexisting_policy")
+    assert preexisting["change"]["after_unknown"].get("policy") is not True
+    assert preexisting["change"]["after"].get("policy") is not None
+
+    result = rego_gate.evaluate(plan_json, opa_bin=OPA)
+    assert result["evaluation_failed"] is False
+    findings = _findings_by_id(result, "SEC-07")
+    by_address = {f["resource"]: f for f in findings}
+    assert len(findings) == 2
+    assert by_address["aws_s3_bucket_policy.fresh_policy"]["finding_kind"] == "field_unresolved"
+    assert by_address["aws_s3_bucket_policy.preexisting_policy"]["finding_kind"] == "standard"
