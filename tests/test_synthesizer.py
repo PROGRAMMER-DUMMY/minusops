@@ -304,9 +304,13 @@ def test_synthesize_refuses_authored_content_with_no_declared_blocks(tmp_path, m
 
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
 def test_synthesize_refuses_authored_content_with_hallucinated_type(tmp_path, monkeypatch):
-    """The authoring step's own output resolving to a type that doesn't exist in any live
-    provider schema this repo tracks -- stricter than G2's usual unknown_attribute case, this is
-    the type itself being nonexistent (a typo/hallucination), not merely unreviewed."""
+    """The authoring step's own output declaring a REAL type (aws_dynamodb_table, per
+    _NOVEL_DECISION) but authoring content for a completely different, nonexistent type --
+    Phase 7 Item 5's declared-vs-authored type-match check (docs/phase7_item5_authoring_scope.md
+    section 4) catches this earlier and more specifically than G2's own generic unknown_type
+    finding now would: the content doesn't even address what was declared, which is authoring
+    malfunction, not "a hallucinated but on-topic attempt." See the sibling test below for the
+    case where the declared type ITSELF is the hallucination -- caught by a different new check."""
     import runs
     monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
     monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
@@ -320,7 +324,130 @@ def test_synthesize_refuses_authored_content_with_hallucinated_type(tmp_path, mo
             )},
         )
 
-    assert "failed G2 schema lint" in str(exc.value)
+    assert "does not declare a matching resource/data block" in str(exc.value)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_synthesize_refuses_novel_resource_declaring_a_hallucinated_type(tmp_path, monkeypatch):
+    """The declared resource_type ITSELF doesn't exist in the live provider schema (a typo/
+    hallucination in novel_resources, not just in the authored content) -- Phase 7 Item 5's
+    pre-authoring schema-exists check (docs/phase7_item5_authoring_scope.md section 4) refuses
+    before ever reaching G2, since a type that doesn't exist can't be authored correctly no
+    matter what content is supplied."""
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    decision = dict(COMPLETE_DECISION, novel_resources=[{
+        "resource_type": "aws_totally_made_up_type",
+        "justification": "test",
+        "alternatives_considered": ["x"],
+    }])
+
+    with pytest.raises(ValueError) as exc:
+        synthesizer.synthesize(
+            "airflow pipeline needing a low-latency lookup table",
+            spec=COMPLETE_SPEC, decision=decision, owner="data-platform",
+            authored_content={"aws_totally_made_up_type": (
+                'resource "aws_totally_made_up_type" "novel" {\n  name = "x"\n}\n'
+            )},
+        )
+
+    assert "does not exist in the live provider schema" in str(exc.value)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_validate_novel_resources_blocks_a_nonexistent_declared_type_directly():
+    """Same check as the synthesize()-level test above, called directly against
+    _validate_novel_resources() -- isolates the new check from the rest of synthesize()'s own
+    gates, same pattern as the module-unit tests above."""
+    decision = dict(archdec.template(), selected_modules=[], novel_resources=[{
+        "resource_type": "aws_totally_made_up_type",
+        "justification": "test",
+        "alternatives_considered": ["x"],
+    }])
+    with pytest.raises(ValueError) as exc:
+        synthesizer._validate_novel_resources(decision, {
+            "aws_totally_made_up_type": 'resource "aws_totally_made_up_type" "novel" {\n  name = "x"\n}\n',
+        })
+    assert "does not exist in the live provider schema" in str(exc.value)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_validate_novel_resources_blocks_content_for_a_different_real_type_directly():
+    """A REAL, existing type (aws_s3_bucket) authored under a declaration for a DIFFERENT real
+    type (aws_dynamodb_table, via _NOVEL_DECISION) -- both types are individually real, so only
+    the declared-vs-authored type-match check (not the schema-exists check) can catch this."""
+    with pytest.raises(ValueError) as exc:
+        synthesizer._validate_novel_resources(_NOVEL_DECISION, {
+            "aws_dynamodb_table": 'resource "aws_s3_bucket" "novel" {\n  bucket = "x"\n}\n',
+        })
+    assert "does not declare a matching resource/data block" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# write_authoring_record() (Phase 7 Item 5, docs/phase7_item5_authoring_scope.md section 1) --
+# the audit-record step, built before any real authoring call exists (build order per the scope:
+# checks, then the audit record, then the call itself, last). No real LLM/schema fetch needed
+# here -- this function's own job is writing what it's GIVEN, not producing it.
+# ---------------------------------------------------------------------------
+
+def test_write_authoring_record_writes_real_files_with_matching_hashes(tmp_path, monkeypatch):
+    import runs
+    import audit_chain
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(synthesizer, "LOG_DIR", str(tmp_path / "logs"))
+    run = runs.new_run(blueprint="test", request="x")
+
+    schema_block = {"attributes": {"name": {"type": "string"}}}
+    grounding_examples = [{"id": "storage-medallion-s3", "content": "resource \"aws_s3_bucket\" \"x\" {}\n"}]
+    raw_output = 'resource "aws_dynamodb_table" "novel" {\n  name = "orders"\n}\n'
+
+    rec = synthesizer.write_authoring_record(
+        run, "aws_dynamodb_table", "needs a low-latency lookup table",
+        schema_block, grounding_examples, raw_output, verdict="authored",
+    )
+
+    assert rec["resource_type"] == "aws_dynamodb_table"
+    assert rec["verdict"] == "authored"
+
+    schema_path = os.path.join(run["root"], rec["schema_ref"])
+    grounding_path = os.path.join(run["root"], rec["grounding_ref"])
+    output_path = os.path.join(run["root"], rec["output_ref"])
+    assert json.load(open(schema_path, encoding="utf-8")) == schema_block
+    assert json.load(open(grounding_path, encoding="utf-8")) == grounding_examples
+    assert open(output_path, encoding="utf-8").read() == raw_output
+
+    import hashlib
+    assert rec["schema_hash"] == hashlib.sha256(open(schema_path, encoding="utf-8").read().encode("utf-8")).hexdigest()
+    assert rec["output_hash"] == hashlib.sha256(raw_output.encode("utf-8")).hexdigest()
+
+    log_path = os.path.join(str(tmp_path / "logs"), "audit.jsonl")
+    ok, errors = audit_chain.verify(log_path)
+    assert ok, errors
+
+
+def test_write_authoring_record_preserves_a_blocked_attempt_with_its_reason(tmp_path, monkeypatch):
+    """A blocked attempt (any of section 4's fail-closed checks firing) is NOT retried and NOT
+    silently discarded -- the raw output that failed, and exactly why, stay on the record for a
+    human to see, matching the scope's explicit no-retry decision."""
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(synthesizer, "LOG_DIR", str(tmp_path / "logs"))
+    run = runs.new_run(blueprint="test", request="x")
+
+    bad_output = 'resource "aws_totally_made_up_type" "novel" {\n  name = "x"\n}\n'
+    rec = synthesizer.write_authoring_record(
+        run, "aws_dynamodb_table", "needs a low-latency lookup table",
+        schema_block={"attributes": {}}, grounding_examples=[], raw_output=bad_output,
+        verdict="blocked", detail="does not declare a matching resource/data block",
+    )
+
+    assert rec["verdict"] == "blocked"
+    assert rec["detail"] == "does not declare a matching resource/data block"
+    output_path = os.path.join(run["root"], rec["output_ref"])
+    assert open(output_path, encoding="utf-8").read() == bad_output
 
 
 # ---------------------------------------------------------------------------

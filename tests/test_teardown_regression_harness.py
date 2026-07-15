@@ -236,7 +236,17 @@ def _new_path_plan(module_id, tmp_path):
     # catalog picks (plus the always-added governance-observability module), contaminating the
     # very equivalence comparison this harness exists to make. This harness tests the authoring/
     # composition path itself, not requirement-driven module selection, which is untouched here.
-    authored_resources = synthesizer._validate_novel_resources(decision, authored_content)
+    #
+    # verify_type_exists=False (Phase 7 Item 5's own opt-out, docs/phase7_item5_authoring_scope
+    # .md section 4): this decomposes ALREADY-REAL, ALREADY-PINNED catalog module content across
+    # potentially dozens of unique types per full-suite run. Re-verifying "does this type exist"
+    # via another live terraform schema fetch per type is pure redundant overhead here (measured:
+    # ~30 seconds per call, no shared plugin cache) -- the type obviously exists, it's copied
+    # verbatim from a real, tested module -- not a meaningful safety check in this one narrow,
+    # internal-testing context. Every real caller keeps this check ON by default; this is the one
+    # named exception, not a silent default anywhere else.
+    authored_resources = synthesizer._validate_novel_resources(
+        decision, authored_content, verify_type_exists=False)
 
     dst = tmp_path / "new"
     dst.mkdir()

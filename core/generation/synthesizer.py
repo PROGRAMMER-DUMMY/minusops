@@ -55,6 +55,61 @@ def _audit_allow_incomplete_bypass(requirements_text, spec, decision, run):
     except Exception as exc:
         print(f"[architect] WARNING: could not write audit record: {exc}", file=sys.stderr)
 
+
+def write_authoring_record(run, resource_type, justification, schema_block, grounding_examples,
+                            raw_output, verdict, detail=""):
+    """Phase 7 Item 5 (docs/phase7_item5_authoring_scope.md section 1): the record of one
+    authoring attempt -- what was asked, the real live schema and grounding examples it was
+    given, and what it produced -- written so a specific authoring decision is reconstructable
+    after the fact even though repeating the call might not reproduce the same bytes. `verdict`
+    is `"authored"` (passed every check) or `"blocked"` (section 4's fail-closed table fired);
+    `detail` names which check, when blocked. No retries happen at this layer or above it
+    (decided in scope, not left to whoever calls this): a blocked attempt is a hard stop, and
+    this function's whole job is making sure that stop is not a silent one.
+
+    Bulk artifacts (`schema_block`, `grounding_examples`, `raw_output`) are written as real files
+    under the run's own workspace, NOT inlined into the hash-chained audit log itself -- measured,
+    not assumed: a single type's live schema can run ~9KB, grounding examples several more on top
+    (docs/phase7_item5_authoring_scope.md section 1's own measurements). This matches this
+    project's own established pattern for bulky artifacts (`source_guard.py`'s baseline
+    manifests, `requirements.json`/`architecture_decision.json` themselves) -- the audit chain
+    entry carries small, hash-verified pointers; the real content lives in real files a reviewer
+    can open directly."""
+    authoring_dir = os.path.join(run["root"], "authoring")
+    os.makedirs(authoring_dir, exist_ok=True)
+
+    def _write(name, text):
+        rel_path = os.path.join("authoring", f"{resource_type}-{name}")
+        with open(os.path.join(run["root"], rel_path), "w", encoding="utf-8") as f:
+            f.write(text)
+        return rel_path.replace(os.sep, "/"), hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    schema_rel, schema_hash = _write("schema.json", json.dumps(schema_block, sort_keys=True, indent=2))
+    grounding_rel, grounding_hash = _write(
+        "grounding.json", json.dumps(grounding_examples, sort_keys=True, indent=2))
+    output_rel, output_hash = _write("output.txt", raw_output or "")
+
+    rec = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "operator": getpass.getuser(),
+        "component": "synthesizer.authoring",
+        "action": "author_resource",
+        "run_id": (run or {}).get("run_id", ""),
+        "resource_type": resource_type,
+        "justification": justification,
+        "verdict": verdict,
+        "detail": detail,
+        "schema_ref": schema_rel, "schema_hash": schema_hash,
+        "grounding_ref": grounding_rel, "grounding_hash": grounding_hash,
+        "output_ref": output_rel, "output_hash": output_hash,
+    }
+    os.makedirs(LOG_DIR, exist_ok=True)
+    try:
+        return audit_chain.append(os.path.join(LOG_DIR, "audit.jsonl"), rec)
+    except Exception as exc:
+        print(f"[architect] WARNING: could not write authoring audit record: {exc}", file=sys.stderr)
+        return rec
+
 # A small set of obvious cross-module wirings applied when both modules are present.
 # Module block labels use underscores (hyphens are awkward in HCL references).
 _STORAGE = "module.storage_medallion_s3"
@@ -566,7 +621,63 @@ def _render_authored_module_call(unit_key, hcl_text, module_args):
     return "\n".join(lines)
 
 
-def _validate_novel_resources(decision, authored_content):
+_DATA_PREFIX = "data."
+
+
+def _split_resource_type(resource_type):
+    """('resource'|'data', bare_type) from a declared resource_type, honoring the existing
+    'data.'-prefix convention (docs/phase6_step1_authoring_scope.md section 1: authored_content
+    is keyed by resource type, "optionally data.-prefixed")."""
+    if resource_type.startswith(_DATA_PREFIX):
+        return "data", resource_type[len(_DATA_PREFIX):]
+    return "resource", resource_type
+
+
+def _infer_provider(bare_type):
+    return "databricks" if bare_type.startswith("databricks_") else "aws"
+
+
+def _resource_type_exists_live(resource_type):
+    """Phase 7 Item 5 (docs/phase7_item5_authoring_scope.md section 4): a declared
+    novel_resources resource_type must exist in the REAL, live provider schema before anything
+    is trusted for it -- the cheapest possible check, and (for a real authoring step, not built
+    here) the only one that can save an authoring call entirely: a type that doesn't exist can't
+    be authored correctly no matter what produces the content. Uses get_type_schema() (Item 4)
+    directly."""
+    # Imported lazily for the same reason schema_lint's own import in this function is lazy:
+    # schema_watch.py imports synthesizer, so a module-level import here would complete the same
+    # circular-import cycle module_provenance.py and this function already work around.
+    import schema_watch
+    kind, bare_type = _split_resource_type(resource_type)
+    provider = _infer_provider(bare_type)
+    return schema_watch.get_type_schema(provider, bare_type, kind=kind) is not None
+
+
+def _authored_type_matches_declared(content, resource_type):
+    """Phase 7 Item 5: the declared resource_type must actually be what's authored -- a caller
+    (an LLM, eventually; any caller in principle) declaring 'aws_dynamodb_table' but authoring a
+    DIFFERENT type's content is authoring malfunction, not legitimate novel output. Every prior
+    caller of this mechanism (a human, or a test standing in for one) naturally authored content
+    matching what they declared, so this was never a real failure mode until a caller that can
+    get it wrong exists -- checked now, before one does.
+
+    Scoped to the flat (str) form only, by design: a module-shaped unit can legitimately bundle
+    several resource/data types under one caller-chosen key that is not itself a literal type
+    string (confirmed against the real Step 5 harness, which keys a whole decomposed module's
+    novel_resources entry by module_id, e.g. "compute-glue-etl" -- not a Terraform type). What
+    "the content addresses the declared need" means for a multi-type unit is a real, harder
+    question this item does not resolve (docs/phase7_item5_authoring_scope.md's own "not solved
+    here" section); this check only fires for the single-type flat form, where resource_type IS
+    unambiguously supposed to be a literal type name."""
+    import schema_lint  # lazy -- see _validate_novel_resources()'s own identical import note
+    kind, bare_type = _split_resource_type(resource_type)
+    return any(
+        block_kind == kind and type_name == bare_type
+        for block_kind, type_name, _name, _body in schema_lint.iter_hcl_blocks(content)
+    )
+
+
+def _validate_novel_resources(decision, authored_content, verify_type_exists=True):
     """Resolve architecture_decision.json's `novel_resources` (docs/
     phase6_step1_authoring_scope.md section 1) against caller-supplied `authored_content` --
     real HCL text for each declared novel resource type, keyed by `resource_type`. Fail-closed,
@@ -606,6 +717,22 @@ def _validate_novel_resources(decision, authored_content):
         required input unfilled, and composing anyway would either fail at plan or silently take
         an unintended default. Same fail-closed posture as every other check in this function.
 
+    `verify_type_exists` (default `True`, flat form only): whether the schema-exists check
+    (above) runs. Real cost, measured, not assumed: each check is a full, uncached live schema
+    fetch (`get_type_schema()`, Item 4) -- ~30 seconds per call in this environment, since each
+    call does its own fresh `terraform init` with no shared provider plugin cache. Left ON by
+    default because every REAL caller (a human, or eventually an authoring step) is declaring a
+    type that has not already been independently proven real, so the check is exactly the
+    protection Item 5 exists to provide. The ONE narrow, explicit exception:
+    `tests/test_teardown_regression_harness.py`'s own `_new_path_plan()` decomposes ALREADY-REAL,
+    ALREADY-PINNED catalog module content across potentially dozens of unique types per run --
+    re-verifying "does this type exist" via another live fetch is pure redundant overhead there
+    (the type obviously exists; it's copied verbatim from a real, tested module), not a
+    meaningful safety check, and at that scale turns a ~20-minute test suite into one that
+    doesn't finish in a reasonable CI window. That one call site passes `verify_type_exists=
+    False` explicitly, with this exact reasoning repeated at its own call site -- never as a
+    silent default anywhere else.
+
     Returns the list of authored_resources dicts `compose()`/`_write_manifest()` expect.
     """
     # Imported lazily, not at module level, to avoid a real circular import (found running
@@ -638,11 +765,32 @@ def _validate_novel_resources(decision, authored_content):
             content = raw
             assets = {}
             module_args = {}
+        # Cheapest, fully-offline check first (unchanged position): empty content is empty
+        # regardless of whether the declared type is even real, and every prior caller of this
+        # path (several tests) relies on this needing no terraform/network access.
         if not list(schema_lint.iter_hcl_blocks(content)):
             raise ValueError(
                 f"authored content for novel resource '{resource_type}' declares no "
                 f"resource/data blocks at all -- refusing to synthesize (source: {source_label})"
             )
+        # Both checks below are scoped to the flat form only (see each function's own
+        # docstring) -- a module-shaped unit's key isn't necessarily a literal type string (the
+        # real Step 5 harness keys one by module_id), so neither applies there. Schema-exists
+        # runs before the type-match check: a type that doesn't exist at all makes "does the
+        # content match the declared type" a moot question.
+        if not is_module_unit:
+            if verify_type_exists and not _resource_type_exists_live(resource_type):
+                raise ValueError(
+                    f"novel_resources entry '{resource_type}' does not exist in the live "
+                    f"provider schema -- fail-closed before authoring/composing anything for "
+                    f"it (source: {source_label})"
+                )
+            if not _authored_type_matches_declared(content, resource_type):
+                raise ValueError(
+                    f"authored content for novel resource '{resource_type}' does not declare a "
+                    f"matching resource/data block -- authoring produced content for a "
+                    f"different type than what was declared (source: {source_label})"
+                )
         lint_result = schema_lint.gate_content(content, source_label)
         if lint_result["blocking"]:
             raise ValueError(
@@ -685,7 +833,8 @@ def _validate_novel_resources(decision, authored_content):
 
 def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=False,
                name_prefix=None, explicit_ids=None, owner="data-platform", cloud="aws",
-               target_run=None, overwrite=False, validate=False, authored_content=None):
+               target_run=None, overwrite=False, validate=False, authored_content=None,
+               verify_novel_resource_types=True):
     """
     End-to-end: enforce the requirements and architecture decision gates -> select the modules
     approved in that decision -> create a run workspace -> compose Terraform into it, and record
@@ -706,6 +855,11 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     `decision["selected_modules"] = []` explicitly (distinct from omitting the key entirely,
     which still infers by keyword) and supply `authored_content`/`novel_resources` for
     everything to compose (docs/phase7_generation_engine_plan.md item 2).
+
+    `verify_novel_resource_types` (default True) forwards to `_validate_novel_resources()`'s own
+    `verify_type_exists` -- see its docstring for the real, measured cost and the one narrow,
+    named exception (the Step 5 regression harness's internal decomposition use). Leave this on
+    for every real call; it exists to be off only there.
     """
     if not allow_incomplete:
         reqgate.require(spec or {})        # raises RequirementsIncomplete(missing) -> caller surfaces it
@@ -732,7 +886,8 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     unknown_ids = sorted(requested_ids - chosen_ids)
     if unknown_ids:
         raise ValueError("unknown selected module(s): " + ", ".join(unknown_ids))
-    authored_resources = _validate_novel_resources(decision, authored_content)
+    authored_resources = _validate_novel_resources(
+        decision, authored_content, verify_type_exists=verify_novel_resource_types)
     if not chosen and not authored_resources:
         # Predates authored_resources, same fix compose()'s own identical guard already got in
         # Step 1: a composition can be entirely authored content with zero catalog picks (an
