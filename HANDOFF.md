@@ -221,7 +221,29 @@ an assumption the whole project had been reasoning with, enforced somewhere nobo
 found only by trying to actually DO the catalog-free composition rather than by reading the code
 that was supposed to allow it. Two of those now, both found the same way.
 
-Item 3 (the requirements-schema symbolic-vs-real decision) is next — a decision, not a build item.
+**Item 3 (the requirements-schema symbolic-vs-real decision) is DECIDED — branch (b), with a
+named carve-out.** This was a decision, not a build item; nothing was built. Field-by-field
+verification (every downstream reader grepped, not assumed) showed the schema does three real
+jobs, only one of which is "feeds a generator": (1) forces the `grill-me` interview to actually
+happen, (2) is audit evidence a human answered the NFR questions on the record — including that
+deferring an axis was a stated decision, not an omission — and (3) supplies exactly two real
+generation inputs today (`non_functional.budget`, `data_pipeline.data_volume`), both bounded
+numeric answers wireable with a plain regex, unlike everything still inert. Recorded directly in
+`core/architecture/requirements.py`'s own module docstring so the next person who greps a field
+and finds nothing reads it doesn't rediscover this from scratch. Key point that generalizes:
+**a field can be load-bearing for human review while staying inert to machines, and that is not
+a defect** — `deferral_signoff`'s whole job is done the moment a human writes it; nothing should
+ever need to read it back. Same reasoning for `stakeholders`.
+
+The named carve-out — NOT declared permanently symbolic: `non_functional.retention`/`security`/
+`availability`/`latency` and `data_pipeline.orchestration`/`catalog`/`consumption`. Each is an
+enumerable answer already asked and recorded (Airflow vs. Step Functions; schema-registry-glue
+vs. none; Athena vs. Redshift Serverless) and never used — real signal already being collected,
+deliberately left unwired pending a generator that actually needs a module-choice/config input.
+Not a gap to fix now, not dead weight to remove — the pre-analyzed candidate list for whenever
+Item 5 asks "what drives module choice beyond the catalog's own defaults."
+
+Item 4 (the thin per-type live schema query, composing `_fetch_schema` + `_reduce_full`) is next.
 
 Nothing above authorizes new implementation beyond what Phase 7's own scope docs have already
 been reviewed and approved for, item by item. Each remaining item still needs the same discipline

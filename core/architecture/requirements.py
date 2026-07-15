@@ -10,6 +10,43 @@ are gathered and justified, and the record becomes audit evidence for what was b
 Required functional fields: goal, system_class, at least one functional capability.
 Required non-functional axes (value or "deferred: <reason>"): latency, scale, availability,
 retention, security, budget.
+
+Phase 7 Item 3 decision (docs/phase7_generation_engine_plan.md, 2026-07-15): branch (b),
+symbolic/audit-only, WITH a named carve-out -- not a blanket "this schema is decorative." Field-
+by-field verification (every downstream reader grepped, not assumed) found the schema does three
+real jobs, only one of which is "feeds a generator":
+
+  1. Forces the grill-me interview to actually happen -- validate()'s fail-closed gate means
+     generation cannot proceed on a vague, ungathered request.
+  2. Is audit evidence that a human answered the NFR questions on the record -- including, via
+     is_deferred()/MAX_FREE_NFR_DEFERRALS, that deferring an axis was a stated decision, not an
+     omission. A field doing THIS job is load-bearing for human review while staying inert to
+     machines, and that is not a defect -- deferral_signoff is the clearest case (exists so a
+     human is on record accepting deferred axes; its job is done the moment it's written, nothing
+     downstream should ever need to read it back). Same reasoning applies to `stakeholders`.
+  3. Supplies exactly two real generation inputs today: `non_functional.budget` (parse_budget_usd,
+     wires governance-observability's guardrail) and `data_pipeline.data_volume` (parse_daily_gb,
+     the S3 usage estimate + daily_data_gb module wiring). Both were wireable with a plain regex
+     because both are bounded, numeric answers -- no text-understanding required.
+
+Why not branch (a) (wire the rest of the schema into generation) now: every field left inert
+either needs real text-understanding (`goal`, `functional`, `constraints` -- free text, no
+structured signal extractable without NLP) or is a plausible-but-unbuilt BOUNDED signal. Building
+several bounded extractors plus accepting NLP work now would mean designing intake for a
+generator that doesn't exist and whose input contract isn't known yet -- and the free-text fields
+need exactly the text-understanding item 5's authoring mechanism itself IS, so wiring them ahead
+of it would build a redundant mini-NLP layer item 5 would then subsume. Wrong order, not wrong
+idea.
+
+The named carve-out -- NOT declared permanently symbolic, unlike goal/functional/constraints --
+is `non_functional.retention`/`security`/`availability`/`latency` and
+`data_pipeline.orchestration`/`catalog`/`consumption`: each is an ENUMERABLE answer already asked
+and recorded (Airflow vs. Step Functions; schema-registry-glue vs. none; Athena vs. Redshift
+Serverless; lifecycle/KMS/multi-AZ toggles), currently collected and never used. Real signal
+already being gathered, deliberately left unwired pending a generator that actually needs a
+module-choice/config input -- not a gap to fix now, and not dead weight to remove. When Item 5
+asks "what drives module choice or resource configuration beyond the catalog's own defaults,"
+this is the pre-analyzed, ready candidate list to start from.
 """
 import datetime
 import json
