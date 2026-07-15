@@ -20,25 +20,54 @@ consequences.
 
 **Naming it an LLM call means naming what that costs, not filing it as a footnote:**
 
+> **INVARIANT, not a design note — the boundary this whole item depends on:** the LLM authors
+> *syntax* for a resource_type a human has already named and justified in `novel_resources`. **It
+> never proposes a type, never decides what gets built.** `novel_resources`/`architecture_
+> decision.json` stays the one human-reviewed record deciding *what* — exactly the same
+> discipline that record's own docstring already states for module selection (*"keyword matching
+> cannot silently become a recommendation engine"*), extended to authoring without exception. If
+> this boundary erodes — if authoring is ever allowed to introduce a resource_type nobody
+> declared, or to expand scope beyond the declared type — the entire human-reviewed-record
+> discipline this project has held since Phase 1 collapses, not just this item's own safety
+> story. Any future change that touches this boundary needs its own explicit review, not a quiet
+> refactor.
+
 - **Non-determinism.** The same declared resource_type + justification can produce different HCL
-  on different calls. This scope does not try to make authoring deterministic — it makes the
-  *decision of what to build* stay deterministic and human-reviewed (unchanged), and confines
-  non-determinism to the smallest possible surface: *how* to author HCL for a type a human has
-  already named and justified, never *what* to build. This is the same boundary
-  `architecture_decision.json`'s own docstring already draws for module selection — *"keyword
-  matching cannot silently become a recommendation engine"* — extended to authoring: the LLM
-  authors syntax for an already-decided type; it does not decide which types get built. That
-  decision stays `novel_resources`, a human-reviewed record, exactly as today.
+  on different calls. This scope does not try to make authoring deterministic — the invariant
+  above is what stays deterministic and human-reviewed; non-determinism is confined to *how* to
+  author HCL for a type already named, never *what* to build.
 - **Occasional confident wrongness.** The model can hallucinate a nonexistent type, invent an
   attribute a real type doesn't have, or author content for a type other than the one it was
   asked for. Section 4 below maps every one of these to a specific check and verdict — this is
   not deferred to "the gates will catch it eventually," it's enumerated.
+- **No retry on a failed check — decided here, not left for whoever writes the loop.** A naive
+  implementation reaches for "check fails → call the model again until one passes." That
+  selects for output that *slips past* the checks, not output that's *correct* — the same
+  "re-run the flaky test until green" pattern this project has already refused twice (elsewhere:
+  fail-closed-on-unparseable-input, never fail-open-and-retry). **Decision: no retries in the
+  first pass.** A failed check (any row in section 4 marked "hard block") is a hard stop: reported
+  to a human, with the failure reason and the raw authored output preserved in the audit record
+  (below) so a human can see exactly what the model produced and why it was rejected — not
+  silently discarded, and not retried into something that happens to pass.
 - **Reproducibility of the DECISION, not the output.** Since the exact HCL isn't reproducible
   call-to-call, what must be reproducible is the record of what happened: the resource_type
   requested, the justification, the grounding examples and live schema supplied, and the raw
-  authored output — written to the same audit chain `plan_gate.py`/`_audit_allow_incomplete_
-  bypass()` already write to, so a specific authoring decision is always reconstructable after
-  the fact even though repeating the call might not produce the same bytes.
+  authored output (whether it passed or was hard-stopped) — written to the same audit chain
+  `plan_gate.py`/`_audit_allow_incomplete_bypass()` already write to, so a specific authoring
+  decision is always reconstructable after the fact even though repeating the call might not
+  produce the same bytes. **Payload size, checked, not assumed**: a live `get_type_schema()` block
+  for `aws_dynamodb_table` measured 8,996 bytes; `retrieve_grounding_examples()` for a typical
+  request measured ~4.5 KB across 2 real module bodies (both measured against the real running
+  code, not estimated). `audit_chain.append()` has no hard size limit — it's a plain
+  `json.dumps()` + sha256 per line — so inlining this would not technically break. It is still the
+  wrong call: this project's own established pattern for bulky artifacts (`source_guard.py`'s
+  baseline manifests, `requirements.json`/`architecture_decision.json` themselves) is a small,
+  hash-verified audit record pointing at real files written into the run's own workspace, not
+  bulk content inlined into the hash-chained log itself. The authoring record follows that same
+  pattern: the chain entry carries `resource_type`, `justification`, `verdict`, and a
+  `content_hash`/`schema_hash`/`grounding_hash` plus the relative path each full artifact was
+  written to (e.g. `authoring/<resource_type>-{request,schema,grounding,output}.json` under the
+  run root) — tamper-evidence via hash comparison, without bloating the chain itself.
 
 **Concrete inputs to the call** (not designed further here — the prompt/model/provider choice is
 implementation, not scope, and correctly out of this document):
@@ -139,8 +168,17 @@ does not resolve, because it isn't required for the target in section 2.
 
 Not "the generator produced plausible HCL." Every item below is a checkable fact:
 
-1. `aws_dynamodb_table` is authored **fresh**, by the real mechanism, for a genuinely new request
-   — not copied from `test_synthesizer.py`'s existing fixture string, not hand-typed.
+1. `aws_dynamodb_table` is authored **fresh, and this is made checkable, not asserted**:
+   `test_synthesizer.py`'s existing fixture (`_VALID_DYNAMODB_HCL`) is a single-hash-key table
+   named `"novel-table"`, `billing_mode = "PAY_PER_REQUEST"`, one `attribute { name = "id", type =
+   "S" }`. "Looks different" is not a check, so the proof request's own parameters must make
+   reproducing the fixture impossible, not just unlikely: a **different table name**, a
+   **composite key** (`hash_key` + `range_key`, the fixture has neither a range key nor a second
+   attribute block), and **`billing_mode = "PROVISIONED"`** with explicit `read_capacity`/
+   `write_capacity` (the fixture only ever uses `PAY_PER_REQUEST`, which take no capacity
+   arguments at all). Output containing a `range_key` and `read_capacity`/`write_capacity` cannot
+   be the fixture reproduced — it can only be a real response to the actual request, which is
+   what makes "fresh" a checkable assertion instead of a claim.
 2. The pre-authoring `get_type_schema()` check passes (the type is confirmed real before
    authoring is attempted).
 3. The authored content passes every existing `_validate_novel_resources()` check: non-zero
@@ -168,8 +206,6 @@ Not "the generator produced plausible HCL." Every item below is a checkable fact
   target, named so it isn't silently forgotten when a module-shaped novel unit is authored later.
 - Whether/when to build out G6 coverage for `aws_dynamodb_table` or any other newly-authored
   type — a separate, already-escalated, larger question (HANDOFF §5 item 1), not this item's job.
-- A retry/re-authoring policy for when a proposed type fails a check — worth a real decision before
-  building, not resolved here since it doesn't change what the first proof requires.
 
 ## Ordering invariant
 
