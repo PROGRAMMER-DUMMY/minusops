@@ -146,6 +146,15 @@ of whether a generation engine is ever built. Recorded here, not filed as genera
    an authoring/writing design — there is currently nothing to generate FROM beyond those two
    numbers, and that gap doesn't close itself just by adding an authoring mechanism on top.
 
+**The autonomy story is theoretical, not just unbuilt, until coverage grows.** 33/41 reviewed
+types have zero G6 rule; 37/41 are G9-unverified on every emulator; all 4 security-critical types
+block under G9's own fail-closed rule regardless. The pipeline is safe as a mechanism — everything
+unrecognized or unverified stages, never auto-ships — but that's precisely because so little of
+the reviewable type space has been reviewed. A generator's output would today essentially always
+land in the staged path. Correct and safe; not evidence that autonomous generation actually works
+yet. `docs/phase7_generation_engine_plan.md` sequences the work this implies; nothing about it is
+started.
+
 Nothing above authorizes new implementation. The planned arc is complete — no new phase starts
 without its own scope document and review, the same discipline held for all five before it.
 
