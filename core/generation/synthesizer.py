@@ -67,8 +67,15 @@ def _label(module_id):
 
 def select_modules(requirements, explicit_ids=None, with_governance=True):
     """Pick modules for the requirements. Explicit ids win; otherwise match by keyword. A
-    governance/observability baseline is added unless already chosen."""
-    if explicit_ids:
+    governance/observability baseline is added unless already chosen.
+
+    `explicit_ids=None` means "no override, infer by keyword" (unchanged). `explicit_ids=[]` --
+    distinct from None, checked explicitly rather than by truthiness (docs/
+    phase7_generation_engine_plan.md item 2) -- means "explicitly chosen: zero catalog modules,"
+    or the same as `None` would have been, and it's what an authored-only composition (a real
+    architecture_decision.json with `"selected_modules": []`) needs to actually reach `compose()`
+    with zero catalog picks instead of silently falling through to keyword matching."""
+    if explicit_ids is not None:
         chosen = [module_registry.get_module(i) for i in explicit_ids]
         chosen = [m for m in chosen if m]
     else:
@@ -694,22 +701,44 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     `decision["novel_resources"]` -- this function does not itself author anything; it only
     validates and composes what a caller's authoring step already produced. See
     `_validate_novel_resources()` for the fail-closed contract.
+
+    A catalog-free, purely authored composition is a real, supported call: set
+    `decision["selected_modules"] = []` explicitly (distinct from omitting the key entirely,
+    which still infers by keyword) and supply `authored_content`/`novel_resources` for
+    everything to compose (docs/phase7_generation_engine_plan.md item 2).
     """
     if not allow_incomplete:
         reqgate.require(spec or {})        # raises RequirementsIncomplete(missing) -> caller surfaces it
         archdec.require(decision or {})
-    decision_module_ids = (decision or {}).get("selected_modules") or None
+    decision_module_ids = (decision or {}).get("selected_modules")
     if not allow_incomplete and explicit_ids and set(explicit_ids) != set(decision_module_ids or []):
         raise ValueError("--module overrides must match architecture_decision.json selected_modules")
-    chosen = select_modules(requirements_text, explicit_ids=decision_module_ids or explicit_ids)
-    requested_ids = set(decision_module_ids or explicit_ids or [])
+    # None (key absent) -> no override, infer by keyword (unchanged). An explicit [] -- checked
+    # by identity, not truthiness, same fix as select_modules() itself -- means "architect
+    # decided: zero catalog modules" (docs/phase7_generation_engine_plan.md item 2: the real
+    # public synthesize() entry point previously had no way to reach a catalog-free composition
+    # without bypassing select_modules() the way the Step 5 regression harness had to). Respected
+    # exactly, including skipping the governance-observability auto-add an INFERRED composition
+    # still gets -- an explicit decision that names nothing shouldn't have something silently
+    # added back in.
+    explicit_selection = decision_module_ids if decision_module_ids is not None else explicit_ids
+    if explicit_selection is not None:
+        chosen = select_modules(requirements_text, explicit_ids=explicit_selection,
+                                with_governance=bool(explicit_selection))
+    else:
+        chosen = select_modules(requirements_text)
+    requested_ids = set(explicit_selection or [])
     chosen_ids = {m["id"] for m in chosen}
     unknown_ids = sorted(requested_ids - chosen_ids)
     if unknown_ids:
         raise ValueError("unknown selected module(s): " + ", ".join(unknown_ids))
-    if not chosen:
-        raise ValueError("no modules matched the requirements; refine the request or pass --module")
     authored_resources = _validate_novel_resources(decision, authored_content)
+    if not chosen and not authored_resources:
+        # Predates authored_resources, same fix compose()'s own identical guard already got in
+        # Step 1: a composition can be entirely authored content with zero catalog picks (an
+        # explicit selected_modules: [] plus novel_resources), which is not "nothing matched,"
+        # only "nothing FROM THE CATALOG."
+        raise ValueError("no modules matched the requirements; refine the request or pass --module")
     run = target_run or runs.new_run(blueprint="synthesized", request=requirements_text, cloud=cloud)
     if allow_incomplete:
         _audit_allow_incomplete_bypass(requirements_text, spec, decision, run)

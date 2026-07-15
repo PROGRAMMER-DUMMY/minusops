@@ -77,8 +77,21 @@ def validate(data):
     for field in ("requirements_file", "selected_architecture", "decision_summary"):
         if not _answered(data.get(field, "")):
             missing.append(field)
-    if not _nonempty_list(data.get("selected_modules")):
-        missing.append("selected_modules (at least one module id)")
+    # A decision must select SOMETHING -- catalog modules, novel (authored) resources, or both.
+    # Previously this required selected_modules alone, unconditionally, which made a real,
+    # legitimate decision -- "zero catalog modules, entirely covered by authored content" --
+    # impossible to record at all (docs/phase7_generation_engine_plan.md item 2: synthesize()'s
+    # own zero-catalog path was fixed to allow this, but this gate, one level up, still refused
+    # to accept the decision record before synthesize() ever got to run). novel_resources' own
+    # per-entry completeness is checked separately below; this only asks "is there at least one
+    # entry to check."
+    has_selected_modules = _nonempty_list(data.get("selected_modules"))
+    novel_resources_present = isinstance(data.get("novel_resources"), list) and len(data.get("novel_resources")) > 0
+    if not has_selected_modules and not novel_resources_present:
+        missing.append(
+            "selected_modules (at least one module id) OR novel_resources (at least one entry) "
+            "-- a decision must select something, from the catalog or authored"
+        )
     alternatives = data.get("alternatives") or []
     if not (isinstance(alternatives, list) and any(_valid_alternative(item) for item in alternatives)):
         missing.append("alternatives (at least one named choice with decision and reason)")

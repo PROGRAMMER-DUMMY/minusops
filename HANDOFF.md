@@ -182,7 +182,36 @@ Item 1, scoped separately (`docs/phase7_item1_module_unit_scope.md`) and approve
   iceberg` was explicitly not expected to close by this item, and didn't — its gap is G6 item 5's
   question (dynamic blocks under G2), unrelated to the module-boundary work.
 
-Item 2 (`synthesize()`'s zero-catalog path) is next, same discipline: build, prove, report.
+**Item 2 (`synthesize()`'s zero-catalog path) is done.** Before this, the ONLY way to get a
+catalog-free, purely-authored composition was the Step 5 harness's own bypass — calling
+`compose()` directly, skipping `select_modules()` entirely, because that function had no way to
+distinguish "no override, infer by keyword" from "explicitly chosen: zero modules" (both looked
+like the same falsy value in Python). Fixed at every layer the bug actually lived in, found by
+tracing the real call chain rather than assumed to be one fix:
+
+- `select_modules()`/`synthesize()`: `explicit_ids`/`selected_modules` is now checked by
+  `is not None`, not truthiness — an explicit `[]` takes the explicit-selection branch (zero
+  modules, zero keyword matching) instead of silently falling through to `match_modules()`.
+- The auto-added `governance-observability` baseline now only applies to an INFERRED
+  composition — an explicit selection (empty or not) is followed exactly, matching the
+  "explicit wins entirely" philosophy `select_modules()` already claimed for catalog picks but
+  didn't actually apply to the governance add-on.
+- **A second, deeper gate was found blocking the same case one level up**:
+  `architecture_decision.py`'s own `validate()` required `selected_modules` non-empty
+  UNCONDITIONALLY — a real architecture decision recording "zero catalog modules, entirely
+  authored" was rejected as incomplete before `synthesize()` ever ran. Relaxed to "selected_
+  modules OR novel_resources, at least one" — the same "select something, catalog or authored"
+  bar `compose()`'s and `synthesize()`'s own guards already apply, now consistent across all
+  three checkpoints instead of the strictest one silently overriding the other two.
+- `synthesize()`'s "no modules matched" guard now also checks `authored_resources` before
+  refusing — identical fix shape to `compose()`'s own guard from Step 1.
+- Proof: a new test calls the real public `synthesize()` (not `compose()` directly) with an
+  explicit `selected_modules: []` plus `authored_content`, and gets a catalog-free composition
+  with no auto-added governance module — the exact capability gap the survey named. All existing
+  synthesizer/architecture_decision/accelerators/intent_assertions/plan_reader/schema_watch tests
+  (every caller of the touched functions, enumerated by grep, not inferred) pass unchanged.
+
+Item 3 (the requirements-schema symbolic-vs-real decision) is next — a decision, not a build item.
 
 Nothing above authorizes new implementation beyond what Phase 7's own scope docs have already
 been reviewed and approved for, item by item. Each remaining item still needs the same discipline

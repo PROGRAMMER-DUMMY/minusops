@@ -454,6 +454,100 @@ def test_synthesize_composes_a_valid_module_shaped_authored_unit(tmp_path, monke
     assert res["manifest"]["authored_resources"] == res["authored_resources"]
 
 
+# ---------------------------------------------------------------------------
+# Phase 7 Item 2 (docs/phase7_generation_engine_plan.md) -- synthesize()'s zero-catalog path.
+# Before this fix, the ONLY way to get a catalog-free, purely-authored composition was to bypass
+# select_modules() and call compose() directly (tests/test_teardown_regression_harness.py's own
+# workaround, explicitly documented there as a deliberate bypass of select_modules() "which would
+# run match_modules() ... plus the always-added governance-observability module"). These tests
+# call the real public synthesize() entry point the same way that harness called the private
+# path, and confirm it now reaches an equivalent catalog-free result on its own.
+# ---------------------------------------------------------------------------
+
+_ZERO_CATALOG_DECISION = dict(COMPLETE_DECISION, selected_modules=[], novel_resources=[{
+    "resource_type": "aws_s3_object",
+    "justification": "Requirement fully covered by a standalone authored unit; no catalog "
+                      "module needed at all.",
+    "alternatives_considered": ["compute-glue-etl (rejected: needs the whole Glue job, not just this)"],
+    "grounding_examples": ["compute-glue-etl"],
+}])
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_synthesize_composes_catalog_free_via_explicit_empty_selection(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    res = synthesizer.synthesize(
+        "standalone script-upload unit, no catalog modules needed",
+        spec=COMPLETE_SPEC, decision=_ZERO_CATALOG_DECISION, owner="data-platform",
+        authored_content={"aws_s3_object": {
+            "content": _MODULE_UNIT_HCL,
+            "assets": dict(_MODULE_UNIT_ASSETS),
+            "module_args": {"script_s3_bucket": '"test-bucket"'},
+        }},
+    )
+
+    # Zero catalog modules -- no keyword-matched picks, and no silently-added
+    # governance-observability, unlike an INFERRED (no explicit selection at all) composition.
+    assert res["modules"] == []
+    assert "governance-observability" not in res["modules"]
+    assert res["authored_resources"][0]["form"] == "module"
+    unit_dir = os.path.join(res["out_dir"], "authored_modules", "aws_s3_object")
+    assert os.path.isdir(unit_dir)
+    assert os.path.exists(os.path.join(unit_dir, "scripts", "etl.py"))
+
+
+def test_synthesize_refuses_when_nothing_selected_and_nothing_authored(tmp_path, monkeypatch):
+    """selected_modules=[] with no novel_resources at all is caught even earlier than
+    synthesize()'s own guard: architecture_decision.py's own gate (docs/
+    phase7_generation_engine_plan.md item 2's companion fix -- a decision must select
+    SOMETHING, catalog or authored) refuses the record itself as incomplete, before synthesize()
+    gets far enough to run its own "nothing to compose" check."""
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    decision = dict(COMPLETE_DECISION, selected_modules=[])
+
+    with pytest.raises(archdec.ArchitectureDecisionIncomplete) as exc:
+        synthesizer.synthesize("nothing at all", spec=COMPLETE_SPEC, decision=decision)
+
+    assert any("selected_modules" in m and "novel_resources" in m for m in exc.value.missing)
+    assert not os.path.isdir(tmp_path / "runs")
+
+
+def test_synthesize_refuses_zero_catalog_with_only_invalid_novel_resources(tmp_path, monkeypatch):
+    """A decision can name novel_resources to pass archdec's own gate, but if none of those
+    entries ever resolve to real authored_content, synthesize()'s existing
+    _validate_novel_resources() fail-closed check still catches it -- this proves the two gates
+    compose correctly rather than one silently papering over the other."""
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    decision = dict(COMPLETE_DECISION, selected_modules=[], novel_resources=[{
+        "resource_type": "aws_dynamodb_table",
+        "justification": "test",
+        "alternatives_considered": ["x"],
+    }])
+
+    with pytest.raises(ValueError) as exc:
+        synthesizer.synthesize("nothing at all", spec=COMPLETE_SPEC, decision=decision,
+                               authored_content=None)
+
+    assert "no matching authored_content" in str(exc.value)
+    assert not os.path.isdir(tmp_path / "runs")
+
+
+def test_select_modules_explicit_empty_list_selects_nothing():
+    # explicit_ids=[] is checked by identity, not truthiness (the actual Item 2 fix) -- it must
+    # take the explicit-selection branch (chosen=[]), not fall through to keyword matching.
+    # with_governance is a separate, synthesize()-level decision (bool(explicit_selection)),
+    # not this function's own default -- passed explicitly here to isolate what's under test.
+    chosen = synthesizer.select_modules("irrelevant request text", explicit_ids=[], with_governance=False)
+    assert chosen == []
+
+
 def test_synthesize_with_no_novel_resources_is_unaffected(tmp_path, monkeypatch):
     """Backward-compatible: a decision with no novel_resources key at all (every requirement
     fully covered by the catalog, which is every requirement before this scope existed) composes

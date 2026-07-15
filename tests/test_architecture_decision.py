@@ -8,7 +8,10 @@ def test_architecture_decision_template_is_incomplete_until_researched():
 
     assert ok is False
     assert "selected_architecture" in missing
-    assert "selected_modules (at least one module id)" in missing
+    # Phase 7 Item 2 (docs/phase7_generation_engine_plan.md): a decision may instead be complete
+    # via novel_resources alone (zero catalog modules, entirely authored) -- the template has
+    # neither, so the combined "select something" requirement is still unmet.
+    assert any("selected_modules" in m and "novel_resources" in m for m in missing)
     assert "sources (at least one item)" in missing
 
 
