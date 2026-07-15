@@ -196,13 +196,6 @@ tracing the real call chain rather than assumed to be one fix:
   composition — an explicit selection (empty or not) is followed exactly, matching the
   "explicit wins entirely" philosophy `select_modules()` already claimed for catalog picks but
   didn't actually apply to the governance add-on.
-- **A second, deeper gate was found blocking the same case one level up**:
-  `architecture_decision.py`'s own `validate()` required `selected_modules` non-empty
-  UNCONDITIONALLY — a real architecture decision recording "zero catalog modules, entirely
-  authored" was rejected as incomplete before `synthesize()` ever ran. Relaxed to "selected_
-  modules OR novel_resources, at least one" — the same "select something, catalog or authored"
-  bar `compose()`'s and `synthesize()`'s own guards already apply, now consistent across all
-  three checkpoints instead of the strictest one silently overriding the other two.
 - `synthesize()`'s "no modules matched" guard now also checks `authored_resources` before
   refusing — identical fix shape to `compose()`'s own guard from Step 1.
 - Proof: a new test calls the real public `synthesize()` (not `compose()` directly) with an
@@ -210,6 +203,23 @@ tracing the real call chain rather than assumed to be one fix:
   with no auto-added governance module — the exact capability gap the survey named. All existing
   synthesizer/architecture_decision/accelerators/intent_assertions/plan_reader/schema_watch tests
   (every caller of the touched functions, enumerated by grep, not inferred) pass unchanged.
+
+**A second, structural finding — its own class, not a footnote to the fix above.** One level
+above `synthesize()`, `architecture_decision.py`'s own `validate()` required `selected_modules`
+non-empty **unconditionally** — a real architecture decision recording "zero catalog modules,
+entirely authored" was rejected as an INCOMPLETE record before `synthesize()` ever got to run.
+This means the frozen-catalog assumption wasn't just a bug in a truthiness check one function
+down — it was baked into the data model's own invariant, enforced in the validation of the
+human-reviewed decision RECORD itself, a level deeper than anyone had looked or than fixing
+`select_modules()` alone would have reached. The fix is conditional, not a removal:
+`selected_modules` may now be empty **if and only if** `novel_resources` is non-empty — a record
+with neither is still an empty architecture and still fails validation (`test_architecture_
+decision_blocks_when_neither_modules_nor_novel_resources_given`, an otherwise-fully-complete
+record isolating exactly this check, not a template with a dozen other gaps also open). Same
+class of finding as the Step 5 harness's own "only 2 of 16 modules were ever pinned" discovery:
+an assumption the whole project had been reasoning with, enforced somewhere nobody had checked,
+found only by trying to actually DO the catalog-free composition rather than by reading the code
+that was supposed to allow it. Two of those now, both found the same way.
 
 Item 3 (the requirements-schema symbolic-vs-real decision) is next — a decision, not a build item.
 

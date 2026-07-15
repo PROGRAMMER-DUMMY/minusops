@@ -91,6 +91,26 @@ def _complete_record(**overrides):
     return record
 
 
+def test_architecture_decision_blocks_when_neither_modules_nor_novel_resources_given():
+    """Phase 7 Item 2's relaxation is CONDITIONAL, not a removal: selected_modules may be empty
+    ONLY IF novel_resources is non-empty. An otherwise-complete record (every other field
+    answered, via _complete_record()) with BOTH empty is an empty architecture -- selecting
+    nothing, from the catalog or authored -- and must still fail validation. Isolated from every
+    other completeness field (unlike the raw-template test above, which has many other gaps
+    too) so this proves the "select something" check itself is what's firing, not some other
+    missing field masking a validator that quietly stopped checking anything."""
+    record = _complete_record(selected_modules=[])
+    assert "novel_resources" not in record  # this record has neither key populated
+
+    ok, missing = archdec.validate(record)
+
+    assert ok is False
+    assert missing == [
+        "selected_modules (at least one module id) OR novel_resources (at least one entry) "
+        "-- a decision must select something, from the catalog or authored"
+    ]
+
+
 def test_architecture_decision_with_no_novel_resources_still_validates():
     """Backward-compatible: a record with no novel_resources key at all (every pre-existing
     record, and every record for a requirement fully covered by the catalog) is unaffected."""
