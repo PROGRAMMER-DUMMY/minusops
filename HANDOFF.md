@@ -119,6 +119,33 @@ every time beats checked once-if-ever.
   also added to the fixed tuple those loops iterate over. Adding a rule to `rules.rego` is not the
   same as adding it everywhere its ID needs to be known.
 
+### 5. Two findings from the 2026-07-15 ground-truth survey, escalated as present-day facts
+
+The read-only survey (`docs/generation_engine_ground_truth_survey.md`) was scoped to map the
+generation-engine seam, but it surfaced two findings that are true of the repo TODAY, independent
+of whether a generation engine is ever built. Recorded here, not filed as generator prerequisites:
+
+1. **G6 rule coverage is 8 of 41 reviewed types, not "policy enforcement."** `aws_s3_bucket`,
+   `aws_iam_role`, `aws_iam_role_policy`, `aws_kms_key`, `aws_s3_bucket_policy`,
+   `aws_redshiftserverless_workgroup`, `aws_subnet`, `aws_s3_object` have at least one firing rule.
+   The other **33** — including `aws_vpc`, `aws_mwaa_environment`, `aws_glue_job`,
+   `aws_kinesis_stream`, `aws_sfn_state_machine`, `aws_sns_topic`, and 27 more (full list: survey
+   §5, `policy/g6/rules.rego`) — have zero. Every one of those 33 is `AUTO_SHIP_ELIGIBLE` under G5
+   by type, so a misconfigured instance of any of them ships with no content-level finding at all.
+   This is the same shape as the config-dependent gap SEC-08/09/10 closed in Step 1 — public
+   access / public IP / public ACL left unchecked — except 33 types wide instead of 3. It exists
+   right now, in the composition path already shipped, for any of the 16 real modules or any hand-
+   authored content touching those types. Not a generation prerequisite: the largest open policy
+   gap in the repo as it stands.
+2. **The requirements-to-build link is two numbers.** Of `architecture_decision.json`'s 11 fields,
+   2 are load-bearing (`selected_modules`, `novel_resources`). Of the full `requirements.json`
+   schema, only `data_pipeline.data_volume` and `non_functional.budget` shape any generation-
+   adjacent output (survey §3). Nine of ten `data_pipeline` fields and five of six NFR axes are
+   validated on the way in and never read again. Any future generator scope described as "driven by
+   the requirements record" needs a requirements-CONSUMPTION design as its first question, before
+   an authoring/writing design — there is currently nothing to generate FROM beyond those two
+   numbers, and that gap doesn't close itself just by adding an authoring mechanism on top.
+
 Nothing above authorizes new implementation. The planned arc is complete — no new phase starts
 without its own scope document and review, the same discipline held for all five before it.
 
