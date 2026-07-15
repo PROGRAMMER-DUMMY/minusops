@@ -284,8 +284,52 @@ Proof: 3 new tests, the only real logic (the resource-vs-data branch) directly e
 `kind="resource"` correctly finds nothing (proving the branch matters, not just re-proving
 `_fetch_schema()` works). All 3, plus the full existing `test_schema_watch.py` suite, pass.
 
-Item 5 (the authoring mechanism itself) is next — the one item this plan named as depending on
-all four of the above, either built or explicitly decided. Nothing here started it.
+**Item 5 (the authoring mechanism itself) — scoped, reviewed, and everything that CONSTRAINS the
+generator is now built and proven. The actual live LLM call is the one piece deliberately not
+built yet — flagged, not silently skipped.**
+
+Scope (`docs/phase7_item5_authoring_scope.md`) named the mechanism concretely (an LLM call,
+non-determinism confined to *how* an already-declared type gets authored, never *what* gets
+built — an explicit, named INVARIANT, not a design note), picked `aws_dynamodb_table` as the
+smallest honest first target, and mapped every authoring-failure mode to a specific check and
+verdict. Built, in the approved order — checks first, then the audit record, LLM call last:
+
+- **Two new fail-closed checks**, both scoped to the flat (`str`) form only (a module-shaped
+  unit's key isn't necessarily a literal type string — the Step 5 harness itself keys one by
+  `module_id`, confirmed against the real code before assuming otherwise):
+  `_resource_type_exists_live()` (a declared `resource_type` must exist in the real, live
+  provider schema — Item 4's `get_type_schema()`, checked BEFORE anything is authored for it) and
+  `_authored_type_matches_declared()` (the authored content must actually address the declared
+  type, not a different one — the gap this item's own analysis found: every prior caller
+  naturally authored what they declared, so this was never a real failure mode until a caller
+  that can get it wrong exists).
+- **A real performance regression found and fixed before landing, not discovered later**:
+  running the schema-exists check unconditionally broke the 16-module regression harness's own
+  flat-decomposition path — each call is an uncached live schema fetch, measured at ~30 seconds
+  (no shared provider plugin cache), and the harness routes potentially dozens of unique,
+  already-real, already-pinned types through the same validation. What should have been an
+  ~18-test, ~25-minute suite didn't produce a SECOND result in 10 minutes. Fixed with a
+  `verify_type_exists` parameter (default `True`, threaded through `synthesize()` too) — ON for
+  every real caller, since the check is exactly the protection it exists to provide; OFF only at
+  the harness's own internal decomposition call site, with the exact reasoning written at that
+  one call site, never a silent default anywhere else. Re-confirmed: **13 passed, 5 skipped, 0
+  failed**, matching the established baseline, ~27 minutes total.
+- **`write_authoring_record()`** — the audit-record step, built before any real authoring call
+  exists. Writes the schema/grounding-examples/raw-output as real files in the run's own
+  workspace, with a small hash-verified pointer record in the audit chain — not bulk content
+  inlined into the chain itself, matching `source_guard.py`'s own established pattern and the
+  scope's own measured payload sizes (~9KB schema, ~4.5KB grounding). A blocked attempt's raw
+  output and reason are recorded too, same as a passing one — no retries (decided in scope, not
+  left to whoever wired the loop): a failed check is a hard stop, never silently discarded and
+  never retried into something that happens to pass.
+
+**Deliberately not built yet: the actual call to a live LLM.** This is a different class of
+action than everything above — a real external API integration (provider, credentials, real
+cost, a genuinely non-deterministic external call happening for real) — not more Python logic
+with a clear test boundary. It needs its own explicit go-ahead (which provider/API, whether to
+spend real API credits, prompt content) before being wired in, the same way any other
+consequential, hard-to-reverse action in this project gets confirmed first rather than assumed
+authorized by a general "build it."
 
 Nothing above authorizes new implementation beyond what Phase 7's own scope docs have already
 been reviewed and approved for, item by item. Each remaining item still needs the same discipline
