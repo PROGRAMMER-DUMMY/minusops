@@ -407,3 +407,36 @@ def test_fetch_schema_real_aws_contains_known_types(tmp_path):
     assert resolved_version is not None
     assert "aws_vpc" in schema["resource_schemas"]
     assert "aws_s3_bucket" in schema["resource_schemas"]
+
+
+# ---------------------------------------------------------------------------
+# get_type_schema() (Phase 7 Item 4, docs/phase7_generation_engine_plan.md): the thin per-type
+# live schema query composing _fetch_schema() with a plain dict lookup -- deliberately NOT
+# _reduce(), which strips to {kind, version, deprecated_attributes} for drift comparison and
+# would throw away the attribute detail this function exists to expose. The resource-vs-data
+# branch is the only real logic in the function, so it's the one thing all three tests below
+# are actually checking, not just re-proving _fetch_schema() works (already covered above).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_get_type_schema_returns_real_attributes_for_a_known_resource_type():
+    block = schema_watch.get_type_schema("aws", "aws_s3_bucket")
+
+    assert block is not None
+    assert "bucket" in block.get("attributes", {})
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_get_type_schema_returns_none_for_an_unknown_type():
+    assert schema_watch.get_type_schema("aws", "aws_totally_made_up_type") is None
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_get_type_schema_resolves_a_data_source_via_kind_data():
+    block = schema_watch.get_type_schema("aws", "aws_caller_identity", kind="data")
+
+    assert block is not None
+    assert "account_id" in block.get("attributes", {})
+    # confirms the branch actually matters -- looking this data source up as a "resource"
+    # (the wrong table) must NOT find it
+    assert schema_watch.get_type_schema("aws", "aws_caller_identity", kind="resource") is None

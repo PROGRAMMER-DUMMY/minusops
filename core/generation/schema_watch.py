@@ -132,6 +132,40 @@ def _fetch_schema(provider, workdir):
     return schema, resolved_version
 
 
+def get_type_schema(provider, type_name, kind="resource"):
+    """Phase 7 Item 4 (docs/phase7_generation_engine_plan.md): live provider schema for exactly
+    one resource/data type. Composes `_fetch_schema()`'s real `terraform providers schema -json`
+    fetch with a plain dict lookup by type -- `_reduce()` (below) is deliberately NOT part of
+    this: it strips a type down to `{kind, version, deprecated_attributes}` for schema_watch's
+    own drift-comparison purpose, throwing away exactly the attribute/nested-block detail this
+    function exists to expose. Composing with it here would return a confidently-wrong "schema
+    query" that's actually a drift summary. `_fetch_schema()` itself is unchanged.
+
+    provider: "aws" | "databricks" (`_PROVIDER_SOURCE`'s existing keys).
+    type_name: e.g. "aws_dynamodb_table".
+    kind: "resource" (default) | "data".
+
+    Returns the type's raw schema block dict (`attributes` + nested `block_types`, full detail),
+    or `None` if the type doesn't exist in the live schema.
+
+    COST, undocumented anywhere else so don't assume this is cheap: every call does a full
+    `terraform init` + `terraform providers schema -json` -- seconds and a network round trip,
+    per call, not cached. A naive loop calling this once per candidate type is N full fetches.
+    Left deliberately uncached here: a project whose whole premise is "schemas drift and stale
+    assumptions break you" should not get a live-schema cache as a silent convenience default --
+    if a caller (e.g. a future Item 5 authoring step checking several types per unit) needs to
+    avoid refetching, it must cache at ITS OWN layer, knowingly, not rely on one hidden in here.
+    """
+    with tempfile.TemporaryDirectory() as workdir:
+        schema, _resolved_version = _fetch_schema(provider, workdir)
+    table = schema.get("resource_schemas" if kind == "resource" else "data_source_schemas", {})
+    entry = table.get(type_name)
+    # Real provider schema JSON wraps each type as {"version": N, "block": {...}} -- confirmed
+    # live, not assumed (the same shape _reduce() below unwraps via entry.get("block")). The
+    # actual attributes/block_types detail this function exists to expose lives one level down.
+    return entry.get("block") if entry is not None else None
+
+
 def _deprecated_attrs(block, prefix=""):
     """Recursively walk attributes + nested block_types for anything marked deprecated --
     verified live against real `terraform providers schema -json` output (attribute-level

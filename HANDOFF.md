@@ -243,7 +243,40 @@ deliberately left unwired pending a generator that actually needs a module-choic
 Not a gap to fix now, not dead weight to remove — the pre-analyzed candidate list for whenever
 Item 5 asks "what drives module choice beyond the catalog's own defaults."
 
-Item 4 (the thin per-type live schema query, composing `_fetch_schema` + `_reduce_full`) is next.
+**Item 4 (the thin per-type live schema query) is done — with a real correction to its own
+premise found while building it, not just a routine wire-up.** The survey (and its own approval)
+carried "`_fetch_schema` + `_reduce_full`" forward as known-good. Reading the actual code found
+two things wrong with that: `_reduce_full` doesn't exist, and the real function, `_reduce()`,
+strips a type down to `{kind, version, deprecated_attributes}` for schema_watch's own drift-
+comparison purpose — throwing away exactly the attribute/nested-block detail a generator would
+need. Composing as literally specified would have shipped a confidently-wrong "schema query"
+that was actually a drift summary. The correct, genuinely thin composition uses `_fetch_schema()`
+alone (unchanged) plus a plain dict lookup: `core/generation/schema_watch.py`'s new
+`get_type_schema(provider, type_name, kind="resource")`. `_reduce()` is deliberately uninvolved,
+documented as such so a future "simplification" doesn't reintroduce it.
+
+A second real bug surfaced writing the first test, not assumed away: the live schema wraps each
+type as `{"version": N, "block": {...}}` — the initial implementation returned that wrapper
+directly instead of unwrapping `entry["block"]`, so `"bucket" in block.get("attributes", {})`
+failed against a block with no `attributes` key at all. Fixed to return `entry["block"]`, the
+same unwrap `_reduce()` itself already does — caught by running the test against real
+`terraform providers schema -json` output, not by reasoning about the shape from memory.
+
+Cost, documented in the function's own docstring per explicit decision: **left deliberately
+uncached.** Every call is a full `terraform init` + `providers schema -json` — seconds and a
+network round trip, not cached, on purpose. A project whose whole premise is "schemas drift and
+stale assumptions break you" should not get a live-schema cache as a silent convenience default.
+If a future caller (plausibly Item 5, checking several types per authored unit) needs to avoid
+refetching, it caches at its own layer, knowingly.
+
+Proof: 3 new tests, the only real logic (the resource-vs-data branch) directly exercised —
+`aws_s3_bucket` resolves real attributes, an unknown type returns `None`, and
+`aws_caller_identity` resolves via `kind="data"` while confirming the SAME lookup under
+`kind="resource"` correctly finds nothing (proving the branch matters, not just re-proving
+`_fetch_schema()` works). All 3, plus the full existing `test_schema_watch.py` suite, pass.
+
+Item 5 (the authoring mechanism itself) is next — the one item this plan named as depending on
+all four of the above, either built or explicitly decided. Nothing here started it.
 
 Nothing above authorizes new implementation beyond what Phase 7's own scope docs have already
 been reviewed and approved for, item by item. Each remaining item still needs the same discipline
