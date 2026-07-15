@@ -1,5 +1,127 @@
 # Handoff — Data-Pipeline Specialization
 
+## PHASE 6 — FINAL STATUS (2026-07-15). Read this section first.
+
+Phase 6 (`docs/phase6_scope.md`) is closed. Its planned arc — Step 0 (G5 fail-closed fix), Step 1
+(the authoring/composition pipeline), Step 5 (catalog teardown, conditional) — is complete. This
+section is the ledger for whoever picks this up next: what was actually delivered, what wasn't,
+what's still genuinely open, and the cross-phase lessons worth not re-learning the hard way. The
+detailed, dated blockquote entries below this section are the full history; this is the summary
+that should be read before any of them.
+
+### 1. What Phase 6 delivered — and the one thing it did NOT
+
+**Delivered**: a validated, safety-netted COMPOSITION pipeline. `synthesizer.synthesize(authored_
+content=...)` takes real HCL text a human or external agent already wrote, validates it (G2 schema
+lint, live-schema-verified), composes it into a governed Terraform root, and runs it through the
+full real gate stack (G1 validate, G5 destructive-change classification, G6 Rego shadow
+evaluation, G9 ephemeral-apply fidelity check — the last one now actually wired into the real
+`stage_plan`/`stage_apply` flow, not just its own CI job). Real, proven, load-bearing.
+
+**NOT delivered, stated as plainly as this sentence, so it is never misread**: **a generation
+engine.** Nothing in this codebase decides what HCL to write from a free-text requirement. There
+is no LLM call, no template engine, no authoring decision logic anywhere. "Capability-equivalent
+path" (the regression harness's own finding, see below) describes the composition MECHANISM being
+sound for content that already exists — it must never be read as "we generate infrastructure
+now." That capability is real, named, future work, not started.
+
+### 2. The catalog: Option B — stays the real composition source
+
+Decided by the user (2026-07-15), reasoning accepted and recorded: the catalog is a working,
+proven asset, not dead weight awaiting supersession. `compose()` keeps copying from
+`modules/<id>/` for every one of the 16 real modules, unconditionally, regardless of any proof
+result below. **The trigger for revisiting this (Option A — relocate proof-ready modules,
+retire their copy-path), written down as the trigger, not left implicit: the moment a real
+authoring mechanism exists that can independently supply equivalent HCL content. Not before.**
+
+The regression-baseline harness (`tests/test_teardown_regression_harness.py`) still ran against
+all 16 modules — proof-readiness is a fact worth having on record for whenever that trigger
+fires, even though nothing acts on it today:
+
+- **11/16 proof-ready**: `governance-observability`, `storage-medallion-s3`, `query-athena`,
+  `dq-great-expectations`, `schema-registry-glue`, `speed-layer-kinesis`, `ingest-firehose`,
+  `compute-emr-serverless`, `consumption-redshift-serverless`, `orchestrator-mwaa`,
+  `databricks-workspace`. Real terraform plan, both the catalog-copy path and the authored-
+  content path, produce identical (type, name, action) signatures.
+- **5/16 named blockers — diagnostic, not failures, and cost nothing under Option B.** Each is a
+  real, disclosed limitation to fix or accept later, not a defect to argue around now:
+  - `networking-vpc`, `orchestrator-stepfunctions` — **cannot be planned standalone at all**, by
+    either path. Each declares a data source that makes a genuine AWS API call at plan time
+    (`data.aws_availability_zones`, `ValidateStateMachineDefinition`) that no dummy credential
+    can satisfy. The known structural class: some resource types simply require a live account
+    to plan, full stop.
+  - `compute-glue-etl`, `compaction-glue` — **a real, structural gap in the authored-content
+    mechanism itself**: `aws_s3_object.script` in each references `filemd5("${path.module}/
+    scripts/....py")`, a companion non-HCL asset file. The flat-root authored-file shape (one
+    `.tf` file per resource type, no module subdirectory) has no way to carry over a module-
+    relative asset — `path.module` resolves to the composition root, where the script was never
+    copied. A genuinely novel resource authored fresh would have no such pre-existing asset to
+    reference this way; this gap is specific to decomposing an EXISTING module that bundles one.
+  - `table-format-iceberg` — **G2's own structural dynamic-block limitation**: a genuinely
+    dynamic `dynamic "columns" { for_each = var.columns }` block that `schema_lint.py`
+    deliberately cannot resolve statically (a dynamic block's real emitted attributes depend on
+    evaluating its `for_each`, not knowable without running Terraform). The same limitation
+    already disclosed in `test_schema_lint.py`'s own known-exceptions list.
+
+**The finding worth more than the teardown itself**: running the harness's own prerequisites
+found that **only 2 of these 16 real modules (`databricks-workspace`, `networking-vpc`) had
+EVER actually been run through `module_provenance.pin()`** — the other 14 were added to the
+catalog directly, bypassing G2's gate entirely. "Every real module is pinned and clean" was an
+assumption the whole project had been building on, never a checked fact. This is the fail-open-
+in-the-foundation pattern (item 4 below) showing up in the most basic possible place: a trust
+mechanism (`pin()`) whose real value — "checked once, unchanged since" — was quietly true for 2
+modules and fiction for the other 14, with nothing anywhere distinguishing the two cases until
+this session wrote a test that actually checked. This retroactively validates Option B: Option A
+would have relocated the catalog's `modules/<id>/` directories on the strength of a "pinned and
+trusted" status that was never real for 87% of it.
+
+`module_provenance.py`'s `pin()` gate is now retired for exactly this reason — not because a
+stale historical hash is theoretically weaker than a live check (though it is), but because for
+14 of 16 modules there was no hash and nobody knew. Its replacement (re-verify live, via
+`gate_content()`, at the point ANY content is actually drawn on) is strictly stronger: checked
+every time beats checked once-if-ever.
+
+### 3. Two decisions, still open, not drifting — do not resolve these piecemeal
+
+1. **The all-of-G6 enforcement flip.** Every G6 rule (SEC-01 through SEC-10, COST-01/02/03) stays
+   shadow-only. Flipping any of it to enforcing is a single, deliberate, still-undecided later
+   decision (`docs/g6_scope.md` section 2, item 3 of its own proof bar) that needs the
+   ACCUMULATED real shadow-divergence log as its evidence base — not a per-rule decision made as
+   rules get added, and not something this or any single session should decide alone.
+2. **G9's LocalStack fidelity column.** `RESOURCE_TYPE_ALLOWLIST`'s LocalStack entries stay
+   unverified; `aws_iam_role`/`aws_kms_key`/`aws_s3_bucket_policy` stay `negative_fidelity_
+   unverified` on both free emulators (MiniStack, Floci). **Permanent disclosed limitation
+   unless the paid-LocalStack posture changes** (`docs/phase5_scope.md` item 0) — resolvable
+   only by provisioning the paid account this project has deliberately chosen not to buy, not by
+   any further code.
+
+### 4. The standing checklist — cross-phase lessons, apply by default, don't re-learn these
+
+- **Fail-closed on unparseable/unverifiable input, EVERYWHERE, not case-by-case.** This recurred
+  across nearly every phase of this project (Probe A's six sibling fail-opens in `classify()`;
+  `schema_lint.py`'s dynamic-block handling; G5's fail-open-on-unknown-resource-type; G6's
+  `after_unknown`/`field_unresolved` handling for every new rule; `ephemeral_apply.classify_
+  coverage()`'s "not Databricks" vs. "actually aws_-prefixed" bug found this Step 5; `compose()`'s
+  own "at least one thing composed" guard never accounting for `authored_resources`). **Every
+  input reader is guilty until proven fail-closed** — when adding a new one, ask explicitly what
+  it does with input it cannot parse or verify, and prove the answer is "block/stage," not assume
+  it.
+- **Enumerate before push.** Before pushing a change to any shared classifier/gate/module, `grep`
+  for every file that imports or calls it (test files and production callers alike) and run every
+  one of them locally — "green locally" means "green on the files the change can affect," which
+  you must actually enumerate, not infer from having run the file whose name matches. Two real,
+  distinct failures this project already paid for by skipping this: `G6_RULE_IDS` silently
+  dropping a new rule's findings one hop downstream, and the `terraform_data` regression only CI
+  caught.
+- **A new rule's ID must be verified to actually reach the audit chain, not just that it fires.**
+  The `G6_RULE_IDS` bug: a rule can produce real findings in `rego_gate.evaluate()` and still be
+  silently invisible to `_g6_shadow_eval()`'s divergence report and the audit log, if its ID isn't
+  also added to the fixed tuple those loops iterate over. Adding a rule to `rules.rego` is not the
+  same as adding it everywhere its ID needs to be known.
+
+Nothing above authorizes new implementation. The planned arc is complete — no new phase starts
+without its own scope document and review, the same discipline held for all five before it.
+
 > **2026-07-09: Databricks-on-AWS build (Phases 0–2b) done — blocked on external input, not
 > more code.** Terraform MCP wired (docs/schema lookups, `docker hashicorp/terraform-mcp-server`);
 > AWS MCP deliberately deferred (needs real credentials to even connect — see
