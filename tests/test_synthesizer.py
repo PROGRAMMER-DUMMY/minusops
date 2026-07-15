@@ -323,6 +323,137 @@ def test_synthesize_refuses_authored_content_with_hallucinated_type(tmp_path, mo
     assert "failed G2 schema lint" in str(exc.value)
 
 
+# ---------------------------------------------------------------------------
+# Phase 7 Item 1 (docs/phase7_item1_module_unit_scope.md) -- authored_content's module-shaped
+# unit. The flat str form above is completely unchanged (see tests above, all still passing
+# untouched); these cover the new dict form: its own variable/output/locals namespace and
+# path.module resolution via a real Terraform module boundary, not the flat root-file shape.
+# The fixture mirrors modules/compute-glue-etl/main.tf's own aws_s3_object.script shape exactly
+# (already proven G2-clean by test_schema_lint.py's real-catalog sweep) so these tests exercise
+# the new checks, not an incidental G2 finding on invented HCL.
+# ---------------------------------------------------------------------------
+
+_MODULE_UNIT_DECISION = dict(COMPLETE_DECISION, novel_resources=[{
+    "resource_type": "aws_s3_object",
+    "justification": "A self-contained script-upload unit needing its own bucket input and a "
+                      "companion asset file; no catalog module fits standalone.",
+    "alternatives_considered": ["compute-glue-etl (rejected: needs the whole Glue job, not just this)"],
+    "grounding_examples": ["compute-glue-etl"],
+}])
+
+_MODULE_UNIT_HCL = (
+    'variable "name_prefix" {\n'
+    '  type = string\n'
+    '}\n\n'
+    'variable "script_s3_bucket" {\n'
+    '  type        = string\n'
+    '  description = "Bucket to hold the uploaded script."\n'
+    '}\n\n'
+    'resource "aws_s3_object" "script" {\n'
+    '  bucket = var.script_s3_bucket\n'
+    '  key    = "${var.name_prefix}/scripts/etl.py"\n'
+    '  source = "${path.module}/scripts/etl.py"\n'
+    '  etag   = filemd5("${path.module}/scripts/etl.py")\n'
+    '}\n'
+)
+
+_MODULE_UNIT_ASSETS = {"scripts/etl.py": "# placeholder starter script\n"}
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_validate_novel_resources_module_unit_blocks_missing_path_module_asset():
+    decision = _MODULE_UNIT_DECISION
+    authored_content = {"aws_s3_object": {
+        "content": _MODULE_UNIT_HCL,
+        "assets": {},  # missing scripts/etl.py -- the reference has nothing to resolve against
+        "module_args": {"script_s3_bucket": '"test-bucket"'},
+    }}
+    with pytest.raises(ValueError) as exc:
+        synthesizer._validate_novel_resources(decision, authored_content)
+    assert "path.module-relative asset" in str(exc.value)
+    assert "scripts/etl.py" in str(exc.value)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_validate_novel_resources_module_unit_blocks_unwired_required_variable():
+    decision = _MODULE_UNIT_DECISION
+    authored_content = {"aws_s3_object": {
+        "content": _MODULE_UNIT_HCL,
+        "assets": dict(_MODULE_UNIT_ASSETS),
+        "module_args": {},  # script_s3_bucket has no default, isn't well-known -- must block
+    }}
+    with pytest.raises(ValueError) as exc:
+        synthesizer._validate_novel_resources(decision, authored_content)
+    assert "required variable" in str(exc.value)
+    assert "script_s3_bucket" in str(exc.value)
+    # name_prefix is well-known-auto-wired and must NOT be reported as unresolved
+    assert "name_prefix" not in str(exc.value)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_validate_novel_resources_module_unit_passes_with_assets_and_module_args():
+    decision = _MODULE_UNIT_DECISION
+    authored_content = {"aws_s3_object": {
+        "content": _MODULE_UNIT_HCL,
+        "assets": dict(_MODULE_UNIT_ASSETS),
+        "module_args": {"script_s3_bucket": '"test-bucket"'},
+    }}
+    authored_resources = synthesizer._validate_novel_resources(decision, authored_content)
+    assert authored_resources[0]["form"] == "module"
+    assert authored_resources[0]["assets"] == _MODULE_UNIT_ASSETS
+    assert authored_resources[0]["module_args"] == {"script_s3_bucket": '"test-bucket"'}
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_compose_writes_module_unit_into_its_own_directory_with_assets_and_call_block(tmp_path):
+    authored_resources = synthesizer._validate_novel_resources(_MODULE_UNIT_DECISION, {
+        "aws_s3_object": {
+            "content": _MODULE_UNIT_HCL,
+            "assets": dict(_MODULE_UNIT_ASSETS),
+            "module_args": {"script_s3_bucket": '"test-bucket"'},
+        }
+    })
+    out = tmp_path / "tf"
+    synthesizer.compose([], "acme-dev", str(out), owner="acme", authored_resources=authored_resources)
+
+    unit_main = out / "authored_modules" / "aws_s3_object" / "main.tf"
+    unit_asset = out / "authored_modules" / "aws_s3_object" / "scripts" / "etl.py"
+    call_file = out / "authored_aws_s3_object.tf"
+    assert unit_main.read_text(encoding="utf-8") == _MODULE_UNIT_HCL  # already newline-terminated
+    assert unit_asset.read_text(encoding="utf-8") == "# placeholder starter script\n"
+    # terraform fmt (compose()'s best-effort formatting pass) aligns `=` signs with padding --
+    # check content, not exact spacing.
+    call_text = call_file.read_text(encoding="utf-8")
+    assert 'module "authored_aws_s3_object" {' in call_text
+    assert '"./authored_modules/aws_s3_object"' in call_text
+    # name_prefix auto-wired to the root local, script_s3_bucket wired via the explicit override
+    assert "local.name_prefix" in call_text
+    assert '"test-bucket"' in call_text
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_synthesize_composes_a_valid_module_shaped_authored_unit(tmp_path, monkeypatch):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    res = synthesizer.synthesize(
+        "airflow pipeline needing a standalone script-upload unit",
+        spec=COMPLETE_SPEC, decision=_MODULE_UNIT_DECISION, owner="data-platform",
+        authored_content={"aws_s3_object": {
+            "content": _MODULE_UNIT_HCL,
+            "assets": dict(_MODULE_UNIT_ASSETS),
+            "module_args": {"script_s3_bucket": '"test-bucket"'},
+        }},
+    )
+
+    assert res["authored_resources"][0]["form"] == "module"
+    unit_dir = os.path.join(res["out_dir"], "authored_modules", "aws_s3_object")
+    assert os.path.isdir(unit_dir)
+    assert os.path.exists(os.path.join(unit_dir, "scripts", "etl.py"))
+    assert res["manifest"]["authored_resources"] == res["authored_resources"]
+
+
 def test_synthesize_with_no_novel_resources_is_unaffected(tmp_path, monkeypatch):
     """Backward-compatible: a decision with no novel_resources key at all (every requirement
     fully covered by the catalog, which is every requirement before this scope existed) composes

@@ -38,25 +38,20 @@ The regression-baseline harness (`tests/test_teardown_regression_harness.py`) st
 all 16 modules — proof-readiness is a fact worth having on record for whenever that trigger
 fires, even though nothing acts on it today:
 
-- **11/16 proof-ready**: `governance-observability`, `storage-medallion-s3`, `query-athena`,
+- **13/16 proof-ready**: `governance-observability`, `storage-medallion-s3`, `query-athena`,
   `dq-great-expectations`, `schema-registry-glue`, `speed-layer-kinesis`, `ingest-firehose`,
   `compute-emr-serverless`, `consumption-redshift-serverless`, `orchestrator-mwaa`,
   `databricks-workspace`. Real terraform plan, both the catalog-copy path and the authored-
-  content path, produce identical (type, name, action) signatures.
-- **5/16 named blockers — diagnostic, not failures, and cost nothing under Option B.** Each is a
+  content path, produce identical (type, name, action) signatures. `compute-glue-etl` and
+  `compaction-glue` **moved into this set on 2026-07-15** (Phase 7 Item 1, below) — see the
+  updated count and reasoning there; the original 11 stands unchanged.
+- **3/16 named blockers — diagnostic, not failures, and cost nothing under Option B.** Each is a
   real, disclosed limitation to fix or accept later, not a defect to argue around now:
   - `networking-vpc`, `orchestrator-stepfunctions` — **cannot be planned standalone at all**, by
     either path. Each declares a data source that makes a genuine AWS API call at plan time
     (`data.aws_availability_zones`, `ValidateStateMachineDefinition`) that no dummy credential
     can satisfy. The known structural class: some resource types simply require a live account
     to plan, full stop.
-  - `compute-glue-etl`, `compaction-glue` — **a real, structural gap in the authored-content
-    mechanism itself**: `aws_s3_object.script` in each references `filemd5("${path.module}/
-    scripts/....py")`, a companion non-HCL asset file. The flat-root authored-file shape (one
-    `.tf` file per resource type, no module subdirectory) has no way to carry over a module-
-    relative asset — `path.module` resolves to the composition root, where the script was never
-    copied. A genuinely novel resource authored fresh would have no such pre-existing asset to
-    reference this way; this gap is specific to decomposing an EXISTING module that bundles one.
   - `table-format-iceberg` — **G2's own structural dynamic-block limitation**: a genuinely
     dynamic `dynamic "columns" { for_each = var.columns }` block that `schema_lint.py`
     deliberately cannot resolve statically (a dynamic block's real emitted attributes depend on
@@ -155,8 +150,43 @@ land in the staged path. Correct and safe; not evidence that autonomous generati
 yet. `docs/phase7_generation_engine_plan.md` sequences the work this implies; nothing about it is
 started.
 
-Nothing above authorizes new implementation. The planned arc is complete — no new phase starts
-without its own scope document and review, the same discipline held for all five before it.
+### 6. Phase 7 (the generation-engine plan) — Item 1 complete, reviewed and built
+
+`docs/phase7_generation_engine_plan.md` sequences the five gaps section 5 implies, in dependency
+order (item 5 — authoring — cannot start before the others, none of which are authoring work).
+Item 1, scoped separately (`docs/phase7_item1_module_unit_scope.md`) and approved, is done:
+
+- `authored_content`'s values now accept two forms. A plain `str` is the unchanged, existing
+  contract — every prior caller (5 tests in `test_synthesizer.py`, the Step 5 harness) passes
+  untouched, verified by re-running them, not assumed. A `dict` (`content`, optional `assets`,
+  optional `module_args`) is a real module-shaped unit: its own directory
+  (`authored_modules/<key>/`), so `path.module` resolves correctly and its `variable`/`output`
+  declarations get Terraform's own fresh namespace — not a boundary this project invented, the one
+  Terraform already has.
+- Wiring decision (b) with (a) as override, as approved: a unit's own variable named
+  `name_prefix`/`tags`/`owner`/`environment`/`region`/`run_id`/`daily_data_gb` auto-wires to the
+  matching root value; anything else needs an explicit `module_args` entry. A REQUIRED variable
+  (no default) matching neither → **hard block**, not a `# REVIEW:` placeholder — `_render_main()`'s
+  review-comment convention is right for a human-reviewed catalog module and wrong for a
+  generated one, per the correction that shaped this design.
+- New fail-closed check: a `path.module`-relative reference with no matching `assets` entry →
+  hard block, in `_validate_novel_resources()` alongside the existing checks.
+- **Proof bar met for real**: `compute-glue-etl` and `compaction-glue` — the two modules whose
+  `path.module`-relative script assets the flat form structurally could not carry — now compose
+  through the module form and plan-equivalence-match the catalog-copy path exactly
+  (`tests/test_teardown_regression_harness.py::test_module_form_closes_the_path_module_asset_
+  blockers`, both passing). The full 16-module harness re-run: **13 passed, 5 skipped, 0 failed**
+  (skips: 2 modules that cannot plan standalone by either path, `table-format-iceberg`'s separate
+  G2 dynamic-block gap, and the same 2 newly-closed modules skipped only in the OLDER
+  flat-decomposition parametrization, which still uses the flat form by design). `table-format-
+  iceberg` was explicitly not expected to close by this item, and didn't — its gap is G6 item 5's
+  question (dynamic blocks under G2), unrelated to the module-boundary work.
+
+Item 2 (`synthesize()`'s zero-catalog path) is next, same discipline: build, prove, report.
+
+Nothing above authorizes new implementation beyond what Phase 7's own scope docs have already
+been reviewed and approved for, item by item. Each remaining item still needs the same discipline
+this project has held throughout: no new phase or item starts without its own scope and review.
 
 > **2026-07-09: Databricks-on-AWS build (Phases 0–2b) done — blocked on external input, not
 > more code.** Terraform MCP wired (docs/schema lookups, `docker hashicorp/terraform-mcp-server`);

@@ -283,29 +283,111 @@ def _new_path_plan(module_id, tmp_path):
     return _real_plan_resource_changes(out_dir)
 
 
+def _read_companion_assets(module_id):
+    """Every non-main.tf file under a real catalog module's directory, keyed by its relative
+    path -- the exact shape authored_content's module form's `assets` map expects (docs/
+    phase7_item1_module_unit_scope.md)."""
+    src = os.path.join(dcg.MODULES_DIR, module_id)
+    assets = {}
+    for root, _dirs, files in os.walk(src):
+        for name in files:
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, src).replace(os.sep, "/")
+            if rel == "main.tf":
+                continue
+            with open(full, "rb") as f:
+                assets[rel] = f.read()
+    return assets
+
+
+def _module_args_from_required_variables(main_tf):
+    """dcg._required_variable_lines()'s own `  name = value` placeholder lines, parsed into a
+    dict -- reused directly (not re-derived) so the MODULE-form path is given the exact same
+    values the OLD catalog-copy path already uses for its own required-variable assignments
+    (_old_path_plan below), which is what makes the plan-equivalence comparison fair."""
+    args = {}
+    for line in dcg._required_variable_lines(main_tf):
+        name, _, value = line.strip().partition(" = ")
+        args[name] = value
+    return args
+
+
+def _new_module_form_plan(module_id, tmp_path):
+    """The authored-content MODULE form (docs/phase7_item1_module_unit_scope.md, approved): the
+    module's entire real main.tf routed through synthesizer.compose(authored_resources=...) as
+    ONE module-shaped unit -- its own directory (authored_modules/<module_id>/), its own
+    variable/output namespace, its real companion asset files copied alongside it -- instead of
+    _new_path_plan()'s flat per-type decomposition, which has no directory for `path.module` to
+    resolve against. Exists only for the modules the flat form structurally cannot reproduce;
+    see the (now closed) entries this replaces in _NEW_PATH_KNOWN_BLOCKERS below."""
+    src = os.path.join(dcg.MODULES_DIR, module_id)
+    main_tf = open(os.path.join(src, "main.tf"), encoding="utf-8").read()
+    patched = _strip_caller_identity(main_tf)
+
+    decision = dict(archdec.template(), selected_modules=[], novel_resources=[{
+        "resource_type": module_id,
+        "justification": "Phase 7 Item 1 harness -- real catalog module content routed through "
+                          "the module-shaped authored path for equivalence proof.",
+        "alternatives_considered": ["none -- this is the module's own real content"],
+        "grounding_examples": [module_id],
+    }], selected_architecture="teardown regression harness",
+        decision_summary="Phase 7 Item 1 harness -- proving path equivalence, not a real "
+                         "architecture decision.",
+        alternatives=[{"name": "n/a", "decision": "rejected", "reason": "harness"}],
+        assumptions=["harness-only"], risks=["none -- test fixture"],
+        sources=["docs/phase7_item1_module_unit_scope.md"])
+
+    authored_content = {module_id: {
+        "content": patched,
+        "assets": _read_companion_assets(module_id),
+        "module_args": _module_args_from_required_variables(main_tf),
+    }}
+    authored_resources = synthesizer._validate_novel_resources(decision, authored_content)
+
+    dst = tmp_path / "new_module_form"
+    dst.mkdir()
+    compose_result = synthesizer.compose(
+        [], f"harness-{module_id}", str(dst), owner="teardown-harness",
+        request=f"harness:{module_id}", authored_resources=authored_resources,
+    )
+
+    out_dir = compose_result["out_dir"]
+    versions = _DUMMY_VERSIONS
+    providers = _DUMMY_AWS_PROVIDER
+    if _uses_databricks(main_tf):
+        versions = _DUMMY_VERSIONS_WITH_DATABRICKS
+        providers += _DUMMY_DATABRICKS_PROVIDER
+    with open(os.path.join(out_dir, "versions.tf"), "w", encoding="utf-8") as f:
+        f.write(versions)
+    with open(os.path.join(out_dir, "providers.tf"), "w", encoding="utf-8") as f:
+        f.write(providers)
+
+    return _real_plan_resource_changes(out_dir)
+
+
 # Real, named blockers found RUNNING this harness (not hypothetical, not hacked around) --
 # per docs/phase6_step5_teardown_scope.md section 2: a module the current authored_content
 # mechanism can't reproduce to the same bar is a disclosed blocker, not something to paper over
 # by copying extra files into the flat-root composition to make the symptom disappear.
 _NEW_PATH_KNOWN_BLOCKERS = {
-    # Real, structural gap: the authored_content mechanism (docs/phase6_step1_authoring_scope.md
-    # section 2) writes one flat file per resource type at the composition ROOT -- it has no
-    # concept of "this resource also needs a companion non-HCL asset file located relative to
-    # the module directory." aws_s3_object.script's `filemd5("${path.module}/scripts/etl.py")`
-    # resolves `path.module` to the composition ROOT in the flat-file shape (there is no module
-    # subdirectory), where scripts/etl.py was never copied -- confirmed live, not assumed. A
-    # genuinely NOVEL resource authored fresh would have no such pre-existing companion asset to
-    # reference this way in the first place; this gap is specific to decomposing an EXISTING
-    # module that bundles one, which the harness does but real authoring wouldn't.
+    # compute-glue-etl and compaction-glue used to be listed here: the flat per-type
+    # decomposition _new_path_plan() uses (one root file per resource type, no module
+    # subdirectory) has no way to carry a companion asset file a `path.module`-relative
+    # reference needs (aws_s3_object.script's `filemd5("${path.module}/scripts/....py")`).
+    # CLOSED for real by Phase 7 Item 1 (docs/phase7_item1_module_unit_scope.md): the new
+    # module-shaped authored_content form gives the unit its own directory, so `path.module`
+    # resolves correctly -- see test_module_form_closes_the_path_module_asset_blockers below,
+    # which proves plan-equivalence for both using that form. Still skipped HERE because this
+    # parametrization specifically exercises the flat-decomposition path via _new_path_plan(),
+    # which still can't reproduce them (unchanged, by design -- the flat form stays simple for
+    # callers that don't need a module boundary).
     "compute-glue-etl": (
-        'aws_s3_object.script references `filemd5("${path.module}/scripts/etl.py")` -- a '
-        "companion asset file the flat-file authored_content mechanism has no way to carry "
-        "over (path.module resolves to the composition root, not a module subdirectory, in "
-        "this shape). Real, structural gap in the current mechanism, not a bug in this harness."
+        "flat-decomposition path only -- see test_module_form_closes_the_path_module_asset_"
+        "blockers for the real, now-passing proof via the module-shaped authored_content form."
     ),
     "compaction-glue": (
-        'aws_s3_object.script references `filemd5("${path.module}/scripts/compact.py")` -- the '
-        "same companion-asset-file gap as compute-glue-etl."
+        "flat-decomposition path only -- see test_module_form_closes_the_path_module_asset_"
+        "blockers for the real, now-passing proof via the module-shaped authored_content form."
     ),
     # Same real, disclosed G2 limitation already found and recorded in
     # tests/test_schema_lint.py::test_every_real_module_passes_g2_cleanly's own known-exceptions
@@ -338,5 +420,28 @@ def test_authored_path_is_plan_equivalent_to_catalog_copy_path(module_id, tmp_pa
     new_sig = _plan_signature(new_rc)
     assert new_sig == old_sig, (
         f"{module_id}: NEW path's plan is not equivalent to the OLD path's plan.\n"
+        f"only in OLD: {old_sig - new_sig}\nonly in NEW: {new_sig - old_sig}"
+    )
+
+
+# The proof bar Phase 7 Item 1's scope doc named explicitly (docs/phase7_item1_module_unit_scope
+# .md section 5): these two modules must move from a disclosed blocker to a real, unmodified
+# plan-equivalence pass via the module-shaped authored_content form -- not a test-only workaround.
+# table-format-iceberg is deliberately NOT included here: its blocker is G2's own dynamic-block
+# limitation (a separate, larger question the module-boundary work does not touch).
+@pytest.mark.parametrize("module_id", ["compute-glue-etl", "compaction-glue"])
+def test_module_form_closes_the_path_module_asset_blockers(module_id, tmp_path):
+    old_rc, old_err = _old_path_plan(module_id, tmp_path)
+    assert old_rc is not None, f"{module_id}: OLD (catalog-copy) path could not be planned -- {old_err}"
+
+    new_rc, new_err = _new_module_form_plan(module_id, tmp_path)
+    assert new_rc is not None, (
+        f"{module_id}: NEW module-shaped-unit path could not be planned -- {new_err}"
+    )
+
+    old_sig = _plan_signature(old_rc)
+    new_sig = _plan_signature(new_rc)
+    assert new_sig == old_sig, (
+        f"{module_id}: module-shaped-unit path's plan is not equivalent to the OLD path's plan.\n"
         f"only in OLD: {old_sig - new_sig}\nonly in NEW: {new_sig - old_sig}"
     )

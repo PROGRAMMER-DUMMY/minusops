@@ -345,18 +345,40 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
                       + (f'  # from requirements: "{volume_source}" (upper bound)' if volume_source else ""))
     _w("terraform.tfvars", "\n".join(tfvars) + "\n")
 
-    # Authored (novel) resources -- each gets its own file at the composition root: a discrete,
-    # independently reviewable unit (docs/phase6_step1_authoring_scope.md section 2 item 1), not
-    # folded into main.tf and not wrapped in a synthetic child module -- these are typically
-    # standalone resources, and inventing a variables.tf/module-input contract for a resource
-    # type nobody has designed call-site wiring for yet would be scope creep past what this
-    # step actually needs. Written before the fmt pass below so authored HCL gets the same
-    # fmt-clean treatment as every catalog module's rendered output.
+    # Authored (novel) resources. Two forms (docs/phase7_item1_module_unit_scope.md):
+    #   - "flat" (docs/phase6_step1_authoring_scope.md section 2 item 1): a standalone resource
+    #     with no input contract of its own gets its own file at the composition root, sharing
+    #     the root's variables/locals directly -- unchanged since Step 1.
+    #   - "module": a unit that declares its own variable/output/locals needs a real module
+    #     boundary (Terraform's own scoping, not one this project invents) so `path.module`
+    #     resolves against ITS directory and its variables don't collide with the root's --
+    #     written into authored_modules/<key>/, plus any companion assets its HCL references,
+    #     called from a root-level `module "authored_<key>" { ... }` block.
+    # Written before the fmt pass below so authored HCL gets the same fmt-clean treatment as
+    # every catalog module's rendered output.
     for entry in authored_resources:
         text = entry["content"]
         if not text.endswith("\n"):
             text += "\n"
-        _w(f"authored_{entry['resource_type']}.tf", text)
+        if entry.get("form") == "module":
+            unit_key = entry["resource_type"]
+            unit_dir = os.path.join(out_dir, "authored_modules", unit_key)
+            os.makedirs(unit_dir, exist_ok=True)
+            with open(os.path.join(unit_dir, "main.tf"), "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            for rel_path, asset_content in entry.get("assets", {}).items():
+                asset_path = os.path.join(unit_dir, rel_path)
+                os.makedirs(os.path.dirname(asset_path), exist_ok=True)
+                if isinstance(asset_content, bytes):
+                    with open(asset_path, "wb") as f:
+                        f.write(asset_content)
+                else:
+                    with open(asset_path, "w", encoding="utf-8", newline="\n") as f:
+                        f.write(asset_content)
+            _w(f"authored_{unit_key}.tf",
+               _render_authored_module_call(unit_key, text, entry.get("module_args", {})))
+        else:
+            _w(f"authored_{entry['resource_type']}.tf", text)
 
     # Emit fmt-clean output so `plan_gate verify` (terraform fmt -check) passes without a
     # manual formatting step. Best-effort: composition still succeeds without terraform.
@@ -404,8 +426,8 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
         "modules": [m["id"] for m in chosen],
         "review": review,
         "authored_resources": [
-            {"resource_type": e["resource_type"], "decision_source": e["decision_source"],
-             "content_hash": e["content_hash"]}
+            {"resource_type": e["resource_type"], "form": e.get("form", "flat"),
+             "decision_source": e["decision_source"], "content_hash": e["content_hash"]}
             for e in authored_resources
         ],
     }
@@ -464,6 +486,79 @@ def _update_workflow(run, result):
     return record
 
 
+# Well-known root-level values every composition already declares (compose()'s own _VARIABLES /
+# _render_main()'s locals block) -- docs/phase7_item1_module_unit_scope.md section 3, decision
+# (b): a module-shaped authored unit's own variable gets auto-wired to the matching root value
+# when its name matches one of these exactly, so a future authoring step can't get this wrong by
+# emitting a variable name without also emitting a matching wiring entry (that mismatch would be
+# a new failure class that doesn't exist for catalog modules, which get the identical auto-wire
+# treatment via _module_args() above). Anything not name-matched needs an explicit module_args
+# entry or a default; option (a), the override, still applies for those.
+_AUTO_WIRE_ROOT_VALUES = {
+    "name_prefix": "local.name_prefix",
+    "tags": "local.tags",
+    "owner": "var.owner",
+    "environment": "var.environment",
+    "region": "var.region",
+    "run_id": "var.run_id",
+    "daily_data_gb": "var.daily_data_gb",
+}
+
+_VARIABLE_BLOCK_RE = re.compile(r'^variable\s+"([^"]+)"\s*\{', re.MULTILINE)
+# Matches the interpolated-string form this repo's real modules actually use
+# (`filemd5("${path.module}/scripts/etl.py")`) -- the only form found in the catalog.
+_PATH_MODULE_ASSET_RE = re.compile(r'\$\{path\.module\}/([^"\'\s)]+)')
+
+
+def _matching_brace_offset(content, start):
+    """Same brace-depth walk as schema_lint._matching_brace -- duplicated rather than imported
+    (a private helper) since this is a handful of lines and avoids coupling this module's parsing
+    to schema_lint's internals."""
+    depth = 1
+    i = start
+    while depth > 0 and i < len(content):
+        if content[i] == "{":
+            depth += 1
+        elif content[i] == "}":
+            depth -= 1
+        i += 1
+    return i
+
+
+def _iter_variable_blocks(content):
+    """Yield (name, body) for every top-level `variable "name" { ... }` block in an authored
+    module unit's HCL -- used to decide what needs wiring at the call site (auto-wire /
+    module_args / has-a-default) and, in compose(), what to actually emit in the module call."""
+    for m in _VARIABLE_BLOCK_RE.finditer(content):
+        end = _matching_brace_offset(content, m.end())
+        yield m.group(1), content[m.end():end - 1]
+
+
+def _variable_has_default(body):
+    return re.search(r"^\s*default\s*=", body, re.MULTILINE) is not None
+
+
+def _path_module_asset_refs(content):
+    return set(_PATH_MODULE_ASSET_RE.findall(content))
+
+
+def _render_authored_module_call(unit_key, hcl_text, module_args):
+    """The root-level `module "authored_<x>" { source = "./authored_modules/<unit_key>" ... }`
+    block wiring a module-shaped authored unit's own declared variables -- explicit module_args
+    wins, then the well-known auto-wire set, then (validated already in
+    _validate_novel_resources()) the variable's own default. Only variables the unit actually
+    declares are emitted -- Terraform rejects a module argument with no matching input variable."""
+    lines = [f'module "authored_{_label(unit_key)}" {{', f'  source = "./authored_modules/{unit_key}"']
+    for var_name, _body in _iter_variable_blocks(hcl_text):
+        if var_name in module_args:
+            lines.append(f"  {var_name} = {module_args[var_name]}")
+        elif var_name in _AUTO_WIRE_ROOT_VALUES:
+            lines.append(f"  {var_name} = {_AUTO_WIRE_ROOT_VALUES[var_name]}")
+    lines.append("}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _validate_novel_resources(decision, authored_content):
     """Resolve architecture_decision.json's `novel_resources` (docs/
     phase6_step1_authoring_scope.md section 1) against caller-supplied `authored_content` --
@@ -483,6 +578,27 @@ def _validate_novel_resources(decision, authored_content):
         actual schema-content check -- a hallucinated/nonexistent type surfaces there as
         `unknown_type`, already blocking.
 
+    An `authored_content` entry may also be a module-shaped unit (docs/
+    phase7_item1_module_unit_scope.md), not just a plain HCL string: a dict with `content` (the
+    HCL text -- can declare its own resource/data/variable/output/locals blocks together, exactly
+    like a real catalog module's own main.tf), optional `assets` (relative path -> file content,
+    for anything the HCL's own `path.module` references need), and optional `module_args`
+    (explicit wiring for a declared variable, overriding the auto-wire set). Two additional
+    fail-closed checks apply ONLY to this form, both new with this extension:
+
+      - A `path.module`-relative asset reference with no matching `assets` entry -> hard block.
+        This is the exact gap the Step 5 regression harness named as a real, structural blocker
+        (compute-glue-etl/compaction-glue's `filemd5("${path.module}/scripts/....py")`) -- a
+        composition that silently omitted the referenced file would produce HCL that fails at
+        plan time, which is the same "parses fine, still wrong" shape every other fail-closed
+        check in this project exists to catch.
+      - A REQUIRED variable (no default) that is neither in `module_args` nor a name-matched
+        auto-wire value -> hard block, NOT a `# REVIEW:` placeholder. `_render_main()`'s
+        REVIEW-comment convention is correct for catalog modules (a human wrote and is reviewing
+        them); it is wrong here -- an authoring step, not a human, would be the one leaving a
+        required input unfilled, and composing anyway would either fail at plan or silently take
+        an unintended default. Same fail-closed posture as every other check in this function.
+
     Returns the list of authored_resources dicts `compose()`/`_write_manifest()` expect.
     """
     # Imported lazily, not at module level, to avoid a real circular import (found running
@@ -498,14 +614,23 @@ def _validate_novel_resources(decision, authored_content):
     authored_resources = []
     for i, entry in enumerate(novel_resources):
         resource_type = entry.get("resource_type", "")
-        content = authored_content.get(resource_type)
-        if content is None:
+        raw = authored_content.get(resource_type)
+        if raw is None:
             raise ValueError(
                 f"novel_resources entry '{resource_type}' has no matching authored_content -- "
                 "fail-closed: synthesis refuses to proceed without authored HCL for every "
                 "declared novel resource"
             )
         source_label = f"novel_resources[{i}]:{resource_type}"
+        is_module_unit = isinstance(raw, dict)
+        if is_module_unit:
+            content = raw.get("content", "")
+            assets = raw.get("assets") or {}
+            module_args = raw.get("module_args") or {}
+        else:
+            content = raw
+            assets = {}
+            module_args = {}
         if not list(schema_lint.iter_hcl_blocks(content)):
             raise ValueError(
                 f"authored content for novel resource '{resource_type}' declares no "
@@ -517,9 +642,33 @@ def _validate_novel_resources(decision, authored_content):
                 f"authored content for novel resource '{resource_type}' failed G2 schema lint "
                 f"({source_label}): {lint_result['findings']}"
             )
+        if is_module_unit:
+            referenced = _path_module_asset_refs(content)
+            missing_assets = sorted(referenced - set(assets.keys()))
+            if missing_assets:
+                raise ValueError(
+                    f"authored module unit '{resource_type}' references path.module-relative "
+                    f"asset(s) with no matching entry in 'assets' ({source_label}): "
+                    f"{missing_assets}"
+                )
+            unresolved_required = [
+                var_name for var_name, body in _iter_variable_blocks(content)
+                if not _variable_has_default(body)
+                and var_name not in module_args
+                and var_name not in _AUTO_WIRE_ROOT_VALUES
+            ]
+            if unresolved_required:
+                raise ValueError(
+                    f"authored module unit '{resource_type}' has required variable(s) with no "
+                    f"default, no module_args entry, and no well-known auto-wire match "
+                    f"({source_label}): {sorted(unresolved_required)}"
+                )
         authored_resources.append({
             "resource_type": resource_type,
+            "form": "module" if is_module_unit else "flat",
             "content": content,
+            "assets": assets,
+            "module_args": module_args,
             "justification": entry.get("justification", ""),
             "decision_source": f"novel_resources[{i}]",
             "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
