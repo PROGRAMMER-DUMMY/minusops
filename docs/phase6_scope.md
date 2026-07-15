@@ -180,6 +180,16 @@ directly against each gate's actual implementation, not its intent:
 
 ### 4.1 G5's autonomy boundary is fail-OPEN on any resource type it hasn't been told about — the single most severe gap
 
+> **SUPERSEDED — closed in Step 0 (2026-07-14).** This section describes the PRE-fix
+> architecture, kept verbatim below for history. `AUTO_SHIP_ELIGIBLE_TYPES` was added as the real
+> gate; `STATEFUL_RESOURCE_TYPES`/`IAM_RESOURCE_TYPES` were demoted to annotation-only. A type in
+> neither danger set AND not in `AUTO_SHIP_ELIGIBLE_TYPES` now correctly routes to
+> `unreviewed_resource_type` → `autonomous_eligible=False`, proven with a real
+> `dynamodb_table` fail-before/pass-after test, CI green. **Do not read this section as live
+> state** — see `core/governance/destructive_change_gate.py`'s own docstring (2026-07-14 entry)
+> and `docs/phase7_generation_engine_plan.md`'s Banked section for the current, verified
+> behavior.
+
 `destructive_change_gate.py`'s own docstring is explicit about this scope: *"Scoped deliberately
 to what MinusOps' own 16 modules can actually produce today... not a general-purpose
 cloud-resource classifier. Extend this list when a new module introduces a new data-bearing or

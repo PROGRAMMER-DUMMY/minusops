@@ -112,24 +112,22 @@ Not designed here. This scope only names the dependency: whatever authors HCL pl
 extended seam, through item 2's fixed entry point, informed by item 3's resolved (not inert)
 requirements input and item 4's live schema check. Building this before 1–4 land would repeat the
 exact pattern the survey was commissioned to catch — a capability aimed at a seam that can't carry
-its output.
+its output. Its only real prerequisite is items 1–4 above — not a G5 fix, which is already done
+(see Banked, below): `docs/phase6_scope.md` §4.1 described a fail-open gap that Step 0
+(2026-07-14) closed. That section is now marked superseded; it should not be read as live.
 
-One prerequisite from Phase 6's own scope doc still applies and is restated, not re-litigated:
-`docs/phase6_scope.md` §4.1 already found G5's `destructive_change_gate.classify()` fail-**open**
-on any resource type outside its 41-type reviewed universe — a genuinely novel type sails through
-as `autonomous_eligible` purely because the classifier has never heard of it. That gap must close
-before item 5 can safely author a type outside today's 41; it was already flagged as a
-prerequisite to authoring, not a parallel task, and this plan does not change that ordering.
+## Banked: G5's fail-closed posture, confirmed against current code
 
-## Banked: G5's fail-closed posture confirmed for what it does cover
-
-The survey re-verified `classify()`'s actual branches directly (not from memory): a type in none
-of its named sets, not `databricks_`-prefixed, falls to `reason = "unreviewed_resource_type"` →
-`autonomous_eligible` evaluates `False`. **Confirmed: a genuinely novel resource type always
-stages, never ships autonomously, today.** The Step 0 fail-closed fix holds. This is a different
-statement from §4.1 above — the classifier is honest about what it doesn't recognize; the gap is
-that "doesn't recognize" and "not in the two named danger sets" are treated as the same case, and
-the second one is much broader than the first.
+The survey re-verified `classify()`'s actual branches directly (not from memory, not from
+`phase6_scope.md`'s now-stale §4.1): a type in none of `STATEFUL_RESOURCE_TYPES`/
+`IAM_RESOURCE_TYPES` AND not in `AUTO_SHIP_ELIGIBLE_TYPES` (the reviewed-safe allowlist added in
+Step 0) falls to `reason = "unreviewed_resource_type"` → `autonomous_eligible` evaluates `False`.
+**Confirmed: a genuinely novel resource type always stages, never ships autonomously, today.**
+This has been true since Step 0, proven then with the `dynamodb_table` fail-before/pass-after
+test, CI green — it is closed, not pending, and item 5 has no outstanding gate prerequisite
+beyond items 1–4. Post-Step-0, "doesn't recognize" (not in `AUTO_SHIP_ELIGIBLE_TYPES`) and "in one
+of the two named danger sets" are correctly two different, separately-reasoned cases — that
+distinction was the entire point of Step 0's fix, not a residual gap.
 
 ## The coverage reality, and what it means for the autonomy story
 
@@ -149,7 +147,8 @@ auto-shippable without checking whether coverage grew to cover what was actually
 
 ## Ordering invariant
 
-1 → 2 → 3 → 4 → 5, as sequenced above. Item 5 additionally requires `docs/phase6_scope.md` §4.1's
-G5 fail-open gap to be closed before it authors any resource type outside today's 41 — restated,
-not newly imposed. No implementation starts on any item until this plan is reviewed and agreed.
-Nothing in this document authorizes writing code.
+1 → 2 → 3 → 4 → 5, as sequenced above. Item 5's only real prerequisite is items 1–4; G5's fail-
+open gap that an earlier scope doc (`docs/phase6_scope.md` §4.1) once named as a prerequisite was
+already closed in Step 0 and is not a gate on this plan (see Banked, above). No implementation
+starts on any item until this plan is reviewed and agreed. Nothing in this document authorizes
+writing code.
