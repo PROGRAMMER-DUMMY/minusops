@@ -113,6 +113,15 @@ every time beats checked once-if-ever.
   silently invisible to `_g6_shadow_eval()`'s divergence report and the audit log, if its ID isn't
   also added to the fixed tuple those loops iterate over. Adding a rule to `rules.rego` is not the
   same as adding it everywhere its ID needs to be known.
+- **Confidence a task is "trivial" is inversely correlated with the scrutiny it gets — treat that
+  as a warning, not a green light.** Item 4 (`get_type_schema()`) was called "thin" by the survey,
+  the plan, and the reviewer alike, three separate times, and still shipped two real bugs on the
+  first pass: composing with `_reduce()` as literally specified would have silently returned a
+  drift-comparison summary instead of real schema attributes (`_reduce_full`, the name everyone
+  had been carrying forward, doesn't even exist), and the first implementation returned the raw
+  `{"version": N, "block": {...}}` wrapper instead of unwrapping it. Both were caught only because
+  the function got the exact same "read the real code, write the real test, run it for real"
+  treatment as everything else in this project — "small" is not a reason to skip that.
 
 ### 5. Two findings from the 2026-07-15 ground-truth survey, escalated as present-day facts
 
