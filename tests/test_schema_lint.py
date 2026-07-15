@@ -678,11 +678,15 @@ def test_gate_module_no_warning_on_first_ever_pin_nothing_to_compare(fake_module
 
 
 # ---------------------------------------------------------------------------
-# module_provenance.py CLI wiring: pin refuses on a blocking G2 verdict, never writes
-# PROVENANCE.json, and never calls pin() at all.
+# module_provenance.py CLI wiring: G2 no longer GATES `pin` (docs/phase6_step5_teardown_scope.md
+# section 3, 2026-07-15) -- it still runs, still prints a loud warning on a blocking verdict, and
+# still records the result in PROVENANCE.json (g2_blocking/g2_findings), but never refuses to
+# write the record. See module_provenance.py's own module docstring ("RETIRED AS A GATE") for the
+# full reasoning: only 2 of this repo's 16 real catalog modules were ever actually pinned in the
+# first place, so "pinned means G2-checked" was never a fact the rest of the catalog relied on.
 # ---------------------------------------------------------------------------
 
-def test_cli_pin_refuses_on_blocking_lint(fake_module, monkeypatch, capsys):
+def test_cli_pin_proceeds_on_blocking_lint_and_records_it(fake_module, monkeypatch, capsys):
     _write(fake_module, 'resource "aws_ghost_resource" "b" {}\n')
     monkeypatch.setattr(schema_lint, "_fetch_schema", lambda provider, workdir: (_stub_schema(), "6.54.0"))
     monkeypatch.setattr(module_provenance, "_module_dir",
@@ -690,9 +694,12 @@ def test_cli_pin_refuses_on_blocking_lint(fake_module, monkeypatch, capsys):
 
     rc = module_provenance.main(["pin", "--module", "widget", "--source", "test"])
 
-    assert rc == 1
-    assert "REFUSED" in capsys.readouterr().err
-    assert not (fake_module / "PROVENANCE.json").exists()
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "blocking finding" in err
+    on_disk = json.loads((fake_module / "PROVENANCE.json").read_text(encoding="utf-8"))
+    assert on_disk["g2_blocking"] is True
+    assert on_disk["g2_findings"]
 
 
 def test_cli_pin_proceeds_and_auto_fills_schema_hash_when_clean(fake_module, monkeypatch, capsys):
@@ -823,3 +830,52 @@ def test_gate_content_is_byte_identical_to_gate_module_for_every_real_module(mod
         f"{module_id}: gate_content() diverged from gate_module() -- the disk-read/lint-logic "
         f"split changed behavior.\nvia_module={via_module}\nvia_content={via_content}"
     )
+
+
+# ---------------------------------------------------------------------------
+# G2 per-module "is clean" (docs/phase6_step5_teardown_scope.md section 1.3): the parity test
+# above proves the two call paths AGREE with each other -- it does not itself assert either one
+# is actually clean. That every real module passes G2 today was, until this test, an inference
+# ("they're pinned, so they must be clean") rather than a regression-tested fact. This is a real
+# prerequisite for the Step 5 teardown harness, which depends on being able to say "the old
+# path's G2 result was clean" as a checked baseline, not an assumption.
+#
+# REAL FINDING, not hypothetical: running this test found that only 2 of the 16 real modules
+# (`databricks-workspace`, `networking-vpc`) actually carry a `PROVENANCE.json` at all -- the
+# other 14, including this exception, were added to the catalog without ever being run through
+# `pin()`'s G2 gate. "Every real module is pinned and clean" was never a checked fact; this test
+# is what makes it one, and it surfaced exactly the gap that assumption was hiding.
+# ---------------------------------------------------------------------------
+
+_G2_KNOWN_EXCEPTIONS = {
+    # aws_glue_catalog_table.this's storage_descriptor declares a genuinely dynamic
+    # `dynamic "columns" { for_each = var.columns }` block -- real, user-configurable schema
+    # (var.columns has no fixed shape), not something to rewrite into a static block just to
+    # dodge this finding. schema_lint.py's own design deliberately reports every dynamic block
+    # as unparseable_reference rather than silently skipping it, since a dynamic block's real
+    # emitted attributes depend on evaluating its for_each expression, which is not statically
+    # resolvable -- a structural G2 limitation, not a bug in this module or this test. No
+    # PROVENANCE.json exists for this module (confirmed live) -- it was never actually pinned.
+    "table-format-iceberg": (
+        'aws_glue_catalog_table.this has a genuinely dynamic "columns" block driven by '
+        "var.columns -- schema_lint.py structurally cannot resolve a dynamic block's emitted "
+        "attributes statically, by design, and reports it as unparseable_reference. Real, "
+        "disclosed, pre-existing gap: this module was never pinned (no PROVENANCE.json) and "
+        "was never actually G2-clean."
+    ),
+}
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+@pytest.mark.parametrize("module_id", [
+    pytest.param(m["id"], marks=pytest.mark.xfail(
+        strict=True, reason=_G2_KNOWN_EXCEPTIONS[m["id"]]))
+    if m["id"] in _G2_KNOWN_EXCEPTIONS else m["id"]
+    for m in module_registry.list_modules()
+])
+def test_every_real_module_passes_g2_cleanly(module_id):
+    result = schema_lint.gate_module(module_id)
+    assert result["blocking"] is False, (
+        f"{module_id}: G2 is not clean on the real catalog content -- {result['findings']}"
+    )
+    assert result["findings"] == []

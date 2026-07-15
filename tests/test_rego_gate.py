@@ -23,11 +23,15 @@ stub, prove it once against reality" split established throughout this session.
 """
 import json
 import os
+import re
+import shutil
 import subprocess
 
 import pytest
 
+import modules as module_registry
 import rego_gate
+import test_destructive_change_gate as dcg
 import toolpath
 
 OPA = toolpath.find_tool("opa")
@@ -971,3 +975,149 @@ resource "aws_s3_bucket_policy" "preexisting_policy" {
     assert len(findings) == 2
     assert by_address["aws_s3_bucket_policy.fresh_policy"]["finding_kind"] == "field_unresolved"
     assert by_address["aws_s3_bucket_policy.preexisting_policy"]["finding_kind"] == "standard"
+
+
+# ---------------------------------------------------------------------------
+# G6 16-module zero-false-positive proof, CODIFIED (docs/phase6_step5_teardown_scope.md section
+# 1.3): `docs/g6_iam_extension_scope.md` section 7.2 proved this once, by hand, in prose -- real
+# evidence, but never re-verified by CI the way G5's and G2's 16-module proofs are. This makes it
+# a real, automated, parametrized regression test, same shape as those two, using the exact
+# methodology section 7.2 named: real `terraform plan` + `show -json` with dummy AWS/Databricks
+# credentials, NOT `mock_provider`/`terraform test` -- mock_provider supplies synthetic computed
+# values that misrepresent the real after_unknown behavior SEC-06/07/08/09/10's fail-closed
+# design depends on (confirmed live this session, not assumed).
+# ---------------------------------------------------------------------------
+
+_CALLER_IDENTITY_BLOCK_RE = re.compile(
+    r'data\s+"aws_caller_identity"\s+"[A-Za-z0-9_]+"\s*\{\s*\}\s*\n?')
+_CALLER_IDENTITY_REF_RE = re.compile(r'data\.aws_caller_identity\.[A-Za-z0-9_]+\.account_id')
+
+_DUMMY_AWS_PROVIDER = '''
+provider "aws" {
+  region                       = "us-east-1"
+  access_key                   = "test"
+  secret_key                   = "test"
+  skip_credentials_validation  = true
+  skip_requesting_account_id   = true
+  skip_metadata_api_check      = true
+}
+'''
+
+_DUMMY_DATABRICKS_PROVIDER = '''
+provider "databricks" {
+  host       = "https://accounts.cloud.databricks.com"
+  account_id = "00000000-0000-0000-0000-000000000000"
+}
+'''
+
+# Real, disclosed, pre-existing gaps, not introduced by this test: each of these modules
+# declares a data source that makes a genuine AWS API call at plan time no dummy credential can
+# satisfy (confirmed live, not assumed) -- neither module can be planned standalone this way.
+_CANNOT_PLAN_STANDALONE = {
+    "orchestrator-stepfunctions": (
+        "aws_sfn_state_machine triggers a real ValidateStateMachineDefinition AWS API call at "
+        "plan time that dummy credentials cannot satisfy -- disclosed, pre-existing gap, not "
+        "introduced by this test (docs/g6_iam_extension_scope.md section 7.2)."
+    ),
+    "networking-vpc": (
+        "data.aws_availability_zones.available triggers a real EC2 DescribeAvailabilityZones "
+        "API call at plan time -- confirmed live, dummy credentials get a real 401 AuthFailure "
+        "from the actual AWS endpoint, not a local/offline failure. Real, disclosed gap found "
+        "while codifying this test, not a new one this test introduces."
+    ),
+}
+
+# Real, known, pre-existing findings this test's own first run confirmed against the actual
+# catalog content (not asserted from prose) -- distinguishes "zero FALSE positives" (the real
+# claim docs/g6_iam_extension_scope.md section 7.2 made) from "zero findings at all" (a
+# stricter, wrong claim this test must not silently encode). Each entry is a real, explained,
+# non-regression finding; a module producing anything ELSE (or missing one of these) is a real
+# regression this test must catch, not paper over.
+_KNOWN_REAL_FINDINGS = {
+    "databricks-workspace": {
+        # Pre-existing since Phase 3 (docs/g6_scope.md), independent of this session's IAM/KMS/S3
+        # extension -- databricks-workspace's own root storage bucket has no lifecycle policy.
+        ("COST-01", "aws_s3_bucket.root_storage_bucket"),
+        # The exact finding docs/g6_iam_extension_scope.md section 7.2 predicted and confirmed:
+        # a pre-existing Resource == "*" IAM finding, not a new false positive from the
+        # Action == "*" extension.
+        ("SEC-02", "aws_iam_role_policy.cross_account_role"),
+    },
+}
+
+
+def _strip_caller_identity(content):
+    """Terraform reads every declared data source at plan time regardless of whether its output
+    is referenced -- data.aws_caller_identity is a real STS GetCallerIdentity call dummy
+    credentials cannot satisfy, so the block itself must go, not just its references (the real
+    bug docs/g6_iam_extension_scope.md section 7.2 found and fixed the first time this ran)."""
+    content = _CALLER_IDENTITY_BLOCK_RE.sub("", content)
+    content = _CALLER_IDENTITY_REF_RE.sub('"000000000000"', content)
+    return content
+
+
+def _uses_databricks(main_tf_content):
+    return ('source  = "databricks/databricks"' in main_tf_content
+            or 'source = "databricks/databricks"' in main_tf_content)
+
+
+def _real_plan_for_module(module_id, tmp_path):
+    """Real, standalone terraform plan for one catalog module, dummy AWS/Databricks credentials,
+    no mock_provider. Returns (plan_json, None) on success, or (None, detail) if this module
+    cannot be planned standalone this way."""
+    src = os.path.join(dcg.MODULES_DIR, module_id)
+    main_tf = open(os.path.join(src, "main.tf"), encoding="utf-8").read()
+    dst = tmp_path / module_id
+    shutil.copytree(src, dst)
+
+    patched = _strip_caller_identity(main_tf)
+    if patched != main_tf:
+        (dst / "main.tf").write_text(patched, encoding="utf-8")
+
+    var_lines = dcg._required_variable_lines(main_tf)
+    (dst / "terraform.tfvars").write_text("\n".join(var_lines) + "\n", encoding="utf-8")
+
+    providers = _DUMMY_AWS_PROVIDER
+    if _uses_databricks(main_tf):
+        providers += _DUMMY_DATABRICKS_PROVIDER
+    (dst / "_test_providers.tf").write_text(providers, encoding="utf-8")
+
+    init = subprocess.run([TERRAFORM, f"-chdir={dst}", "init", "-input=false"],
+                          capture_output=True, text=True, timeout=120)
+    if init.returncode != 0:
+        return None, f"init failed: {(init.stderr or init.stdout).strip()[:2000]}"
+
+    plan = subprocess.run([TERRAFORM, f"-chdir={dst}", "plan", "-out=tfplan", "-input=false"],
+                         capture_output=True, text=True, timeout=120)
+    if plan.returncode != 0:
+        return None, f"plan failed: {(plan.stderr or plan.stdout).strip()[:2000]}"
+
+    show = subprocess.run([TERRAFORM, f"-chdir={dst}", "show", "-json", "tfplan"],
+                          capture_output=True, text=True, timeout=60)
+    if show.returncode != 0:
+        return None, f"show failed: {show.stderr.strip()[:2000]}"
+    return json.loads(show.stdout), None
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+@pytest.mark.parametrize("module_id", [
+    pytest.param(m["id"], marks=pytest.mark.skip(reason=_CANNOT_PLAN_STANDALONE[m["id"]]))
+    if m["id"] in _CANNOT_PLAN_STANDALONE else m["id"]
+    for m in module_registry.list_modules()
+])
+def test_g6_zero_false_positives_across_real_catalog(module_id, tmp_path):
+    plan_json, err = _real_plan_for_module(module_id, tmp_path)
+    assert plan_json is not None, f"{module_id}: could not produce a real standalone plan -- {err}"
+
+    result = rego_gate.evaluate(plan_json)
+    assert result["evaluation_failed"] is False, result
+
+    non_unresolved = [f for f in result["findings"] if f.get("finding_kind") != "field_unresolved"]
+    actual = {(f["id"], f["resource"]) for f in non_unresolved}
+    expected = _KNOWN_REAL_FINDINGS.get(module_id, set())
+    assert actual == expected, (
+        f"{module_id}: G6's non-unresolved findings diverged from the known-real baseline -- "
+        f"expected {expected}, got {actual}. New/missing entries here are a real regression "
+        f"(a new false positive, or a previously-real finding that silently stopped firing), "
+        f"not something to allowlist without re-verifying it against real catalog content."
+    )

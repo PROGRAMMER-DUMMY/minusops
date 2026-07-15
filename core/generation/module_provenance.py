@@ -9,14 +9,30 @@ Plumbing for the "fetch live docs at module-update time, never at synthesis time
 after hand-editing or MCP-assisted-updating a module under modules/<id>/. This computes a
 content hash over the module's current files and writes modules/<id>/PROVENANCE.json,
 recording *what* informed this version (source, provider version constraint, notes) and
-*when*, and bumping the version counter. From that point the module is a static, pinned
-artifact like every other module in the catalog — synthesizer.py copies its files verbatim,
-it is never re-fetched or re-generated at plan/apply time.
+*when*, and bumping the version counter.
+
+RETIRED AS A GATE (docs/phase6_step5_teardown_scope.md section 3, 2026-07-15): `pin`'s CLI used
+to REFUSE to write a record at all if G2 (schema_lint.gate_module()) found a blocking issue.
+Two real facts, verified against the actual catalog before deciding this, not assumed: (1) only
+2 of this repo's 16 real modules (`databricks-workspace`, `networking-vpc`) have ever actually
+been pinned at all — the other 14 were added directly, bypassing this gate entirely, so "pinned
+means G2-checked" was never true for most of the catalog; (2) nothing anywhere in this codebase
+calls `verify()` automatically — a pin, once written, is never re-checked against later drift
+either. `pin()`'s entire value proposition was "trust this content because it was checked once,
+here, and nothing has changed since" — a proposition this repo's own real usage never actually
+relied on. The retirement's replacement is stronger, not weaker: G2 (`gate_content()`) re-checks
+live, at the point ANY content is actually drawn on for composition or authoring (docs/
+phase6_step1_authoring_scope.md, docs/phase6_step5_teardown_scope.md section 4) — a fresh check
+every time beats a stale one-time pin every time. `pin` now ALWAYS records (a maintainer's own
+decision to keep this version cannot be second-guessed by this tool), but still runs G2 and
+records what it found (`g2_blocking`/`g2_findings`) as part of the historical record, printed
+loudly, not silently swallowed — a real, useful signal for a human reader, just never a refusal.
 
 `verify` recomputes the hash and compares it to what's recorded — drift detection for a
 module whose files changed without a matching pin (e.g. a hand-edit that forgot to re-run
 `pin`), the same tamper-evidence idea audit_chain.py and plan_gate.py's plan-hash already use
-elsewhere in this codebase, applied to the module catalog itself.
+elsewhere in this codebase, applied to the module catalog itself. Still useful as a historical
+diagnostic; never wired as an enforced gate anywhere either.
 
 This file does not talk to any MCP server, AWS API, or Terraform Registry — `--source` and
 `--provider-version` are maintainer-supplied strings. The actual live-fetch step (Terraform
@@ -83,12 +99,16 @@ def _upgrades_dir():
     return os.path.join(module_registry.output_root(), _UPGRADES_DIRNAME)
 
 
-def pin(module_id, source, provider_version=None, notes=None, schema_hash=None):
-    """Record a new pinned version of module_id. Bumps `version` by 1 (starts at 1).
+def pin(module_id, source, provider_version=None, notes=None, schema_hash=None,
+        g2_blocking=None, g2_findings=None):
+    """Record a new pinned version of module_id. Bumps `version` by 1 (starts at 1). Never
+    refuses (see module docstring's "RETIRED AS A GATE") -- always writes a record.
 
     `schema_hash` is optional and caller-supplied (e.g. by schema_watch.py, from that module's
     slice of a live-fetched provider schema) -- this function never talks to a live source
-    itself, per the module docstring above.
+    itself, per the module docstring above. `g2_blocking`/`g2_findings` are likewise
+    caller-supplied (the CLI passes its own `schema_lint.gate_module()` result) -- a historical
+    record of what G2 found AT PIN TIME, not a live guarantee about now.
 
     When this call is a real re-pin (content_hash changed from the previously recorded one, not
     a first-ever pin), also writes an upgrades/<module_id>-v<new_version>.json report recording
@@ -109,6 +129,8 @@ def pin(module_id, source, provider_version=None, notes=None, schema_hash=None):
         "provider_version": provider_version,
         "notes": notes,
         "pinned_at": pinned_at,
+        "g2_blocking": g2_blocking,
+        "g2_findings": g2_findings,
     }
     with open(_provenance_path(module_dir), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2)
@@ -171,26 +193,28 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.cmd == "pin":
-        # G2 (docs/g2_scope.md): gates the pin CLI action, not the pin() function itself --
-        # pin() stays a pure, offline-testable record-writer (existing tests construct
-        # synthetic modules and pass schema_hash explicitly with no live fetch); the live,
-        # blocking schema check lives here, at the actual operator-facing action, mirroring
-        # how destructive_change_gate.classify() stays pure while plan_gate.py's stage_apply
-        # is what enforces it. Imported lazily to avoid a module-level import cycle (schema_
-        # lint.py itself imports this module, for the previous-schema_hash WARN comparison).
+        # G2 (docs/g2_scope.md) NO LONGER GATES this action (docs/phase6_step5_teardown_scope.md
+        # section 3, "RETIRED AS A GATE" -- see module docstring): still run, still recorded,
+        # still printed loudly -- a maintainer choosing to pin content G2 flags is a real,
+        # visible fact in the historical record, never silently swallowed, but this tool no
+        # longer second-guesses that choice by refusing to write it. Imported lazily to avoid a
+        # module-level import cycle (schema_lint.py itself imports this module, for the
+        # previous-schema_hash WARN comparison).
         import schema_lint
         lint = schema_lint.gate_module(args.module)
         if lint["blocking"]:
-            print(f"[module_provenance] G2 REFUSED to pin {args.module!r} -- "
-                  f"{len(lint['findings'])} blocking finding(s):", file=sys.stderr)
+            print(f"[module_provenance] G2 found {len(lint['findings'])} blocking finding(s) "
+                  f"for {args.module!r} -- pinning anyway (not a gate), recorded in "
+                  "PROVENANCE.json's g2_blocking/g2_findings for the historical record:",
+                  file=sys.stderr)
             for f_ in lint["findings"]:
                 print(f"  - {f_}", file=sys.stderr)
-            return 1
         for w in lint["warnings"]:
             print(f"[module_provenance] G2 warning: {w}", file=sys.stderr)
         schema_hash = args.schema_hash if args.schema_hash is not None else lint["schema_hash"]
         record = pin(args.module, args.source, args.provider_version, args.notes,
-                     schema_hash=schema_hash)
+                     schema_hash=schema_hash, g2_blocking=lint["blocking"],
+                     g2_findings=lint["findings"])
         print(json.dumps(record, indent=2))
         return 0
 

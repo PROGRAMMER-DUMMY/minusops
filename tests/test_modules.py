@@ -104,3 +104,42 @@ def test_get_and_categories():
     assert modules.get_module("storage-medallion-s3")["category"] == "storage"
     assert modules.get_module("does-not-exist") is None
     assert "orchestration" in modules.categories()
+
+
+# ---------------------------------------------------------------------------
+# retrieve_grounding_examples() (docs/phase6_step5_teardown_scope.md section 3): match_modules()
+# repurposed toward retrieval-for-grounding, additive -- the scorer itself is untouched, this is
+# just a different consumer of its ranking.
+# ---------------------------------------------------------------------------
+
+def test_retrieve_grounding_examples_ranks_the_same_as_match_modules():
+    req = "athena sql for analysts"
+    ranked_ids = [m["id"] for m in modules.match_modules(req)]
+    examples = modules.retrieve_grounding_examples(req, top_n=5)
+    assert [e["id"] for e in examples] == ranked_ids[:5]
+
+
+def test_retrieve_grounding_examples_includes_real_module_content():
+    examples = modules.retrieve_grounding_examples("athena sql for analysts", top_n=1)
+    assert len(examples) == 1
+    assert examples[0]["id"] == "query-athena"
+    with open(os.path.join(modules.module_dir("query-athena"), "main.tf"), encoding="utf-8") as f:
+        real_content = f.read()
+    assert examples[0]["content"] == real_content
+
+
+def test_retrieve_grounding_examples_respects_top_n():
+    examples = modules.retrieve_grounding_examples(
+        "airflow pipeline with data quality and schema enforcement", top_n=2)
+    assert len(examples) <= 2
+
+
+def test_retrieve_grounding_examples_never_selects_by_itself():
+    """Repurposing toward retrieval must never become a selection decision on its own (docs/
+    phase6_scope.md section 2.1's own non-negotiable) -- match_modules() itself is completely
+    untouched by this addition, still usable for final-selection exactly as before."""
+    req = "airflow pipeline with data quality and schema enforcement"
+    before = modules.match_modules(req)
+    modules.retrieve_grounding_examples(req)
+    after = modules.match_modules(req)
+    assert before == after

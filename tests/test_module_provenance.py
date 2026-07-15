@@ -1,11 +1,23 @@
 """
 module_provenance.py pins a module's content hash + who/what informed it, and detects drift
 if the module's files change without a matching re-pin.
+
+RETIRED AS A GATE (docs/phase6_step5_teardown_scope.md section 3, 2026-07-15): the `pin` CLI
+used to refuse to write a record at all on a blocking G2 finding. It no longer does -- see the
+module's own docstring for the reasoning (only 2 of 16 real catalog modules were ever actually
+pinned in the first place, so "pinned means G2-checked" was never a fact the rest of the catalog
+relied on). The tests below prove the NEW behavior: G2 still runs, still gets recorded, but never
+refuses.
 """
 import json
 
+import pytest
+
 import module_provenance
 import modules as module_registry
+import toolpath
+
+TERRAFORM = toolpath.find_tool("terraform")
 
 
 def _make_module(tmp_path, module_id, content="resource \"aws_s3_bucket\" \"b\" {}\n"):
@@ -186,3 +198,52 @@ def test_repin_with_unchanged_content_writes_no_upgrade_report(tmp_path, monkeyp
     module_provenance.pin("widget", source="v2")
 
     assert not (tmp_path / "upgrades").exists()
+
+
+# ---------------------------------------------------------------------------
+# G2 retirement as a gate (docs/phase6_step5_teardown_scope.md section 3): pin() records what G2
+# found, but never refuses on it -- neither the pure function nor the CLI action.
+# ---------------------------------------------------------------------------
+
+def test_pin_records_g2_findings(tmp_path, monkeypatch):
+    _patch_registry(monkeypatch, tmp_path)
+    _make_module(tmp_path, "widget")
+
+    record = module_provenance.pin(
+        "widget", source="v1", g2_blocking=True,
+        g2_findings=[{"finding": "unknown_type", "type": "resource:aws_totally_made_up"}],
+    )
+
+    assert record["g2_blocking"] is True
+    assert record["g2_findings"] == [{"finding": "unknown_type", "type": "resource:aws_totally_made_up"}]
+    on_disk = json.loads((tmp_path / "widget" / "PROVENANCE.json").read_text(encoding="utf-8"))
+    assert on_disk["g2_blocking"] is True
+
+
+def test_pin_defaults_g2_fields_to_none(tmp_path, monkeypatch):
+    _patch_registry(monkeypatch, tmp_path)
+    _make_module(tmp_path, "widget")
+
+    record = module_provenance.pin("widget", source="v1")
+
+    assert record["g2_blocking"] is None
+    assert record["g2_findings"] is None
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_cli_pin_proceeds_despite_a_real_blocking_g2_finding(tmp_path, monkeypatch, capsys):
+    """The load-bearing proof this retirement is real, not just a docstring claim: a genuinely
+    G2-blocking module (a hallucinated, nonexistent resource type -- schema_lint.py's own
+    unknown_type finding, real and live-schema-verified, not a stub) must still pin successfully.
+    Before this retirement, main(["pin", ...]) would have returned 1 and written nothing."""
+    _patch_registry(monkeypatch, tmp_path)
+    _make_module(tmp_path, "widget", content='resource "aws_totally_made_up_type" "x" {\n  name = "x"\n}\n')
+
+    rc = module_provenance.main(["pin", "--module", "widget", "--source", "cli-test"])
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "blocking finding" in err
+    on_disk = json.loads((tmp_path / "widget" / "PROVENANCE.json").read_text(encoding="utf-8"))
+    assert on_disk["g2_blocking"] is True
+    assert on_disk["g2_findings"]

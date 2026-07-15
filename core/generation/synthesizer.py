@@ -26,7 +26,6 @@ import audit_chain
 import modules as module_registry
 import requirements as reqgate
 import runs
-import schema_lint
 import source_guard
 
 LOG_DIR = os.path.join(os.getcwd(), ".agents", "logs")
@@ -306,8 +305,13 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
     authored_resources = authored_resources or []
     chosen = [module_registry.get_module(i) for i in module_ids]
     chosen = [m for m in chosen if m]
-    if not chosen:
-        raise ValueError("no valid modules selected")
+    if not chosen and not authored_resources:
+        # Real, pre-existing gap fixed here: this check predates authored_resources (docs/
+        # phase6_step1_authoring_scope.md) and was never updated for it -- a composition can be
+        # entirely authored content with zero catalog picks (the Step 5 regression harness is
+        # exactly this case), which is not "nothing valid to compose," only "nothing FROM THE
+        # CATALOG to compose."
+        raise ValueError("no valid modules or authored resources selected")
     present_ids = {m["id"] for m in chosen}
 
     os.makedirs(out_dir, exist_ok=True)
@@ -481,6 +485,14 @@ def _validate_novel_resources(decision, authored_content):
 
     Returns the list of authored_resources dicts `compose()`/`_write_manifest()` expect.
     """
+    # Imported lazily, not at module level, to avoid a real circular import (found running
+    # tests/test_schema_watch.py standalone, pre-existing since Step 1, not introduced here):
+    # schema_watch.py imports synthesizer; schema_lint.py imports FROM schema_watch
+    # (_fetch_schema et al); a module-level `import schema_lint` here completes the cycle in
+    # the one order that breaks (schema_watch imported first, before schema_lint has fully
+    # initialized). module_provenance.py already uses this exact same lazy-import fix for the
+    # identical reason -- see its own `pin` CLI handler.
+    import schema_lint
     novel_resources = (decision or {}).get("novel_resources") or []
     authored_content = authored_content or {}
     authored_resources = []

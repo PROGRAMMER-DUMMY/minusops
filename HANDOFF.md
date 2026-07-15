@@ -1236,6 +1236,68 @@
 > relocated, or retired — this is scope only, awaiting the user's explicit call on the one
 > open decision, per their own explicit instruction not to default either way.**
 
+> **DECIDED (2026-07-15): Option B.** Recorded, loudly and permanently, per explicit
+> instruction: **Phase 6 delivered a validated, safety-netted composition pipeline. The
+> GENERATION ENGINE that turns a requirement into novel HCL is NOT built and is named future
+> work.** `synthesizer.synthesize(authored_content=...)` validates and composes HCL a human or
+> external agent already wrote; nothing in this codebase decides what to write from a
+> requirement. **"Capability-equivalent path" must never be read as "we generate now."** The
+> catalog stays the real composition source — `compose()` keeps copying from `modules/<id>/` for
+> every module, unconditionally, regardless of any proof result below. **The trigger for
+> revisiting Option A, written down as the trigger, not left implicit: the moment a real
+> authoring mechanism exists that can independently supply equivalent HCL content — not before.**
+>
+> Everything option-independent, proceeded and built for real:
+>
+> 1. **The regression-baseline harness** (`tests/test_teardown_regression_harness.py`) exists and
+>    ran against all 16 real modules: **11/16 proof-ready** (real terraform plan, both the
+>    catalog-copy path and the authored-content path, produce identical (type, name, action)
+>    signatures) — `governance-observability`, `storage-medallion-s3`, `query-athena`,
+>    `dq-great-expectations`, `schema-registry-glue`, `speed-layer-kinesis`, `ingest-firehose`,
+>    `compute-emr-serverless`, `consumption-redshift-serverless`, `orchestrator-mwaa`,
+>    `databricks-workspace`. **5/16 are named, disclosed blockers, none hacked around**:
+>    `networking-vpc`/`orchestrator-stepfunctions` cannot be planned standalone with dummy
+>    credentials at all (each triggers a genuine AWS API call at plan time — `data.aws_
+>    availability_zones`, `ValidateStateMachineDefinition`); `compute-glue-etl`/`compaction-glue`
+>    hit a real, structural gap in the current authored-content mechanism (a companion asset file
+>    referenced via `path.module`-relative `filemd5(...)`, which the flat-root authoring shape has
+>    no way to carry over); `table-format-iceberg` trips G2's own structural dynamic-block
+>    limitation (below).
+> 2. **Both G2/G6 test-gap prerequisites closed FIRST, as required, and both surfaced a real,
+>    previously-unknown fact**: only 2 of 16 modules (`databricks-workspace`, `networking-vpc`)
+>    have EVER actually been pinned — the other 14 were added to the catalog directly, bypassing
+>    `pin()`'s G2 gate entirely. "Every real module is pinned and clean" was an assumption, not a
+>    checked fact, until these tests existed. G2 per-module clean
+>    (`tests/test_schema_lint.py::test_every_real_module_passes_g2_cleanly`): 15/16, with
+>    `table-format-iceberg` a real, disclosed `xfail(strict=True)` exception — a genuinely dynamic
+>    `dynamic "columns" { for_each = var.columns }` block G2 structurally cannot resolve
+>    statically, never pinned, never actually clean. G6 16-module zero-FP, codified into a real
+>    regression test (`tests/test_rego_gate.py::test_g6_zero_false_positives_across_real_catalog`,
+>    replacing 2026-07-14's one-time prose proof): 14/16 plannable, 0 unexpected findings;
+>    `databricks-workspace` produces exactly 2 real, known, pre-existing findings (`COST-01`
+>    missing lifecycle policy, `SEC-02` pre-existing wildcard IAM resource), recorded as an
+>    explicit baseline, not silently allowlisted.
+> 3. **`module_provenance.py`'s `pin()` gate retired** — it no longer refuses on a blocking G2
+>    finding; it always records, now including the G2 verdict as historical fact
+>    (`g2_blocking`/`g2_findings`), printed loudly. Proven with a real, live-schema-verified
+>    blocking fixture, not a stub. Reasoning: only 2/16 modules were ever gated by this in the
+>    first place, and nothing anywhere calls `verify()` automatically either — the "trust once,
+>    forever" model this retires was never the safety net it appeared to be.
+> 4. **`match_modules()` repurposed toward retrieval** — additive: `modules.
+>    retrieve_grounding_examples()` returns the top-N ranked modules as real reference content,
+>    proven to leave `match_modules()`'s own selection output byte-identical. Not wired into
+>    anything yet (there is nothing to wire it into until a real authoring mechanism exists).
+> 5. **`source_guard.py` and `compose()`'s copy-path confirmed correctly unchanged** — the one
+>    real code fix made was unrelated to the copy-path itself: `compose()`'s "at least one thing
+>    composed" guard predated `authored_resources` and never accounted for it (`if not chosen:
+>    raise` → `if not chosen and not authored_resources: raise`), found while building the
+>    regression harness, needed for it to run at all.
+>
+> Full detail, the harness's own per-module table, and every real bug found along the way:
+> `docs/phase6_step5_teardown_scope.md`. G6's shadow-only status and its own separate,
+> still-open enforcement-flip decision remain unaffected. G9's LocalStack fidelity column stays
+> unverified pending a provisioned paid account.
+
 > **2026-07-02 (later): ALL ROADMAP PHASES SHIPPED + PUSHED** (`c31fe53`…`c50d787`).
 > Phase B (volume wiring, budget check, showback tags, drift alert), loopholes #1/#2
 > (sandbox-account gate, audited guard refresh), Phase C (tier-aware conformance

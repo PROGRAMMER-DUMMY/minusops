@@ -273,6 +273,41 @@ def match_modules(requirements, min_score=1):
     return sorted(scored, key=lambda x: x["score"], reverse=True)
 
 
+def retrieve_grounding_examples(requirements, top_n=3, min_score=1):
+    """Repurposes `match_modules()`'s scoring toward retrieval-for-grounding (docs/
+    phase6_scope.md section 2.1, docs/phase6_step5_teardown_scope.md section 3) -- additive, not
+    a rewrite: the scorer itself is untouched and still used exactly as-is by every existing
+    caller (`synthesizer.select_modules()`, `patterns.py`) for final catalog-pick selection.
+
+    This is a DIFFERENT consumer of the same ranking: given a requirement, return the top-N
+    ranked modules as real, human-reviewed reference examples -- their actual `main.tf` content,
+    not just metadata -- for whatever authors new HCL to ground against (real wiring patterns,
+    attribute shapes, cross-resource conventions), architecturally the retrieval step of a RAG
+    pipeline. Never a selection decision by itself: nothing calls this to decide what to compose;
+    `architecture_decision.json`'s human-reviewed record stays the only path to that (docs/
+    phase6_scope.md section 2.1's own explicit non-negotiable).
+
+    Returns a list of {id, title, services, score, matched, content} dicts, best-first. `content`
+    is the module's real, current `main.tf` text -- read fresh every call, never cached, so a
+    grounding example is never staler than the catalog itself (the same "re-verify live, don't
+    trust from history" principle this session's `module_provenance.py` retirement established
+    for content review applies here too, for content RETRIEVAL)."""
+    ranked = match_modules(requirements, min_score=min_score)
+    examples = []
+    for m in ranked[:top_n]:
+        main_tf_path = os.path.join(module_dir(m["id"]), "main.tf")
+        try:
+            with open(main_tf_path, encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            content = None
+        examples.append({
+            "id": m["id"], "title": m["title"], "services": m["services"],
+            "score": m["score"], "matched": m["matched"], "content": content,
+        })
+    return examples
+
+
 def module_dir(module_id):
     for root in _candidate_module_roots():
         path = os.path.join(root, module_id)
