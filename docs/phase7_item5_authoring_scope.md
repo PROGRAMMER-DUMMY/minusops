@@ -6,6 +6,24 @@ pivot was for and the one piece never built: everything in items 1–4 made the 
 real content and made a real requirements-driven decision honestly scoped — none of it decides
 what HCL to write. This document has to answer, concretely, what does.
 
+> **CORRECTION (2026-07-16), after the checks/audit-record below were already built:** Section 1
+> as originally written assumed MinusOps would embed its own LLM API client (an Anthropic SDK
+> call, its own model choice, its own credentials) to do the authoring. That is wrong for this
+> project — **MinusOps is operated THROUGH an agentic CLI tool** (Claude Code, Codex, agy, etc.),
+> not run as a standalone LLM app. The driving agent already has full authoring capability; it
+> does not need MinusOps to make a second, separate LLM call on its own. What it needs is the
+> same real, live context a human author would want — the declared type's live provider schema
+> and real grounding examples from this codebase's own reviewed modules — surfaced as a plain,
+> callable function (`synthesizer.assemble_authoring_context()`) and a matching CLI subcommand
+> (`synthesizer.py author-context <resource_type> <requirements>`). The driving agent reads that
+> context, writes the HCL itself, and hands it back through the exact same `authored_content`
+> interface every other caller of `synthesize()` already uses — nothing about that interface
+> changes. Everything below section 1 (the INVARIANT, the fail-closed checks, the no-retry
+> decision, the proof bar) is UNCHANGED and still applies — it was never actually about *how* the
+> call happens, only about what a caller's authored output must satisfy. Only "an LLM call this
+> project makes on its own" is struck; replace every reading of that phrase below with "whatever
+> agent is driving the session, using `assemble_authoring_context()`'s output."
+
 ## 1. What actually authors
 
 **Named concretely: an LLM call**, not a template engine and not a decision tree. Justified by

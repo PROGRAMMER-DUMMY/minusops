@@ -450,11 +450,6 @@ def test_write_authoring_record_preserves_a_blocked_attempt_with_its_reason(tmp_
     assert open(output_path, encoding="utf-8").read() == bad_output
 
 
-import toolpath  # noqa: E402
-
-TERRAFORM = toolpath.find_tool("terraform")
-
-
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
 def test_write_authoring_record_carries_the_real_measured_full_size_payload(tmp_path, monkeypatch):
     """docs/phase7_item5_authoring_scope.md section 1 cites 8,996 bytes for a live
@@ -515,6 +510,58 @@ def test_write_authoring_record_carries_the_real_measured_full_size_payload(tmp_
 
     ok, errors = audit_chain.verify(log_path)
     assert ok, errors
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Item 5, revised (docs/phase7_item5_authoring_scope.md section 1): MinusOps is operated
+# THROUGH an agentic CLI tool (Claude Code, Codex, agy, etc.) -- it does not embed its own LLM
+# client. assemble_authoring_context() is the real surface: it hands a driving agent the same
+# live schema + grounding context a human author would want, so that agent can write
+# authored_content itself and feed it back through synthesize()'s existing interface, unchanged.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_assemble_authoring_context_returns_real_schema_and_grounding_for_a_known_type():
+    context = synthesizer.assemble_authoring_context(
+        "aws_dynamodb_table", "needs a low-latency lookup table",
+        "s3 storage data lake bucket")
+
+    assert context["blocked"] is False
+    assert context["detail"] == ""
+    assert context["resource_type"] == "aws_dynamodb_table"
+    assert "hash_key" in context["schema"]["attributes"]
+    assert len(context["grounding_examples"]) >= 1
+    assert "content" in context["grounding_examples"][0]
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_assemble_authoring_context_blocks_before_grounding_for_an_unknown_type():
+    context = synthesizer.assemble_authoring_context(
+        "aws_totally_made_up_type", "irrelevant", "irrelevant requirements text")
+
+    assert context["blocked"] is True
+    assert context["schema"] is None
+    assert context["grounding_examples"] == []
+    assert "does not exist in the live provider schema" in context["detail"]
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_author_context_cli_prints_json_and_exits_zero_for_a_known_type(capsys):
+    rc = synthesizer.main(["author-context", "aws_dynamodb_table", "s3 storage data lake"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert out["blocked"] is False
+    assert out["resource_type"] == "aws_dynamodb_table"
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_author_context_cli_exits_nonzero_for_an_unknown_type(capsys):
+    rc = synthesizer.main(["author-context", "aws_totally_made_up_type", "irrelevant"])
+    out = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert out["blocked"] is True
 
 
 # ---------------------------------------------------------------------------

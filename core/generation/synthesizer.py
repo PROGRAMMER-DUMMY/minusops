@@ -110,6 +110,45 @@ def write_authoring_record(run, resource_type, justification, schema_block, grou
         print(f"[architect] WARNING: could not write authoring audit record: {exc}", file=sys.stderr)
         return rec
 
+
+# Phase 7 Item 5 (docs/phase7_item5_authoring_scope.md section 1, revised): the authoring
+# mechanism is NOT an API call this project makes on its own. MinusOps is operated THROUGH an
+# agentic CLI tool (Claude Code, Codex, agy, etc.) -- that driving agent already has full
+# authoring capability; it does not need MinusOps to embed its own separate LLM client,
+# credentials, or model choice. What it DOES need is the same real, live context a human author
+# would want: the declared type's actual provider schema and real grounding examples from this
+# codebase's own reviewed modules. `assemble_authoring_context()` is exactly that surface -- a
+# thin, callable (and CLI-exposed, see `main()`'s `author-context` subcommand) function that
+# returns this context as plain JSON, so whatever agent is driving the session reads it, writes
+# the HCL itself, and hands it back through the SAME `authored_content` interface every other
+# caller of synthesize() already uses. Nothing about that interface changes -- this only answers
+# "where does an authoring agent get the schema+grounding it needs," not "who authors."
+def assemble_authoring_context(resource_type, justification, requirements_text, provider="aws"):
+    """Returns {resource_type, justification, schema, grounding_examples, blocked, detail}.
+
+    `blocked=True` (schema is None) means the pre-authoring schema-exists check (docs/
+    phase7_item5_authoring_scope.md section 4) already fired -- the declared type does not exist
+    in the live provider schema, so there is nothing to author against and no context is worth
+    handing to an authoring agent; `detail` names why. This is the SAME check
+    `_validate_novel_resources()` runs later for any caller's authored_content, surfaced here
+    up front so an authoring agent (or a human) finds out before spending effort writing HCL for
+    a type that will hard-block regardless."""
+    import schema_watch
+    schema_block = schema_watch.get_type_schema(provider, resource_type)
+    if schema_block is None:
+        return {
+            "resource_type": resource_type, "justification": justification,
+            "schema": None, "grounding_examples": [], "blocked": True,
+            "detail": f"resource_type '{resource_type}' does not exist in the live provider schema",
+        }
+    grounding_examples = module_registry.retrieve_grounding_examples(requirements_text)
+    return {
+        "resource_type": resource_type, "justification": justification,
+        "schema": schema_block, "grounding_examples": grounding_examples,
+        "blocked": False, "detail": "",
+    }
+
+
 # A small set of obvious cross-module wirings applied when both modules are present.
 # Module block labels use underscores (hyphens are awkward in HCL references).
 _STORAGE = "module.storage_medallion_s3"
@@ -923,8 +962,34 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     return result
 
 
+def _main_author_context(argv):
+    """`synthesizer.py author-context <resource_type> <requirements> [--justification ...]` --
+    prints the live schema + grounding examples an authoring agent needs (docs/
+    phase7_item5_authoring_scope.md section 1, revised). Makes no external call and authors
+    nothing itself; the driving agent (Claude Code, Codex, agy, etc.) reads this JSON, writes
+    the HCL, and feeds it back into synthesize()'s existing `authored_content` interface."""
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="synthesizer.py author-context",
+        description="Print the live schema + grounding examples for a declared novel resource "
+                     "type, for whatever agent is driving this session to author against.")
+    ap.add_argument("resource_type", help="e.g. aws_dynamodb_table")
+    ap.add_argument("requirements", help="free-text requirements summary, for grounding retrieval")
+    ap.add_argument("--justification", default="",
+                    help="the human-reviewed justification from architecture_decision.json's novel_resources entry")
+    ap.add_argument("--provider", default="aws")
+    args = ap.parse_args(argv)
+    context = assemble_authoring_context(
+        args.resource_type, args.justification, args.requirements, provider=args.provider)
+    print(json.dumps(context, indent=2))
+    return 1 if context["blocked"] else 0
+
+
 def main(argv=None):
     import argparse
+    peek = argv if argv is not None else sys.argv[1:]
+    if peek and peek[0] == "author-context":
+        return _main_author_context(peek[1:])
     ap = argparse.ArgumentParser(description="Compose vetted modules into governed Terraform")
     ap.add_argument("requirements", help="free-text requirements summary (from grill-me)")
     ap.add_argument("--requirements-file", default=None,

@@ -323,13 +323,26 @@ verdict. Built, in the approved order — checks first, then the audit record, L
   left to whoever wired the loop): a failed check is a hard stop, never silently discarded and
   never retried into something that happens to pass.
 
-**Deliberately not built yet: the actual call to a live LLM.** This is a different class of
-action than everything above — a real external API integration (provider, credentials, real
-cost, a genuinely non-deterministic external call happening for real) — not more Python logic
-with a clear test boundary. It needs its own explicit go-ahead (which provider/API, whether to
-spend real API credits, prompt content) before being wired in, the same way any other
-consequential, hard-to-reverse action in this project gets confirmed first rather than assumed
-authorized by a general "build it."
+**Correction, same day: the "actual LLM call" was scoped wrong.** The first pass assumed MinusOps
+would embed its own Anthropic SDK client (model choice, its own credentials, a system/user
+prompt) to do the authoring — flagged as needing its own go-ahead given the real cost and
+external non-determinism involved. The user corrected the premise: **MinusOps is operated
+THROUGH an agentic CLI tool (Claude Code, Codex, agy, etc.), not run as a standalone LLM app.**
+The driving agent already has full authoring capability — it does not need MinusOps to make a
+second, separate LLM call on its own, and the SDK-based code (installed, wired, one proof-payload
+test passing) was removed before any real API call was made.
+
+**Built instead: `synthesizer.assemble_authoring_context()`** plus a matching CLI subcommand
+(`synthesizer.py author-context <resource_type> <requirements>`) — the real surface a driving
+agent needs: the declared type's live provider schema (Item 4's `get_type_schema()`, with the
+same pre-authoring schema-exists hard block, checked before handing back any context) and real
+grounding examples (`retrieve_grounding_examples()`), returned as plain JSON. The agent reads it,
+writes the HCL itself, and feeds it back through the *exact same* `authored_content` interface
+every other caller of `synthesize()` already used — nothing about that interface changed. Every
+fail-closed check, the no-retry decision, and the proof bar from the original scope survive
+unchanged; only "who/how the call happens" was ever wrong. Item 5 is now fully closed: the
+mechanism is real, callable, tested (4 new tests, terraform-gated like the rest of Item 4/5's
+suite), and makes no external call or spend of its own.
 
 Nothing above authorizes new implementation beyond what Phase 7's own scope docs have already
 been reviewed and approved for, item by item. Each remaining item still needs the same discipline
