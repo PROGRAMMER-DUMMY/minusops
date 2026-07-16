@@ -197,6 +197,16 @@ Not "the generator produced plausible HCL." Every item below is a checkable fact
    arguments at all). Output containing a `range_key` and `read_capacity`/`write_capacity` cannot
    be the fixture reproduced — it can only be a real response to the actual request, which is
    what makes "fresh" a checkable assertion instead of a claim.
+
+   **"Differs from the fixture" and "not hand-typed" are two separate properties, and this item
+   requires BOTH** (caught 2026-07-16, see run log below): the content must ALSO be verifiably
+   the product of a real authoring invocation — not typed directly into a script or test file by
+   whoever is running the proof bar, however that person/agent happens to be an LLM. The bytes
+   must come from the mechanism's own output (e.g. a real model response, checkable via non-zero
+   real token usage, response metadata, or an equivalent non-fakeable signal for whatever the
+   mechanism turns out to be), not from the orchestrating agent composing HCL in advance with
+   full knowledge of what the checks require. Differing parameters prove the fixture wasn't
+   reused; they do not by themselves prove a generation mechanism ran at all.
 2. The pre-authoring `get_type_schema()` check passes (the type is confirmed real before
    authoring is attempted).
 3. The authored content passes every existing `_validate_novel_resources()` check: non-zero
@@ -216,6 +226,32 @@ Not "the generator produced plausible HCL." Every item below is a checkable fact
    alone, without needing to re-run anything.
 10. The result is reported as what it is: **the pipeline correctly refusing to trust unproven
     output** — matching section 3, so this is never later misread as a shortfall.
+
+### Run log — 2026-07-16, corrected
+
+A run was performed under the redesigned architecture (§1's correction: `assemble_authoring_
+context()` + `synthesizer.py author-context` supply the schema/grounding; the driving agent
+authors). The driving agent (this session) fetched real context via that surface, then wrote the
+`aws_dynamodb_table` HCL directly into a demonstration script itself, with full advance knowledge
+of every proof-bar requirement.
+
+**That run does NOT satisfy item 1 or close Item 5.** It is functionally identical to hand-typing
+`_VALID_DYNAMODB_HCL` — the fact that the agent doing the typing happens to be an LLM does not
+make the act an authoring *invocation*; no generation mechanism ran, callable or otherwise. What
+it DID prove, honestly: **the pipeline validated end-to-end against hand-authored novel HCL** —
+seam, `_validate_novel_resources()`'s checks, G1 (real `terraform validate`), G5 (real plan,
+`unreviewed_resource_type`/`autonomous_eligible: False`), G9 (`unverified`), and the audit chain,
+all real, all on a real `terraform plan`. That is the same thing this project has been able to do
+since Step 1's `_VALID_DYNAMODB_HCL` fixture — valuable as a pipeline proof, not a substitute for
+proving the generator, because the generator was never actually invoked. Item 7 (G6) was
+separately, correctly reported as inconclusive in that run (`opa` not installed in the local dev
+environment — a tooling gap, not a functional one; `policy/g6/rules.rego` has zero rules matching
+`aws_dynamodb_table`, confirmed by static read, so "zero rules fire" is the expected result once
+this is actually run somewhere `opa` is present).
+
+The run is being kept (not discarded) as real evidence the pipeline half of Item 5 works. Item 5
+itself remains open until an actual authoring invocation — one whose output the orchestrating
+agent did not already know in advance — produces the content that goes through this same path.
 
 ## What this scope does not decide
 
