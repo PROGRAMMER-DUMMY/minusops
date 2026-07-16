@@ -450,6 +450,73 @@ def test_write_authoring_record_preserves_a_blocked_attempt_with_its_reason(tmp_
     assert open(output_path, encoding="utf-8").read() == bad_output
 
 
+import toolpath  # noqa: E402
+
+TERRAFORM = toolpath.find_tool("terraform")
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_write_authoring_record_carries_the_real_measured_full_size_payload(tmp_path, monkeypatch):
+    """docs/phase7_item5_authoring_scope.md section 1 cites 8,996 bytes for a live
+    get_type_schema('aws', 'aws_dynamodb_table') fetch and ~4.5KB for two real grounding
+    example bodies as MEASURED, not assumed. This proves it against the real functions, not a
+    hand-typed stand-in: a real live schema fetch and real catalog module content, run through
+    write_authoring_record() and the real audit chain, confirming the pointer/hash pattern holds
+    at the actual size these payloads run at, not just at toy-fixture size."""
+    import runs
+    import audit_chain
+    import schema_watch
+    import modules as module_registry
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(synthesizer, "LOG_DIR", str(tmp_path / "logs"))
+    run = runs.new_run(blueprint="test", request="x")
+
+    schema_block = schema_watch.get_type_schema("aws", "aws_dynamodb_table")
+    assert schema_block is not None
+    grounding_examples = module_registry.retrieve_grounding_examples(
+        "s3 storage data lake bucket", top_n=2, min_score=1)
+    assert len(grounding_examples) >= 1
+
+    schema_json = json.dumps(schema_block, sort_keys=True, indent=2)
+    grounding_json = json.dumps(grounding_examples, sort_keys=True, indent=2)
+    # Confirm this run's payload is genuinely at (or beyond) the measured scale the scope
+    # doc cites -- not accidentally exercising a tiny schema/empty grounding list instead.
+    assert len(schema_json.encode("utf-8")) > 5000
+    assert len(grounding_json.encode("utf-8")) > 1000
+
+    raw_output = (
+        'resource "aws_dynamodb_table" "novel" {\n'
+        '  name         = "orders"\n'
+        '  billing_mode = "PAY_PER_REQUEST"\n'
+        '  hash_key     = "id"\n'
+        '  attribute {\n    name = "id"\n    type = "S"\n  }\n'
+        '}\n'
+    )
+
+    rec = synthesizer.write_authoring_record(
+        run, "aws_dynamodb_table", "needs a low-latency lookup table",
+        schema_block, grounding_examples, raw_output, verdict="authored",
+    )
+
+    schema_path = os.path.join(run["root"], rec["schema_ref"])
+    grounding_path = os.path.join(run["root"], rec["grounding_ref"])
+    assert json.load(open(schema_path, encoding="utf-8")) == schema_block
+    assert json.load(open(grounding_path, encoding="utf-8")) == grounding_examples
+
+    # The chain entry itself stays small (pointer + hash), never the bulk content inlined --
+    # the whole point of the pattern the scope doc describes.
+    log_path = os.path.join(str(tmp_path / "logs"), "audit.jsonl")
+    with open(log_path, encoding="utf-8") as f:
+        lines = f.readlines()
+    last_entry = json.loads(lines[-1])
+    assert len(lines[-1].encode("utf-8")) < 2000
+    assert last_entry["schema_hash"] == rec["schema_hash"]
+
+    ok, errors = audit_chain.verify(log_path)
+    assert ok, errors
+
+
 # ---------------------------------------------------------------------------
 # Phase 7 Item 1 (docs/phase7_item1_module_unit_scope.md) -- authored_content's module-shaped
 # unit. The flat str form above is completely unchanged (see tests above, all still passing
