@@ -406,10 +406,12 @@ def test_write_authoring_record_writes_real_files_with_matching_hashes(tmp_path,
     rec = synthesizer.write_authoring_record(
         run, "aws_dynamodb_table", "needs a low-latency lookup table",
         schema_block, grounding_examples, raw_output, verdict="authored",
+        driving_agent="claude-code",
     )
 
     assert rec["resource_type"] == "aws_dynamodb_table"
     assert rec["verdict"] == "authored"
+    assert rec["driving_agent"] == "claude-code"
 
     schema_path = os.path.join(run["root"], rec["schema_ref"])
     grounding_path = os.path.join(run["root"], rec["grounding_ref"])
@@ -446,6 +448,9 @@ def test_write_authoring_record_preserves_a_blocked_attempt_with_its_reason(tmp_
 
     assert rec["verdict"] == "blocked"
     assert rec["detail"] == "does not declare a matching resource/data block"
+    # driving_agent is optional and agent-neutral: omitting it (as here) defaults to "" --
+    # MinusOps never requires or validates a value against a known set of agents.
+    assert rec["driving_agent"] == ""
     output_path = os.path.join(run["root"], rec["output_ref"])
     assert open(output_path, encoding="utf-8").read() == bad_output
 

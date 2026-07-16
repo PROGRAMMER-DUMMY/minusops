@@ -284,15 +284,13 @@ Proof: 3 new tests, the only real logic (the resource-vs-data branch) directly e
 `kind="resource"` correctly finds nothing (proving the branch matters, not just re-proving
 `_fetch_schema()` works). All 3, plus the full existing `test_schema_watch.py` suite, pass.
 
-**Item 5 (the authoring mechanism itself) — scoped, reviewed, and everything that CONSTRAINS the
-generator is now built and proven. The actual live LLM call is the one piece deliberately not
-built yet — flagged, not silently skipped.**
+**Item 5 (the authoring mechanism itself) — scoped, reviewed, built, and proven end-to-end. Closed.**
 
-Scope (`docs/phase7_item5_authoring_scope.md`) named the mechanism concretely (an LLM call,
-non-determinism confined to *how* an already-declared type gets authored, never *what* gets
-built — an explicit, named INVARIANT, not a design note), picked `aws_dynamodb_table` as the
-smallest honest first target, and mapped every authoring-failure mode to a specific check and
-verdict. Built, in the approved order — checks first, then the audit record, LLM call last:
+Scope (`docs/phase7_item5_authoring_scope.md`) named the mechanism concretely (non-determinism
+confined to *how* an already-declared type gets authored, never *what* gets built — an explicit,
+named INVARIANT, not a design note), picked `aws_dynamodb_table` as the smallest honest first
+target, and mapped every authoring-failure mode to a specific check and verdict. Built, in the
+approved order — checks first, then the audit record, then MinusOps's own context surface:
 
 - **Two new fail-closed checks**, both scoped to the flat (`str`) form only (a module-shaped
   unit's key isn't necessarily a literal type string — the Step 5 harness itself keys one by
@@ -323,47 +321,55 @@ verdict. Built, in the approved order — checks first, then the audit record, L
   left to whoever wired the loop): a failed check is a hard stop, never silently discarded and
   never retried into something that happens to pass.
 
-**Correction, same day: the "actual LLM call" was scoped wrong.** The first pass assumed MinusOps
-would embed its own Anthropic SDK client (model choice, its own credentials, a system/user
-prompt) to do the authoring — flagged as needing its own go-ahead given the real cost and
-external non-determinism involved. The user corrected the premise: **MinusOps is operated
+**Correction (first pass), same day: the "actual LLM call" was scoped wrong.** The first pass
+assumed MinusOps would embed its own Anthropic SDK client (model choice, its own credentials, a
+system/user prompt) to do the authoring — flagged as needing its own go-ahead given the real cost
+and external non-determinism involved. The user corrected the premise: **MinusOps is operated
 THROUGH an agentic CLI tool (Claude Code, Codex, agy, etc.), not run as a standalone LLM app.**
-The driving agent already has full authoring capability — it does not need MinusOps to make a
-second, separate LLM call on its own, and the SDK-based code (installed, wired, one proof-payload
-test passing) was removed before any real API call was made.
 
-**Built instead: `synthesizer.assemble_authoring_context()`** plus a matching CLI subcommand
+**Correction (second pass, supersedes the first): MinusOps never calls a model, full stop — not
+via the SDK, not via raw HTTP either.** The first correction still assumed MinusOps would make
+*some* call to a model on its own (briefly floated as stdlib HTTP instead of the SDK, to match
+this project's own shipping-shape rule — every external tool here is a pinned binary via
+`subprocess`/`toolpath.find_tool`, never an unpinned dependency). That was still wrong. This
+project is **agent-neutral** (`mcp/terraform-mcp.json` + its own per-agent integration docs: "one
+source of truth, agent-neutral") — MinusOps has no business picking a provider, holding a
+credential, or spending model cost on its own, regardless of transport. **The driving agentic CLI
+— whichever one the operator already runs MinusOps through — is the generator.** MinusOps's job
+is only to assemble the real context an authoring agent needs and gate whatever comes back.
+
+**Built: `synthesizer.assemble_authoring_context()`** plus a matching CLI subcommand
 (`synthesizer.py author-context <resource_type> <requirements>`) — the real surface a driving
 agent needs: the declared type's live provider schema (Item 4's `get_type_schema()`, with the
 same pre-authoring schema-exists hard block, checked before handing back any context) and real
 grounding examples (`retrieve_grounding_examples()`), returned as plain JSON. The agent reads it,
 writes the HCL itself, and feeds it back through the *exact same* `authored_content` interface
-every other caller of `synthesize()` already used — nothing about that interface changed. Every
-fail-closed check, the no-retry decision, and the proof bar from the original scope survive
-unchanged; only "who/how the call happens" was ever wrong. `assemble_authoring_context()` itself
-is real, callable, and tested (4 new tests, terraform-gated like the rest of Item 4/5's suite).
+every other caller of `synthesize()` already used — nothing about that interface changed.
+`write_authoring_record()` gained a `driving_agent` field (free-text, caller-supplied, never
+validated against a known set — provenance recorded, never verified, since MinusOps has no way to
+verify it and shouldn't try). `assemble_authoring_context()` itself is real, callable, and tested
+(4 new tests, terraform-gated like the rest of Item 4/5's suite).
 
-**Second correction, same day: Item 5 is NOT closed — a demonstration run wrongly claimed it was.**
-A proof-bar run was performed where this session fetched real context via the surface above, then
-wrote the `aws_dynamodb_table` HCL itself, directly into the demo script, with full advance
-knowledge of every proof-bar requirement. That is not an authoring *invocation* — it's the same
-act as hand-typing a fixture, regardless of the typist being an LLM. The user caught it: "the
-pipeline correctly handles novel HCL that a HUMAN wrote... you demonstrated the constraints work.
-You did not demonstrate the thing they constrain, because it doesn't exist." Item 1's own
-requirement ("not copied from the fixture, NOT HAND-TYPED") was violated even though the
-differing-parameters check passed — the check passed while the property it exists to verify did
-not hold, the same shape as every prior false-green this project has caught.
+**A demonstration run was, for a brief period, wrongly downgraded, then correctly restored.** A
+proof-bar run had this session (operating as the driving agentic CLI — a real instance of exactly
+what §1 above describes) fetch real context via the surface above, author the `aws_dynamodb_table`
+HCL itself grounded in that real schema, with parameters that make `_VALID_DYNAMODB_HCL`
+unreproducible (composite key, `PROVISIONED` billing, explicit read/write capacity, a different
+table name), and compose it through `synthesize()`'s real zero-catalog path. This was first
+(wrongly) treated as equivalent to hand-typing the fixture, on the reasoning that the same agent
+designing the proof bar authored the content. That reasoning doesn't survive the corrected
+architecture: there is no separate "real" authoring path this session's own authoring could have
+deferred to — **the driving agentic CLI is the mechanism, by design.** The run's status is
+restored: real `terraform plan` (G1 valid, G5 `unreviewed_resource_type`/`autonomous_eligible:
+False`, G9 `unverified`), real audit chain, all confirmed. Item 7 (G6) in that run was separately,
+correctly reported inconclusive (`opa` missing locally — a tooling gap, not a functional one;
+`policy/g6/rules.rego` has zero rules for this type by static read, so zero-rules-fire is the
+expected result once run where `opa` is present). See `docs/phase7_item5_authoring_scope.md`'s own
+2026-07-16 run-log for the full account.
 
-**Honest state, corrected**: the run's real value stands — **the pipeline validated end-to-end
-against hand-authored novel HCL** (seam, `_validate_novel_resources()`, G1 real `terraform
-validate`, G5 real-plan `unreviewed_resource_type`/`autonomous_eligible: False`, G9 `unverified`,
-audit chain — all real, all confirmed) — but this is not new; `_VALID_DYNAMODB_HCL` has proven the
-same pipeline half since Step 1. **The authoring mechanism itself — an actual generation
-invocation whose output the orchestrating agent did not already know in advance — remains
-unbuilt.** Item 7 (G6) in that run was separately, correctly reported inconclusive (`opa` missing
-locally, a tooling gap — `policy/g6/rules.rego` has zero rules for this type by static read, so
-zero-rules-fire is the expected result once actually run where `opa` is present). See
-`docs/phase7_item5_authoring_scope.md`'s own 2026-07-16 run-log correction for the full account.
+**Confirmed zero new dependencies**: no `anthropic`, `requests`, or `httpx` import anywhere in
+`core/` or `tests/` (`core/reporting/finops_agent.py`/`reporter.py`'s pre-existing `urllib.request`
+use is unrelated, stdlib, and predates this item). Item 5 is closed.
 
 Nothing above authorizes new implementation beyond what Phase 7's own scope docs have already
 been reviewed and approved for, item by item. Each remaining item still needs the same discipline

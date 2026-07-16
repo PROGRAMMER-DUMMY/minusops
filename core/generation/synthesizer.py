@@ -57,15 +57,27 @@ def _audit_allow_incomplete_bypass(requirements_text, spec, decision, run):
 
 
 def write_authoring_record(run, resource_type, justification, schema_block, grounding_examples,
-                            raw_output, verdict, detail=""):
+                            raw_output, verdict, detail="", driving_agent=""):
     """Phase 7 Item 5 (docs/phase7_item5_authoring_scope.md section 1): the record of one
-    authoring attempt -- what was asked, the real live schema and grounding examples it was
-    given, and what it produced -- written so a specific authoring decision is reconstructable
-    after the fact even though repeating the call might not reproduce the same bytes. `verdict`
-    is `"authored"` (passed every check) or `"blocked"` (section 4's fail-closed table fired);
-    `detail` names which check, when blocked. No retries happen at this layer or above it
+    authoring attempt -- the context supplied (schema + grounding), the content returned, and the
+    gate verdict on it -- written so a specific authoring decision is reconstructable after the
+    fact even though a different attempt might not reproduce the same bytes. `verdict` is
+    `"authored"` (passed every check) or `"blocked"` (section 4's fail-closed table fired);
+    `detail` names which check, when blocked. `driving_agent` is a free-text, caller-supplied
+    label for whatever was driving the session when this content was authored (e.g.
+    `"claude-code"`, `"codex"`, `"human"`) -- recorded for provenance, never validated or
+    required to match a known set: this project doesn't verify WHO or WHAT produced the content
+    (it can't, and shouldn't try -- see the field's own note below), only that a real context was
+    supplied and a real gate verdict was reached. No retries happen at this layer or above it
     (decided in scope, not left to whoever calls this): a blocked attempt is a hard stop, and
     this function's whole job is making sure that stop is not a silent one.
+
+    Deliberately agent-neutral: nothing in this record's shape assumes an API response object
+    (no token-usage field, no request/header/credential field of any kind) -- `raw_output` is
+    whatever text the caller hands in, regardless of whether a human typed it, an agentic CLI's
+    own model authored it, or any other source. Provenance is this record's job (the audit
+    chain's own hash-verified pointer, permanent and reviewable); proving WHO/WHAT authored the
+    bytes is not a property this function checks or can check.
 
     Bulk artifacts (`schema_block`, `grounding_examples`, `raw_output`) are written as real files
     under the run's own workspace, NOT inlined into the hash-chained audit log itself -- measured,
@@ -97,6 +109,7 @@ def write_authoring_record(run, resource_type, justification, schema_block, grou
         "run_id": (run or {}).get("run_id", ""),
         "resource_type": resource_type,
         "justification": justification,
+        "driving_agent": driving_agent,
         "verdict": verdict,
         "detail": detail,
         "schema_ref": schema_rel, "schema_hash": schema_hash,
