@@ -223,9 +223,9 @@ def test_reduce_full_keeps_every_attribute_with_type_and_deprecated_flag():
     reduced = schema_lint._reduce_full(schema, {("resource", "aws_s3_bucket")})
     entry = reduced[("resource", "aws_s3_bucket")]
     assert entry["version"] == 1
-    assert entry["attributes"]["bucket"] == {"type": "string", "deprecated": False}
-    assert entry["attributes"]["acl"] == {"type": "string", "deprecated": True}
-    assert entry["attributes"]["versioning.enabled"] == {"type": "bool", "deprecated": False}
+    assert entry["attributes"]["bucket"] == {"type": "string", "deprecated": False, "required": False}
+    assert entry["attributes"]["acl"] == {"type": "string", "deprecated": True, "required": False}
+    assert entry["attributes"]["versioning.enabled"] == {"type": "bool", "deprecated": False, "required": False}
 
 
 def test_reduce_full_recurses_more_than_one_level_deep():
@@ -316,10 +316,12 @@ def test_reduce_full_records_none_for_a_type_absent_from_the_schema():
 # gate_module(): the full classification, network stubbed via _fetch_schema
 # ---------------------------------------------------------------------------
 
-def _stub_schema(attrs=None, deprecated=()):
+def _stub_schema(attrs=None, deprecated=(), required=()):
     attrs = attrs or {"bucket": {"type": "string"}}
     for name in deprecated:
         attrs[name] = {**attrs.get(name, {"type": "string"}), "deprecated": True}
+    for name in required:
+        attrs[name] = {**attrs.get(name, {"type": "string"}), "required": True}
     return {
         "resource_schemas": {"aws_s3_bucket": {"version": 0, "block": {
             "attributes": attrs, "block_types": {},
@@ -423,6 +425,54 @@ def test_gate_module_type_mismatch_blocks(fake_module, monkeypatch):
     assert result["blocking"] is True
     findings = [f for f in result["findings"] if f["finding"] == "type_mismatch"]
     assert findings and findings[0]["attribute"] == "bucket"
+
+
+def test_gate_module_missing_required_top_level_attribute_blocks(fake_module, monkeypatch):
+    # The symmetric inverse of unknown_attribute: name is required (per the stub schema) but
+    # never set -- must block, same as authoring an attribute the schema doesn't recognize.
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = "x"\n}\n')
+    monkeypatch.setattr(
+        schema_lint, "_fetch_schema",
+        lambda provider, workdir: (_stub_schema(required=["name"]), "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
+    assert result["blocking"] is True
+    findings = [f for f in result["findings"] if f["finding"] == "required_attribute_absent"]
+    assert findings and findings[0]["attribute"] == "name"
+
+
+def test_gate_module_required_attribute_that_is_set_does_not_block(fake_module, monkeypatch):
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = "x"\n  name = "y"\n}\n')
+    monkeypatch.setattr(
+        schema_lint, "_fetch_schema",
+        lambda provider, workdir: (_stub_schema(required=["name"]), "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
+    assert result["blocking"] is False
+    assert [f for f in result["findings"] if f["finding"] == "required_attribute_absent"] == []
+
+
+def test_gate_module_missing_required_field_inside_unopened_nested_block_is_not_flagged(
+        fake_module, monkeypatch):
+    # Named boundary from gate_content()'s own docstring: a nested block_types entry's required
+    # field only matters if that block is actually opened in the HCL. A bucket that correctly
+    # omits an entire optional nested block (e.g. no versioning {} at all) must not be flagged
+    # for that nested block's own required field.
+    schema = _stub_schema()
+    schema["resource_schemas"]["aws_s3_bucket"]["block"]["block_types"] = {
+        "versioning": {"nesting_mode": "list", "block": {
+            "attributes": {"status": {"type": "string", "required": True}},
+        }},
+    }
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = "x"\n}\n')
+    monkeypatch.setattr(schema_lint, "_fetch_schema", lambda provider, workdir: (schema, "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
+    assert result["blocking"] is False
+    assert [f for f in result["findings"] if f["finding"] == "required_attribute_absent"] == []
 
 
 def test_gate_module_matching_type_does_not_block():

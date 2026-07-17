@@ -286,10 +286,18 @@ def _walk_attributes(block, prefix=""):
     fields), both must resolve to the same dotted-attribute-path lookup regardless of which
     shape a given resource happens to use.
 
-    NestedType object fields carry no per-field deprecation info in this JSON encoding (unlike
-    classic block_types, which do) -- a field synthesized this way is only ever checked for
-    existence/rough type family, never flagged deprecated. That is a real, narrower scope than
-    the block_types path, disclosed here rather than silently assumed equivalent."""
+    NestedType object fields carry no per-field deprecation OR required info in this JSON
+    encoding (unlike classic block_types, which do) -- a field synthesized this way is only
+    ever checked for existence/rough type family, never flagged deprecated or required. That is
+    a real, narrower scope than the block_types path, disclosed here rather than silently
+    assumed equivalent (same disclosed limitation for both flags, not just deprecated).
+
+    `required` is captured verbatim from the live schema's own `required: true` flag (verified
+    live against a real fetch: present only on genuinely required attributes, e.g.
+    aws_dynamodb_table.name; absent -- never `false` -- otherwise). Enforcement (gate_content()
+    checking a required attribute was actually set) is deliberately scoped to top-level
+    attributes only -- see gate_content()'s own comment for why nested required attributes are
+    a named, disclosed boundary, not silently extended to."""
     attrs = {}
     if not isinstance(block, dict):
         return attrs
@@ -298,7 +306,9 @@ def _walk_attributes(block, prefix=""):
         for name, attr in raw_attributes.items():
             if not isinstance(attr, dict):
                 continue
-            attrs[f"{prefix}{name}"] = {"type": attr.get("type"), "deprecated": bool(attr.get("deprecated"))}
+            attrs[f"{prefix}{name}"] = {"type": attr.get("type"),
+                                         "deprecated": bool(attr.get("deprecated")),
+                                         "required": bool(attr.get("required"))}
             fields = _object_fields(attr.get("type"))
             if fields:
                 attrs.update(_walk_object_fields(fields, prefix=f"{prefix}{name}."))
@@ -316,10 +326,12 @@ def _walk_attributes(block, prefix=""):
 def _walk_object_fields(fields, prefix):
     """Recurse into a NestedType object's fields to arbitrary depth -- an object field can
     itself be object-shaped (an object nested inside an object), same idea as _walk_attributes'
-    own block_types recursion, just for the other schema encoding."""
+    own block_types recursion, just for the other schema encoding. `deprecated`/`required` are
+    always False here -- this JSON encoding carries no per-field metadata beyond type, the same
+    disclosed limitation _walk_attributes' own docstring names."""
     attrs = {}
     for fname, ftype in fields.items():
-        attrs[f"{prefix}{fname}"] = {"type": ftype, "deprecated": False}
+        attrs[f"{prefix}{fname}"] = {"type": ftype, "deprecated": False, "required": False}
         nested_fields = _object_fields(ftype)
         if nested_fields:
             attrs.update(_walk_object_fields(nested_fields, prefix=f"{prefix}{fname}."))
@@ -394,7 +406,20 @@ def gate_content(content, source_label):
 
     `findings` entries that make `blocking` True: schema_fetch_failed, schema_malformed,
     unknown_type, unknown_attribute, deprecated_attribute_in_use, type_mismatch,
-    unparseable_reference. `warnings` (never blocking): schema_shape_changed_no_signal.
+    unparseable_reference, required_attribute_absent. `warnings` (never blocking):
+    schema_shape_changed_no_signal.
+
+    `required_attribute_absent` is the symmetric inverse of `unknown_attribute`: a real,
+    schema-required top-level attribute the declared block never sets is the same failure mode
+    as an unknown attribute, just the other direction (an authoring agent omitting something a
+    resource cannot apply without, rather than inventing something that doesn't exist).
+    Deliberately scoped to TOP-LEVEL attributes only (no `.` in the attribute path) -- a nested
+    block_types entry's own required fields only matter if that nested block is actually opened
+    in the HCL at all, and confirming that needs presence-tracking this pass does not add.
+    Checking a nested required field unconditionally would false-positive on every declaration
+    that correctly omits an entire optional nested block (e.g. a bucket with no
+    `server_side_encryption_configuration` at all) -- named here as a real, disclosed boundary,
+    not silently extended past what's actually verified.
 
     `source_label` is used only for the shape-changed WARN signal's prior-pin lookup
     (`module_provenance.show(source_label)`) -- for a real module id this finds that module's
@@ -457,6 +482,17 @@ def gate_content(content, source_label):
                                       "block": block_name, "attribute": attr_path})
                 elif attrs[attr_path]["deprecated"]:
                     findings.append({"finding": "deprecated_attribute_in_use",
+                                      "type": f"{kind}:{type_name}", "block": block_name,
+                                      "attribute": attr_path})
+
+            # Symmetric inverse of unknown_attribute (see gate_content()'s own docstring):
+            # scoped to top-level attributes only ("." not in attr_path) -- a required field
+            # nested inside an optional block_types entry only matters if that block was
+            # actually opened, which isn't tracked here; checking it unconditionally would
+            # false-positive on every correctly-omitted optional nested block.
+            for attr_path, meta in attrs.items():
+                if "." not in attr_path and meta["required"] and attr_path not in set_attrs:
+                    findings.append({"finding": "required_attribute_absent",
                                       "type": f"{kind}:{type_name}", "block": block_name,
                                       "attribute": attr_path})
 
