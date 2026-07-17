@@ -794,8 +794,20 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     # still invoked separately in stage_verify above -- unchanged). SHADOW ONLY: this never
     # blocks stage_plan and never enforces anything -- BLOCKING_PREFIXES / real enforcement
     # stays exactly where it already is (optimize_analyzer.py's own SEC- prefix check,
-    # unchanged) until 16-module parity is proven and Phase 3 is explicitly closed for real,
-    # same discipline as G2/G5.
+    # unchanged).
+    #
+    # CORRECTED (2026-07-17): this comment used to name "16-module parity" as the remaining
+    # flip prerequisite. That's now met -- tests/test_rego_gate.py::
+    # test_g6_zero_false_positives_across_real_catalog (added 2026-07-15) proves zero
+    # unexpected false positives across 14/16 real modules via real terraform plans, confirmed
+    # green in CI (opa v1.18.2 pinned). Parity was never the binding constraint once measured:
+    # the 13 tracked rule IDs cover only 8 of the 47 reviewed resource types (STATEFUL_RESOURCE_
+    # TYPES + IAM_RESOURCE_TYPES + REVIEWED_UNSAFE_TYPES + AUTO_SHIP_ELIGIBLE_TYPES in
+    # destructive_change_gate.py) -- flipping to enforce today would mean enforcing on 8 types
+    # and staying silent on 39, including most of the stateful danger set. An enforcing gate at
+    # 17% coverage reads as "policy is enforced" while 83% passes unexamined -- worse than an
+    # honest shadow gate. The flip is gated on coverage work, not proven and not scoped here;
+    # when it happens, go shadow -> warn -> enforce (three stages), not shadow -> enforce direct.
     plan_json_for_g6, plan_json_err = _plan_json(dir_)
     g6_result = _g6_shadow_eval(dir_, plan_json_for_g6) if plan_json_for_g6 is not None else {
         "comparable": False, "regex_error": None,
