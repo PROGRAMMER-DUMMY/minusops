@@ -4,9 +4,23 @@ autonomous ship-on-green, or must route to the staged/guarded path.
 
 Direction (docs/project_plan.md, generation-time-authoring architecture spec, Phase 1 of the
 gate stack): validate/test/plan passing is necessary but not sufficient proof of safety for
-stateful or destructive changes (external research cited: TerraProbe's 71.4% deceptive-fix rate
-that passes every automated check; correctness-doesn't-predict-security, r=0.20). The autonomy
-boundary this module enforces:
+stateful or destructive changes. This gate does not depend on any single citation to justify
+existing -- the load-bearing evidence is TerraProbe's 71.4% deceptive-fix rate (arXiv 2606.26590,
+peer-reviewed methodology, layered-oracle framework applied to 288 real repairs across three
+models): a fix that passes every automated check while leaving the actual vulnerability in place,
+confirming that "the checks passed" cannot be trusted as "this is safe" for exactly the class of
+change this gate exists to route to staged review. One additional, secondary data point, corrected
+here after review (2026-07): a single unverified preprint ("Hallucinated Resources, Brittle
+Oracles, Decoupled Security") reports no detected correctness-to-security transfer at n=55
+(Pearson r=0.20, p=0.14, 95% CI crossing zero -- a non-significant null result, not a weak positive
+correlation; do not soften this to "weakly correlated" if it is ever restated). Read correctly, a
+null result here is corroborating, not incidental: it means correctness signals (validate/test/plan
+passing) carry no detectable predictive power over security outcomes, which is the same conclusion
+TerraProbe's own real, adjudicated failures demonstrate directly. This citation is included as
+color, single-source and unverified in its own right -- if TerraProbe's number were ever
+retracted, this module's autonomy boundary would still stand on its own design logic (validate/
+test/plan is a syntax-and-plan-shape check, never a safety check) and should never be presented as
+though it depends on the preprint. The autonomy boundary this module enforces:
 
   - Ship-on-green is allowed ONLY for net-new, non-destructive, non-stateful creates OF A
     REVIEWED-SAFE RESOURCE TYPE (see AUTO_SHIP_ELIGIBLE_TYPES below).
