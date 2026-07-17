@@ -294,14 +294,29 @@ states precisely why it hasn't happened yet.
   originally.** Resolved here, with reasoning recorded, same standard as every other design call
   this session: **retire, not repurpose.** `pin()`'s entire value proposition is "trust this
   content because it was checked once, at pin time, and nothing has changed since" (`verify()`'s
-  hash-drift check). That value proposition evaporates once nothing is copied-and-trusted-from-
-  history: section 4's "grounding examples" role re-verifies live, via `gate_content()`, at
-  every actual draw — the same fresh live-schema check `pin()` used to gate once, now happening
-  every time instead of once. A stale historical hash adds no safety a fresh live check doesn't
-  already subsume. `PROVENANCE.json` files may be kept as a historical record of when a module was
-  last reviewed as a real, working catalog module (useful context, not a safety mechanism), but
-  `pin()`'s gating role in the `minus-update-module` CLI path retires once nothing routes through
-  it as a trust boundary.
+  hash-drift check). **Corrected (2026-07-18)**: that value proposition doesn't evaporate
+  because retrieval re-verifies each example live — it never did that (see section 4's own
+  correction; `retrieve_grounding_examples()` only guarantees a fresh disk read, not a schema
+  check). The real reason `pin()`'s gate stops mattering is simpler and was already established
+  elsewhere in this project: only 2 of 16 modules were ever actually pinned
+  (`module_provenance.py`'s own docstring), so "trust because it was checked at pin time" was
+  never a load-bearing guarantee for most of the catalog to begin with — there was nothing
+  working to retire. What replaces trust-at-pin-time going forward differs by which of the two
+  distinct safety surfaces is in play, and they must not be conflated: **authored content** (what
+  a driving agent writes from a grounding example) is schema-gated for real at
+  `_validate_novel_resources()` (`gate_content()`, blocking) before it composes — a genuine,
+  per-call, live check. **The 16 catalog modules themselves are not** — `compose()` copies
+  `modules/<id>/` verbatim with no per-compose `gate_content()` call at all (confirmed: G2 only
+  gates the authored/novel-resource path, never `compose()`). Catalog-module assurance instead
+  comes from `tests/test_schema_lint.py::test_every_real_module_passes_g2_cleanly` (15/16 clean,
+  `table-format-iceberg` a disclosed `xfail`) — a periodic, test-time check, not a live gate on
+  every real composition. A stale historical hash adds no safety either mechanism doesn't
+  already subsume for its own path — that's still true, just via two different, narrower
+  mechanisms than the original single claim implied.
+  `PROVENANCE.json` files may be kept as a historical record of when a module was last reviewed
+  as a real, working catalog module (useful context, not a safety mechanism), but `pin()`'s
+  gating role in the `minus-update-module` CLI path retires once nothing routes through it as a
+  trust boundary.
 - **`source_guard.py` — "Survives unchanged," originally.** Confirmed correct and already
   sufficient, not a Step 5 deliverable: the authored-vs-copied distinction Step 1 needed already
   lives one layer up, in `synthesizer._write_manifest()`'s `"modules"` vs `"authored_resources"`
@@ -366,11 +381,29 @@ keeps depending on the catalog as its real source:
 - **`MODULES` list metadata (`id`, `title`, `services`, `satisfies`, `inputs`) survives** — it is
   exactly the index `match_modules()`'s retrieval role (section 3) needs; only its role changes,
   from "the final answer" to "a ranked reference."
-- **Every retrieved example is re-verified live, at the point it's drawn on**, via
-  `schema_lint.gate_content()` against the then-current real provider schema — never assumed
-  still valid because it passed once. This is the direct replacement for `pin()`'s retired
-  historical-trust role (section 3), and it is a strictly stronger guarantee: live-checked on
-  every use instead of checked once and trusted until someone remembers to re-verify.
+- **CORRECTED (2026-07-18) — the claim below overstated what's actually built, same defect
+  class as the r=0.20 citation elsewhere in this project's docs: an assertion presented as a
+  confirmed safety guarantee that the code doesn't deliver.** `retrieve_grounding_examples()`
+  (`core/generation/modules.py`) gives exactly one guarantee: **disk freshness** — it reads each
+  module's `main.tf` fresh off disk on every call, never cached, so a grounding example is never
+  staler than the catalog's current on-disk content. It does **not** call `schema_lint.
+  gate_content()` and never has (confirmed via `git log -S`, same commit that introduced the
+  function). The real safety mechanism is downstream and separate: whatever a driving agent
+  authors from these examples is schema-gated at `_validate_novel_resources()`
+  (`synthesizer.py`), which does call `gate_content()`, blocking, on the actual authored output
+  before it composes. A stale grounding example can at most waste one generation attempt (the
+  agent imitates a since-deprecated attribute; G2 catches it on the authored output and blocks)
+  — the grounding-example step itself introduces no unsafe output that G2 wouldn't otherwise
+  catch at `_validate_novel_resources()`, not a stronger claim that unsafe output is impossible
+  (G2's own coverage has named, disclosed limits — e.g. the required-vs-optional/nested-block
+  boundaries documented in `docs/g2_scope.md` — so "G2 catches it" is bounded by what G2 actually
+  checks, not a blanket guarantee). Per-example re-validation would only save that wasted
+  attempt within G2's existing coverage, an efficiency question, not a
+  safety one — and at measured cost (a live schema fetch is ~30s uncached; `top_n=3` means up to
+  90s added to every authoring-context call to catch what's already caught one step later) it
+  isn't worth building until the generation pipeline exists for real and staleness is measured
+  to actually cost cycles, not assumed to. Deliberately not built now. The honest, still-strong
+  story: fresh examples in (disk-current, not schema-current), schema-validated output out.
 - **`PROVENANCE.json` history may be retained** as a dated record of "this was a real, working,
   human-reviewed catalog module as of this pin" — informative provenance, not a gate, once
   `pin()`'s gating role retires per section 3.
