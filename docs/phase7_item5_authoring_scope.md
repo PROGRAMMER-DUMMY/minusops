@@ -83,6 +83,20 @@ consequences — the decision being *what MinusOps supplies*, not *who authors*.
   held twice elsewhere (fail-closed-on-unparseable-input, never fail-open-and-retry) — restated
   here as "MinusOps hard-stops on a bad attempt," not "MinusOps controls whether retries happen,"
   because it doesn't and shouldn't.
+
+  > **This boundary must never blur, including for "convenience" in a later phase.** An
+  > iterate-until-valid loop (call, check, re-call on failure, repeat) is a real, legitimate
+  > pattern — but it belongs entirely on the driving agentic CLI's own side of this line, never
+  > wired into MinusOps itself. Moving it inside MinusOps later — even framed as a Phase 6+
+  > convenience so operators don't have to loop by hand — would mean the same component judging
+  > correctness (deciding an attempt failed and trying again) is no longer independent of the
+  > component being judged. That is precisely the decorrelation failure external research on
+  > LLM-authored IaC warns about: a generator and its own retry judgment sharing one boundary
+  > stop being decorrelated oracles. `_validate_novel_resources()`'s fail-closed checks stay
+  > useful specifically because they are the one thing in this path that never re-tries, never
+  > second-guesses its own verdict, and never lives inside the same loop as whatever produced the
+  > content it's checking. Any future proposal to add retry logic inside MinusOps needs to
+  > confront this paragraph directly, not quietly route around it.
 - **Reproducibility of the DECISION, not the output.** Since the exact HCL isn't reproducible
   attempt-to-attempt (different driving agents, or the same one on a different day, may author
   differently), what must be reproducible is the record of what happened: the resource_type
