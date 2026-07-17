@@ -235,6 +235,70 @@ def test_destroy_plan_skips_g9(gate_env, monkeypatch):
     assert "not applicable" in pending["g9_result"]["detail"]
 
 
+def test_g6_shadow_finding_cannot_block_only_blocking_prefixes_can(gate_env, monkeypatch):
+    """G6 (rego_gate.py, docs/g6_scope.md) is SHADOW ONLY by design -- this proves the boundary
+    as a MECHANISM, not just that today's code happens to return True on one plan. A single
+    "alarming G6 finding -> True" assertion is a pass-through check: it would still pass even if
+    someone later wired g6_result into the return path, as long as that one fixture didn't
+    happen to trip the new logic. The actual boundary claim is a PAIR: G6, however alarming, can
+    never block on its own, and optimize_analyzer.BLOCKING_PREFIXES = ("SEC-",) is the ONLY thing
+    that can -- so the same alarming G6 result must be held constant while the native SEC-*
+    scanner outcome is flipped, and the overall verdict must track the scanner, never G6.
+
+    Part A: no SEC-* native finding (scanner mocked clean) -- both stage_verify() and
+    stage_plan() succeed despite the maximally alarming G6 result (a real-shaped SEC-06
+    divergence, the same shape test_g6_shadow_surfaces_a_real_sec06_finding_not_just_field_
+    unresolved produces from a real wide-open KMS policy). No opa binary needed -- _g6_shadow_
+    eval itself is monkeypatched out, so this exercises stage_plan()'s OWN handling of whatever
+    it returns, not rego_gate's evaluation logic (covered elsewhere).
+
+    Part B: the SAME alarming G6 result, same dir -- but now the native scanner reports a real
+    SEC-01 finding (the same monkeypatch shape test_verify_fails_when_security_scan_blocks
+    already uses) -- stage_verify() now blocks. This half is what makes the test a boundary
+    guard rather than a pass-through: if G6 is ever wired into enforcement, Part A breaks
+    immediately (an alarming G6 result no longer passes); if BLOCKING_PREFIXES stops being
+    consulted, Part B breaks (a real SEC-* finding no longer blocks). Either erosion fails
+    loudly, exactly where each one would actually happen.
+
+    The audit-record assertion in Part A additionally proves the alarming G6 result reached the
+    trail intact, not silently dropped or replaced upstream -- shadow means "recorded but
+    non-blocking," never "recorded only if convenient.\""""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_G9_ELIGIBLE))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "SCAN", __file__)
+
+    alarming_g6_result = {
+        "comparable": True,
+        "divergence": {
+            "SEC-06": {"new_in_rego": ["aws_kms_key.wide_open"], "lost_in_regex": [],
+                       "regex_unattributed_finding": False},
+        },
+        "unresolved_count": 0,
+        "unresolved": [],
+    }
+    monkeypatch.setattr(plan_gate, "_g6_shadow_eval", lambda dir_, plan_json: alarming_g6_result)
+
+    # Part A: G6 alarming, SEC-* clean -> nothing blocks.
+    monkeypatch.setattr(plan_gate, "_run", lambda args, capture=False: (0, "", ""))
+    assert plan_gate.stage_verify("d") is True
+    assert plan_gate.stage_plan("d") is True
+
+    audit_lines = [json.loads(line) for line in
+                   open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8")
+                   if line.strip()]
+    plan_entry = [e for e in audit_lines if e.get("action") == "plan"][-1]
+    assert plan_entry["status"] == "OK"
+    assert (plan_entry["g6_shadow"]["divergence"]["SEC-06"]["new_in_rego"]
+            == ["aws_kms_key.wide_open"])
+
+    # Part B: SAME alarming G6 result, but the native scanner now reports a real SEC-*
+    # finding -- THIS is what blocks, not G6.
+    monkeypatch.setattr(
+        plan_gate, "_run",
+        lambda args, capture=False: (2, "", "[OPTIMIZER] Blocking findings detected: SEC-01"))
+    assert plan_gate.stage_verify("d") is False
+
+
 def test_apply_refuses_when_plan_drifted(gate_env, monkeypatch):
     """Approve PLAN_A, then the .tf changes (now PLAN_B) -> apply must refuse."""
     monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
