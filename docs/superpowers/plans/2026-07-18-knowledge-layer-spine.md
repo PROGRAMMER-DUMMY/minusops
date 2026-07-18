@@ -22,6 +22,7 @@
 - Do not touch `synthesizer.py`, `compose()`, or any catalog module. This spine runs alongside, reading `schema_watch`'s engine; it is never called from and never calls into the composition path.
 - First and only resource type in this build: `aws_s3_bucket` (from `storage-medallion-s3`, already confirmed G2-clean, no disclosed exception).
 - Flat modules in `core/generation/`, matching this project's existing convention — no new subpackages.
+- **Testing convention, binding on every task in this plan, present and future (established by Step 2's `test_resolve_uses_the_truly_newest_among_multiple_schema_claims`, restated here as a rule after it was violated once already in Step 3's own draft):** any test proving "the newest/correct row is picked from a set that could contain more than one" MUST insert rows with insertion order deliberately scrambled against timestamp order (the row that should win inserted earlier or later than a naive "last/first inserted wins" implementation would pick). A test where insertion order happens to match timestamp order can pass under both a correct and a buggy implementation and proves nothing — this is not a per-test reminder, it is a required property of the test before it can be trusted.
 
 ---
 
@@ -860,9 +861,865 @@ These are sketched at the shape/interface level for red-team review of the overa
 
 ### Step 3 — bi-temporal degradation check (generalizes `schema_watch.py`'s drift pattern)
 
-- **New**: a `reverify_after` concept per claim (or a separate `degradation_check.py`) that re-fetches a resource type's live schema on a cadence, groups existing claims by `(resource_type, attribute)` (confirmed in Step 1's design review: no new linking column needed -- these two existing, already-indexed columns are the version-independent key; `content_hash` stays deliberately version-scoped for exact-duplicate detection only), and inserts a fresh `schema` claim when the live fetch disagrees with the last-stored one -- setting `valid_until`/`invalidated_at`/`invalidated_by` on the superseded row (never deleting it).
-- **Consumes**: `knowledge_diff.schema_claims_for_type`, `knowledge_store.insert_claim`, a new `knowledge_store.invalidate_claim(conn, claim_id, invalidated_by)`.
-- **Open question for ray**: content-hash-based dedup (skip re-inserting an identical observation) vs. always inserting and letting `resolve()`'s freshness clause do the work -- leaning toward always-insert-and-let-resolve-decide, since deduping by hash risks silently swallowing a "the world didn't change" re-confirmation that itself has evidentiary value (a schema re-checked and found unchanged is a fact worth an `observed_at` bump, not a no-op).
+**Status (2026-07-19): bite-sized below, approved design after TWO ray review rounds, ready to build subagent-driven.**
+
+Round 1 (design, before any code written): the original sketch (above, kept for history) plus a
+reconciliation pass that resolved every open question, corrected the DB default path, and found
+one thing neither the sketch nor the first pass caught (the removed-attribute case) plus one
+near-miss caught before any code was written (SQL-level `ORDER BY observed_at` would have
+reintroduced bug #2's exact shape — string comparison on a `Z`/`+00:00`-mixed column. All ordering
+in this step goes through `_parse_ts()` in Python, never SQL). Self-review during that round also
+caught the dict-comprehension bug (below).
+
+Round 2 (implementation-level review against the *shipped* Step 2 code, same standard as the
+`attribute IS NULL` catch) found a fourth-family bug of its own and a flaw in the test meant to
+guard the third:
+- **A fifth instance of "confident wrong answer": the type-not-found ambiguity** (Task 4). `schema_
+  claims_for_type()` returns `[]` both when a resource type genuinely doesn't exist and when it
+  exists with zero attributes — Step 2's own already-tested contract, not touched here. Left
+  unguarded, an empty fetch would cascade into marking EVERY previously-tracked attribute
+  "removed" — reachable by an ordinary typo or the wrong `--kind` (`aws_s3_bucket` is a real name
+  under both `resource` and `data`), not an edge case. Fixed: `check_and_refresh` skips the
+  removed-attribute pass entirely when the fetch is empty, surfaces `"skipped_removed_attribute_
+  check"` in its summary, and the CLI (Task 5) warns on stderr and exits non-zero rather than
+  quietly reporting success.
+- **The regression test for bug #4 (duplicate active claims) was theater**: it inserted the older
+  and newer claims in an order that happened to match their timestamps, so SQLite's natural
+  (unordered) row-return order coincided with the correct `_parse_ts`-based pick — the buggy
+  dict-comprehension version would very likely have passed the same test. Fixed by scrambling
+  insertion order (Task 3), and the scrambling requirement is now a standing testing convention
+  (see Global Constraints), not a fact to remember per-test.
+- **`invalidate_claim`'s `valid_until` was set from the superseding claim's `observed_at`;
+  corrected to `valid_from`.** `valid_until` must track the same axis as `valid_from` (the fact's
+  own timeline) — using `observed_at` sets the window's end to when the check happened to notice,
+  not when the fact actually changed, misrepresenting the window by however large the release-to-
+  recheck gap is. This only "worked" today because of Step 2's own disclosed placeholder
+  (`knowledge_diff.py` sets `valid_from == observed_at` for every schema claim) — fixed now, while
+  free, rather than left as a second latent clock-conflation for whatever eventually reads
+  `valid_until`'s value for real (Step 4, an audit view).
+
+**Decisions locked in, restated from the sketch's open questions:**
+- **Always-insert, no dedup** — confirmed as the design, not just defensible: a re-check that
+  finds nothing changed still inserts a fresh claim and invalidates the old one, bumping
+  `observed_at`. This is load-bearing for the freshness clause's own noise-queue reasoning (ray's
+  Q2), not just "evidence has value" — it's what keeps schema claims from going permanently stale
+  relative to live-fetched non-schema claims.
+- **DB default path is `modules.output_root()/knowledge/claims.db`**, not a bare `.agents/`-
+  relative path — `output_root()` (`core/generation/modules.py:50`) exists specifically to be
+  wheel-safe (never resolves into `site-packages` when installed), and `modules` is already in the
+  boundary guard's `_ALLOWED` set, so this costs nothing extra there. `--db` overrides.
+- **`_ALLOWED` in `tests/test_knowledge_core_boundary.py` gains `"knowledge_store"`,
+  `"knowledge_diff"`** — first-party same-family modules, not a loosening of the stdlib-only
+  boundary against the outside world. Confirmed this does NOT touch the separate
+  `test_knowledge_verifier_nli_is_never_module_level_imported_by_core` check (`test_knowledge_core_
+  boundary.py:130-140`), which never reads `_ALLOWED` at all — it's a fully independent function
+  scanning for one literal name.
+- **Only one new read primitive**, not two: `_active_schema_claims_for_resource(conn, resource_type)`
+  (plural, one query, dict-built in Python) serves both the per-attribute "what's currently active"
+  lookup inside the main loop and the removed-attribute diff. A singular per-attribute lookup was
+  in the original proposal but nothing in this step actually needs it (YAGNI) — dropped.
+- **Removed-attribute case (found reading the shipped code, not in the original sketch):** an
+  attribute with a previously-active schema claim that's absent from a fresh fetch would otherwise
+  stay "active" forever, asserting something about an attribute that no longer exists — a
+  silent-stale-answer bug in the same family as `resolve()`'s three. Fix: insert a synthetic
+  `"<attr>: removed from live schema"` claim and invalidate the stale one against it, so `resolve()`
+  has a real current belief instead of a silent absence.
+
+**Consumes**: `knowledge_diff.schema_claims_for_type`, `knowledge_store.insert_claim`,
+`knowledge_store._parse_ts` (reused, not reimplemented), plus the two new `knowledge_store.py`
+functions built in Task 1 below.
+
+**Red-Team focus for this step (for ray) — point at these two specifically, not a general pass:**
+
+1. **The removed-attribute synthetic-claim logic** (Task 4 below). This is new belief-state
+   semantics with no prior art in this codebase — nothing before this has ever had the store
+   assert something on the store's own initiative rather than relaying an external observation
+   verbatim. Does synthesizing a claim (vs. some other representation of "we don't know anymore")
+   hold up under scrutiny? Does it interact correctly with `resolve()`'s existing agreement
+   short-circuit or freshness comparison in any surprising way once it's just another schema claim
+   in the table?
+2. **`invalidate_claim`'s two-clock handling** (Task 1 below): `valid_until` (fact-validity end,
+   caller-supplied, tied to the superseding claim's `observed_at`) vs `invalidated_at` (write-time
+   audit stamp, defaults to now) — the exact wrong-clock shape that produced bug #1
+   (`resolve()` originally compared `valid_from` instead of `observed_at`). Task 1's own test is
+   built to fail if the two are swapped; does that test actually prove what it claims to, and is
+   there a swap/confusion risk this design doesn't cover?
+
+---
+
+### Task 1: `knowledge_store.py` — `invalidate_claim()` + `_active_schema_claims_for_resource()`
+
+**Files:**
+- Modify: `core/generation/knowledge_store.py`
+- Test: `tests/test_knowledge_store.py`
+
+**Interfaces:**
+- Consumes: `_parse_ts` (existing, this file).
+- Produces: `invalidate_claim(conn, claim_id, *, valid_until, invalidated_by=None, invalidated_at=None) -> None`; `_active_schema_claims_for_resource(conn, resource_type) -> list[dict]` (active `source_type="schema"` claims with a non-null `attribute`, i.e. excludes resource-level schema claims — this function is specifically for per-attribute presence tracking).
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_active_schema_claims_for_resource_returns_only_active_attribute_scoped_schema_claims(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "bucket: optional", "2026-07-01T00:00:00Z", attribute="bucket")
+    _insert(conn, "web", "acl: contested", "2026-07-01T00:00:00Z", attribute="acl")  # wrong source_type
+    knowledge_store.insert_claim(  # resource-level (attribute=None), must be excluded
+        conn, resource_type="aws_s3_bucket", attribute=None, claim_text="stable",
+        method="structural", source_type="schema", provider="aws",
+        valid_from="2026-07-01T00:00:00Z", observed_at="2026-07-01T00:00:00Z",
+    )
+    result = knowledge_store._active_schema_claims_for_resource(conn, "aws_s3_bucket")
+    assert len(result) == 1
+    assert result[0]["attribute"] == "bucket"
+    assert result[0]["source_type"] == "schema"
+
+
+def test_active_schema_claims_for_resource_excludes_invalidated_rows(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    old_id = _insert(conn, "schema", "bucket: optional", "2026-07-01T00:00:00Z", attribute="bucket")
+    knowledge_store.invalidate_claim(conn, old_id, valid_until="2026-07-10T00:00:00Z")
+    result = knowledge_store._active_schema_claims_for_resource(conn, "aws_s3_bucket")
+    assert result == []
+
+
+def test_invalidate_claim_sets_valid_until_and_invalidated_at_as_distinct_clocks(tmp_path):
+    # valid_until = fact-validity end (caller-supplied, semantically tied to the superseding
+    # claim's observed_at) vs invalidated_at = write-time audit stamp (defaults to now) -- the
+    # exact wrong-clock shape that produced bug #1 (resolve() originally compared valid_from
+    # instead of observed_at). Deliberately far-apart, easily-distinguishable values, so a swap
+    # between the two fields is caught, not just "some value got set somewhere."
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    claim_id = _insert(conn, "schema", "acl: required", "2026-06-01T00:00:00Z", attribute="acl")
+    knowledge_store.invalidate_claim(
+        conn, claim_id, valid_until="2026-07-01T00:00:00Z",  # the superseding claim's observed_at
+        invalidated_at="2099-01-01T00:00:00Z",  # deliberately absurd write-time stamp
+        invalidated_by=999,
+    )
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
+    assert row["valid_until"] == "2026-07-01T00:00:00Z"
+    assert row["invalidated_at"] == "2099-01-01T00:00:00Z"
+    assert row["invalidated_by"] == 999
+
+
+def test_invalidate_claim_defaults_invalidated_at_to_now_but_never_defaults_valid_until(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    claim_id = _insert(conn, "schema", "acl: required", "2026-06-01T00:00:00Z", attribute="acl")
+    knowledge_store.invalidate_claim(conn, claim_id, valid_until="2026-07-01T00:00:00Z")
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
+    assert row["valid_until"] == "2026-07-01T00:00:00Z"  # exactly what was passed, untouched
+    assert row["invalidated_at"] is not None  # defaulted, but to a DIFFERENT clock than valid_until
+    assert row["invalidated_at"] != row["valid_until"]
+
+
+def test_invalidate_claim_requires_valid_until_explicitly():
+    import pytest
+    with pytest.raises(TypeError):
+        knowledge_store.invalidate_claim(None, 1, invalidated_by=2)  # no valid_until -- must not silently default to now()
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/test_knowledge_store.py -v -k "active_schema_claims_for_resource or invalidate_claim"`
+Expected: FAIL with `AttributeError: module 'knowledge_store' has no attribute 'invalidate_claim'` (and `'_active_schema_claims_for_resource'`).
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+def _active_schema_claims_for_resource(conn, resource_type):
+    rows = conn.execute(
+        "SELECT * FROM claims WHERE resource_type = ? AND source_type = 'schema' "
+        "AND attribute IS NOT NULL AND valid_until IS NULL",
+        (resource_type,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def invalidate_claim(conn, claim_id, *, valid_until, invalidated_by=None, invalidated_at=None):
+    """Bookkeeping only -- never touches claim_text/observed_at/any content column, same
+    'claims coexist, nothing is overwritten' discipline as insert_claim(). valid_until and
+    invalidated_at are deliberately two different clocks on two different axes: valid_until is
+    fact-validity time (caller-supplied, semantically the superseding claim's valid_from -- NOT
+    its observed_at; valid_until must track the same axis valid_from does, the fact's own
+    timeline, not when we happened to notice the change, or it silently misrepresents the window
+    by however large the gap between the real change and the recheck is) and invalidated_at is
+    write-time audit time (defaults to now, same pattern as insert_claim()'s own ingested_at).
+    valid_until has NO default specifically so a caller can never accidentally use wall-clock time
+    for both (the exact wrong-clock shape that produced resolve()'s bug #1; using observed_at here
+    instead of valid_from would have been a second, subtler instance of the same family -- ray's
+    review, 2026-07-19)."""
+    invalidated_at = invalidated_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE claims SET valid_until = ?, invalidated_at = ?, invalidated_by = ? WHERE id = ?",
+        (valid_until, invalidated_at, invalidated_by, claim_id),
+    )
+    conn.commit()
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_knowledge_store.py -v`
+Expected: PASS (22 passed) -- 17 from Step 2 + 5 new above.
+
+- [ ] **Step 5: Empirically verify the two-clock test actually catches a swap**
+
+Not optional -- same standard as the `attribute IS NULL` fix. Temporarily swap the two values in
+`invalidate_claim`'s `UPDATE` tuple (`(invalidated_at, valid_until, invalidated_by, claim_id)`
+instead of `(valid_until, invalidated_at, invalidated_by, claim_id)`), run
+`test_invalidate_claim_sets_valid_until_and_invalidated_at_as_distinct_clocks` alone, confirm it
+FAILS, then revert and confirm it passes again. Paste both results in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add core/generation/knowledge_store.py tests/test_knowledge_store.py
+git commit -m "feat: knowledge-layer spine Step 3 -- invalidate_claim + active-schema-claims read primitive
+
+Two-clock design (valid_until vs invalidated_at) verified by deliberately
+swapping the UPDATE tuple and confirming the distinguishing test fails,
+then reverting -- same standard as Step 2's attribute-IS-NULL fix."
+```
+
+---
+
+### Task 2: boundary-guard `_ALLOWED` update
+
+**Files:**
+- Modify: `tests/test_knowledge_core_boundary.py`
+
+**Interfaces:** none -- this only widens what Task 3/4/5's new file is permitted to import.
+
+- [ ] **Step 1: Apply the change**
+
+```python
+_ALLOWED = set(sys.stdlib_module_names) | {"schema_watch", "modules", "module_registry",
+                                            "knowledge_store", "knowledge_diff"}
+```
+
+- [ ] **Step 2: Run the full boundary suite, confirm still green**
+
+Run: `pytest tests/test_knowledge_core_boundary.py -v`
+Expected: PASS (5 passed) -- unchanged count; this widens the allowlist, doesn't add a new test.
+Confirm specifically that `test_knowledge_verifier_nli_is_never_module_level_imported_by_core`
+still passes and is unaffected (it doesn't read `_ALLOWED`, but confirm anyway since this task
+touches the same file).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/test_knowledge_core_boundary.py
+git commit -m "feat: knowledge-layer spine Step 3 -- allow knowledge_store/knowledge_diff as intra-project imports
+
+First-party same-family modules, not a loosening of the stdlib-only boundary
+against the outside world. Does not touch the separate
+knowledge_verifier_nli-never-imported check, which reads no allowlist."
+```
+
+---
+
+### Task 3: `knowledge_degradation.py` — `check_and_refresh()` core loop (present attributes)
+
+**Files:**
+- Create: `core/generation/knowledge_degradation.py`
+- Test: `tests/test_knowledge_degradation.py`
+
+**Interfaces:**
+- Consumes: `knowledge_diff.schema_claims_for_type`, `knowledge_store.insert_claim`,
+  `knowledge_store.invalidate_claim`, `knowledge_store._active_schema_claims_for_resource`,
+  `knowledge_store._parse_ts` (accessed as `knowledge_store._parse_ts`, not reimplemented -- picks
+  the newest among possibly-multiple active schema claims per attribute; see the code below for
+  why a plain dict comprehension over `_active_schema_claims_for_resource`'s result isn't safe).
+- Produces: `check_and_refresh(conn, provider, resource_type, kind="resource") -> dict` returning
+  `{"resource_type", "provider", "inserted": [ids], "invalidated": [ids], "removed_attributes": []}`.
+  This task builds the present-attribute loop only; `removed_attributes` stays `[]` until Task 4.
+
+- [ ] **Step 1: Write the failing tests (stubbed fetch -- fast, no live network)**
+
+```python
+"""
+knowledge_degradation.py tests -- the stubbed tests below fake schema_claims_for_type()'s return
+to run fast with no live fetch. Their fake return shape is asserted, separately, against the REAL
+function's actual return in test_schema_claims_for_type_shape_matches_the_degradation_stubs
+(Task 4) -- a stub that silently drifts from reality is exactly how the +00:00/Z bug survived,
+so that drift-guard is not optional.
+"""
+import pytest
+
+import knowledge_degradation
+import knowledge_store
+import toolpath
+
+TERRAFORM = toolpath.find_tool("terraform")
+
+_FIXED_CLAIM = {
+    "resource_type": "aws_s3_bucket", "attribute": "bucket",
+    "claim_text": "bucket: optional, not deprecated", "method": "structural",
+    "source_type": "schema", "provider": "aws", "provider_version": "6.54.0",
+    "valid_from": "2026-07-19T00:00:00Z", "observed_at": "2026-07-19T00:00:00Z",
+}
+
+
+def test_check_and_refresh_inserts_when_no_prior_claim_exists(tmp_path, monkeypatch):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert len(summary["inserted"]) == 1
+    assert summary["invalidated"] == []
+    assert summary["removed_attributes"] == []
+
+
+def test_check_and_refresh_always_inserts_even_when_nothing_changed(tmp_path, monkeypatch):
+    # THE decision this task locks in: no content-hash dedup. A re-check finding zero real
+    # change still inserts a fresh claim and invalidates the old one -- the observed_at bump is
+    # load-bearing for the freshness clause's own noise-queue reasoning (ray's Q2), not a no-op.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    summary1 = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    summary2 = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert len(summary2["inserted"]) == 1
+    assert summary2["inserted"] != summary1["inserted"]  # a genuinely new row, not a no-op
+    assert summary2["invalidated"] == summary1["inserted"]  # invalidates exactly the prior insert
+    active = knowledge_store._active_schema_claims_for_resource(conn, "aws_s3_bucket")
+    assert len(active) == 1  # exactly one active claim survives, not two accumulating
+    assert active[0]["id"] == summary2["inserted"][0]
+
+
+def test_check_and_refresh_invalidates_the_old_claim_with_the_new_claims_valid_from(tmp_path, monkeypatch):
+    # Proves Task 1's two-clock discipline is actually wired correctly at the call site, not just
+    # correct in isolation: valid_until on the OLD row must equal the NEW claim's valid_from,
+    # NOT its observed_at (ray's review, 2026-07-19 -- valid_until must track the fact-validity
+    # axis, not when this check happened to notice). valid_from and observed_at are set to
+    # DIFFERENT, easily-distinguishable values here specifically so this can't pass by coincidence
+    # if the two axes were conflated -- same standard as the invalidated_at/valid_until swap test.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    summary1 = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    old_id = summary1["inserted"][0]
+    later_claim = dict(_FIXED_CLAIM, valid_from="2026-08-01T00:00:00Z", observed_at="2026-09-15T00:00:00Z")
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(later_claim)])
+    knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    old_row = conn.execute("SELECT * FROM claims WHERE id = ?", (old_id,)).fetchone()
+    assert old_row["valid_until"] == "2026-08-01T00:00:00Z"  # the new claim's valid_from
+    assert old_row["valid_until"] != "2026-09-15T00:00:00Z"  # NOT the new claim's observed_at
+
+
+def test_check_and_refresh_targets_the_newest_of_multiple_pre_existing_active_claims(tmp_path, monkeypatch):
+    # Simulates a DB used before this step's invalidate-on-insert discipline existed (Step 2's own
+    # tests/proof runs never invalidated anything, so more than one active schema claim CAN
+    # already exist for one attribute). check_and_refresh's bookkeeping must reference the NEWEST
+    # of them, not whichever row SQLite happens to return last from _active_schema_claims_for_resource.
+    #
+    # Insertion order deliberately scrambled against timestamp order (the NEWER-by-observed_at
+    # claim inserted FIRST, older SECOND) -- required by this plan's Global Constraints testing
+    # convention. Ray's review, 2026-07-19: the original draft of this test inserted older-then-
+    # newer, matching timestamp order, so SQLite's natural (unordered) row-return order happened
+    # to coincide with the correct _parse_ts-based pick -- the buggy dict-comprehension version
+    # would very likely have passed the exact same test. This ordering is what makes the two
+    # implementations actually diverge; see Step 5 below for the required fail-first proof.
+    #
+    # Disclosed limit, not asserted here: the OTHER (older) pre-existing duplicate is left
+    # untouched, still active -- this step guarantees correct behavior going forward, not
+    # retroactive cleanup of duplicates that predate it.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    newer_id = knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="bucket", claim_text="bucket: optional, not deprecated",
+        method="structural", source_type="schema", provider="aws", provider_version="6.54.0",
+        valid_from="2026-06-01T00:00:00Z", observed_at="2026-06-01T00:00:00Z",
+    )
+    older_id = knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="bucket", claim_text="bucket: stale duplicate",
+        method="structural", source_type="schema", provider="aws", provider_version="6.50.0",
+        valid_from="2026-05-01T00:00:00Z", observed_at="2026-05-01T00:00:00Z",
+    )
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert newer_id in summary["invalidated"]
+    assert older_id not in summary["invalidated"]
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/test_knowledge_degradation.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'knowledge_degradation'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+"""
+knowledge_degradation.py -- the bi-temporal degradation check: re-fetches a resource type's live
+schema and reconciles it against what the store currently believes, generalizing schema_watch.py's
+drift pattern into the knowledge layer's own claims/resolve() model instead of schema_watch's
+separate snapshot-diff files.
+
+Always inserts, never dedups by content hash -- a re-check that finds nothing changed still
+inserts a fresh claim and invalidates the old one, bumping observed_at. This is load-bearing for
+resolve()'s freshness clause, not just "evidence has value": without it, schema claims go
+permanently stale relative to live-fetched non-schema claims, and every future conflict trivially
+looks "web/agent_delegated is newer" -- the exact noise-queue asymmetry ray's Q2 review named.
+"""
+import datetime
+
+import knowledge_diff
+import knowledge_store
+
+
+def check_and_refresh(conn, provider, resource_type, kind="resource"):
+    fresh_claims = knowledge_diff.schema_claims_for_type(provider, resource_type, kind=kind)
+    fresh_attributes = {c["attribute"] for c in fresh_claims}
+    # Grouped, then reduced via _parse_ts()'s max() -- NOT a plain {attr: claim} dict
+    # comprehension. A dict comprehension keeps whichever row SQLite happens to return LAST for
+    # a given attribute (unspecified order), which is only ever safe if at most one active schema
+    # claim can exist per attribute. That is NOT guaranteed: a DB used before this step existed
+    # (Step 2's own tests/proof runs never invalidated anything) can already hold more than one.
+    # resolve() itself already handles this correctly via its own max()-by-observed_at (Step 2,
+    # test_resolve_uses_the_truly_newest_among_multiple_schema_claims) -- this mirrors that same
+    # discipline here so this function's OWN bookkeeping (which row is "old," what invalidated_by
+    # points at) can't silently reference the wrong duplicate.
+    _by_attr = {}
+    for c in knowledge_store._active_schema_claims_for_resource(conn, resource_type):
+        existing = _by_attr.get(c["attribute"])
+        if existing is None or knowledge_store._parse_ts(c["observed_at"]) > knowledge_store._parse_ts(existing["observed_at"]):
+            _by_attr[c["attribute"]] = c
+    previously_active_by_attr = _by_attr
+
+    inserted, invalidated = [], []
+    for claim in fresh_claims:
+        old = previously_active_by_attr.get(claim["attribute"])
+        new_id = knowledge_store.insert_claim(conn, **claim)
+        inserted.append(new_id)
+        if old is not None:
+            # valid_until = the NEW claim's valid_from, NOT its observed_at (ray's review,
+            # 2026-07-19) -- valid_until must track the same axis valid_from does (the fact's own
+            # timeline), not when this check happened to notice the change. Only appears
+            # interchangeable today because knowledge_diff.py's schema claims currently set
+            # valid_from == observed_at (a disclosed Step 2 placeholder); this is correct
+            # regardless of whether that placeholder is ever resolved.
+            knowledge_store.invalidate_claim(
+                conn, old["id"], valid_until=claim["valid_from"], invalidated_by=new_id)
+            invalidated.append(old["id"])
+
+    return {"resource_type": resource_type, "provider": provider,
+            "inserted": inserted, "invalidated": invalidated, "removed_attributes": []}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_knowledge_degradation.py -v`
+Expected: PASS (4 passed)
+
+- [ ] **Step 5: Empirically verify both comparison-sensitive tests actually catch a break**
+
+Not optional -- same standard as Task 1's two-clock swap, applied here to two separate breaks:
+
+1. **The duplicate-selection fix** (`test_check_and_refresh_targets_the_newest_of_multiple_pre_existing_active_claims`): temporarily replace the `_by_attr` reduction loop with the naive version --
+   ```python
+   previously_active_by_attr = {
+       c["attribute"]: c
+       for c in knowledge_store._active_schema_claims_for_resource(conn, resource_type)
+   }
+   ```
+   Run this one test alone, confirm it FAILS (this is the proof that scrambling insertion order in the test actually made it discriminate -- the un-scrambled version from the first draft would NOT have failed here). Revert, confirm it passes again.
+2. **The valid_from fix** (`test_check_and_refresh_invalidates_the_old_claim_with_the_new_claims_valid_from`): temporarily change `valid_until=claim["valid_from"]` back to `valid_until=claim["observed_at"]`. Run this one test alone, confirm it FAILS on the `!= "2026-09-15T00:00:00Z"` assertion. Revert, confirm it passes again.
+
+Paste all four results (fail, pass, fail, pass) in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add core/generation/knowledge_degradation.py tests/test_knowledge_degradation.py
+git commit -m "feat: knowledge-layer spine Step 3 -- check_and_refresh() present-attribute loop
+
+Always-insert, no content-hash dedup -- load-bearing for resolve()'s
+freshness clause per ray's Q2 noise-queue reasoning, not just evidentiary
+value. Removed-attribute handling is Task 4.
+
+Folds in ray's second review round: duplicate-active-claim selection goes
+through _parse_ts (not a dict comprehension that keeps whichever row SQLite
+returns last); its regression test uses scrambled insertion order so it
+can't pass by coincidence, verified to fail against the naive version and
+against un-scrambled insertion order; invalidate_claim's valid_until is set
+from the superseding claim's valid_from, not observed_at -- both empirically
+verified to fail pre-fix."
+```
+
+---
+
+### Task 4: removed-attribute handling + the real-shape drift guard
+
+**Files:**
+- Modify: `core/generation/knowledge_degradation.py`
+- Modify: `tests/test_knowledge_degradation.py`
+
+**Interfaces:**
+- Consumes: same as Task 3, no new dependency.
+- Produces: `check_and_refresh()`'s `removed_attributes` field, now populated. Also adds
+  `"skipped_removed_attribute_check": bool` to the return dict -- `True` only when a fresh fetch
+  returned nothing AND previously-active claims existed for the type (nothing to signal if there
+  was nothing at stake). The type-not-found guard: an empty fetch is never trusted as "every
+  attribute removed" (ray's review, 2026-07-19).
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_check_and_refresh_marks_a_vanished_attribute_as_removed(tmp_path, monkeypatch):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    # Seed a previously-active claim for an attribute the "fresh fetch" below won't return --
+    # simulating a provider release that dropped it. Can't force a real provider to do this, so
+    # this is the one place in this file that stubs the fetch rather than using a live one; the
+    # shape-match test below guards against this stub drifting from what the real function
+    # actually returns.
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl", claim_text="acl: deprecated",
+        method="structural", source_type="schema", provider="aws", provider_version="6.54.0",
+        valid_from="2026-06-01T00:00:00Z", observed_at="2026-06-01T00:00:00Z",
+    )
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert summary["removed_attributes"] == ["acl"]
+    # The synthetic claim must actually become resolve()'s current belief, not just exist as a
+    # row -- proving this through resolve() itself, not just internal bookkeeping.
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["winner"]["claim_text"] == "acl: removed from live schema"
+
+
+def test_check_and_refresh_does_not_flag_attributes_still_present(tmp_path, monkeypatch):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert summary["removed_attributes"] == []
+
+
+def test_check_and_refresh_skips_removed_attribute_check_when_type_not_found_but_claims_exist(tmp_path, monkeypatch):
+    # THE bug ray's review found: schema_claims_for_type() returning [] must NOT be trusted as
+    # "every previously-tracked attribute was removed" -- that's reachable by an ordinary typo or
+    # the wrong --kind (aws_s3_bucket is a real name under BOTH "resource" and "data"), not just a
+    # genuine full-type removal. Confirmed this test discriminates: against the pre-guard code,
+    # fresh_attributes is an empty set, "acl" is not in it, and the removed-attribute loop would
+    # have fired -- summary["removed_attributes"] would be ["acl"], not [].
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl", claim_text="acl: deprecated",
+        method="structural", source_type="schema", provider="aws", provider_version="6.54.0",
+        valid_from="2026-06-01T00:00:00Z", observed_at="2026-06-01T00:00:00Z",
+    )
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert summary["removed_attributes"] == []  # NOT ["acl"] -- the false positive this guards against
+    assert summary["skipped_removed_attribute_check"] is True
+    # The pre-existing claim must be left untouched, still the active belief.
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["winner"]["claim_text"] == "acl: deprecated"
+
+
+def test_check_and_refresh_does_not_report_skipped_when_nothing_was_at_stake(tmp_path, monkeypatch):
+    # An empty fetch for a type with NO previously-active claims has nothing to silently get
+    # wrong -- skipped_removed_attribute_check must not fire on every unknown/never-tracked type.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_totally_made_up_type")
+    assert summary["skipped_removed_attribute_check"] is False
+    assert summary["removed_attributes"] == []
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_schema_claims_for_type_shape_matches_the_degradation_stubs():
+    # The removed-attribute stub above (and Task 3's stubs) encode an assumption about
+    # schema_claims_for_type()'s real return shape -- can't force a real provider to drop an
+    # attribute, so the stub can't be replaced with a live call there. This test guards against
+    # that assumption silently drifting from reality: the exact defect class that let the
+    # +00:00/Z bug survive (an assumption encoded once, never re-checked against a real fetch).
+    import knowledge_diff
+    claims = knowledge_diff.schema_claims_for_type("aws", "aws_s3_bucket")
+    assert claims
+    assert set(claims[0].keys()) == set(_FIXED_CLAIM.keys())
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/test_knowledge_degradation.py -v -k "removed or shape_matches"`
+Expected: FAIL -- `removed_attributes` stays `[]` (Task 3's implementation doesn't populate it yet).
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+def check_and_refresh(conn, provider, resource_type, kind="resource"):
+    fresh_claims = knowledge_diff.schema_claims_for_type(provider, resource_type, kind=kind)
+    fresh_attributes = {c["attribute"] for c in fresh_claims}
+    # Grouped, then reduced via _parse_ts()'s max() -- NOT a plain {attr: claim} dict
+    # comprehension. A dict comprehension keeps whichever row SQLite happens to return LAST for
+    # a given attribute (unspecified order), which is only ever safe if at most one active schema
+    # claim can exist per attribute. That is NOT guaranteed: a DB used before this step existed
+    # (Step 2's own tests/proof runs never invalidated anything) can already hold more than one.
+    # resolve() itself already handles this correctly via its own max()-by-observed_at (Step 2,
+    # test_resolve_uses_the_truly_newest_among_multiple_schema_claims) -- this mirrors that same
+    # discipline here so this function's OWN bookkeeping (which row is "old," what invalidated_by
+    # points at) can't silently reference the wrong duplicate.
+    _by_attr = {}
+    for c in knowledge_store._active_schema_claims_for_resource(conn, resource_type):
+        existing = _by_attr.get(c["attribute"])
+        if existing is None or knowledge_store._parse_ts(c["observed_at"]) > knowledge_store._parse_ts(existing["observed_at"]):
+            _by_attr[c["attribute"]] = c
+    previously_active_by_attr = _by_attr
+
+    inserted, invalidated = [], []
+    for claim in fresh_claims:
+        old = previously_active_by_attr.get(claim["attribute"])
+        new_id = knowledge_store.insert_claim(conn, **claim)
+        inserted.append(new_id)
+        if old is not None:
+            knowledge_store.invalidate_claim(
+                conn, old["id"], valid_until=claim["valid_from"], invalidated_by=new_id)
+            invalidated.append(old["id"])
+
+    removed_attributes = []
+    skipped_removed_attribute_check = False
+    if not fresh_claims:
+        # Type-not-found guard (ray's review, 2026-07-19): schema_claims_for_type() returns []
+        # both when the resource type genuinely doesn't exist in the live schema (a typo, or the
+        # wrong `kind` -- aws_s3_bucket is a real name under BOTH "resource" and "data") and when
+        # it exists with zero attributes. Collapsing these would mark EVERY previously-tracked
+        # attribute "removed" on an ordinary caller mistake, not a real removal -- a confident
+        # wrong verdict, same family as resolve()'s three. Do NOT touch schema_claims_for_type()'s
+        # own already-locked (three review rounds) contract to disambiguate the two cases;
+        # instead, skip the removed-attribute pass entirely and say so in the summary rather than
+        # silently trusting emptiness as confirmed removal. Only True when there was something at
+        # stake (previously-active claims this function declined to touch); an empty fetch for a
+        # type that was never tracked has nothing to silently get wrong.
+        skipped_removed_attribute_check = bool(previously_active_by_attr)
+    else:
+        # An attribute with a previously-active schema claim absent from the fresh fetch would
+        # otherwise stay "active" forever, asserting something about an attribute that no longer
+        # exists -- a silent-stale-answer bug in the same family as resolve()'s three
+        # (implementation-level review, 2026-07-19). Gives resolve() a real current belief instead
+        # of a silent absence, which the store has no other way to represent.
+        removed_provider_version = fresh_claims[0]["provider_version"]
+        removed_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        for attr, old in previously_active_by_attr.items():
+            if attr in fresh_attributes:
+                continue
+            removed_id = knowledge_store.insert_claim(
+                conn, resource_type=resource_type, attribute=attr,
+                claim_text=f"{attr}: removed from live schema", method="structural",
+                source_type="schema", provider=provider, provider_version=removed_provider_version,
+                valid_from=removed_ts, observed_at=removed_ts,
+            )
+            knowledge_store.invalidate_claim(conn, old["id"], valid_until=removed_ts, invalidated_by=removed_id)
+            inserted.append(removed_id)
+            invalidated.append(old["id"])
+            removed_attributes.append(attr)
+
+    return {"resource_type": resource_type, "provider": provider,
+            "inserted": inserted, "invalidated": invalidated, "removed_attributes": removed_attributes,
+            "skipped_removed_attribute_check": skipped_removed_attribute_check}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_knowledge_degradation.py -v`
+Expected: PASS (9 passed) -- 4 from Task 3 + 5 new above.
+
+- [ ] **Step 5: Empirically verify the type-not-found guard actually catches the false positive**
+
+Temporarily remove the `if not fresh_claims:` guard (restore the unconditional removed-attribute
+loop that treats any absent attribute as removed, no matter why `fresh_claims` is empty). Run
+`test_check_and_refresh_skips_removed_attribute_check_when_type_not_found_but_claims_exist` alone,
+confirm it FAILS (`removed_attributes` will be `["acl"]`, not `[]`). Revert, confirm it passes
+again. Paste both results in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add core/generation/knowledge_degradation.py tests/test_knowledge_degradation.py
+git commit -m "feat: knowledge-layer spine Step 3 -- removed-attribute synthetic claim + real-shape drift guard
+
+An attribute absent from a fresh fetch but present in the last-active set
+gets a synthetic 'removed from live schema' claim instead of leaving a
+silently stale required/deprecated claim as resolve()'s answer. New belief-
+state semantics -- flagged for ray's review, not built casually.
+
+Also folds in ray's second review round: schema_claims_for_type() returning
+[] is never trusted as 'every previously-tracked attribute was removed' --
+reachable by an ordinary typo or the wrong --kind, not just a real removal.
+Empty fetch skips the removed-attribute pass entirely and reports
+skipped_removed_attribute_check in the summary instead of silently
+cascading; verified to fail pre-fix. Louder CLI-level warning is Task 5."
+```
+
+---
+
+### Task 5: CLI entrypoint + default DB path + real end-to-end proof
+
+**Files:**
+- Modify: `core/generation/knowledge_degradation.py`
+- Modify: `tests/test_knowledge_degradation.py`
+
+**Interfaces:**
+- Consumes: `modules.output_root()` (existing, `core/generation/modules.py:50`).
+- Produces: `knowledge_degradation.py`'s `main(argv=None)`, invocable as
+  `python core/generation/knowledge_degradation.py check <provider> <resource_type> [--kind resource|data] [--db <path>]`.
+
+- [ ] **Step 1: Write the failing test (real fetch, terraform-gated, no mocks -- same discipline as Step 2's Task 5)**
+
+Add `import os` to `tests/test_knowledge_degradation.py`'s existing imports (not needed by Tasks
+3-4's tests, needed by the two CLI tests below).
+
+```python
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_end_to_end_check_and_refresh_against_real_live_aws_s3_bucket_schema(tmp_path):
+    db_path = str(tmp_path / "claims.db")
+    conn = knowledge_store.init_db(db_path)
+    summary1 = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert summary1["inserted"]
+    assert summary1["invalidated"] == []  # first check, nothing to supersede
+
+    summary2 = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert len(summary2["inserted"]) == len(summary1["inserted"])
+    assert sorted(summary2["invalidated"]) == sorted(summary1["inserted"])  # re-check invalidates the first pass
+
+    active = knowledge_store._active_schema_claims_for_resource(conn, "aws_s3_bucket")
+    assert len(active) == len(summary1["inserted"])  # exactly one active generation, not two accumulating
+    conn.close()
+
+
+def test_cli_check_writes_to_output_root_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(knowledge_degradation.modules, "output_root", lambda: str(tmp_path))
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    rc = knowledge_degradation.main(["check", "aws", "aws_s3_bucket"])
+    assert rc == 0
+    assert os.path.exists(os.path.join(str(tmp_path), "knowledge", "claims.db"))
+
+
+def test_cli_check_respects_explicit_db_override(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "custom" / "claims.db")
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    rc = knowledge_degradation.main(["check", "aws", "aws_s3_bucket", "--db", db_path])
+    assert rc == 0
+    assert os.path.exists(db_path)
+
+
+def test_cli_check_warns_and_exits_nonzero_when_removed_attribute_check_is_skipped(tmp_path, monkeypatch, capsys):
+    # Ray's review, 2026-07-19: a summary field alone is passive -- nobody reads those. A
+    # mistyped resource_type/--kind must not quietly no-op and report success; the CLI path
+    # needs its own loud signal, not just Task 4's summary flag.
+    db_path = str(tmp_path / "claims.db")
+    conn = knowledge_store.init_db(db_path)
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl", claim_text="acl: deprecated",
+        method="structural", source_type="schema", provider="aws", provider_version="6.54.0",
+        valid_from="2026-06-01T00:00:00Z", observed_at="2026-06-01T00:00:00Z",
+    )
+    conn.close()
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [])
+    rc = knowledge_degradation.main(["check", "aws", "aws_s3_bucket", "--db", db_path])
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "WARNING" in captured.err
+    assert "skipped" in captured.err.lower()
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/test_knowledge_degradation.py -v -k "end_to_end or cli_check"`
+Expected: FAIL -- no `main()` yet, `modules`/`os` not imported in the test file yet.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# Added to core/generation/knowledge_degradation.py, top of file:
+import json
+import os
+import sys
+
+import modules
+
+
+def _default_db_path():
+    return os.path.join(modules.output_root(), "knowledge", "claims.db")
+
+
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description="Knowledge-layer schema degradation check")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("check")
+    c.add_argument("provider")
+    c.add_argument("resource_type")
+    c.add_argument("--kind", default="resource", choices=["resource", "data"])
+    c.add_argument("--db", default=None)
+    args = ap.parse_args(argv)
+
+    db_path = args.db or _default_db_path()
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = knowledge_store.init_db(db_path)
+    summary = check_and_refresh(conn, args.provider, args.resource_type, kind=args.kind)
+    conn.close()
+    print(json.dumps(summary, indent=2))
+    if summary.get("skipped_removed_attribute_check"):
+        # Loud, not just a summary field nobody reads (ray's review, 2026-07-19). A mistyped
+        # resource_type or --kind must not quietly no-op and report success.
+        print(
+            f"[knowledge_degradation] WARNING: no live schema found for "
+            f"{args.provider}:{args.resource_type} (kind={args.kind}), but previously-active "
+            f"claims exist for it -- check resource_type/--kind for a typo before trusting this "
+            f"as a real removal. Removed-attribute detection was skipped, not silently applied.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+Note for the implementer: `test_cli_check_writes_to_output_root_by_default` monkeypatches
+`knowledge_degradation.modules.output_root` directly (not `os.environ["MINUSOPS_OUTPUT_DIR"]`) --
+either works since `output_root()` checks the env override first, but patching the function itself
+is simpler and doesn't leak an env var across tests.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_knowledge_degradation.py -v`
+Expected: PASS (13 passed) -- 9 from Tasks 3-4 + 4 new above.
+
+- [ ] **Step 5: Run the full knowledge-layer suite once, confirm nothing regressed**
+
+Run: `pytest tests/test_knowledge_store.py tests/test_knowledge_diff.py tests/test_knowledge_core_boundary.py tests/test_knowledge_degradation.py -v`
+Expected: PASS (22 + 4 + 5 + 13 = 44 passed)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add core/generation/knowledge_degradation.py tests/test_knowledge_degradation.py
+git commit -m "feat: knowledge-layer spine Step 3 -- CLI entrypoint, output_root()-based default DB path
+
+python core/generation/knowledge_degradation.py check <provider> <resource_type>
+[--kind resource|data] [--db <path>]. Default DB path is
+modules.output_root()/knowledge/claims.db -- wheel-safe, matching this
+project's existing convention, not a bare cwd-relative path. Cadence/
+scheduling deliberately out of scope, same precedent as schema_watch.py:
+this is a standalone CLI for an external scheduler (cron/CI) to invoke, not
+a self-scheduling daemon.
+
+Also folds in ray's second review round: the CLI warns on stderr and exits
+non-zero when the removed-attribute check was skipped (Task 4's
+skipped_removed_attribute_check) -- a summary field alone is passive and a
+mistyped resource_type/--kind must not quietly report success."
+```
+
+---
 
 ### Step 4 — agent-delegation contract for the semantic path
 
@@ -884,3 +1741,45 @@ These are sketched at the shape/interface level for red-team review of the overa
 **Placeholder scan**: no TBD/"add appropriate handling" in any Task 1-5 step; Steps 3-5's "open question for ray" markers are deliberate discussion points for the review this plan is headed to, not implementation gaps in tasks meant to be built now.
 
 **Type consistency**: `insert_claim`'s keyword signature (Task 1) matches exactly what `schema_claims_for_type` (Task 4) produces per-dict and what the end-to-end test (Task 5) calls with `**c`; `resolve()`'s return shape (`status`/`winner`/`claims`/`reason`) is identical across Task 2's unit tests and Task 5's end-to-end tests. Post-red-team: the renamed `reason` string (`non_schema_claim_observed_more_recently_than_schema_fetch`, replacing `web_claim_observed_more_recently_than_schema_fetch`) was checked and updated in both places it appears -- Task 2's own test and Task 5's end-to-end test -- so the two don't drift.
+
+### Self-Review addendum: Step 3 (2026-07-19)
+
+**Spec coverage**: every decision locked in Step 3's "Status" block maps to a task -- always-insert (Task 3), `output_root()` default path (Task 5), `_ALLOWED` extension (Task 2), removed-attribute handling (Task 4), the single read-primitive simplification and the `_parse_ts`-not-SQL-ordering catch (both Task 1).
+
+**Placeholder scan**: no TBD in any Task 1-5 step. Steps 4-5 (agent-delegation, budget knob) remain untouched sketches, correctly out of scope for this pass.
+
+**Type consistency, checked and one real bug fixed before this went to review**: Task 4's original draft referenced `knowledge_degradation.toolpath.find_tool(...)` in a `skipif` decorator, but `knowledge_degradation.py` never imports `toolpath` -- would have raised `AttributeError` at test collection, not at test run, so it would have broken collection of the entire file. Fixed to match every other terraform-gated test file's own established pattern (`import toolpath` + `TERRAFORM = toolpath.find_tool("terraform")` at test-module level, never reached through the production module). Also caught: Task 5's two new CLI tests use `os.path.exists`/`os.path.join`, but Task 3's initial test-file header didn't import `os` -- noted explicitly in Task 5's Step 1 rather than left implicit. Test counts verified arithmetically consistent task-to-task: `test_knowledge_store.py` 17→22 (Task 1); `test_knowledge_degradation.py` 0→4 (Task 3)→9 (Task 4)→13 (Task 5); combined-suite total 22+4+5+13=44 in Task 5's Step 5.
+
+### Self-Review addendum: Step 3, round 2 (ray's implementation-level review, 2026-07-19)
+
+Sent the bite-sized plan above to ray with the two focus areas named (removed-attribute synthetic
+claims, `invalidate_claim`'s two clocks). Round 2 found a fifth instance of the same "confident
+wrong answer" family this whole plan is watching for, plus a flaw in the test written to guard
+the fourth instance -- both accepted in full, folded in before any code was written:
+
+1. **Type-not-found guard** (Task 4): `schema_claims_for_type()` returning `[]` was being trusted
+   as "every previously-tracked attribute was removed," reachable by an ordinary typo or the wrong
+   `--kind`. Fixed with a guard that skips the removed-attribute pass and reports
+   `skipped_removed_attribute_check` instead of cascading -- verified to fail pre-fix. Extended
+   further per direct instruction: a passive summary field isn't enough (nobody reads those), so
+   the CLI (Task 5) also warns on stderr and exits non-zero.
+2. **Theater test, generalized into a standing rule**: `test_check_and_refresh_targets_the_newest_
+   of_multiple_pre_existing_active_claims` inserted claims in an order that let SQLite's natural
+   row-return order coincide with the correct pick, so it would likely have passed under both the
+   buggy and fixed code. Fixed by scrambling insertion order (mirroring Step 2's own
+   `test_resolve_uses_the_truly_newest_among_multiple_schema_claims`), plus a required fail-first
+   verification step. Per direct instruction, "insertion order deliberately scrambled against
+   timestamp order" is now a standing testing convention in this plan's Global Constraints, not a
+   fact to remember per-test -- it has now caused a real test-quality bug twice.
+3. **`valid_until` axis correction**: switched from the superseding claim's `observed_at` to its
+   `valid_from`, at both call sites (present-attribute loop, Task 3; removed-attribute synthesis,
+   Task 4) plus `invalidate_claim`'s own docstring (Task 1). Doesn't change `resolve()`'s behavior
+   today (it never reads `valid_until`'s value), but fixed now, while free, rather than left
+   latent for whatever eventually reads it for real.
+
+All three verified to fail pre-fix per this plan's own standing discipline, not just asserted --
+see each task's dedicated verification step above.
+
+**Deliberately not built in this step, and why:** SQL-level `ORDER BY observed_at` for "pick the newest active schema claim" was drafted and rejected before being written into any task -- it would have reintroduced bug #2's exact string-comparison shape on a `Z`/`+00:00`-mixed column. All recency comparison in this step goes through `knowledge_store._parse_ts()` in Python (reused, not reimplemented).
+
+**A second, related bug caught in self-review, not by ray:** `check_and_refresh`'s first draft built `previously_active_by_attr` via a plain `{c["attribute"]: c for c in ...}` dict comprehension over `_active_schema_claims_for_resource`'s result. That silently keeps whichever row SQLite happens to return LAST for a given attribute (unspecified order) -- correct only if at most one active schema claim can ever exist per attribute, which is NOT guaranteed (a DB used since Step 2, before this step's invalidate-on-insert discipline existed, can already hold more than one). `resolve()` itself already handles this correctly via its own `max()`-by-`observed_at` (Step 2's `test_resolve_uses_the_truly_newest_among_multiple_schema_claims` proves it), so this wouldn't have made `resolve()` return a wrong answer -- but `check_and_refresh`'s OWN bookkeeping (`invalidated_by`, which row gets `valid_until` set) could have silently referenced the wrong duplicate. Fixed to reduce via `_parse_ts()`-based comparison (Task 3/4's code below), mirroring `resolve()`'s own discipline instead of trusting dict-comprehension iteration order.
