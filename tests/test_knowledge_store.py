@@ -137,3 +137,95 @@ def test_resolve_generalizes_beyond_web_to_any_non_schema_source_type(tmp_path):
     result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
     assert result["status"] == "needs_review"
     assert result["reason"] == "non_schema_claim_observed_more_recently_than_schema_fetch"
+
+
+# Implementation-level review, 2026-07-18: zero test above ever called resolve() or
+# _active_claims() without an explicit attribute string, or exercised several other reachable
+# branches -- exactly the gap that let three separate comparison-correctness bugs (wrong clock,
+# incompatible timestamp formats, cross-attribute pooling) each pass every prior review. The
+# tests below audit resolve()'s full branch surface, not just the paths already in mind.
+
+def test_resolve_without_attribute_only_pools_resource_level_claims(tmp_path):
+    # _active_claims()'s attribute-is-None branch must mean "resource-level claims only"
+    # (attribute IS NULL), not "every claim for this resource_type regardless of attribute" --
+    # the latter would let resolve(conn, resource_type) silently compare claims about unrelated
+    # attributes as if they were about the same fact and return a confident wrong answer.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl: deprecated", "2026-07-18T00:00:00Z", attribute="acl")  # decoy
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute=None,
+        claim_text="aws_s3_bucket is a stable resource type", method="structural",
+        source_type="schema", provider="aws",
+        valid_from="2026-07-01T00:00:00Z", observed_at="2026-07-01T00:00:00Z",
+    )
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute=None,
+        claim_text="aws_s3_bucket is being deprecated resource-wide", method="semantic",
+        source_type="web", provider="aws",
+        valid_from="2026-06-01T00:00:00Z", observed_at="2026-06-01T00:00:00Z",  # OLDER than schema
+    )
+    result = knowledge_store.resolve(conn, "aws_s3_bucket")  # no attribute -- resource level
+    assert len(result["claims"]) == 2  # only the two resource-level claims, NOT the "acl" decoy
+    assert all(c["attribute"] is None for c in result["claims"])
+    assert result["status"] == "resolved"
+    assert result["winner"]["source_type"] == "schema"
+
+
+def test_resolve_with_zero_claims_returns_none_winner(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "nonexistent_attribute")
+    assert result["status"] == "resolved"
+    assert result["winner"] is None
+    assert result["reason"] == "single_or_no_claim"
+    assert result["claims"] == []
+
+
+def test_resolve_exact_tie_in_observed_at_same_format_favors_schema(tmp_path):
+    # Distinct from test_resolve_treats_same_instant_across_z_and_offset_format_as_equal_freshness:
+    # that test proves the format-parsing fix; this proves the tie behavior itself (schema wins
+    # on an exact tie) independent of any format-normalization concern -- identical strings, not
+    # just identical instants.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl is deprecated", "2026-07-18T12:00:00Z")
+    _insert(conn, "web", "acl is fine to use", "2026-07-18T12:00:00Z")  # identical string
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["status"] == "resolved"
+    assert result["winner"]["source_type"] == "schema"
+    assert result["reason"] == "schema_observed_same_or_more_recently_than_non_schema_claim"
+
+
+def test_resolve_uses_the_truly_newest_among_multiple_schema_claims(tmp_path):
+    # Insertion order deliberately scrambled relative to timestamp order, so this can't pass by
+    # accident of "first/last inserted happens to be newest."
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl: older schema read", "2026-06-01T00:00:00Z")
+    _insert(conn, "web", "acl: web claim between the two schema reads", "2026-07-01T00:00:00Z")
+    _insert(conn, "schema", "acl: newer schema read", "2026-07-15T00:00:00Z")  # inserted last
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    # If max() incorrectly picked the OLDER schema claim (06-01), the web claim (07-01) would
+    # look newer and force needs_review. The truly newest schema claim (07-15) is newer than
+    # the web claim, so schema must win.
+    assert result["status"] == "resolved"
+    assert result["winner"]["claim_text"] == "acl: newer schema read"
+
+
+def test_resolve_agreeing_claims_leading_trailing_whitespace_still_agrees(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "  acl is deprecated  ", "2026-07-01T00:00:00Z")
+    _insert(conn, "web", "acl is deprecated", "2026-07-18T00:00:00Z")
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["status"] == "resolved"
+    assert result["reason"] == "claims_agree"
+
+
+def test_resolve_agreeing_claims_internal_whitespace_difference_does_not_agree(tmp_path):
+    # Documents a known, disclosed limitation (final whole-branch review, 2026-07-18): the
+    # short-circuit normalizes leading/trailing whitespace and case, but NOT internal whitespace.
+    # Locks the current boundary in as a deliberate regression test, not a silent gap.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl  is deprecated", "2026-07-01T00:00:00Z")  # double space
+    _insert(conn, "web", "acl is deprecated", "2026-07-18T00:00:00Z")  # single space, observed later
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["reason"] != "claims_agree"
+    assert result["status"] == "needs_review"  # falls through to the ordinary freshness comparison
+    assert result["reason"] == "non_schema_claim_observed_more_recently_than_schema_fetch"

@@ -66,8 +66,16 @@ def insert_claim(conn, *, resource_type, attribute, claim_text, method, source_t
 
 def _active_claims(conn, resource_type, attribute=None):
     if attribute is None:
+        # Resource-level claims ONLY (attribute IS NULL), NOT every claim regardless of
+        # attribute -- insert_claim() genuinely supports attribute=None for claims about the
+        # resource type as a whole (e.g. "this resource type is deprecated entirely"), and
+        # that is the only sensible meaning of resolve(conn, resource_type) with no attribute.
+        # Omitting the attribute filter here previously pooled claims from unrelated attributes
+        # into one comparison, letting resolve() return a confident, silently wrong verdict --
+        # exactly the failure category the freshness clause exists to prevent (implementation-
+        # level review, 2026-07-18).
         rows = conn.execute(
-            "SELECT * FROM claims WHERE resource_type = ? AND valid_until IS NULL",
+            "SELECT * FROM claims WHERE resource_type = ? AND attribute IS NULL AND valid_until IS NULL",
             (resource_type,),
         ).fetchall()
     else:
