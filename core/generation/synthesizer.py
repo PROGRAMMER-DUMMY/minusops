@@ -729,6 +729,22 @@ def _authored_type_matches_declared(content, resource_type):
     )
 
 
+class AuthoredContentRejected(ValueError):
+    """Same ValueError every existing caller of _validate_novel_resources() already catches and
+    string-matches (pytest.raises(ValueError) still matches this subclass; str(exc) is unchanged)
+    -- but carries the structured reason/findings alongside the human-readable message, so a CLI
+    caller (synthesizer.py author, docs/phase7_generation_engine_plan.md's authoring entrypoint)
+    can hand a revising agent WHAT to fix, not just THAT something failed. `findings` is
+    gate_content()'s own real findings list for the g2_schema_lint_failed reason; empty for
+    every other reason, where the message string already names the specific attribute/type/
+    variable involved."""
+    def __init__(self, message, *, resource_type, reason, findings=None):
+        super().__init__(message)
+        self.resource_type = resource_type
+        self.reason = reason
+        self.findings = findings or []
+
+
 def _validate_novel_resources(decision, authored_content, verify_type_exists=True):
     """Resolve architecture_decision.json's `novel_resources` (docs/
     phase6_step1_authoring_scope.md section 1) against caller-supplied `authored_content` --
@@ -802,10 +818,11 @@ def _validate_novel_resources(decision, authored_content, verify_type_exists=Tru
         resource_type = entry.get("resource_type", "")
         raw = authored_content.get(resource_type)
         if raw is None:
-            raise ValueError(
+            raise AuthoredContentRejected(
                 f"novel_resources entry '{resource_type}' has no matching authored_content -- "
                 "fail-closed: synthesis refuses to proceed without authored HCL for every "
-                "declared novel resource"
+                "declared novel resource",
+                resource_type=resource_type, reason="missing_authored_content",
             )
         source_label = f"novel_resources[{i}]:{resource_type}"
         is_module_unit = isinstance(raw, dict)
@@ -821,9 +838,10 @@ def _validate_novel_resources(decision, authored_content, verify_type_exists=Tru
         # regardless of whether the declared type is even real, and every prior caller of this
         # path (several tests) relies on this needing no terraform/network access.
         if not list(schema_lint.iter_hcl_blocks(content)):
-            raise ValueError(
+            raise AuthoredContentRejected(
                 f"authored content for novel resource '{resource_type}' declares no "
-                f"resource/data blocks at all -- refusing to synthesize (source: {source_label})"
+                f"resource/data blocks at all -- refusing to synthesize (source: {source_label})",
+                resource_type=resource_type, reason="empty_content",
             )
         # Both checks below are scoped to the flat form only (see each function's own
         # docstring) -- a module-shaped unit's key isn't necessarily a literal type string (the
@@ -832,31 +850,37 @@ def _validate_novel_resources(decision, authored_content, verify_type_exists=Tru
         # content match the declared type" a moot question.
         if not is_module_unit:
             if verify_type_exists and not _resource_type_exists_live(resource_type):
-                raise ValueError(
+                raise AuthoredContentRejected(
                     f"novel_resources entry '{resource_type}' does not exist in the live "
                     f"provider schema -- fail-closed before authoring/composing anything for "
-                    f"it (source: {source_label})"
+                    f"it (source: {source_label})",
+                    resource_type=resource_type, reason="declared_type_not_found",
                 )
             if not _authored_type_matches_declared(content, resource_type):
-                raise ValueError(
+                raise AuthoredContentRejected(
                     f"authored content for novel resource '{resource_type}' does not declare a "
                     f"matching resource/data block -- authoring produced content for a "
-                    f"different type than what was declared (source: {source_label})"
+                    f"different type than what was declared (source: {source_label})",
+                    resource_type=resource_type, reason="authored_type_mismatch",
                 )
         lint_result = schema_lint.gate_content(content, source_label)
         if lint_result["blocking"]:
-            raise ValueError(
+            raise AuthoredContentRejected(
                 f"authored content for novel resource '{resource_type}' failed G2 schema lint "
-                f"({source_label}): {lint_result['findings']}"
+                f"({source_label}): {lint_result['findings']}",
+                resource_type=resource_type, reason="g2_schema_lint_failed",
+                findings=lint_result["findings"],
             )
         if is_module_unit:
             referenced = _path_module_asset_refs(content)
             missing_assets = sorted(referenced - set(assets.keys()))
             if missing_assets:
-                raise ValueError(
+                raise AuthoredContentRejected(
                     f"authored module unit '{resource_type}' references path.module-relative "
                     f"asset(s) with no matching entry in 'assets' ({source_label}): "
-                    f"{missing_assets}"
+                    f"{missing_assets}",
+                    resource_type=resource_type, reason="missing_path_module_assets",
+                    findings=[{"missing_asset": a} for a in missing_assets],
                 )
             unresolved_required = [
                 var_name for var_name, body in _iter_variable_blocks(content)
@@ -865,10 +889,12 @@ def _validate_novel_resources(decision, authored_content, verify_type_exists=Tru
                 and var_name not in _AUTO_WIRE_ROOT_VALUES
             ]
             if unresolved_required:
-                raise ValueError(
+                raise AuthoredContentRejected(
                     f"authored module unit '{resource_type}' has required variable(s) with no "
                     f"default, no module_args entry, and no well-known auto-wire match "
-                    f"({source_label}): {sorted(unresolved_required)}"
+                    f"({source_label}): {sorted(unresolved_required)}",
+                    resource_type=resource_type, reason="unresolved_required_variables",
+                    findings=[{"unresolved_variable": v} for v in sorted(unresolved_required)],
                 )
         authored_resources.append({
             "resource_type": resource_type,

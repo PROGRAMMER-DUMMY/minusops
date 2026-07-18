@@ -384,6 +384,27 @@ def test_validate_novel_resources_blocks_content_for_a_different_real_type_direc
     assert "does not declare a matching resource/data block" in str(exc.value)
 
 
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_validate_novel_resources_g2_failure_raises_authored_content_rejected_with_findings():
+    # The exception itself, not any CLI built on top of it: AuthoredContentRejected carries the
+    # structured reason/findings a caller needs to hand a revising agent WHAT to fix, not just
+    # THAT it failed. str(exc.value) is unchanged from before (every pytest.raises(ValueError)
+    # test above still matches this subclass) -- this test proves the NEW structured attributes
+    # specifically, independent of anything that might consume them later.
+    with pytest.raises(synthesizer.AuthoredContentRejected) as exc:
+        synthesizer._validate_novel_resources(_NOVEL_DECISION, {
+            "aws_dynamodb_table": (
+                'resource "aws_dynamodb_table" "novel" {\n'
+                '  this_attribute_does_not_exist = "x"\n'
+                '}\n'
+            ),
+        })
+    assert exc.value.resource_type == "aws_dynamodb_table"
+    assert exc.value.reason == "g2_schema_lint_failed"
+    assert exc.value.findings  # gate_content()'s real findings list, not empty
+    assert any("this_attribute_does_not_exist" in json.dumps(f) for f in exc.value.findings)
+
+
 # ---------------------------------------------------------------------------
 # write_authoring_record() (Phase 7 Item 5, docs/phase7_item5_authoring_scope.md section 1) --
 # the audit-record step, built before any real authoring call exists (build order per the scope:
