@@ -24,3 +24,42 @@ def test_schema_claims_for_aws_s3_bucket_includes_a_real_required_attribute():
 def test_schema_claims_for_an_unknown_type_returns_empty_not_an_exception():
     claims = knowledge_diff.schema_claims_for_type("aws", "aws_totally_made_up_type")
     assert claims == []
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_end_to_end_real_schema_claim_beats_an_older_contradicting_web_claim(tmp_path):
+    import knowledge_store
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_claims = knowledge_diff.schema_claims_for_type(
+        "aws", "aws_s3_bucket", observed_at="2026-07-18T12:00:00Z")
+    for c in schema_claims:
+        knowledge_store.insert_claim(conn, **c)
+    acl_claim = next((c for c in schema_claims if c["attribute"] == "acl"), None)
+    assert acl_claim is not None
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl",
+        claim_text="acl works fine, no deprecation", method="semantic", source_type="web",
+        provider="aws", valid_from="2026-07-10T00:00:00Z", observed_at="2026-07-10T00:00:00Z",
+    )  # observed BEFORE the schema fetch above
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["status"] == "resolved"
+    assert result["winner"]["source_type"] == "schema"
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_end_to_end_newer_web_claim_forces_review_not_schema_default(tmp_path):
+    import knowledge_store
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_claims = knowledge_diff.schema_claims_for_type(
+        "aws", "aws_s3_bucket", observed_at="2026-06-01T00:00:00Z")  # fetched weeks ago
+    for c in schema_claims:
+        knowledge_store.insert_claim(conn, **c)
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl",
+        claim_text="acl was removed in the latest provider release", method="semantic",
+        source_type="web", provider="aws",
+        valid_from="2026-07-18T00:00:00Z", observed_at="2026-07-18T00:00:00Z",  # observed just now
+    )
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["status"] == "needs_review"
+    assert result["reason"] == "non_schema_claim_observed_more_recently_than_schema_fetch"
