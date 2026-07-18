@@ -106,13 +106,17 @@ def _fetch_schema(provider, workdir):
     if terraform is None:
         raise RuntimeError("terraform CLI not found on PATH")
 
+    # timeout=120: real fetches measured this session at 30-80s; a hang here (network stall,
+    # a wedged provider-plugin download) must fail loud with subprocess.TimeoutExpired rather
+    # than block a caller indefinitely -- observed directly: a stuck run here silently blocked
+    # a dependent process for 50+ minutes with no live terraform process to show for it.
     init = subprocess.run([terraform, f"-chdir={workdir}", "init", "-input=false"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, timeout=120)
     if init.returncode != 0:
         raise RuntimeError(f"terraform init failed:\n{init.stdout}\n{init.stderr}")
 
     result = subprocess.run([terraform, f"-chdir={workdir}", "providers", "schema", "-json"],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise RuntimeError(f"terraform providers schema -json failed:\n{result.stdout}\n{result.stderr}")
 

@@ -44,6 +44,7 @@ def test_end_to_end_real_schema_claim_beats_an_older_contradicting_web_claim(tmp
     result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
     assert result["status"] == "resolved"
     assert result["winner"]["source_type"] == "schema"
+    conn.close()
 
 
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
@@ -63,3 +64,4 @@ def test_end_to_end_newer_web_claim_forces_review_not_schema_default(tmp_path):
     result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
     assert result["status"] == "needs_review"
     assert result["reason"] == "non_schema_claim_observed_more_recently_than_schema_fetch"
+    conn.close()
