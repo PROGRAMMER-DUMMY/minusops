@@ -229,3 +229,61 @@ def test_resolve_agreeing_claims_internal_whitespace_difference_does_not_agree(t
     assert result["reason"] != "claims_agree"
     assert result["status"] == "needs_review"  # falls through to the ordinary freshness comparison
     assert result["reason"] == "non_schema_claim_observed_more_recently_than_schema_fetch"
+
+
+def test_active_schema_claims_for_resource_returns_only_active_attribute_scoped_schema_claims(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "bucket: optional", "2026-07-01T00:00:00Z", attribute="bucket")
+    _insert(conn, "web", "acl: contested", "2026-07-01T00:00:00Z", attribute="acl")  # wrong source_type
+    knowledge_store.insert_claim(  # resource-level (attribute=None), must be excluded
+        conn, resource_type="aws_s3_bucket", attribute=None, claim_text="stable",
+        method="structural", source_type="schema", provider="aws",
+        valid_from="2026-07-01T00:00:00Z", observed_at="2026-07-01T00:00:00Z",
+    )
+    result = knowledge_store._active_schema_claims_for_resource(conn, "aws_s3_bucket")
+    assert len(result) == 1
+    assert result[0]["attribute"] == "bucket"
+    assert result[0]["source_type"] == "schema"
+
+
+def test_active_schema_claims_for_resource_excludes_invalidated_rows(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    old_id = _insert(conn, "schema", "bucket: optional", "2026-07-01T00:00:00Z", attribute="bucket")
+    knowledge_store.invalidate_claim(conn, old_id, valid_until="2026-07-10T00:00:00Z")
+    result = knowledge_store._active_schema_claims_for_resource(conn, "aws_s3_bucket")
+    assert result == []
+
+
+def test_invalidate_claim_sets_valid_until_and_invalidated_at_as_distinct_clocks(tmp_path):
+    # valid_until = fact-validity end (caller-supplied, semantically tied to the superseding
+    # claim's observed_at) vs invalidated_at = write-time audit stamp (defaults to now) -- the
+    # exact wrong-clock shape that produced bug #1 (resolve() originally compared valid_from
+    # instead of observed_at). Deliberately far-apart, easily-distinguishable values, so a swap
+    # between the two fields is caught, not just "some value got set somewhere."
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    claim_id = _insert(conn, "schema", "acl: required", "2026-06-01T00:00:00Z", attribute="acl")
+    knowledge_store.invalidate_claim(
+        conn, claim_id, valid_until="2026-07-01T00:00:00Z",  # the superseding claim's observed_at
+        invalidated_at="2099-01-01T00:00:00Z",  # deliberately absurd write-time stamp
+        invalidated_by=999,
+    )
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
+    assert row["valid_until"] == "2026-07-01T00:00:00Z"
+    assert row["invalidated_at"] == "2099-01-01T00:00:00Z"
+    assert row["invalidated_by"] == 999
+
+
+def test_invalidate_claim_defaults_invalidated_at_to_now_but_never_defaults_valid_until(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    claim_id = _insert(conn, "schema", "acl: required", "2026-06-01T00:00:00Z", attribute="acl")
+    knowledge_store.invalidate_claim(conn, claim_id, valid_until="2026-07-01T00:00:00Z")
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
+    assert row["valid_until"] == "2026-07-01T00:00:00Z"  # exactly what was passed, untouched
+    assert row["invalidated_at"] is not None  # defaulted, but to a DIFFERENT clock than valid_until
+    assert row["invalidated_at"] != row["valid_until"]
+
+
+def test_invalidate_claim_requires_valid_until_explicitly():
+    import pytest
+    with pytest.raises(TypeError):
+        knowledge_store.invalidate_claim(None, 1, invalidated_by=2)  # no valid_until -- must not silently default to now()

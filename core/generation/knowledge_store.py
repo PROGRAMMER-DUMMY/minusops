@@ -86,6 +86,36 @@ def _active_claims(conn, resource_type, attribute=None):
     return [dict(row) for row in rows]
 
 
+def _active_schema_claims_for_resource(conn, resource_type):
+    rows = conn.execute(
+        "SELECT * FROM claims WHERE resource_type = ? AND source_type = 'schema' "
+        "AND attribute IS NOT NULL AND valid_until IS NULL",
+        (resource_type,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def invalidate_claim(conn, claim_id, *, valid_until, invalidated_by=None, invalidated_at=None):
+    """Bookkeeping only -- never touches claim_text/observed_at/any content column, same
+    'claims coexist, nothing is overwritten' discipline as insert_claim(). valid_until and
+    invalidated_at are deliberately two different clocks on two different axes: valid_until is
+    fact-validity time (caller-supplied, semantically the superseding claim's valid_from -- NOT
+    its observed_at; valid_until must track the same axis valid_from does, the fact's own
+    timeline, not when we happened to notice the change, or it silently misrepresents the window
+    by however large the gap between the real change and the recheck is) and invalidated_at is
+    write-time audit time (defaults to now, same pattern as insert_claim()'s own ingested_at).
+    valid_until has NO default specifically so a caller can never accidentally use wall-clock time
+    for both (the exact wrong-clock shape that produced resolve()'s bug #1; using observed_at here
+    instead of valid_from would have been a second, subtler instance of the same family -- ray's
+    review, 2026-07-19)."""
+    invalidated_at = invalidated_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE claims SET valid_until = ?, invalidated_at = ?, invalidated_by = ? WHERE id = ?",
+        (valid_until, invalidated_at, invalidated_by, claim_id),
+    )
+    conn.commit()
+
+
 def _parse_ts(ts):
     """Normalize 'Z'-suffixed and '+00:00'-suffixed ISO timestamps to comparable datetime
     objects. Raw string '>' is NOT safe here: datetime.now(tz).isoformat() emits '+00:00' while
