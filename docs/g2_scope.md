@@ -4,6 +4,38 @@ Scope document only. No implementation in this pass; brought back for review per
 instruction. Posture: compliance-carrying product (2026-07-11) — this scope reflects that,
 particularly in the HARD-FAIL default.
 
+> **STATUS (2026-07-17): built and closed** (`252d1a6`, "G2 pre-write schema linter — Phase 2
+> closed"), wired into a live blocking path 2026-07-14 (`04d45f7`, Phase 6 Step 1). Everything
+> below describes the design that shipped; see `core/generation/schema_lint.py` for the real
+> implementation. Two boundary conditions confirmed correct-by-design, not gaps, on review:
+
+> **Catalog-path gating is deliberately absent, not a missed integration — corrected 2026-07-17
+> after an earlier draft of this note got the reason wrong.** `gate_content()` is wired into
+> `synthesizer._validate_novel_resources()` (a real, live, blocking call for authored/novel-
+> resource HCL — `synthesizer.py:846`) but is **not** wired to hard-block the 16-module catalog
+> path (`compose()`/`module_provenance.pin()`). This is intentional, not an oversight — but NOT
+> because the catalog is scheduled for removal. **The actual, decided position (Option B,
+> `docs/phase6_step5_teardown_scope.md`, 2026-07-15) is that the catalog stays indefinitely**:
+> `compose()` keeps copying from `modules/<id>/` as its real composition source for every module,
+> proven or not, with no fixed removal timeline — Option A (relocating the catalog out of that
+> role) only becomes the right call "the moment a real authoring mechanism exists to supersede
+> the catalog," which has not happened and isn't scheduled. Given that, hard-blocking `compose()`
+> on the catalog would mean gating a path this project has explicitly decided to keep serving
+> both roles (composition source AND grounding example) simultaneously — real enforcement
+> overhead on the one thing this codebase can reliably supply HCL from today, for a hypothetical
+> future retirement with no date attached to it, not a decision to leave it under-governed.
+> `module_provenance.py`'s own docstring documents the separate, narrower historical reason
+> `pin()` stopped being an enforced gate (only 2/16 modules were ever actually pinned).
+>
+> **One real gap surfaced while correcting this note, not yet closed**: `docs/
+> phase6_step5_teardown_scope.md` §4 states, present tense, that "every retrieved example is
+> re-verified live, at the point it's drawn on, via `schema_lint.gate_content()`" when serving
+> as a grounding example. Checked directly against the real code: `core/generation/modules.py`'s
+> `retrieve_grounding_examples()` has **zero** references to `schema_lint`/`gate_content` —
+> this claim does not match what's actually built. Either the doc is stale (written as a design
+> intention, never implemented) or this is a real, open piece of work. Flagging it here rather
+> than silently treating the doc as ground truth; not scoping a fix in this note.
+
 ## Where "pre-write" actually hooks in
 
 The generation-time-authoring pivot's eventual endgame is live per-request HCL synthesis
