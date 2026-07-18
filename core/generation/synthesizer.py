@@ -1024,11 +1024,154 @@ def _main_author_context(argv):
     return 1 if context["blocked"] else 0
 
 
+def _main_author(argv):
+    """`synthesizer.py author <resource_type> (--file <path>|- | --content <hcl> | stdin) [--run <id>]
+    (--decision-file <path> | --allow-incomplete --justification <text>) [--requirements-file <path>]
+    [--json]` -- the intake leg of the author-context -> [agent authors] -> author loop (docs/
+    phase7_generation_engine_plan.md). Accepts HCL an agent already wrote and routes it through
+    the EXISTING _validate_novel_resources() -> gate_content() -> compose() path -- no new gate,
+    no new validation logic.
+
+    Deliberately DUMB by design: accept -> gate -> verdict, once, per call. No retry, no
+    iteration, no fix-up of rejected content -- that loop belongs entirely on the calling agent's
+    side, the same decorrelation boundary docs/phase7_item5_authoring_scope.md already draws for
+    the iterate-until-valid retry loop. A rejection here is the single most common expected
+    outcome of this entrypoint, not a tool failure -- it is caught and reported with the actual
+    structured reason (AuthoredContentRejected.reason/.findings when available), never left to
+    surface as an uncaught traceback."""
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="synthesizer.py author",
+        description="Submit agent-authored HCL for one declared novel resource; gates and "
+                     "composes it via the existing validate/compose path. Accept -> gate -> "
+                     "verdict -- no retry or revision happens here; the calling agent revises "
+                     "and calls again.")
+    ap.add_argument("resource_type", help="e.g. aws_s3_bucket")
+    ap.add_argument("--file", default=None,
+                     help="path to a .tf file with the authored HCL, or '-' for stdin. "
+                          "Preferred over --content -- multi-line HCL with ${} interpolation is "
+                          "an escaping minefield as a shell argument. Piped stdin with no --file "
+                          "also works.")
+    ap.add_argument("--content", default=None,
+                     help="the authored HCL inline (secondary form -- prefer --file/stdin)")
+    ap.add_argument("--run", default=None,
+                     help="existing run id/prefix to continue instead of creating a new run")
+    ap.add_argument("--decision-file", default=None,
+                     help="path to an architecture_decision.json that already declares this "
+                          "resource_type in novel_resources (the governed path -- see "
+                          "architecture_decision.py add-novel-resource)")
+    ap.add_argument("--allow-incomplete", action="store_true",
+                     help="author directly without a pre-built architecture_decision.json -- "
+                          "the common path while this loop is being proven, not a lesser one. "
+                          "Still audited (_audit_allow_incomplete_bypass); requires --justification.")
+    ap.add_argument("--justification", default=None,
+                     help="required with --allow-incomplete: why this resource type, for the audit record")
+    ap.add_argument("--requirements-file", default=None)
+    ap.add_argument("--owner", default="data-platform")
+    ap.add_argument("--json", action="store_true",
+                     help="emit one machine-readable JSON object instead of prose -- the reliable "
+                          "form for a driving agent to parse a refusal's reason/findings")
+    args = ap.parse_args(argv)
+
+    def refuse(reason, message, findings=None, missing=None):
+        if args.json:
+            payload = {"status": "refused", "resource_type": args.resource_type,
+                       "reason": reason, "message": message}
+            if findings is not None:
+                payload["findings"] = findings
+            if missing is not None:
+                payload["missing"] = missing
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"[author] REFUSED ({reason}) - {message}")
+            for f in (findings or []):
+                print("    - " + ", ".join(f"{k}={v}" for k, v in f.items()))
+            for m in (missing or []):
+                print(f"    - {m}")
+        return 2
+
+    if args.file == "-" or (args.file is None and args.content is None and not sys.stdin.isatty()):
+        content = sys.stdin.read()
+    elif args.file:
+        try:
+            with open(args.file, encoding="utf-8") as f:
+                content = f.read()
+        except OSError as exc:
+            return refuse("file_not_readable", f"could not read --file {args.file!r}: {exc}")
+    elif args.content is not None:
+        content = args.content
+    else:
+        return refuse("no_content", "no HCL given: pass --file <path>, --file -, pipe via stdin, or --content")
+
+    if not args.decision_file and not args.allow_incomplete:
+        return refuse("no_decision_source",
+                      f"need one of: --decision-file <path> (a governed decision that already "
+                      f"declares '{args.resource_type}' in novel_resources), or "
+                      f"--allow-incomplete --justification \"<text>\" (author directly, audited)")
+    if args.allow_incomplete and not args.decision_file and not args.justification:
+        return refuse("missing_justification",
+                      "--allow-incomplete needs --justification (why this resource type, for the audit record)")
+
+    if args.decision_file:
+        decision = archdec.load(args.decision_file)
+        if decision is None:
+            return refuse("decision_file_not_found", f"no architecture decision at {args.decision_file}")
+        declared = {e.get("resource_type") for e in (decision.get("novel_resources") or [])}
+        if args.resource_type not in declared:
+            return refuse("resource_not_declared",
+                          f"{args.decision_file} does not declare '{args.resource_type}' in "
+                          f"novel_resources -- run architecture_decision.py add-novel-resource first")
+    else:
+        decision = {
+            "selected_modules": [],
+            "novel_resources": [{"resource_type": args.resource_type, "justification": args.justification}],
+        }
+
+    spec = reqgate.load(args.requirements_file) if args.requirements_file else None
+    target_run = runs.get_run(args.run) if args.run else None
+    if args.run and not target_run:
+        return refuse("run_not_found", f"run not found: {args.run}")
+
+    try:
+        res = synthesize(
+            f"author {args.resource_type}", spec=spec, decision=decision,
+            allow_incomplete=args.allow_incomplete, owner=args.owner, target_run=target_run,
+            authored_content={args.resource_type: content},
+        )
+    except reqgate.RequirementsIncomplete as exc:
+        return refuse("requirements_incomplete", "requirements gate failed", missing=exc.missing)
+    except archdec.ArchitectureDecisionIncomplete as exc:
+        return refuse("architecture_decision_incomplete", "architecture decision gate failed", missing=exc.missing)
+    except AuthoredContentRejected as exc:
+        return refuse(exc.reason, str(exc), findings=exc.findings)
+    except ValueError as exc:
+        return refuse("rejected", str(exc))
+
+    if args.json:
+        print(json.dumps({
+            "status": "composed", "resource_type": args.resource_type,
+            "run_id": res["run"]["run_id"], "out_dir": res["out_dir"],
+            "modules": res["modules"], "review": res["review"],
+            "next": f"python core/governance/plan_gate.py verify --dir {res['out_dir']} --policy-mode production",
+        }, indent=2))
+    else:
+        print("[author] composed  :", args.resource_type)
+        print("[author] terraform :", res["out_dir"])
+        if res["review"]:
+            print("[author] review inputs:")
+            for r in res["review"]:
+                print(f"    - {r}")
+        print(f"[author] next      : python core/governance/plan_gate.py verify --dir {res['out_dir']} --policy-mode production")
+    return 0
+
+
 def main(argv=None):
     import argparse
     peek = argv if argv is not None else sys.argv[1:]
     if peek and peek[0] == "author-context":
         return _main_author_context(peek[1:])
+    if peek and peek[0] == "author":
+        return _main_author(peek[1:])
     ap = argparse.ArgumentParser(description="Compose vetted modules into governed Terraform")
     ap.add_argument("requirements", help="free-text requirements summary (from grill-me)")
     ap.add_argument("--requirements-file", default=None,
