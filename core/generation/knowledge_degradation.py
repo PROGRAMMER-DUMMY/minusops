@@ -51,5 +51,43 @@ def check_and_refresh(conn, provider, resource_type, kind="resource"):
                 conn, old["id"], valid_until=claim["valid_from"], invalidated_by=new_id)
             invalidated.append(old["id"])
 
+    removed_attributes = []
+    skipped_removed_attribute_check = False
+    if not fresh_claims:
+        # Type-not-found guard (ray's review, 2026-07-19): schema_claims_for_type() returns []
+        # both when the resource type genuinely doesn't exist in the live schema (a typo, or the
+        # wrong `kind` -- aws_s3_bucket is a real name under BOTH "resource" and "data") and when
+        # it exists with zero attributes. Collapsing these would mark EVERY previously-tracked
+        # attribute "removed" on an ordinary caller mistake, not a real removal -- a confident
+        # wrong verdict, same family as resolve()'s three. Do NOT touch schema_claims_for_type()'s
+        # own already-locked (three review rounds) contract to disambiguate the two cases;
+        # instead, skip the removed-attribute pass entirely and say so in the summary rather than
+        # silently trusting emptiness as confirmed removal. Only True when there was something at
+        # stake (previously-active claims this function declined to touch); an empty fetch for a
+        # type that was never tracked has nothing to silently get wrong.
+        skipped_removed_attribute_check = bool(previously_active_by_attr)
+    else:
+        # An attribute with a previously-active schema claim absent from the fresh fetch would
+        # otherwise stay "active" forever, asserting something about an attribute that no longer
+        # exists -- a silent-stale-answer bug in the same family as resolve()'s three
+        # (implementation-level review, 2026-07-19). Gives resolve() a real current belief instead
+        # of a silent absence, which the store has no other way to represent.
+        removed_provider_version = fresh_claims[0]["provider_version"]
+        removed_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        for attr, old in previously_active_by_attr.items():
+            if attr in fresh_attributes:
+                continue
+            removed_id = knowledge_store.insert_claim(
+                conn, resource_type=resource_type, attribute=attr,
+                claim_text=f"{attr}: removed from live schema", method="structural",
+                source_type="schema", provider=provider, provider_version=removed_provider_version,
+                valid_from=removed_ts, observed_at=removed_ts,
+            )
+            knowledge_store.invalidate_claim(conn, old["id"], valid_until=removed_ts, invalidated_by=removed_id)
+            inserted.append(removed_id)
+            invalidated.append(old["id"])
+            removed_attributes.append(attr)
+
     return {"resource_type": resource_type, "provider": provider,
-            "inserted": inserted, "invalidated": invalidated, "removed_attributes": []}
+            "inserted": inserted, "invalidated": invalidated, "removed_attributes": removed_attributes,
+            "skipped_removed_attribute_check": skipped_removed_attribute_check}

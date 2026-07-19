@@ -102,3 +102,80 @@ def test_check_and_refresh_targets_the_newest_of_multiple_pre_existing_active_cl
     summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
     assert newer_id in summary["invalidated"]
     assert older_id not in summary["invalidated"]
+
+
+def test_check_and_refresh_marks_a_vanished_attribute_as_removed(tmp_path, monkeypatch):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    # Seed a previously-active claim for an attribute the "fresh fetch" below won't return --
+    # simulating a provider release that dropped it. Can't force a real provider to do this, so
+    # this is the one place in this file that stubs the fetch rather than using a live one; the
+    # shape-match test below guards against this stub drifting from what the real function
+    # actually returns.
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl", claim_text="acl: deprecated",
+        method="structural", source_type="schema", provider="aws", provider_version="6.54.0",
+        valid_from="2026-06-01T00:00:00Z", observed_at="2026-06-01T00:00:00Z",
+    )
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert summary["removed_attributes"] == ["acl"]
+    # The synthetic claim must actually become resolve()'s current belief, not just exist as a
+    # row -- proving this through resolve() itself, not just internal bookkeeping.
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["winner"]["claim_text"] == "acl: removed from live schema"
+
+
+def test_check_and_refresh_does_not_flag_attributes_still_present(tmp_path, monkeypatch):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert summary["removed_attributes"] == []
+
+
+def test_check_and_refresh_skips_removed_attribute_check_when_type_not_found_but_claims_exist(tmp_path, monkeypatch):
+    # THE bug ray's review found: schema_claims_for_type() returning [] must NOT be trusted as
+    # "every previously-tracked attribute was removed" -- that's reachable by an ordinary typo or
+    # the wrong --kind (aws_s3_bucket is a real name under BOTH "resource" and "data"), not just a
+    # genuine full-type removal. Confirmed this test discriminates: against the pre-guard code,
+    # fresh_attributes is an empty set, "acl" is not in it, and the removed-attribute loop would
+    # have fired -- summary["removed_attributes"] would be ["acl"], not [].
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl", claim_text="acl: deprecated",
+        method="structural", source_type="schema", provider="aws", provider_version="6.54.0",
+        valid_from="2026-06-01T00:00:00Z", observed_at="2026-06-01T00:00:00Z",
+    )
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert summary["removed_attributes"] == []  # NOT ["acl"] -- the false positive this guards against
+    assert summary["skipped_removed_attribute_check"] is True
+    # The pre-existing claim must be left untouched, still the active belief.
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["winner"]["claim_text"] == "acl: deprecated"
+
+
+def test_check_and_refresh_does_not_report_skipped_when_nothing_was_at_stake(tmp_path, monkeypatch):
+    # An empty fetch for a type with NO previously-active claims has nothing to silently get
+    # wrong -- skipped_removed_attribute_check must not fire on every unknown/never-tracked type.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [])
+    summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_totally_made_up_type")
+    assert summary["skipped_removed_attribute_check"] is False
+    assert summary["removed_attributes"] == []
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_schema_claims_for_type_shape_matches_the_degradation_stubs():
+    # The removed-attribute stub above (and Task 3's stubs) encode an assumption about
+    # schema_claims_for_type()'s real return shape -- can't force a real provider to drop an
+    # attribute, so the stub can't be replaced with a live call there. This test guards against
+    # that assumption silently drifting from reality: the exact defect class that let the
+    # +00:00/Z bug survive (an assumption encoded once, never re-checked against a real fetch).
+    import knowledge_diff
+    claims = knowledge_diff.schema_claims_for_type("aws", "aws_s3_bucket")
+    assert claims
+    assert set(claims[0].keys()) == set(_FIXED_CLAIM.keys())
