@@ -11,9 +11,17 @@ permanently stale relative to live-fetched non-schema claims, and every future c
 looks "web/agent_delegated is newer" -- the exact noise-queue asymmetry ray's Q2 review named.
 """
 import datetime
+import json
+import os
+import sys
 
 import knowledge_diff
 import knowledge_store
+import modules
+
+
+def _default_db_path():
+    return os.path.join(modules.output_root(), "knowledge", "claims.db")
 
 
 def check_and_refresh(conn, provider, resource_type, kind="resource"):
@@ -91,3 +99,38 @@ def check_and_refresh(conn, provider, resource_type, kind="resource"):
     return {"resource_type": resource_type, "provider": provider,
             "inserted": inserted, "invalidated": invalidated, "removed_attributes": removed_attributes,
             "skipped_removed_attribute_check": skipped_removed_attribute_check}
+
+
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description="Knowledge-layer schema degradation check")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("check")
+    c.add_argument("provider")
+    c.add_argument("resource_type")
+    c.add_argument("--kind", default="resource", choices=["resource", "data"])
+    c.add_argument("--db", default=None)
+    args = ap.parse_args(argv)
+
+    db_path = args.db or _default_db_path()
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = knowledge_store.init_db(db_path)
+    summary = check_and_refresh(conn, args.provider, args.resource_type, kind=args.kind)
+    conn.close()
+    print(json.dumps(summary, indent=2))
+    if summary.get("skipped_removed_attribute_check"):
+        # Loud, not just a summary field nobody reads (ray's review, 2026-07-19). A mistyped
+        # resource_type or --kind must not quietly no-op and report success.
+        print(
+            f"[knowledge_degradation] WARNING: no live schema found for "
+            f"{args.provider}:{args.resource_type} (kind={args.kind}), but previously-active "
+            f"claims exist for it -- check resource_type/--kind for a typo before trusting this "
+            f"as a real removal. Removed-attribute detection was skipped, not silently applied.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

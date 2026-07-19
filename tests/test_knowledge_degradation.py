@@ -5,6 +5,8 @@ function's actual return in test_schema_claims_for_type_shape_matches_the_degrad
 (Task 4) -- a stub that silently drifts from reality is exactly how the +00:00/Z bug survived,
 so that drift-guard is not optional.
 """
+import os
+
 import pytest
 
 import knowledge_degradation
@@ -166,6 +168,62 @@ def test_check_and_refresh_does_not_report_skipped_when_nothing_was_at_stake(tmp
     summary = knowledge_degradation.check_and_refresh(conn, "aws", "aws_totally_made_up_type")
     assert summary["skipped_removed_attribute_check"] is False
     assert summary["removed_attributes"] == []
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_end_to_end_check_and_refresh_against_real_live_aws_s3_bucket_schema(tmp_path):
+    db_path = str(tmp_path / "claims.db")
+    conn = knowledge_store.init_db(db_path)
+    summary1 = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert summary1["inserted"]
+    assert summary1["invalidated"] == []  # first check, nothing to supersede
+
+    summary2 = knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+    assert len(summary2["inserted"]) == len(summary1["inserted"])
+    assert sorted(summary2["invalidated"]) == sorted(summary1["inserted"])  # re-check invalidates the first pass
+
+    active = knowledge_store._active_schema_claims_for_resource(conn, "aws_s3_bucket")
+    assert len(active) == len(summary1["inserted"])  # exactly one active generation, not two accumulating
+    conn.close()
+
+
+def test_cli_check_writes_to_output_root_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(knowledge_degradation.modules, "output_root", lambda: str(tmp_path))
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    rc = knowledge_degradation.main(["check", "aws", "aws_s3_bucket"])
+    assert rc == 0
+    assert os.path.exists(os.path.join(str(tmp_path), "knowledge", "claims.db"))
+
+
+def test_cli_check_respects_explicit_db_override(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "custom" / "claims.db")
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [dict(_FIXED_CLAIM)])
+    rc = knowledge_degradation.main(["check", "aws", "aws_s3_bucket", "--db", db_path])
+    assert rc == 0
+    assert os.path.exists(db_path)
+
+
+def test_cli_check_warns_and_exits_nonzero_when_removed_attribute_check_is_skipped(tmp_path, monkeypatch, capsys):
+    # Ray's review, 2026-07-19: a summary field alone is passive -- nobody reads those. A
+    # mistyped resource_type/--kind must not quietly no-op and report success; the CLI path
+    # needs its own loud signal, not just Task 4's summary flag.
+    db_path = str(tmp_path / "claims.db")
+    conn = knowledge_store.init_db(db_path)
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl", claim_text="acl: deprecated",
+        method="structural", source_type="schema", provider="aws", provider_version="6.54.0",
+        valid_from="2026-06-01T00:00:00Z", observed_at="2026-06-01T00:00:00Z",
+    )
+    conn.close()
+    monkeypatch.setattr(knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+                         lambda provider, resource_type, observed_at=None, kind="resource": [])
+    rc = knowledge_degradation.main(["check", "aws", "aws_s3_bucket", "--db", db_path])
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "WARNING" in captured.err
+    assert "skipped" in captured.err.lower()
 
 
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
