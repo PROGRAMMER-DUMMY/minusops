@@ -985,14 +985,16 @@ def test_active_schema_claims_for_resource_excludes_invalidated_rows(tmp_path):
 
 def test_invalidate_claim_sets_valid_until_and_invalidated_at_as_distinct_clocks(tmp_path):
     # valid_until = fact-validity end (caller-supplied, semantically tied to the superseding
-    # claim's observed_at) vs invalidated_at = write-time audit stamp (defaults to now) -- the
-    # exact wrong-clock shape that produced bug #1 (resolve() originally compared valid_from
-    # instead of observed_at). Deliberately far-apart, easily-distinguishable values, so a swap
-    # between the two fields is caught, not just "some value got set somewhere."
+    # claim's valid_from -- NOT its observed_at) vs invalidated_at = write-time audit stamp
+    # (defaults to now) -- the exact wrong-clock shape that produced bug #1 (resolve() originally
+    # compared valid_from instead of observed_at; this function's own docstring names the same
+    # risk in reverse -- using observed_at here instead of valid_from). Deliberately far-apart,
+    # easily-distinguishable values, so a swap between the two fields is caught, not just "some
+    # value got set somewhere."
     conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
     claim_id = _insert(conn, "schema", "acl: required", "2026-06-01T00:00:00Z", attribute="acl")
     knowledge_store.invalidate_claim(
-        conn, claim_id, valid_until="2026-07-01T00:00:00Z",  # the superseding claim's observed_at
+        conn, claim_id, valid_until="2026-07-01T00:00:00Z",  # the superseding claim's valid_from
         invalidated_at="2099-01-01T00:00:00Z",  # deliberately absurd write-time stamp
         invalidated_by=999,
     )
