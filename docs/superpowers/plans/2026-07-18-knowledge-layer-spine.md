@@ -1725,9 +1725,999 @@ mistyped resource_type/--kind must not quietly report success."
 
 ### Step 4 — agent-delegation contract for the semantic path
 
-- **New**: a function (name TBD, e.g. `build_delegation_request(conn, resource_type, attribute)`) that packages a `needs_review` result from `resolve()` into a structured hand-off: the conflicting claims, their provenance/URLs, resource_type/attribute, and a place for the driving agent to write back a verdict (`record_delegation_verdict(conn, resource_type, attribute, verdict_claim)`).
-- **No local model anywhere in this path** -- the driving agent does the adjudication; MinusOps only packages the question and records the answer as a new claim (still an `INSERT`, never an `UPDATE`).
-- **Resolved by red-team review**: `source_type` is a plain `TEXT NOT NULL` column with no `CHECK` constraint or enum -- `"agent_delegated"` is not schema-enforced/"reserved," it simply requires no migration to start using. `resolve()` (Task 2) already generalizes to any non-schema `source_type`, so a dedicated `"agent_delegated"` value is safe to introduce here without touching `knowledge_store.py` again: it will fall into `non_schema_claims` alongside `"web"` and participate in the freshness clause identically. Dedicated `source_type` confirmed as the right choice -- collapsing it into `"web"` would lose the distinction between "found on the internet" and "adjudicated by the agent given both sides," and `confidence` can be populated from whatever the agent reports without `resolve()` ever reading it.
+**Status (2026-07-19): bite-sized below, two design rounds completed with the human (no ray review yet) -- ready to send to ray before build.**
+
+Round 1 (initial proposal, before any code written): proposed `build_delegation_request()` /
+`record_delegation_verdict()`, with `source_type="agent_delegated"` falling into `resolve()`'s
+existing `non_schema_claims` bucket exactly as the original sketch above (kept for history)
+described. While designing this step's own end-to-end test, found a fundamental gap the sketch
+never surfaced: `resolve()` has NO mechanism for an `agent_delegated` verdict to ever BECOME the
+resolved winner, in either branch -- the schema-vs-non-schema branch is blocked by strict
+exact-text `claims_agree` matching (a verdict's text is a paraphrase, not a copy), and the
+no-schema-arbiter branch (`"no_ground_truth_arbiter"`) doesn't unblock at all regardless of what
+adjudicates the conflict. Stopped and presented this to the human rather than building around it
+or silently deciding how to fix it. Also folded in three items from an earlier human review pass
+on the naive design: `record_delegation_verdict`'s clock handling (default `observed_at` to now,
+require only `valid_from`, validate whatever's supplied through `_parse_ts` and reject
+`valid_from > observed_at`), corrected test framing (assert `source_type`/`method` directly, not
+via an "ignore" framing), and confirmed no queue-discovery function is needed (agreed, dropped --
+`build_delegation_request` on a specific `resource_type`/`attribute` is enough; scanning for
+*which* attributes need review is a driving-agent concern, not this module's).
+
+Round 2 (scoped-authority design, "b′"): the human rejected a simpler fix ("the newest
+`agent_delegated` claim always wins") on sight -- "that's the freshness clause's exact failure
+mode through a new door," traced concretely: a July verdict adjudicating a schema-vs-web conflict
+would still outrank a genuinely-changed September schema re-fetch, forever, under that design.
+Proposed and refined **scoped authority** instead: a `claim_adjudications` join table records
+exactly which claims a verdict adjudicated; `resolve()` grants a delegated verdict authority only
+when the claims *currently* active (other than the verdict itself) are a subset-or-equal of what
+it adjudicated -- coverage is checked fresh against the CURRENT active set on every call, never
+cached, never permanent. Three follow-up decisions locked in this round:
+1. The vacuous-subset case (verdict is the only active claim, so the empty set is trivially a
+   subset of anything) is claimed structurally **unreachable** -- `resolve()`'s own
+   `len(claims) <= 1` early return fires first and unconditionally. Asserted via its own dedicated
+   test (Task 3) rather than left as an inference, so a future change that reorders or removes that
+   early return fails this test loudly instead of silently opening the path.
+2. `adjudicated_ids` is validated at `record_delegation_verdict`'s boundary with the same rigor as
+   the clocks (Task 2): required, non-empty, and every id must reference a claim that is
+   currently active for the EXACT `resource_type`/`attribute` being adjudicated -- a stale or
+   fabricated id would make the coverage test in `resolve()` meaningless, silently.
+3. Verdict-invalidation-on-new-verdict (explicitly considered: should recording a new verdict
+   invalidate a still-active prior one?) was rejected -- approved as-is. A later verdict naturally
+   covers a still-active prior verdict's claims via `build_delegation_request` reflecting current
+   state; no separate invalidation mechanism is needed.
+
+While designing Task 3's tie-breaking test (found proactively, before any code existed, not
+discovered as a defect afterward -- see the resolve-comparison-bugs-pattern memory, now an
+8th-instance candidate): a plain `max()` by `observed_at` can silently return an ARBITRARY one of
+several tied-newest claims. If a delegated verdict is ever tied for newest-observed with ONE OF
+ITS OWN adjudicated claims, an unspecified tie winner changes whether authority gets granted for
+the identical underlying state. Fixed by requiring the newest claim be UNIQUE (`len(newest_claims)
+== 1`), not just any `max()` result.
+
+**Consumes**: `knowledge_store.resolve`, `knowledge_store._active_claims`, `knowledge_store.
+_parse_ts`, `knowledge_store.insert_claim`, `knowledge_store.invalidate_claim` (all existing,
+reused not reimplemented). No boundary-guard (`_ALLOWED`) change needed anywhere in this step:
+the new `knowledge_delegation.py` imports only `datetime` (stdlib) and `knowledge_store` (already
+in `_ALLOWED` since Step 3), and `tests/test_knowledge_core_boundary.py`'s `_FILES` is computed
+via `glob(knowledge_*.py)`, so the new file is picked up automatically with zero edits to the
+guard itself.
+
+**Red-Team focus for this step (for ray) -- point at these four specifically, not a general pass:**
+
+1. **The tie-breaking fix** (Task 3): `len(newest_claims) == 1` guards against granting authority
+   off an ambiguous tie. Does the dedicated tie-breaking test (constructed by tying the verdict's
+   `observed_at` against ONE OF ITS OWN adjudicated claims, not an unrelated new claim -- the
+   latter construction was tried first and found to be theater, since it breaks the subset test
+   regardless of which side wins the tie) actually discriminate a unique-max requirement from a
+   plain `max()`? Is there a tie construction this doesn't cover?
+2. **The proper-subset decision** (Task 3): `other_active_ids <= adjudicated_ids` uses
+   subset-or-equal, not exact-match, deliberately -- coverage means nothing NEW has appeared, not
+   that the active set is frozen at exactly what was adjudicated. Does this hold up, or does
+   subset-or-equal open a gap exact-match would have closed?
+3. **The structurally-unreachable-empty-set claim** (Task 3): the vacuous-subset case is claimed
+   unreachable because `resolve()`'s `len(claims) <= 1` early return fires first. Verify it's
+   ACTUALLY unreachable, not just apparently -- is there any path (future or present) that could
+   reach the authority-check code with fewer than 2 active claims, bypassing that early return?
+4. **The `adjudicated_ids` boundary validation** (Task 2), as the second external-input surface
+   after the clocks: required, non-empty, every id must reference a currently-active claim for the
+   exact `resource_type`/`attribute`. Same review standard as the clock validation -- does this
+   close the boundary, or is there a gap (e.g. an id active for the right attribute but wrong
+   `resource_type`, or a race between validation and insert)?
+
+---
+
+### Task 1: `knowledge_delegation.py` (new file) — `build_delegation_request()`
+
+**Files:**
+- Create: `core/generation/knowledge_delegation.py`
+- Test: `tests/test_knowledge_delegation.py`
+
+**Interfaces:**
+- Consumes: `knowledge_store.resolve`, `knowledge_store._parse_ts` (both existing, reused not
+  reimplemented).
+- Produces: `build_delegation_request(conn, resource_type, attribute) -> dict | None` -- `None`
+  when `resolve()` doesn't return `needs_review`; otherwise a dict with keys `resource_type`,
+  `attribute`, `reason`, `claims` (list of provenance dicts, newest-`observed_at`-first).
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+"""
+tests for knowledge_delegation.py -- Step 4 of the knowledge-layer spine, the agent-delegation
+contract for the semantic path.
+"""
+import knowledge_delegation
+import knowledge_store
+
+
+def _insert(conn, source_type, claim_text, observed_at, attribute="acl"):
+    return knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute=attribute, claim_text=claim_text,
+        method="structural" if source_type == "schema" else "semantic", source_type=source_type,
+        provider="aws", valid_from=observed_at, observed_at=observed_at,
+    )
+
+
+def test_build_delegation_request_returns_none_when_single_claim_resolved(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    assert knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl") is None
+
+
+def test_build_delegation_request_returns_none_when_schema_wins_via_freshness(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "web", "acl is fine", "2026-07-01T00:00:00Z")
+    _insert(conn, "schema", "acl is deprecated", "2026-07-05T00:00:00Z")
+    assert knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl") is None
+
+
+def test_build_delegation_request_returns_well_formed_dict_when_needs_review(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    req = knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl")
+    assert req["resource_type"] == "aws_s3_bucket"
+    assert req["attribute"] == "acl"
+    assert req["reason"] == "non_schema_claim_observed_more_recently_than_schema_fetch"
+    ids = {c["id"] for c in req["claims"]}
+    assert ids == {schema_id, web_id}
+    for c in req["claims"]:
+        assert set(c) == {"id", "claim_text", "source_type", "source_url", "provider",
+                           "provider_version", "observed_at", "valid_from"}
+
+
+def test_build_delegation_request_orders_claims_newest_first(tmp_path):
+    # Insertion order deliberately scrambled against timestamp order (standing convention, Global
+    # Constraints) -- the OLDER claim is inserted second so a bug that just returns resolve()'s
+    # claims list in whatever order it came back in cannot pass by coincidence.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    newer_id = _insert(conn, "web", "acl is fine", "2026-07-10T00:00:00Z")
+    older_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    req = knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl")
+    assert [c["id"] for c in req["claims"]] == [newer_id, older_id]
+
+
+def test_build_delegation_request_claims_list_is_never_empty(tmp_path):
+    # Asserted directly, not inferred from resolve()'s len(claims) <= 1 early return living in a
+    # different file -- same "assert don't infer" discipline as Task 3's empty-set test.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    req = knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl")
+    assert len(req["claims"]) >= 2
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/test_knowledge_delegation.py -v`
+Expected: FAIL -- `ModuleNotFoundError: No module named 'knowledge_delegation'` (the file doesn't
+exist yet).
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+"""
+knowledge_delegation.py -- the agent-delegation contract for the semantic path: packages a
+needs_review resolve() result into a structured hand-off for the driving agent, and records the
+agent's verdict back as a new claim (Task 2). No local model anywhere in this path -- the driving
+agent does the adjudication; this module only packages the question and records the answer.
+
+Materiality (whether a new observation is worth recording at all) is deliberately NOT decided
+here -- that is the driving agent's job, checking resolve()'s current winner before ever calling
+record_delegation_verdict. Materiality must never live in resolve() or any stdlib-only core
+module (ray's Q2 reconciliation).
+"""
+import knowledge_store
+
+
+def build_delegation_request(conn, resource_type, attribute):
+    result = knowledge_store.resolve(conn, resource_type, attribute)
+    if result["status"] != "needs_review":
+        return None
+    # claims is asserted non-empty by its own dedicated test
+    # (test_build_delegation_request_claims_list_is_never_empty) rather than left as an inference
+    # from resolve()'s len(claims) <= 1 early return living in a different file.
+    ordered = sorted(
+        result["claims"], key=lambda c: knowledge_store._parse_ts(c["observed_at"]), reverse=True)
+    return {
+        "resource_type": resource_type,
+        "attribute": attribute,
+        "reason": result["reason"],
+        "claims": [
+            {
+                "id": c["id"], "claim_text": c["claim_text"], "source_type": c["source_type"],
+                "source_url": c["source_url"], "provider": c["provider"],
+                "provider_version": c["provider_version"], "observed_at": c["observed_at"],
+                "valid_from": c["valid_from"],
+            }
+            for c in ordered
+        ],
+    }
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_knowledge_delegation.py tests/test_knowledge_core_boundary.py -v`
+Expected: PASS (5 + 5 = 10 passed) -- the new file is picked up by the boundary guard's glob
+automatically; confirms no `_ALLOWED` change was needed.
+
+- [ ] **Step 5: Empirically verify the newest-first ordering actually matters**
+
+Temporarily change `reverse=True` to `reverse=False` (or drop the `key=` entirely) in the
+`sorted(...)` call. Run
+`pytest tests/test_knowledge_delegation.py -v -k orders_claims_newest_first` alone, confirm it
+FAILS (`assert [older_id, newer_id] == [newer_id, older_id]`, order reversed). Revert, confirm it
+passes again. Paste both results in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add core/generation/knowledge_delegation.py tests/test_knowledge_delegation.py
+git commit -m "feat: knowledge-layer spine Step 4 -- build_delegation_request() packages needs_review for the driving agent
+
+New core/generation/knowledge_delegation.py, the agent-delegation
+contract's first half. Packages a needs_review resolve() result into a
+newest-first ordered hand-off (provenance, no raw DB rows) for the driving
+agent to adjudicate. No local model anywhere in this path. Imports only
+knowledge_store, already in the boundary guard's _ALLOWED set -- no
+boundary-guard change needed, and the new file is picked up by
+test_knowledge_core_boundary.py automatically via its existing glob."
+```
+
+---
+
+### Task 2: `knowledge_store.py` (`claim_adjudications` table) + `knowledge_delegation.py` (`record_delegation_verdict()`)
+
+**Files:**
+- Modify: `core/generation/knowledge_store.py` (add `claim_adjudications` table to `_SCHEMA`)
+- Modify: `core/generation/knowledge_delegation.py`
+- Modify: `tests/test_knowledge_delegation.py`
+
+**Interfaces:**
+- Consumes: `knowledge_store._parse_ts`, `knowledge_store.insert_claim` (both existing).
+- Produces: `record_delegation_verdict(conn, resource_type, attribute, *, claim_text, valid_from,
+  provider, adjudicated_ids, observed_at=None, source_url=None, confidence=None,
+  provider_version=None) -> int` (the new verdict claim's id); the `claim_adjudications` table,
+  read by Task 3's `_adjudicated_ids()`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Update the top of `tests/test_knowledge_delegation.py` to add the two new imports:
+
+```python
+import datetime
+
+import pytest
+
+import knowledge_delegation
+import knowledge_store
+```
+
+Append:
+
+```python
+def _count_claims(conn):
+    return conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+
+
+def test_record_delegation_verdict_inserts_claim_with_correct_fields(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    verdict_id = knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="acl is deprecated, per agent review",
+        valid_from="2026-07-10T00:00:00Z", observed_at="2026-07-10T00:00:00Z",
+        provider="aws", adjudicated_ids=[schema_id, web_id], confidence=0.9,
+    )
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (verdict_id,)).fetchone()
+    assert row["claim_text"] == "acl is deprecated, per agent review"
+    assert row["provider"] == "aws"
+    assert row["confidence"] == 0.9
+    assert row["valid_from"] == "2026-07-10T00:00:00Z"
+
+
+def test_record_delegation_verdict_always_sets_agent_delegated_and_semantic(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    verdict_id = knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="anything",
+        valid_from="2026-07-10T00:00:00Z", provider="aws", adjudicated_ids=[schema_id],
+    )
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (verdict_id,)).fetchone()
+    assert row["source_type"] == "agent_delegated"
+    assert row["method"] == "semantic"
+
+
+def test_record_delegation_verdict_defaults_observed_at_to_now(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = datetime.datetime.now(datetime.timezone.utc)
+    verdict_id = knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="anything",
+        valid_from="2026-07-01T00:00:00Z", provider="aws", adjudicated_ids=[schema_id],
+    )
+    after = datetime.datetime.now(datetime.timezone.utc)
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (verdict_id,)).fetchone()
+    observed = knowledge_store._parse_ts(row["observed_at"])
+    assert before <= observed <= after
+
+
+def test_record_delegation_verdict_accepts_explicit_observed_at(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    verdict_id = knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="anything",
+        valid_from="2026-07-01T00:00:00Z", observed_at="2026-07-15T00:00:00Z",
+        provider="aws", adjudicated_ids=[schema_id],
+    )
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (verdict_id,)).fetchone()
+    assert row["observed_at"] == "2026-07-15T00:00:00Z"
+
+
+def test_record_delegation_verdict_rejects_unparseable_valid_from(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="not-a-timestamp", provider="aws", adjudicated_ids=[schema_id],
+        )
+    assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rejects_unparseable_observed_at(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-01T00:00:00Z", observed_at="not-a-timestamp",
+            provider="aws", adjudicated_ids=[schema_id],
+        )
+    assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rejects_valid_from_after_observed_at(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-20T00:00:00Z", observed_at="2026-07-10T00:00:00Z",
+            provider="aws", adjudicated_ids=[schema_id],
+        )
+    assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rejects_empty_adjudicated_ids(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-01T00:00:00Z", provider="aws", adjudicated_ids=[],
+        )
+    assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rejects_nonexistent_adjudicated_id(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-01T00:00:00Z", provider="aws", adjudicated_ids=[999999],
+        )
+    assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rejects_inactive_adjudicated_id(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    knowledge_store.invalidate_claim(conn, schema_id, valid_until="2026-07-05T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-10T00:00:00Z", provider="aws", adjudicated_ids=[schema_id],
+        )
+    assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rejects_adjudicated_id_from_different_attribute(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    other_attr_id = _insert(conn, "schema", "bucket is optional", "2026-07-01T00:00:00Z",
+                             attribute="bucket")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-10T00:00:00Z", provider="aws", adjudicated_ids=[other_attr_id],
+        )
+    assert _count_claims(conn) == before
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/test_knowledge_delegation.py -v -k record_delegation_verdict`
+Expected: FAIL -- `AttributeError: module 'knowledge_delegation' has no attribute
+'record_delegation_verdict'`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `core/generation/knowledge_store.py`, extend `_SCHEMA`:
+
+```python
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS claims (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_type   TEXT NOT NULL,
+    attribute       TEXT,
+    claim_text      TEXT NOT NULL,
+    method          TEXT NOT NULL,
+    source_type     TEXT NOT NULL,
+    source_url      TEXT,
+    provider        TEXT NOT NULL,
+    provider_version TEXT,
+    confidence      REAL,
+    valid_from      TEXT NOT NULL,
+    valid_until     TEXT,
+    observed_at     TEXT NOT NULL,
+    ingested_at     TEXT NOT NULL,
+    invalidated_at  TEXT,
+    invalidated_by  INTEGER REFERENCES claims(id),
+    content_hash    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_claims_lookup ON claims(resource_type, attribute);
+CREATE TABLE IF NOT EXISTS claim_adjudications (
+    verdict_claim_id     INTEGER NOT NULL REFERENCES claims(id),
+    adjudicated_claim_id INTEGER NOT NULL REFERENCES claims(id),
+    PRIMARY KEY (verdict_claim_id, adjudicated_claim_id)
+);
+"""
+```
+
+In `core/generation/knowledge_delegation.py`, add `import datetime` at the top and append:
+
+```python
+def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, valid_from,
+                                provider, adjudicated_ids, observed_at=None, source_url=None,
+                                confidence=None, provider_version=None):
+    """Records the driving agent's adjudication as a new claim -- an INSERT, never an UPDATE.
+    source_type and method are fixed by this function (not caller-supplied): "agent_delegated"
+    and "semantic".
+
+    This is the external boundary of the two-clock model -- an arbitrary driving agent supplies
+    valid_from/observed_at. Both are validated: each must parse via knowledge_store._parse_ts
+    (rejects garbage/wrong-type input), and valid_from must not be AFTER observed_at (a fact
+    can't be observed before it became true). observed_at defaults to now; valid_from has no
+    default (same no-default precedent as invalidate_claim's valid_until).
+
+    adjudicated_ids is the second external-input boundary surface: required (no default), must
+    be non-empty, and every id must reference a currently-active claim for this exact
+    resource_type/attribute -- a stale or fabricated id would make the coverage test in
+    resolve() (Task 3) meaningless, silently. All validation runs BEFORE any write: a rejection
+    leaves no partial claim row behind."""
+    observed_at = observed_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        parsed_valid_from = knowledge_store._parse_ts(valid_from)
+        parsed_observed_at = knowledge_store._parse_ts(observed_at)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError(
+            f"record_delegation_verdict: valid_from/observed_at must be parseable ISO "
+            f"timestamps -- got valid_from={valid_from!r}, observed_at={observed_at!r}"
+        ) from exc
+    if parsed_valid_from > parsed_observed_at:
+        raise ValueError(
+            f"record_delegation_verdict: valid_from ({valid_from!r}) is after observed_at "
+            f"({observed_at!r}) -- a fact cannot be observed before it became true"
+        )
+
+    adjudicated_ids = list(adjudicated_ids)
+    if not adjudicated_ids:
+        raise ValueError(
+            "record_delegation_verdict: adjudicated_ids must be non-empty -- a verdict "
+            "adjudicating nothing is incoherent"
+        )
+    placeholders = ",".join("?" * len(adjudicated_ids))
+    if attribute is None:
+        rows = conn.execute(
+            f"SELECT id FROM claims WHERE id IN ({placeholders}) AND resource_type = ? "
+            f"AND attribute IS NULL AND valid_until IS NULL",
+            (*adjudicated_ids, resource_type),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT id FROM claims WHERE id IN ({placeholders}) AND resource_type = ? "
+            f"AND attribute = ? AND valid_until IS NULL",
+            (*adjudicated_ids, resource_type, attribute),
+        ).fetchall()
+    found_ids = {row["id"] for row in rows}
+    missing = set(adjudicated_ids) - found_ids
+    if missing:
+        raise ValueError(
+            f"record_delegation_verdict: adjudicated_ids {sorted(missing)} do not reference "
+            f"currently-active claims for {resource_type}/{attribute!r} -- stale or "
+            f"fabricated id"
+        )
+
+    verdict_id = knowledge_store.insert_claim(
+        conn, resource_type=resource_type, attribute=attribute, claim_text=claim_text,
+        method="semantic", source_type="agent_delegated", provider=provider,
+        provider_version=provider_version, source_url=source_url, confidence=confidence,
+        valid_from=valid_from, observed_at=observed_at,
+    )
+    conn.executemany(
+        "INSERT INTO claim_adjudications (verdict_claim_id, adjudicated_claim_id) VALUES (?, ?)",
+        [(verdict_id, aid) for aid in adjudicated_ids],
+    )
+    conn.commit()
+    return verdict_id
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_knowledge_delegation.py -v`
+Expected: PASS (16 passed) -- 5 from Task 1 + 11 new above.
+
+- [ ] **Step 5: Empirically verify every rejection actually rejects**
+
+Temporarily comment out the entire validation block in `record_delegation_verdict` -- everything
+between the docstring and `verdict_id = knowledge_store.insert_claim(...)` (the timestamp parse,
+the `valid_from > observed_at` check, the empty-`adjudicated_ids` check, and the
+found/missing-id check). Run `pytest tests/test_knowledge_delegation.py -v -k rejects` (7 tests),
+confirm all 7 FAIL (each with `Failed: DID NOT RAISE <class 'ValueError'>`). Restore the
+validation block. Re-run, confirm all 7 PASS. Paste both results in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add core/generation/knowledge_store.py core/generation/knowledge_delegation.py tests/test_knowledge_delegation.py
+git commit -m "feat: knowledge-layer spine Step 4 -- record_delegation_verdict() + claim_adjudications table
+
+record_delegation_verdict() is the second external-input boundary in this
+codebase (after the clocks): valid_from/observed_at are parsed and
+validated (valid_from must not be after observed_at), and adjudicated_ids
+is validated non-empty with every id required to reference a currently-
+active claim for the exact resource_type/attribute -- all validation runs
+before any write, so a rejection leaves no partial claim row behind. Always
+an INSERT, never an UPDATE; source_type='agent_delegated' and
+method='semantic' are fixed by this function, not caller-supplied.
+
+claim_adjudications is a join table (verdict_claim_id, adjudicated_claim_id),
+tracking exactly what a verdict adjudicated for Task 3's scoped-authority
+check in resolve()."
+```
+
+---
+
+### Task 3: `knowledge_store.py` — `resolve()`'s scoped-authority extension
+
+**Files:**
+- Modify: `core/generation/knowledge_store.py` (`resolve()`, plus new `_adjudicated_ids()` helper)
+- Test: `tests/test_knowledge_store.py`
+
+**Interfaces:**
+- Consumes: `claim_adjudications` (Task 2), `_active_claims`, `_parse_ts` (both existing,
+  unchanged).
+- Produces: `_adjudicated_ids(conn, verdict_claim_id) -> set[int]`; `resolve()`'s new
+  `"delegated_verdict_covers_active_claims"` reason string, returned before the existing
+  schema/non-schema comparison, which is otherwise completely unchanged below it.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_knowledge_store.py` (reuses the file's existing `_insert` helper):
+
+```python
+def _record_verdict(conn, adjudicated_ids, claim_text="agent verdict",
+                     observed_at="2026-07-20T00:00:00Z", attribute="acl"):
+    verdict_id = knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute=attribute, claim_text=claim_text,
+        method="semantic", source_type="agent_delegated", provider="aws",
+        valid_from=observed_at, observed_at=observed_at,
+    )
+    conn.executemany(
+        "INSERT INTO claim_adjudications (verdict_claim_id, adjudicated_claim_id) VALUES (?, ?)",
+        [(verdict_id, aid) for aid in adjudicated_ids],
+    )
+    conn.commit()
+    return verdict_id
+
+
+def test_resolve_delegated_verdict_wins_when_it_covers_all_active_claims(tmp_path):
+    # Insertion order here necessarily matches timestamp order -- a verdict's adjudicated_ids
+    # must reference claims that already exist, so it structurally cannot be inserted before
+    # schema_id/web_id. This does NOT violate the standing "scramble insertion order" testing
+    # convention in spirit: that convention exists to stop a test passing by accident under a
+    # LAST/FIRST-inserted-wins bug, and the dedicated tie-breaking test below (which uses
+    # monkeypatch to force BOTH row orderings explicitly, independent of insertion order)
+    # supplies that guarantee for this exact selection logic instead.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    verdict_id = _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-10T00:00:00Z")
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["status"] == "resolved"
+    assert result["winner"]["id"] == verdict_id
+    assert result["reason"] == "delegated_verdict_covers_active_claims"
+
+
+def test_resolve_delegated_verdict_does_not_win_when_new_claim_appeared(tmp_path):
+    # The staleness scenario that sank the naive "newest agent_delegated claim always wins"
+    # design: a fresh schema re-fetch the verdict never adjudicated must NOT be silently
+    # outranked by a stale July verdict.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-10T00:00:00Z")
+    # September: a fresh schema re-fetch supersedes the July schema claim -- the verdict no
+    # longer covers the active set, since the new schema claim was never adjudicated.
+    new_schema_id = _insert(conn, "schema", "acl is required now", "2026-09-01T00:00:00Z")
+    knowledge_store.invalidate_claim(
+        conn, schema_id, valid_until="2026-09-01T00:00:00Z", invalidated_by=new_schema_id)
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["reason"] != "delegated_verdict_covers_active_claims"
+    assert result["status"] == "resolved"
+    assert result["winner"]["id"] == new_schema_id
+    assert result["reason"] == "schema_observed_same_or_more_recently_than_non_schema_claim"
+
+
+def test_resolve_delegated_verdict_wins_with_proper_subset_of_adjudicated_ids(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    verdict_id = _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-10T00:00:00Z")
+    # One of the originally-adjudicated claims is later invalidated by something other than the
+    # verdict itself (not reachable via any real pathway today -- constructed directly to prove
+    # the subset test is PROPER-subset-or-equal by design, not exact-match).
+    knowledge_store.invalidate_claim(conn, web_id, valid_until="2026-07-11T00:00:00Z")
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["winner"]["id"] == verdict_id
+    assert result["reason"] == "delegated_verdict_covers_active_claims"
+
+
+def test_resolve_delegated_verdict_tie_breaking_does_not_grant_authority_on_ambiguous_newest(
+        tmp_path, monkeypatch):
+    # The tie-breaking fix: a verdict tied for newest-observed_at with ONE OF ITS OWN adjudicated
+    # claims must NOT be treated as an unambiguous newest claim. This is the only construction
+    # that actually discriminates a unique-max requirement from a plain max(): tying the verdict
+    # against a claim it did NOT adjudicate is theater (a new, unadjudicated claim breaks the
+    # subset test regardless of which side wins the tie, so naive and fixed code produce the same
+    # final outcome). Tying it against one of its OWN adjudicated claims is different: if the
+    # verdict wins the tie, other_active_ids becomes exactly {schema_id}, a PROPER SUBSET of
+    # {schema_id, web_id} -- authority is (wrongly) granted. If web_id wins the tie instead, the
+    # authority check never even fires. Only a unique-max requirement closes this off regardless
+    # of which row happens to be treated as "the" tied newest.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    # Verdict's observed_at is the EXACT SAME literal string as web_id's -- a deliberate tie.
+    verdict_id = _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-05T00:00:00Z")
+    rows = {c["id"]: c for c in knowledge_store._active_claims(conn, "aws_s3_bucket", "acl")}
+    schema_row, web_row, verdict_row = rows[schema_id], rows[web_id], rows[verdict_id]
+
+    for ordering_name, ordering in [
+        ("verdict_before_tied_claim", [schema_row, verdict_row, web_row]),
+        ("tied_claim_before_verdict", [schema_row, web_row, verdict_row]),
+    ]:
+        monkeypatch.setattr(knowledge_store, "_active_claims",
+                             lambda *a, _o=ordering, **k: list(_o))
+        result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+        assert result["reason"] != "delegated_verdict_covers_active_claims", (
+            f"authority wrongly granted under ordering {ordering_name}")
+
+
+def test_resolve_when_verdict_is_the_only_active_claim_uses_single_or_no_claim_not_authority_check(
+        tmp_path):
+    # The vacuous-subset case (other_active_ids == set() <= adjudicated_ids is trivially True) is
+    # claimed structurally UNREACHABLE: resolve()'s own len(claims) <= 1 early return fires first
+    # whenever the verdict is the only active claim, before the authority-check code ever runs.
+    # Constructed directly (not reachable via any real pathway today -- invalidating BOTH
+    # originally-adjudicated claims manually) specifically to prove this, not leave it as an
+    # inference: if the early-return above ever moves or changes, this test fails LOUDLY by
+    # landing in the authority-check branch instead of silently opening the vacuous-subset path.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    verdict_id = _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-10T00:00:00Z")
+    knowledge_store.invalidate_claim(conn, schema_id, valid_until="2026-07-11T00:00:00Z")
+    knowledge_store.invalidate_claim(conn, web_id, valid_until="2026-07-11T00:00:00Z")
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["reason"] == "single_or_no_claim"
+    assert result["winner"]["id"] == verdict_id
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/test_knowledge_store.py -v -k delegated_verdict`
+Expected: FAIL -- `AttributeError: module 'knowledge_store' has no attribute '_adjudicated_ids'`
+for tests that reach it; the others fail with `AssertionError` (falling through to ordinary
+schema/non-schema comparison, e.g. `reason == "needs_review"`/`"no_ground_truth_arbiter"` instead
+of `"delegated_verdict_covers_active_claims"`).
+
+- [ ] **Step 3: Write minimal implementation**
+
+Add `_adjudicated_ids`, right before `resolve()`:
+
+```python
+def _adjudicated_ids(conn, verdict_claim_id):
+    rows = conn.execute(
+        "SELECT adjudicated_claim_id FROM claim_adjudications WHERE verdict_claim_id = ?",
+        (verdict_claim_id,),
+    ).fetchall()
+    return {row["adjudicated_claim_id"] for row in rows}
+```
+
+Replace `resolve()` in full (the new early-return sits between the existing `len(claims) <= 1`
+check and the existing schema/non-schema comparison, which is unchanged below it):
+
+```python
+def resolve(conn, resource_type, attribute=None):
+    """Returns {"status": "resolved"|"needs_review", "winner": claim_or_None, "claims": [...],
+    "reason": str}. Never writes -- pure read, same discipline as every gate in this project.
+
+    Freshness clause compares observed_at (when EACH SOURCE was actually fetched/read) --
+    NEVER valid_from (when the underlying real-world fact became true) and NEVER confidence.
+    A schema fetch and a web claim can share the identical valid_from (both describe the same
+    provider release) while differing sharply in observed_at (schema fetched weeks ago; web
+    claim read just now) -- valid_from cannot discriminate this; only observed_at can.
+
+    Comparison always goes through _parse_ts() into datetime objects, never raw string ">" --
+    see _parse_ts()'s own docstring for why that distinction is load-bearing.
+
+    Before comparing recency, an exact case/whitespace-insensitive claim_text match between the
+    newest schema claim and the newest non-schema claim short-circuits to "resolved, schema wins,
+    claims_agree" -- agreeing claims carry no conflict to adjudicate, so routing them into the
+    freshness comparison (or silently discarding one) is noise, not signal. This is a literal
+    string comparison, not semantic judgment -- semantic agreement/disagreement stays delegated
+    to the driving agent, never adjudicated here.
+
+    Any non-schema source_type is treated uniformly (not just "web") -- an "agent_delegated"
+    claim does not silently skip the freshness clause just because it isn't literally "web".
+
+    SCOPED AUTHORITY (Step 4): a delegated verdict (source_type="agent_delegated") becomes the
+    resolved winner via a dedicated early-return, BEFORE the schema/non-schema comparison below,
+    when it is the UNIQUE newest-observed active claim AND the other currently-active claims are
+    a subset-or-equal of what it adjudicated (recorded via record_delegation_verdict's
+    claim_adjudications rows, read through _adjudicated_ids()). Proper-subset, not exact-match,
+    deliberately: coverage means nothing NEW has appeared since the verdict, not that the active
+    set is frozen at exactly what was adjudicated. A verdict is NEVER permanently authoritative --
+    it is only ever as good as its coverage of the CURRENT active set, checked fresh on every
+    call. This is deliberately not "the newest agent_delegated claim always wins": that would let
+    a stale verdict outrank fresh evidence forever, the exact failure mode this freshness clause
+    exists to prevent, through a new door.
+    """
+    claims = _active_claims(conn, resource_type, attribute)
+    if len(claims) <= 1:
+        return {"status": "resolved", "winner": claims[0] if claims else None,
+                "claims": claims, "reason": "single_or_no_claim"}
+    # Unique-max requirement (not a plain max()) is load-bearing: if a delegated verdict is ever
+    # tied for newest-observed with one of its OWN adjudicated claims, a plain max() can silently
+    # return either one depending on unspecified row order, changing whether authority gets
+    # granted for the exact same underlying state (see the tie-breaking test).
+    newest_ts = max(_parse_ts(c["observed_at"]) for c in claims)
+    newest_claims = [c for c in claims if _parse_ts(c["observed_at"]) == newest_ts]
+    if len(newest_claims) == 1 and newest_claims[0]["source_type"] == "agent_delegated":
+        verdict = newest_claims[0]
+        adjudicated_ids = _adjudicated_ids(conn, verdict["id"])
+        other_active_ids = {c["id"] for c in claims if c["id"] != verdict["id"]}
+        if other_active_ids <= adjudicated_ids:
+            return {"status": "resolved", "winner": verdict, "claims": claims,
+                    "reason": "delegated_verdict_covers_active_claims"}
+    schema_claims = [c for c in claims if c["source_type"] == "schema"]
+    non_schema_claims = [c for c in claims if c["source_type"] != "schema"]
+    if schema_claims and non_schema_claims:
+        newest_schema = max(schema_claims, key=lambda c: _parse_ts(c["observed_at"]))
+        newest_other = max(non_schema_claims, key=lambda c: _parse_ts(c["observed_at"]))
+        if newest_schema["claim_text"].strip().lower() == newest_other["claim_text"].strip().lower():
+            return {"status": "resolved", "winner": newest_schema, "claims": claims,
+                    "reason": "claims_agree"}
+        if _parse_ts(newest_other["observed_at"]) > _parse_ts(newest_schema["observed_at"]):
+            return {"status": "needs_review", "winner": None, "claims": claims,
+                    "reason": "non_schema_claim_observed_more_recently_than_schema_fetch"}
+        return {"status": "resolved", "winner": newest_schema, "claims": claims,
+                "reason": "schema_observed_same_or_more_recently_than_non_schema_claim"}
+    return {"status": "needs_review", "winner": None, "claims": claims,
+            "reason": "no_ground_truth_arbiter"}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_knowledge_store.py -v`
+Expected: PASS (27 passed) -- 22 existing + 5 new above.
+
+- [ ] **Step 5: Empirically verify the tie-breaking fix actually matters**
+
+Temporarily replace the unique-max guard:
+```python
+    if len(newest_claims) == 1 and newest_claims[0]["source_type"] == "agent_delegated":
+```
+with a naive single `max()`:
+```python
+    newest = max(claims, key=lambda c: _parse_ts(c["observed_at"]))
+    if newest["source_type"] == "agent_delegated":
+        verdict = newest
+```
+(adjusting the two lines below accordingly). Run
+`pytest tests/test_knowledge_store.py -v -k tie_breaking` alone. Confirm it FAILS specifically
+under the `verdict_before_tied_claim` ordering (`AssertionError: authority wrongly granted under
+ordering verdict_before_tied_claim`) while the reasoning above predicts `tied_claim_before_verdict`
+still passes (Python's `max()` returns the first-encountered maximal element on a tie, and
+`web_row` -- not `agent_delegated` -- comes first in that ordering, so the naive code never even
+enters the branch). Revert, confirm both orderings pass again. Paste both results in the report.
+
+- [ ] **Step 6: Empirically verify the empty-set case is genuinely guarded by the early return**
+
+Temporarily move the `len(claims) <= 1` early-return block to AFTER the new authority-check block
+(so the authority check runs first even when there's only one active claim). Run
+`pytest tests/test_knowledge_store.py -v -k verdict_is_the_only_active_claim` alone. Confirm it
+FAILS -- with only the verdict active, `other_active_ids` is the empty set, trivially a subset of
+anything, so the reordered code now returns `reason == "delegated_verdict_covers_active_claims"`
+instead of the expected `"single_or_no_claim"`. This proves the test would catch a regression if
+the early return ever moved. Revert, confirm it passes again. Paste both results in the report.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add core/generation/knowledge_store.py tests/test_knowledge_store.py
+git commit -m "feat: knowledge-layer spine Step 4 -- scoped-authority extension to resolve()
+
+A delegated verdict becomes resolve()'s winner only when it is the UNIQUE
+newest-observed active claim (a plain max() by observed_at is not enough --
+see the tie-breaking test) AND the currently-active claims other than the
+verdict itself are a subset-or-equal of what it adjudicated
+(claim_adjudications, via the new _adjudicated_ids() helper). Proper-subset,
+not exact-match, deliberately: coverage means nothing NEW has appeared, not
+that the active set is frozen at exactly what was adjudicated.
+
+Rejected during design: 'newest agent_delegated claim always wins' -- that
+would let a stale verdict outrank fresh evidence forever, the freshness
+clause's own failure mode through a new door. This scoped-authority design
+was chosen instead, and is traced end-to-end against that exact staleness
+scenario in a dedicated test.
+
+The vacuous-subset case (verdict is the only active claim) is claimed
+structurally unreachable -- guarded by resolve()'s own len(claims) <= 1
+early return, which fires first -- and is asserted by its own dedicated
+test, not left as an inference. Flagged for ray's review: verify this is
+ACTUALLY unreachable, not just apparently."
+```
+
+---
+
+### Task 4: end-to-end delegation loop + staleness + `claims_agree` safety net
+
+**Files:**
+- Modify: `tests/test_knowledge_delegation.py`
+
+**Interfaces:**
+- Consumes: everything from Tasks 1-3, plus `knowledge_degradation.check_and_refresh` (Step 3,
+  unmodified) for the staleness test.
+- Produces: nothing new -- integration coverage only, proving the pieces from Tasks 1-3 (and
+  Step 3's already-shipped `check_and_refresh`) work together, not just in isolation.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_knowledge_delegation.py`:
+
+```python
+def test_full_delegation_loop_verdict_becomes_resolve_winner(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    request = knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl")
+    assert request is not None
+    verdict_id = knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="acl is deprecated, confirmed by agent review",
+        valid_from="2026-07-10T00:00:00Z", provider="aws",
+        adjudicated_ids=[c["id"] for c in request["claims"]],
+    )
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["status"] == "resolved"
+    assert result["winner"]["id"] == verdict_id
+    assert result["reason"] == "delegated_verdict_covers_active_claims"
+    assert knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl") is None
+
+
+def test_delegation_verdict_falls_back_to_ordinary_logic_when_new_evidence_appears(
+        tmp_path, monkeypatch):
+    import knowledge_degradation
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    request = knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl")
+    knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="acl is deprecated, confirmed by agent review",
+        valid_from="2026-07-10T00:00:00Z", provider="aws",
+        adjudicated_ids=[c["id"] for c in request["claims"]],
+    )
+    assert knowledge_store.resolve(conn, "aws_s3_bucket", "acl")["reason"] == \
+        "delegated_verdict_covers_active_claims"
+
+    fresh_claim = {
+        "resource_type": "aws_s3_bucket", "attribute": "acl",
+        "claim_text": "acl is required now", "method": "structural", "source_type": "schema",
+        "provider": "aws", "provider_version": "6.60.0",
+        "valid_from": "2026-09-01T00:00:00Z", "observed_at": "2026-09-01T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+        lambda provider, resource_type, observed_at=None, kind="resource": [dict(fresh_claim)])
+    knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["reason"] != "delegated_verdict_covers_active_claims"
+    assert result["winner"]["claim_text"] == "acl is required now"
+
+
+def test_redundant_delegated_verdict_not_covering_everything_still_absorbed_by_claims_agree(
+        tmp_path):
+    # A verdict that does NOT fully cover the active set (adjudicated_ids=[schema_id] only,
+    # while web_id remains active and uncovered -- the new b' authority mechanism does not apply
+    # here) but whose claim_text happens to exactly match the schema's claim_text is still
+    # absorbed gracefully by the PRE-EXISTING (Step 2, completely unmodified) claims_agree
+    # short-circuit. Proves "materiality is agent-side" has a real safety net independent of the
+    # new scoped-authority mechanism: an agent that redundantly re-confirms an already-correct
+    # schema claim doesn't create a spurious conflict just because its verdict didn't cover
+    # every active claim.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="acl is deprecated",  # matches schema's text
+        valid_from="2026-07-10T00:00:00Z", provider="aws", adjudicated_ids=[schema_id],
+    )
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["reason"] == "claims_agree"
+    assert result["winner"]["id"] == schema_id
+```
+
+- [ ] **Step 2: Run tests to verify they pass**
+
+By this point Tasks 1-3 are already committed, so no new production code exists for this task --
+this is integration coverage only, proving the already-built pieces work together. If any of
+these three fail, that is a genuine integration bug Tasks 1-3's isolated tests didn't catch --
+diagnose and fix the production code (in `knowledge_delegation.py` or `knowledge_store.py`,
+whichever the failure implicates) before proceeding; do not weaken these tests to make them pass.
+
+Run: `pytest tests/test_knowledge_delegation.py tests/test_knowledge_store.py tests/test_knowledge_diff.py tests/test_knowledge_core_boundary.py tests/test_knowledge_degradation.py -v`
+Expected: PASS (19 + 27 + 4 + 5 + 13 = 68 passed).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/test_knowledge_delegation.py
+git commit -m "test: knowledge-layer spine Step 4 -- end-to-end delegation loop + staleness + claims_agree safety net
+
+Three integration tests closing the loop across knowledge_delegation.py and
+knowledge_store.py together: (1) needs_review -> build_delegation_request ->
+record_delegation_verdict -> resolve() returns the verdict as winner via the
+new authority path; (2) the same loop, then fresh evidence appears and
+resolve() correctly falls back to ordinary logic instead of trusting the
+now-stale verdict; (3) a verdict that does NOT fully cover the active set
+but whose claim_text happens to match the schema claim's text is still
+absorbed gracefully by the PRE-EXISTING (Step 2, unmodified) claims_agree
+short-circuit -- proving 'materiality is agent-side' has a real safety net
+independent of the new scoped-authority mechanism."
+```
+
+---
 
 ### Step 5 — breadth×depth budget knob (request-shaping contract, not a loop MinusOps runs)
 
