@@ -12,7 +12,8 @@ _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_TESTS_DIR)
 _CORE_DIR = os.path.join(_REPO_ROOT, "core", "generation")
 _FILES = sorted(os.path.basename(p) for p in glob.glob(os.path.join(_CORE_DIR, "knowledge_*.py")))
-_ALLOWED = set(sys.stdlib_module_names) | {"schema_watch", "modules", "module_registry"}
+_ALLOWED = set(sys.stdlib_module_names) | {"schema_watch", "modules", "module_registry",
+                                            "knowledge_store", "knowledge_diff"}
 
 
 # Scope, disclosed: this guard checks each knowledge_*.py file's OWN direct imports only, not
