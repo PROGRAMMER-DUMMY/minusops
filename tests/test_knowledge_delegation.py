@@ -275,3 +275,74 @@ def test_record_delegation_verdict_rolls_back_the_verdict_claim_if_the_adjudicat
     # Checked on the REAL connection, not the proxy -- the proxy's rollback() call forwards to
     # the same underlying connection, so the real connection is the one whose state matters.
     assert _count_claims(conn) == before
+
+
+def test_full_delegation_loop_verdict_becomes_resolve_winner(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    request = knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl")
+    assert request is not None
+    verdict_id = knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="acl is deprecated, confirmed by agent review",
+        valid_from="2026-07-10T00:00:00Z", provider="aws",
+        adjudicated_ids=[c["id"] for c in request["claims"]],
+    )
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["status"] == "resolved"
+    assert result["winner"]["id"] == verdict_id
+    assert result["reason"] == "delegated_verdict_covers_active_claims"
+    assert knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl") is None
+
+
+def test_delegation_verdict_falls_back_to_ordinary_logic_when_new_evidence_appears(
+        tmp_path, monkeypatch):
+    import knowledge_degradation
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    request = knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl")
+    knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="acl is deprecated, confirmed by agent review",
+        valid_from="2026-07-10T00:00:00Z", provider="aws",
+        adjudicated_ids=[c["id"] for c in request["claims"]],
+    )
+    assert knowledge_store.resolve(conn, "aws_s3_bucket", "acl")["reason"] == \
+        "delegated_verdict_covers_active_claims"
+
+    fresh_claim = {
+        "resource_type": "aws_s3_bucket", "attribute": "acl",
+        "claim_text": "acl is required now", "method": "structural", "source_type": "schema",
+        "provider": "aws", "provider_version": "6.60.0",
+        "valid_from": "2026-09-01T00:00:00Z", "observed_at": "2026-09-01T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        knowledge_degradation.knowledge_diff, "schema_claims_for_type",
+        lambda provider, resource_type, observed_at=None, kind="resource": [dict(fresh_claim)])
+    knowledge_degradation.check_and_refresh(conn, "aws", "aws_s3_bucket")
+
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["reason"] != "delegated_verdict_covers_active_claims"
+    assert result["winner"]["claim_text"] == "acl is required now"
+
+
+def test_redundant_delegated_verdict_not_covering_everything_still_absorbed_by_claims_agree(
+        tmp_path):
+    # A verdict that does NOT fully cover the active set (adjudicated_ids=[schema_id] only,
+    # while web_id remains active and uncovered -- the new b' authority mechanism does not apply
+    # here) but whose claim_text happens to exactly match the schema's claim_text is still
+    # absorbed gracefully by the PRE-EXISTING (Step 2, completely unmodified) claims_agree
+    # short-circuit. Proves "materiality is agent-side" has a real safety net independent of the
+    # new scoped-authority mechanism: an agent that redundantly re-confirms an already-correct
+    # schema claim doesn't create a spurious conflict just because its verdict didn't cover
+    # every active claim.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    knowledge_delegation.record_delegation_verdict(
+        conn, "aws_s3_bucket", "acl", claim_text="acl is deprecated",  # matches schema's text
+        valid_from="2026-07-10T00:00:00Z", provider="aws", adjudicated_ids=[schema_id],
+    )
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["reason"] == "claims_agree"
+    assert result["winner"]["id"] == schema_id
