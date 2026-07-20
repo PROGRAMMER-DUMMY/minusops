@@ -1825,22 +1825,56 @@ accepted and fixed before build, not deferred.
    id in every real code path in this codebase) and additive-only for Step 4's own new tests.
 4. **Task 2's fail-first verification (Step 5) mispredicted its own outcome.** Removing the WHOLE
    validation block to verify all 7 rejection tests fail predicted `DID NOT RAISE ValueError`
-   uniformly -- but with an empty `adjudicated_ids`, the placeholder-building code still runs and
-   produces `... WHERE id IN () AND ...`, a SQLite syntax error (`OperationalError`), not a clean
-   "nothing raised." Restructured to per-check removal: each validation clause is removed
-   independently (the two-clock checks are removed together, since the ordering check's
-   variables are produced by the parse step -- genuinely coupled in the code as written, not
-   artificially split for the sake of the exercise), confirming ONLY the test(s) targeting that
-   specific clause are affected, with the ACTUAL predicted exception type for each -- including
-   the cases where the new transaction (item 2) or the new FK enforcement (item 3) now catches
-   something that used to fail silently, which is itself worth demonstrating, not just a
-   misprediction to avoid.
+   uniformly, which is too coarse to trust. Restructured to per-check removal: each validation
+   clause is removed independently (the two-clock checks are removed together, since the
+   ordering check's variables are produced by the parse step -- genuinely coupled in the code as
+   written, not artificially split for the sake of the exercise), confirming ONLY the test(s)
+   targeting that specific clause are affected, with the ACTUAL predicted exception type for each
+   -- including the cases where the new transaction (item 2) or the new FK enforcement (item 3)
+   now catches something that used to fail silently, which is itself worth demonstrating, not
+   just a misprediction to avoid. (Two rounds of correction on this section, worth naming
+   explicitly: the FIRST restructure still predicted a SQLite `OperationalError` for the empty-
+   `adjudicated_ids` case, reasoning that an empty `IN ()` is invalid SQL -- Task 2's own
+   implementer actually ran it and found that assumption wrong for this SQLite build, which
+   treats `id IN ()` as valid syntax matching zero rows. See item 6 below.)
 5. **The tie-breaking test's assertion was too weak.** `result["reason"] !=
    "delegated_verdict_covers_active_claims"` is a negative check -- it would still pass under bug
    #8's exact failure mode (a `claims_agree` fallthrough also satisfies `!=`). Now that bug #8 is
    fixed, both of the test's monkeypatched orderings produce the SAME fully-determined outcome
    (the fixed `claims_agree`/freshness code is order-independent by construction), so the
    assertion is strengthened to the full expected `status`/`winner`/`reason`, not just a negative.
+
+Round 4 (implementation-time findings, Task 2's own implementer, 2026-07-20 -- this plan's fixes
+went through review before build; this round is what actually running them against the real
+environment found that no amount of re-reading would have caught):
+
+6. **The empty-`adjudicated_ids` fail-first prediction was wrong.** Corrected above (item 4) --
+   `id IN ()` is valid SQL in this SQLite build, not a syntax error; the empty-list removal
+   actually manifests as a silent success that inserts a verdict with zero adjudications, not a
+   raised exception of any kind. Left uncorrected, the fail-first step would have told an
+   implementer to expect a crash that never comes, undermining trust in every other prediction in
+   the same section.
+7. **`monkeypatch.setattr(sqlite3.Connection, "executemany", ...)` doesn't work on this Python
+   version.** CPython 3.13+ locks several stdlib C-extension types, including `sqlite3.
+   Connection`, against class-level attribute assignment (`TypeError: cannot set 'executemany'
+   attribute of immutable type 'sqlite3.Connection'`) -- a real environment constraint, not a
+   coding mistake. Replaced with a plain Python proxy object (`_ExecutemanyFailsProxy`) passed as
+   the `conn` argument instead of monkeypatching the connection class itself -- forwards every
+   attribute to the real connection except `executemany`, which always raises. Portable across
+   Python versions since it never touches the built-in type at all.
+8. **`PRAGMA foreign_keys = ON` (item 3 above) broke a pre-existing Step 2 test.**
+   `test_invalidate_claim_sets_valid_until_and_invalidated_at_as_distinct_clocks`
+   (`tests/test_knowledge_store.py`) used a fabricated `invalidated_by=999` to prove the field
+   gets stored verbatim, distinct from `invalidated_at` -- a nonexistent id that FK enforcement
+   now correctly rejects. The claim in item 3 that this was "confirmed safe against every
+   existing caller" was true for every REAL production call site (traced at the time) but did
+   not account for test code using synthetic/fabricated ids that were never meant to reference
+   anything real. Fixed by inserting a second, genuine claim and using ITS id as
+   `invalidated_by` instead of `999` -- preserves the test's actual intent (proving the two
+   clocks are stored as distinct values) while satisfying the new constraint, and is arguably
+   more representative of real usage than a disconnected magic number was. No other test in this
+   codebase uses a fabricated `invalidated_by` (confirmed via a full-repo grep); this was the
+   only casualty.
 
 **Accepted as holding, no change**: the proper-subset decision (Q2) -- traced every real
 invalidation pathway in this codebase and confirmed every one pairs `invalidate_claim` with a new
@@ -2066,7 +2100,9 @@ test_knowledge_core_boundary.py automatically via its existing glob."
   `PRAGMA foreign_keys = ON` to `init_db()`; add an optional `commit=True` parameter to
   `insert_claim()`)
 - Modify: `core/generation/knowledge_delegation.py`
-- Modify: `tests/test_knowledge_store.py` (one new test for `insert_claim`'s `commit` parameter)
+- Modify: `tests/test_knowledge_store.py` (one new test for `insert_claim`'s `commit` parameter;
+  also fixes a pre-existing Step 2 test that used a fabricated `invalidated_by` id, now rejected
+  by `PRAGMA foreign_keys = ON` -- see Step 1b below)
 - Modify: `tests/test_knowledge_delegation.py`
 
 **Interfaces:**
@@ -2105,6 +2141,43 @@ def test_insert_claim_with_commit_false_can_be_rolled_back(tmp_path):
     count = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
     assert count == 0
 ```
+
+**Step 1b: fix a pre-existing Step 2 test that `PRAGMA foreign_keys = ON` (Step 3 below) will
+break.** `test_invalidate_claim_sets_valid_until_and_invalidated_at_as_distinct_clocks` (already
+in `tests/test_knowledge_store.py`) calls `invalidate_claim(..., invalidated_by=999)` with a
+fabricated id that doesn't reference any real claim -- used only to prove the field gets stored
+verbatim, distinct from `invalidated_at`. With FK enforcement on, this now violates the
+`invalidated_by INTEGER REFERENCES claims(id)` constraint. Fix it now, in this task, since it's a
+direct and necessary consequence of Step 3 below (not a pre-existing failure) -- insert a second,
+genuine claim and use ITS id instead of `999`:
+
+```python
+def test_invalidate_claim_sets_valid_until_and_invalidated_at_as_distinct_clocks(tmp_path):
+    # valid_until = fact-validity end (caller-supplied, semantically tied to the superseding
+    # claim's valid_from -- NOT its observed_at) vs invalidated_at = write-time audit stamp
+    # (defaults to now) -- the exact wrong-clock shape that produced bug #1 (resolve() originally
+    # compared valid_from instead of observed_at; this function's own docstring names the same
+    # risk in reverse -- using observed_at here instead of valid_from). Deliberately far-apart,
+    # easily-distinguishable values, so a swap between the two fields is caught, not just "some
+    # value got set somewhere." invalidated_by references a genuine second claim, not a
+    # fabricated id -- PRAGMA foreign_keys = ON (Step 4) now enforces that the reference is real.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    claim_id = _insert(conn, "schema", "acl: required", "2026-06-01T00:00:00Z", attribute="acl")
+    superseding_id = _insert(conn, "schema", "acl: optional", "2026-07-01T00:00:00Z",
+                              attribute="acl")
+    knowledge_store.invalidate_claim(
+        conn, claim_id, valid_until="2026-07-01T00:00:00Z",  # the superseding claim's valid_from
+        invalidated_at="2099-01-01T00:00:00Z",  # deliberately absurd write-time stamp
+        invalidated_by=superseding_id,
+    )
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
+    assert row["valid_until"] == "2026-07-01T00:00:00Z"
+    assert row["invalidated_at"] == "2099-01-01T00:00:00Z"
+    assert row["invalidated_by"] == superseding_id
+```
+
+Confirmed via a full-repo `grep` that no other test uses a fabricated `invalidated_by` id -- this
+is the only one FK enforcement affects.
 
 Update the top of `tests/test_knowledge_delegation.py` to add the new imports:
 
@@ -2285,27 +2358,43 @@ def test_record_delegation_verdict_rejects_duplicate_adjudicated_ids(tmp_path):
     assert _count_claims(conn) == before
 
 
+class _ExecutemanyFailsProxy:
+    """Forwards every attribute to a real sqlite3.Connection except executemany, which always
+    raises. A plain Python object, not a monkeypatch of sqlite3.Connection itself -- CPython
+    3.13+ locks several stdlib C-extension types (including sqlite3.Connection) against
+    class-level attribute assignment ("cannot set 'executemany' attribute of immutable type"),
+    so a monkeypatch.setattr(sqlite3.Connection, ...) approach is not portable across Python
+    versions. A duck-typed proxy passed as the conn argument sidesteps that entirely -- Task 2's
+    functions only ever call .execute()/.executemany()/.commit()/.rollback() on conn, all of
+    which forward correctly here except the one deliberately overridden."""
+    def __init__(self, real_conn):
+        self._real = real_conn
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def executemany(self, *a, **k):
+        raise sqlite3.IntegrityError("forced failure")
+
+
 def test_record_delegation_verdict_rolls_back_the_verdict_claim_if_the_adjudication_write_fails(
-        tmp_path, monkeypatch):
+        tmp_path):
     # The transactional wrap (ray's round-3 review, 2026-07-19) is structural, not dependent on
     # catching every bad input in advance -- the duplicate-ids check above closes the ONE
     # currently-known trigger, but this proves the invariant holds even for a failure the input
-    # validation doesn't anticipate. Forced via a class-level monkeypatch of
-    # sqlite3.Connection.executemany (reverted automatically after the test) since there's no
-    # other way to make the second write fail with valid, non-duplicate input.
+    # validation doesn't anticipate.
     conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
     schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
     before = _count_claims(conn)
 
-    def _boom(self, *a, **k):
-        raise sqlite3.IntegrityError("forced failure")
-    monkeypatch.setattr(sqlite3.Connection, "executemany", _boom)
-
+    proxy_conn = _ExecutemanyFailsProxy(conn)
     with pytest.raises(sqlite3.IntegrityError):
         knowledge_delegation.record_delegation_verdict(
-            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            proxy_conn, "aws_s3_bucket", "acl", claim_text="anything",
             valid_from="2026-07-10T00:00:00Z", provider="aws", adjudicated_ids=[schema_id],
         )
+    # Checked on the REAL connection, not the proxy -- the proxy's rollback() call forwards to
+    # the same underlying connection, so the real connection is the one whose state matters.
     assert _count_claims(conn) == before
 ```
 
@@ -2489,21 +2578,27 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_knowledge_store.py -v -k commit_false`
-Expected: PASS (1 passed).
+Run the FULL `test_knowledge_store.py` suite here, not just the new test in isolation --
+`PRAGMA foreign_keys = ON` (Step 3) changes behavior for EVERY test in this file, not just the
+new one, and a narrow `-k`-filtered run would have missed the Step 1b regression entirely (this
+is exactly how it was actually found, 2026-07-20 -- do not narrow this back down).
+
+Run: `pytest tests/test_knowledge_store.py -v`
+Expected: PASS (23 passed) -- 22 existing (including the Step 1b fix) + 1 new (`commit_false`).
 
 Run: `pytest tests/test_knowledge_delegation.py -v`
 Expected: PASS (18 passed) -- 5 from Task 1 + 13 new above (4 basic + 8 rejects + 1 rollback).
 
 - [ ] **Step 5: Empirically verify every rejection actually rejects -- per clause, not in aggregate**
 
-Removing the whole validation block at once (as an earlier version of this plan proposed) hides a
-real mismatch: with `adjudicated_ids` empty, the leftover `placeholders = ""` still flows into
-`... WHERE id IN () AND ...`, which is a SQLite syntax error, not a clean "nothing raised" --
-someone skimming the aggregate break for "did the 7 tests fail, yes/no" would get a false
-confirmation for that one case. Remove each clause independently instead, confirming ONLY the
-test(s) targeting that clause are affected, with the actual predicted exception type. The two
-clock checks are removed together (the `valid_from > observed_at` check reads
+Removing the whole validation block at once (as an earlier version of this plan proposed) is too
+coarse to trust at face value -- confirm each clause independently instead, with the ACTUAL
+predicted exception type per clause, verified empirically rather than assumed. (An earlier
+version of THIS section also predicted a SQLite syntax error for item 2 below, reasoning that an
+empty `IN ()` is invalid SQL -- that assumption was wrong for this SQLite build and was corrected
+after Task 2's own implementer actually ran it and reported a mismatch; treat every prediction in
+this section as something to verify against real output, not trust because it reads plausibly.)
+The two clock checks are removed together (the `valid_from > observed_at` check reads
 `parsed_valid_from`/`parsed_observed_at`, which only exist because the parse `try` block created
 them -- removing the parse alone leaves the ordering check referencing undefined names, so these
 two are genuinely coupled in the code as written, not artificially split for the exercise).
@@ -2515,9 +2610,19 @@ two are genuinely coupled in the code as written, not artificially split for the
    misordered timestamps are written without complaint. Restore, confirm all 3 PASS.
 2. **Remove the empty-`adjudicated_ids` check only.** Run
    `pytest tests/test_knowledge_delegation.py -v -k rejects_empty_adjudicated_ids` alone. Confirm
-   it FAILS, but with `sqlite3.OperationalError: near ")": syntax error` propagating out of the
-   `with pytest.raises(ValueError):` block (an empty `adjudicated_ids` list produces an empty
-   `IN ()`) -- NOT a clean "DID NOT RAISE ValueError". Restore, confirm it PASSES.
+   it FAILS with `Failed: DID NOT RAISE <class 'ValueError'>` -- in this SQLite build, `id IN ()`
+   is valid syntax that matches zero rows (NOT a syntax error, despite how it might look):
+   `found_ids` comes back empty, `missing = set([]) - set() = set()` is vacuously empty (nothing
+   was required, so nothing is "missing"), the found/missing check doesn't fire either, and
+   `conn.executemany(..., [])` -- an empty list, since `adjudicated_ids` is empty -- is a genuine
+   no-op. The net effect is worse than a clean rejection would be: a verdict claim gets
+   permanently inserted with ZERO `claim_adjudications` rows, silently. (This doesn't reopen a
+   gap in `resolve()`'s authority check, though: such a verdict's `_adjudicated_ids()` would
+   return the empty set, and `other_active_ids <= set()` is only true when `other_active_ids` is
+   ALSO empty -- which `resolve()`'s own `len(claims) <= 1` early return already excludes, same
+   reasoning as the empty-set unreachability argument for Task 3. Contained, but still worth
+   guarding against here -- a malformed verdict with no adjudications at all is not a state this
+   function should ever produce.) Restore, confirm it PASSES.
 3. **Remove the duplicate-`adjudicated_ids` check only.** Run
    `pytest tests/test_knowledge_delegation.py -v -k rejects_duplicate_adjudicated_ids` alone.
    Confirm it FAILS with `sqlite3.IntegrityError` (the `claim_adjudications` `PRIMARY KEY`
@@ -2567,8 +2672,16 @@ an INSERT, never an UPDATE; source_type='agent_delegated' and
 method='semantic' are fixed by this function, not caller-supplied.
 
 init_db() now sets PRAGMA foreign_keys = ON -- every REFERENCES claims(id)
-in this schema was previously decorative; confirmed safe against every
-existing caller.
+in this schema was previously decorative. Fixes a pre-existing Step 2 test
+this newly breaks: test_invalidate_claim_sets_valid_until_and_invalidated_
+at_as_distinct_clocks used a fabricated invalidated_by=999, now rejected;
+switched to a genuine second claim's id (confirmed via full-repo grep this
+is the only such case).
+
+The rollback test uses a duck-typed proxy object instead of monkeypatching
+sqlite3.Connection.executemany directly -- CPython 3.13+ locks several
+stdlib C-extension types against class-level attribute assignment, so the
+monkeypatch approach doesn't work on this Python version.
 
 claim_adjudications is a join table (verdict_claim_id, adjudicated_claim_id),
 tracking exactly what a verdict adjudicated for Task 3's scoped-authority
