@@ -1876,6 +1876,37 @@ environment found that no amount of re-reading would have caught):
    codebase uses a fabricated `invalidated_by` (confirmed via a full-repo grep); this was the
    only casualty.
 
+Round 5 (final whole-step review, most capable available model, 2026-07-20 -- all 4 tasks already
+individually reviewed clean; this round's job was to look ACROSS task boundaries, since the
+per-task reviews each only saw their own diff):
+
+9. **`record_delegation_verdict` accepted timezone-naive timestamps, permanently bricking
+   `resolve()` for that resource_type/attribute.** `_parse_ts` only rewrites `Z`→`+00:00` and
+   never checks `tzinfo` -- a well-formed ISO string with no timezone designator (e.g.
+   `"2026-07-10T00:00:00"`, an ordinary thing for an arbitrary driving agent to emit) parses
+   cleanly to a NAIVE datetime and passed validation as written. Two concrete, reproduced
+   failures: (1) a naive `observed_at` gets stored, and the NEXT `resolve()` call on that
+   resource_type/attribute crashes with `TypeError: can't compare offset-naive and
+   offset-aware datetimes` inside its `max()`-by-`observed_at` call -- every schema/web claim is
+   always aware, so mixing in one naive claim permanently disables `resolve()` for that attribute
+   until the row is manually invalidated; (2) a naive `valid_from` raised a raw, uncaught
+   `TypeError` out of the `valid_from > observed_at` comparison, escaping this function's own
+   documented `ValueError` contract entirely, since that comparison sat outside the parse `try`
+   block. This is the exact same hazard class `_parse_ts` exists to prevent for FORMAT (`Z` vs
+   `+00:00`, ray's original highest-severity finding), reintroduced for AWARENESS at precisely
+   the new external-input boundary this step added -- reachable by validated, plausible input,
+   not a contrived edge case. Rated Important rather than Critical because it fails LOUD (a crash,
+   not a silent wrong answer), but it permanently disables core functionality, so fixed before
+   merge rather than deferred: both parsed timestamps are now checked for `tzinfo is not None`
+   immediately after parsing, before the ordering comparison ever sees them -- closing both
+   failure modes with one guard, placed where it structurally can't be bypassed by the ordering
+   check running first.
+
+Also found in this round, Minor: `resolve()`'s own docstring said "Proper-subset, not
+exact-match, deliberately" -- but the code uses `<=` (subset-or-equal), and the normal covering
+case is exact equality, not a strict proper subset. Corrected the wording in both the docstring
+and the Task 3 commit message; the code itself was already correct.
+
 **Accepted as holding, no change**: the proper-subset decision (Q2) -- traced every real
 invalidation pathway in this codebase and confirmed every one pairs `invalidate_claim` with a new
 `insert_claim` for the same attribute, which always breaks the subset test on its own; a pure
@@ -2290,6 +2321,36 @@ def test_record_delegation_verdict_rejects_valid_from_after_observed_at(tmp_path
     assert _count_claims(conn) == before
 
 
+def test_record_delegation_verdict_rejects_naive_valid_from(tmp_path):
+    # Final whole-step review, 2026-07-20: a well-formed ISO string with no timezone designator
+    # parses cleanly via _parse_ts (format is fine) but produces a NAIVE datetime -- every other
+    # timestamp in this store is aware, and comparing naive against aware raises TypeError deep
+    # inside resolve(), permanently bricking it for this resource_type/attribute. Rejected here,
+    # at the boundary, instead of letting it ship and crash resolve() later.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-10T00:00:00", provider="aws", adjudicated_ids=[schema_id],
+        )
+    assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rejects_naive_observed_at(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-01T00:00:00Z", observed_at="2026-07-10T00:00:00",
+            provider="aws", adjudicated_ids=[schema_id],
+        )
+    assert _count_claims(conn) == before
+
+
 def test_record_delegation_verdict_rejects_empty_adjudicated_ids(tmp_path):
     conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
     _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
@@ -2491,9 +2552,22 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
 
     This is the external boundary of the two-clock model -- an arbitrary driving agent supplies
     valid_from/observed_at. Both are validated: each must parse via knowledge_store._parse_ts
-    (rejects garbage/wrong-type input), and valid_from must not be AFTER observed_at (a fact
-    can't be observed before it became true). observed_at defaults to now; valid_from has no
-    default (same no-default precedent as invalidate_claim's valid_until).
+    (rejects garbage/wrong-type input) AND must be timezone-AWARE (rejects a well-formed ISO
+    string with no timezone designator, e.g. "2026-07-10T00:00:00") -- every other timestamp in
+    this store is aware (schema/web claims always emit "Z" or "+00:00"; _parse_ts's own docstring
+    is about format, not awareness), and a naive value that slips past validation here does not
+    fail at insert time: it gets stored, and the NEXT resolve() call on this resource_type/
+    attribute crashes with "TypeError: can't compare offset-naive and offset-aware datetimes"
+    inside its max()-by-observed_at call, permanently bricking that attribute until the row is
+    manually invalidated (found by the final whole-step review, 2026-07-20 -- the exact same
+    hazard class _parse_ts exists to prevent for FORMAT, reintroduced for AWARENESS at precisely
+    the new external-input boundary this step added). This check runs immediately after parsing,
+    before the valid_from > observed_at comparison below -- a naive valid_from was previously
+    able to raise a raw TypeError out of that comparison, escaping this function's own documented
+    ValueError contract entirely. valid_from must not be AFTER observed_at (a fact can't be
+    observed before it became true). observed_at defaults to now (always aware, via
+    datetime.now(timezone.utc)); valid_from has no default (same no-default precedent as
+    invalidate_claim's valid_until).
 
     adjudicated_ids is the second external-input boundary surface: required (no default), must
     be non-empty, free of duplicates, and every id must reference a currently-active claim for
@@ -2514,6 +2588,14 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
             f"record_delegation_verdict: valid_from/observed_at must be parseable ISO "
             f"timestamps -- got valid_from={valid_from!r}, observed_at={observed_at!r}"
         ) from exc
+    if parsed_valid_from.tzinfo is None or parsed_observed_at.tzinfo is None:
+        raise ValueError(
+            f"record_delegation_verdict: valid_from/observed_at must be timezone-aware -- got "
+            f"valid_from={valid_from!r}, observed_at={observed_at!r} -- every other timestamp in "
+            f"this store is timezone-aware, and comparing a naive value against them raises "
+            f"TypeError deep inside resolve(), permanently bricking it for this "
+            f"resource_type/attribute"
+        )
     if parsed_valid_from > parsed_observed_at:
         raise ValueError(
             f"record_delegation_verdict: valid_from ({valid_from!r}) is after observed_at "
@@ -2587,7 +2669,7 @@ Run: `pytest tests/test_knowledge_store.py -v`
 Expected: PASS (23 passed) -- 22 existing (including the Step 1b fix) + 1 new (`commit_false`).
 
 Run: `pytest tests/test_knowledge_delegation.py -v`
-Expected: PASS (18 passed) -- 5 from Task 1 + 13 new above (4 basic + 8 rejects + 1 rollback).
+Expected: PASS (20 passed) -- 5 from Task 1 + 15 new above (4 basic + 10 rejects + 1 rollback).
 
 - [ ] **Step 5: Empirically verify every rejection actually rejects -- per clause, not in aggregate**
 
@@ -2608,7 +2690,29 @@ two are genuinely coupled in the code as written, not artificially split for the
    tests). Confirm all 3 FAIL with `Failed: DID NOT RAISE <class 'ValueError'>` -- `insert_claim`
    stores `valid_from`/`observed_at` as raw `TEXT` with no parsing of its own, so garbage or
    misordered timestamps are written without complaint. Restore, confirm all 3 PASS.
-2. **Remove the empty-`adjudicated_ids` check only.** Run
+2. **Remove the timezone-awareness check only** (`if parsed_valid_from.tzinfo is None or
+   parsed_observed_at.tzinfo is None: raise ...`). Run
+   `pytest tests/test_knowledge_delegation.py -v -k rejects_naive` (2 tests). Confirm:
+   - `rejects_naive_valid_from` FAILS with a raw, uncaught `TypeError: '>' not supported between
+     instances of 'datetime.datetime' and 'datetime.datetime'` (or the offset-naive/aware
+     variant, depending on Python version) escaping the `valid_from > observed_at` comparison --
+     NOT a clean `ValueError`. This is the exact defect the final whole-step review found: a
+     naive `valid_from` used to escape this function's own documented `ValueError` contract
+     entirely.
+   - `rejects_naive_observed_at` FAILS with `Failed: DID NOT RAISE <class 'ValueError'>` -- a
+     naive `observed_at` alone doesn't trip the ordering comparison (both sides can still compare
+     if `valid_from` is aware and happens to be naive-comparable... actually confirm empirically
+     which of `>`-raises or silent-success actually occurs here, since it depends on whether
+     `valid_from`'s awareness matches; paste whatever the real output is). Either way, without
+     this check the claim gets inserted with a naive `observed_at` stored, and a SEPARATE,
+     immediate follow-up check matters more than the exception type here: call
+     `knowledge_store.resolve(conn, "aws_s3_bucket", "acl")` right after the (unexpectedly
+     successful) `record_delegation_verdict` call and confirm THAT raises `TypeError: can't
+     compare offset-naive and offset-aware datetimes` -- this is the real-world consequence this
+     check exists to prevent, not just an input-validation nicety.
+
+   Restore the check, confirm both PASS.
+3. **Remove the empty-`adjudicated_ids` check only.** Run
    `pytest tests/test_knowledge_delegation.py -v -k rejects_empty_adjudicated_ids` alone. Confirm
    it FAILS with `Failed: DID NOT RAISE <class 'ValueError'>` -- in this SQLite build, `id IN ()`
    is valid syntax that matches zero rows (NOT a syntax error, despite how it might look):
@@ -2623,7 +2727,7 @@ two are genuinely coupled in the code as written, not artificially split for the
    reasoning as the empty-set unreachability argument for Task 3. Contained, but still worth
    guarding against here -- a malformed verdict with no adjudications at all is not a state this
    function should ever produce.) Restore, confirm it PASSES.
-3. **Remove the duplicate-`adjudicated_ids` check only.** Run
+4. **Remove the duplicate-`adjudicated_ids` check only.** Run
    `pytest tests/test_knowledge_delegation.py -v -k rejects_duplicate_adjudicated_ids` alone.
    Confirm it FAILS with `sqlite3.IntegrityError` (the `claim_adjudications` `PRIMARY KEY`
    collision, propagated through the transactional wrap's `except: conn.rollback(); raise`) --
@@ -2631,7 +2735,7 @@ two are genuinely coupled in the code as written, not artificially split for the
    with this specific guard missing -- the transaction from Step 3 catches the orphan
    independently of the input check, which is the whole point of making it structural. Restore,
    confirm it PASSES.
-4. **Remove the found/missing check only.** Run
+5. **Remove the found/missing check only.** Run
    `pytest tests/test_knowledge_delegation.py -v -k "nonexistent_adjudicated_id or inactive_adjudicated_id or adjudicated_id_from_different_attribute"`
    (3 tests). Confirm:
    - `rejects_nonexistent_adjudicated_id` (id `999999`, which does not exist in `claims` at
@@ -2646,7 +2750,7 @@ two are genuinely coupled in the code as written, not artificially split for the
 
    Restore the found/missing check, confirm all 3 PASS again.
 
-Paste the actual output for each of the four removals in the report -- the point is confirming
+Paste the actual output for each of the five removals in the report -- the point is confirming
 the ACTUAL exception type/message for each, not just that something failed.
 
 - [ ] **Step 6: Commit**
@@ -2955,8 +3059,10 @@ def resolve(conn, resource_type, attribute=None):
     resolved winner via a dedicated early-return, BEFORE the schema/non-schema comparison below,
     when it is the UNIQUE newest-observed active claim AND the other currently-active claims are
     a subset-or-equal of what it adjudicated (recorded via record_delegation_verdict's
-    claim_adjudications rows, read through _adjudicated_ids()). Proper-subset, not exact-match,
-    deliberately: coverage means nothing NEW has appeared since the verdict, not that the active
+    claim_adjudications rows, read through _adjudicated_ids()). Subset-or-equal, not exact-match,
+    deliberately (the code uses <=, not a strict "proper subset" -- the normal covering case is
+    exact equality between other_active_ids and adjudicated_ids, not a strict subset of it):
+    coverage means nothing NEW has appeared since the verdict, not that the active
     set is frozen at exactly what was adjudicated. A verdict is NEVER permanently authoritative --
     it is only ever as good as its coverage of the CURRENT active set, checked fresh on every
     call. This is deliberately not "the newest agent_delegated claim always wins": that would let
@@ -3092,9 +3198,10 @@ A delegated verdict becomes resolve()'s winner only when it is the UNIQUE
 newest-observed active claim (a plain max() by observed_at is not enough --
 see the tie-breaking test) AND the currently-active claims other than the
 verdict itself are a subset-or-equal of what it adjudicated
-(claim_adjudications, via the new _adjudicated_ids() helper). Proper-subset,
-not exact-match, deliberately: coverage means nothing NEW has appeared, not
-that the active set is frozen at exactly what was adjudicated.
+(claim_adjudications, via the new _adjudicated_ids() helper). Subset-or-equal
+(<=, not a strict proper subset), not exact-match, deliberately: coverage
+means nothing NEW has appeared, not that the active set is frozen at
+exactly what was adjudicated.
 
 Rejected during design: 'newest agent_delegated claim always wins' -- that
 would let a stale verdict outrank fresh evidence forever, the freshness
@@ -3220,7 +3327,7 @@ diagnose and fix the production code (in `knowledge_delegation.py` or `knowledge
 whichever the failure implicates) before proceeding; do not weaken these tests to make them pass.
 
 Run: `pytest tests/test_knowledge_delegation.py tests/test_knowledge_store.py tests/test_knowledge_diff.py tests/test_knowledge_core_boundary.py tests/test_knowledge_degradation.py -v`
-Expected: PASS (21 + 29 + 4 + 5 + 13 = 72 passed).
+Expected: PASS (23 + 29 + 4 + 5 + 13 = 74 passed).
 
 - [ ] **Step 3: Commit**
 
