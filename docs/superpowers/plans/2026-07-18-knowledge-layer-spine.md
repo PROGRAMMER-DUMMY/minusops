@@ -3351,8 +3351,78 @@ independent of the new scoped-authority mechanism."
 
 ### Step 5 — breadth×depth budget knob (request-shaping contract, not a loop MinusOps runs)
 
-- **New**: a plain parameter object (e.g. `ResearchBudget(breadth: int, depth: int)`) that MinusOps hands to the driving agent alongside a delegation request or an authoring-context request (`assemble_authoring_context()`, `core/generation/synthesizer.py:139`) -- purely descriptive, MinusOps never iterates or enforces it itself.
-- **Open question for ray**: does this belong in `knowledge_store.py`/`knowledge_diff.py` at all, or is it purely a `synthesizer.py`-side concern that only *reads* the knowledge layer's `needs_review` queue depth to decide how much budget to hand out? Leaning toward the latter -- keeps the knowledge-layer core from acquiring an opinion about how the agent should spend its own research effort.
+**Status (2026-07-20): concrete sketch below, red-teamed as ray in this same pass, findings folded in. Not yet bite-sized into Task N steps.**
+
+**Open question from the original sketch, now resolved**: does the budget belong in `knowledge_store.py`/`knowledge_diff.py`, or purely in `synthesizer.py` reading the knowledge layer's `needs_review` queue depth? The materiality precedent Step 4 established (Q2: "materiality must never live in `resolve()` or any stdlib-only core module -- it's the driving agent's job") answers this directly: mapping a queue-depth number to a budget IS a judgment call ("is 12 open conflicts a lot?"), the same category of decision Q2 already ruled out of core. Split accordingly:
+
+- **`count_needs_review(conn, resource_type=None) -> int`** -- new, in `knowledge_delegation.py` (core, stdlib-only, alongside `build_delegation_request`). Purely mechanical counting, no judgment:
+
+  ```python
+  def count_needs_review(conn, resource_type=None):
+      """Aggregate needs_review count across every (resource_type, attribute) pair with at
+      least one active claim -- the queue-depth signal the budget ladder (synthesizer.py) reads.
+      Each pair is resolved independently via resolve(); this function only SUMS already-
+      independent verdicts, it never pools rows from different pairs into one comparison --
+      structurally distinct from bug #3's hazard (_active_claims pooling rows ACROSS attributes
+      into a single resolve() call when attribute was treated as "all"). resource_type=None
+      means "every resource_type currently present in the claims table," which is safe here for
+      exactly that reason: None changes which INDEPENDENT resolve() calls get made and summed,
+      never what gets compared inside any single one."""
+      if resource_type is None:
+          rows = conn.execute(
+              "SELECT DISTINCT resource_type, attribute FROM claims WHERE valid_until IS NULL"
+          ).fetchall()
+      else:
+          rows = conn.execute(
+              "SELECT DISTINCT resource_type, attribute FROM claims "
+              "WHERE resource_type = ? AND valid_until IS NULL",
+              (resource_type,),
+          ).fetchall()
+      return sum(
+          1 for row in rows
+          if resolve(conn, row["resource_type"], row["attribute"])["status"] == "needs_review"
+      )
+  ```
+
+- **`budget_for_queue_depth(depth) -> dict`** -- new, in `synthesizer.py`. The judgment call; lives outside core per the materiality precedent. Plain dict return (`{"breadth": ..., "depth": ...}`), matching this codebase's existing convention for every other structured return value (`resolve()`, `build_delegation_request()`, `assemble_authoring_context()` all return plain dicts -- no `dataclass`/`namedtuple` exists anywhere in `core/`, so a `ResearchBudget` class would be a new, unprecedented shape for no benefit):
+
+  ```python
+  def budget_for_queue_depth(depth):
+      """Maps count_needs_review()'s queue-depth signal to a research budget -- descriptive only,
+      never enforced or iterated by MinusOps itself. Tiers shrink as queue depth grows (a large
+      backlog means move faster through it; a small one affords more research per item).
+      Boundaries are inclusive at the LOW edge of each tier (depth >= N enters tier N) and must
+      stay written high-to-low: a sequential-ifs threshold ladder shadows silently if a later
+      (higher) breakpoint is checked before an earlier (lower) one, the exact new-comparison-
+      surface hazard this plan's bug family is watching for here."""
+      if depth < 0:
+          raise ValueError(f"budget_for_queue_depth: depth must be >= 0, got {depth!r}")
+      if depth >= 20:
+          return {"breadth": 1, "depth": 1}
+      if depth >= 5:
+          return {"breadth": 2, "depth": 2}
+      return {"breadth": 4, "depth": 4}
+  ```
+
+  Exact breakpoints (5, 20) and tier values are illustrative, not load-bearing -- confirm with the user before bite-sizing.
+
+- **Wiring (the one concrete integration point that exists today)**: `_main_author_context()` (`synthesizer.py:1004`, the `author-context` CLI) is the only place MinusOps currently hands a driving agent a JSON blob at all -- `build_delegation_request`/`record_delegation_verdict` have no CLI wrapper yet (library functions only, same as they shipped in Step 4), so there is nothing to wire the budget into on that side yet. `author-context`'s output gains a `research_budget` key: `context["research_budget"] = budget_for_queue_depth(count_needs_review(conn))`, using the SAME db connection/path `check` already uses (`knowledge_degradation._default_db_path()`, not a new default) and a matching `--db` override flag for consistency with `check`'s own.
+
+### Red-Team Review Focus (for ray) -- Step 5
+
+1. **Threshold-ladder boundary logic** -- new comparison surface, the family (9 confirmed instances) is live again here. Verify the high-to-low ordering is actually correct and that swapping it would be silently wrong, not just theoretically wrong.
+2. **`count_needs_review`'s `resource_type=None` semantics** -- same optional-parameter shape that produced bug #3 (`_active_claims`'s `attribute=None` pooling rows across attributes). Confirm the "safe because it sums independent `resolve()` calls, never pools rows into one" reasoning actually holds, or find the case where it doesn't.
+3. **Does `_require_aware`'s extraction (commit e0b0284) change behavior anywhere?** Built ahead of Step 5 per direct instruction (discoverability that doesn't exist yet prevents nothing) -- confirm the refactor is genuinely behavior-preserving, not just test-passing.
+4. **Does the sketch's `author-context` DB-path reuse actually hold together?**
+
+### Ray's findings -- Step 5, 2026-07-20
+
+1. **Threshold ladder (focus 1): confirmed correct as written, confirmed dangerous if reordered.** Traced by hand: `depth=25` hits `>= 20` first, returns the smallest tier -- correct. `depth=19` falls through to `>= 5` -- correct. `depth=4` falls through to the bare `return` -- correct. Constructed the broken alternative (`if depth >= 5: ... if depth >= 20: ...`, low-to-high) by hand: `depth=25` would hit `>= 5` first and silently return the WRONG (medium, not smallest) tier -- confirms the hazard is real, not hypothetical, for this exact shape. **Required before bite-sizing**: test every exact boundary value (0, 4, 5, 19, 20, and one clearly-above-20 value) written in shuffled order in the test file, per the standing convention -- not constructed by walking the tiers low-to-high, which is the order a broken low-to-high ladder would also pass.
+2. **`resource_type=None` (focus 2): reasoning holds, one gap found.** The independence argument is correct -- unlike `_active_claims`'s `attribute=None`, no rows from different `(resource_type, attribute)` pairs are ever passed into the same `resolve()` call, so bug #3's specific hazard (comparison-time pooling) cannot recur here. **Gap**: the reasoning was asserted in the docstring but not yet proven by a test. Required before bite-sizing: a dedicated test with TWO distinct `resource_type`s, each with its own active claims (one pair genuinely `needs_review`, the other genuinely `resolved`), asserting `count_needs_review(conn) == 1` -- proving the count reflects two independently-resolved verdicts, not a merged three-or-more-claim comparison across resource_types.
+3. **`_require_aware` extraction (focus 3): confirmed behavior-preserving, one cosmetic change flagged.** Same trigger (`tzinfo is None`), same `ValueError` type, same placement (after the parse try/except, before the `valid_from > observed_at` comparison) -- re-verified against the live file, not just the diff. The only actual change: the old single check raised ONE combined message naming both `valid_from` and `observed_at`; the two new `_require_aware` calls each raise a message naming only their own field. Confirmed safe -- grepped every naive-timestamp test in `tests/test_knowledge_delegation.py` (`test_record_delegation_verdict_rejects_naive_valid_from`, `test_record_delegation_verdict_rejects_naive_observed_at`) and both assert only `pytest.raises(ValueError)`, never message content. 76/76 full-suite run (commit e0b0284) is real evidence, not just a claim -- no further action needed.
+4. **DB-path reuse (focus 4): real gap, not yet fixed.** `_main_author_context` as sketched must import `knowledge_degradation._default_db_path()` (or the equivalent constant) rather than inventing its own default -- otherwise the budget calculation silently reads a DIFFERENT sqlite file than the one `check`/delegation actually write claims into, and `research_budget` would always reflect an empty database regardless of the real queue depth. This is called out explicitly in the wiring sketch above already (not deferred), but flagging it here as the answer to focus question 4 rather than letting it slide by as unremarkable: a fresh implementer given only the code (not this reasoning) could easily reach for `os.path.join(output_root(), "knowledge.db")` or some other plausible-looking new default instead of the one path that's actually already in use.
+
+**No 5th-family instance found beyond focus 1's confirmed-and-mitigated hazard** -- hunted specifically at the `budget_for_queue_depth` boundary and at `count_needs_review`'s aggregation, the two places Step 5 introduces anything resembling comparison or pooling.
 
 ---
 
