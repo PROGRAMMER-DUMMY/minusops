@@ -2889,12 +2889,27 @@ def test_resolve_when_verdict_is_the_only_active_claim_uses_single_or_no_claim_n
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_knowledge_store.py -v -k "delegated_verdict or claims_agree_checks_every"`
-Expected: FAIL -- `AttributeError: module 'knowledge_store' has no attribute '_adjudicated_ids'`
-for tests that reach it; the others fail with `AssertionError` (falling through to ordinary
-schema/non-schema comparison, e.g. `reason == "needs_review"`/`"no_ground_truth_arbiter"` instead
-of `"delegated_verdict_covers_active_claims"`). The bug-#8 test specifically fails under the
-`agreeing_before_disagreeing` ordering with `reason == "claims_agree"` (the pre-fix single-row
-`max()` pick), not under `disagreeing_before_agreeing`.
+Expected: 3 of the 5 selected tests FAIL, 2 PASS -- confirmed empirically 2026-07-20, corrected
+from an earlier prediction of a uniform `AttributeError`. `resolve()` at this point is still the
+UNMODIFIED Step 2/3 version and never calls the not-yet-written `_adjudicated_ids`, so no test can
+hit an `AttributeError`; every test just falls through to the pre-existing schema/non-schema
+branch:
+- `test_resolve_delegated_verdict_wins_when_it_covers_all_active_claims` FAILS --
+  `AssertionError: assert 'needs_review' == 'resolved'`.
+- `test_resolve_delegated_verdict_wins_with_proper_subset_of_adjudicated_ids` FAILS --
+  `TypeError: 'NoneType' object is not subscriptable` (`winner` is `None`).
+- `test_resolve_claims_agree_checks_every_claim_tied_for_newest_not_one_arbitrary_row` FAILS
+  under `agreeing_before_disagreeing` -- `AssertionError: claims_agree wrongly fired ...`.
+- `test_resolve_delegated_verdict_does_not_win_when_new_claim_appeared` PASSES coincidentally --
+  the pre-existing schema/non-schema branch alone already produces this test's expected answer
+  for this specific construction (no tie involved), independent of whether the authority
+  mechanism exists at all. Not a validity problem: this test's own point is that the fallthrough
+  behaves correctly, which is true both before and after this task by construction.
+- `test_resolve_delegated_verdict_tie_breaking_does_not_grant_authority_on_ambiguous_newest`
+  PASSES coincidentally, for the same reason -- the verdict's `claim_text` never exactly matches
+  schema's, so bug #8's `claims_agree` false positive was never going to fire regardless of which
+  tied claim an old-style `max()` picks; this test's own dedicated fail-first is Step 5 below, not
+  this generic check.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -3020,13 +3035,18 @@ with a naive single `max()`:
 ```
 (adjusting the two lines below accordingly). Run
 `pytest tests/test_knowledge_store.py -v -k tie_breaking` alone. Confirm it FAILS specifically
-under the `verdict_before_tied_claim` ordering -- now on the strengthened assertion
-(`AssertionError: ordering verdict_before_tied_claim`, `assert 'delegated_verdict_covers_active_
-claims' == 'non_schema_claim_observed_more_recently_than_schema_fetch'`, since the naive code
-wrongly grants authority instead of falling through) -- while `tied_claim_before_verdict` still
-passes (Python's `max()` returns the first-encountered maximal element on a tie, and `web_row` --
-not `agent_delegated` -- comes first in that ordering, so the naive code never even enters the
-branch, and the now-fixed claims_agree/freshness code below still produces the correct answer).
+under the `verdict_before_tied_claim` ordering -- on the strengthened assertion block's FIRST
+line, not the `reason` line (confirmed empirically 2026-07-20, correcting an earlier prediction
+that named the `reason` assertion): `AssertionError: ordering verdict_before_tied_claim`,
+`assert 'resolved' == 'needs_review'` -- the naive code wrongly grants authority, so `status`
+itself diverges from expected before `reason` is ever compared; pytest stops at the first failing
+`assert`, and `status` is checked first in this test's assertion block. The underlying conclusion
+is exactly as designed (naive `max()` wrongly grants authority under this ordering) -- only which
+specific assertion line reports the mismatch differs from what an earlier draft of this step
+predicted. `tied_claim_before_verdict` still passes (Python's `max()` returns the
+first-encountered maximal element on a tie, and `web_row` -- not `agent_delegated` -- comes first
+in that ordering, so the naive code never even enters the branch, and the now-fixed claims_agree/
+freshness code below still produces the correct answer).
 Revert, confirm both orderings pass again. Paste both results in the report.
 
 - [ ] **Step 6: Empirically verify the claims_agree fix (bug #8) actually matters**
