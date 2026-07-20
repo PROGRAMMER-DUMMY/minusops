@@ -169,6 +169,36 @@ def test_record_delegation_verdict_rejects_valid_from_after_observed_at(tmp_path
     assert _count_claims(conn) == before
 
 
+def test_record_delegation_verdict_rejects_naive_valid_from(tmp_path):
+    # Final whole-step review, 2026-07-20: a well-formed ISO string with no timezone designator
+    # parses cleanly via _parse_ts (format is fine) but produces a NAIVE datetime -- every other
+    # timestamp in this store is aware, and comparing naive against aware raises TypeError deep
+    # inside resolve(), permanently bricking it for this resource_type/attribute. Rejected here,
+    # at the boundary, instead of letting it ship and crash resolve() later.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-10T00:00:00", provider="aws", adjudicated_ids=[schema_id],
+        )
+    assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rejects_naive_observed_at(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-01T00:00:00Z", observed_at="2026-07-10T00:00:00",
+            provider="aws", adjudicated_ids=[schema_id],
+        )
+    assert _count_claims(conn) == before
+
+
 def test_record_delegation_verdict_rejects_empty_adjudicated_ids(tmp_path):
     conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
     _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")

@@ -167,8 +167,10 @@ def resolve(conn, resource_type, attribute=None):
     resolved winner via a dedicated early-return, BEFORE the schema/non-schema comparison below,
     when it is the UNIQUE newest-observed active claim AND the other currently-active claims are
     a subset-or-equal of what it adjudicated (recorded via record_delegation_verdict's
-    claim_adjudications rows, read through _adjudicated_ids()). Proper-subset, not exact-match,
-    deliberately: coverage means nothing NEW has appeared since the verdict, not that the active
+    claim_adjudications rows, read through _adjudicated_ids()). Subset-or-equal, not exact-match,
+    deliberately (the code uses <=, not a strict "proper subset" -- the normal covering case is
+    exact equality between other_active_ids and adjudicated_ids, not a strict subset of it):
+    coverage means nothing NEW has appeared since the verdict, not that the active
     set is frozen at exactly what was adjudicated. A verdict is NEVER permanently authoritative --
     it is only ever as good as its coverage of the CURRENT active set, checked fresh on every
     call. This is deliberately not "the newest agent_delegated claim always wins": that would let

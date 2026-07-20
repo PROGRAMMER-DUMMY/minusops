@@ -48,9 +48,22 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
 
     This is the external boundary of the two-clock model -- an arbitrary driving agent supplies
     valid_from/observed_at. Both are validated: each must parse via knowledge_store._parse_ts
-    (rejects garbage/wrong-type input), and valid_from must not be AFTER observed_at (a fact
-    can't be observed before it became true). observed_at defaults to now; valid_from has no
-    default (same no-default precedent as invalidate_claim's valid_until).
+    (rejects garbage/wrong-type input) AND must be timezone-AWARE (rejects a well-formed ISO
+    string with no timezone designator, e.g. "2026-07-10T00:00:00") -- every other timestamp in
+    this store is aware (schema/web claims always emit "Z" or "+00:00"; _parse_ts's own docstring
+    is about format, not awareness), and a naive value that slips past validation here does not
+    fail at insert time: it gets stored, and the NEXT resolve() call on this resource_type/
+    attribute crashes with "TypeError: can't compare offset-naive and offset-aware datetimes"
+    inside its max()-by-observed_at call, permanently bricking that attribute until the row is
+    manually invalidated (found by the final whole-step review, 2026-07-20 -- the exact same
+    hazard class _parse_ts exists to prevent for FORMAT, reintroduced for AWARENESS at precisely
+    the new external-input boundary this step added). This check runs immediately after parsing,
+    before the valid_from > observed_at comparison below -- a naive valid_from was previously
+    able to raise a raw TypeError out of that comparison, escaping this function's own documented
+    ValueError contract entirely. valid_from must not be AFTER observed_at (a fact can't be
+    observed before it became true). observed_at defaults to now (always aware, via
+    datetime.now(timezone.utc)); valid_from has no default (same no-default precedent as
+    invalidate_claim's valid_until).
 
     adjudicated_ids is the second external-input boundary surface: required (no default), must
     be non-empty, free of duplicates, and every id must reference a currently-active claim for
@@ -71,6 +84,14 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
             f"record_delegation_verdict: valid_from/observed_at must be parseable ISO "
             f"timestamps -- got valid_from={valid_from!r}, observed_at={observed_at!r}"
         ) from exc
+    if parsed_valid_from.tzinfo is None or parsed_observed_at.tzinfo is None:
+        raise ValueError(
+            f"record_delegation_verdict: valid_from/observed_at must be timezone-aware -- got "
+            f"valid_from={valid_from!r}, observed_at={observed_at!r} -- every other timestamp in "
+            f"this store is timezone-aware, and comparing a naive value against them raises "
+            f"TypeError deep inside resolve(), permanently bricking it for this "
+            f"resource_type/attribute"
+        )
     if parsed_valid_from > parsed_observed_at:
         raise ValueError(
             f"record_delegation_verdict: valid_from ({valid_from!r}) is after observed_at "
