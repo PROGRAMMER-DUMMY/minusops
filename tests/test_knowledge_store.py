@@ -261,18 +261,21 @@ def test_invalidate_claim_sets_valid_until_and_invalidated_at_as_distinct_clocks
     # compared valid_from instead of observed_at; this function's own docstring names the same
     # risk in reverse -- using observed_at here instead of valid_from). Deliberately far-apart,
     # easily-distinguishable values, so a swap between the two fields is caught, not just "some
-    # value got set somewhere."
+    # value got set somewhere. invalidated_by references a genuine second claim, not a
+    # fabricated id -- PRAGMA foreign_keys = ON (Step 4) now enforces that the reference is real.
     conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
     claim_id = _insert(conn, "schema", "acl: required", "2026-06-01T00:00:00Z", attribute="acl")
+    superseding_id = _insert(conn, "schema", "acl: optional", "2026-07-01T00:00:00Z",
+                              attribute="acl")
     knowledge_store.invalidate_claim(
         conn, claim_id, valid_until="2026-07-01T00:00:00Z",  # the superseding claim's valid_from
         invalidated_at="2099-01-01T00:00:00Z",  # deliberately absurd write-time stamp
-        invalidated_by=999,
+        invalidated_by=superseding_id,
     )
     row = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
     assert row["valid_until"] == "2026-07-01T00:00:00Z"
     assert row["invalidated_at"] == "2099-01-01T00:00:00Z"
-    assert row["invalidated_by"] == 999
+    assert row["invalidated_by"] == superseding_id
 
 
 def test_invalidate_claim_defaults_invalidated_at_to_now_but_never_defaults_valid_until(tmp_path):

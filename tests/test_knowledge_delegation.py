@@ -237,25 +237,41 @@ def test_record_delegation_verdict_rejects_duplicate_adjudicated_ids(tmp_path):
     assert _count_claims(conn) == before
 
 
+class _ExecutemanyFailsProxy:
+    """Forwards every attribute to a real sqlite3.Connection except executemany, which always
+    raises. A plain Python object, not a monkeypatch of sqlite3.Connection itself -- CPython
+    3.13+ locks several stdlib C-extension types (including sqlite3.Connection) against
+    class-level attribute assignment ("cannot set 'executemany' attribute of immutable type"),
+    so a monkeypatch.setattr(sqlite3.Connection, ...) approach is not portable across Python
+    versions. A duck-typed proxy passed as the conn argument sidesteps that entirely -- Task 2's
+    functions only ever call .execute()/.executemany()/.commit()/.rollback() on conn, all of
+    which forward correctly here except the one deliberately overridden."""
+    def __init__(self, real_conn):
+        self._real = real_conn
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def executemany(self, *a, **k):
+        raise sqlite3.IntegrityError("forced failure")
+
+
 def test_record_delegation_verdict_rolls_back_the_verdict_claim_if_the_adjudication_write_fails(
-        tmp_path, monkeypatch):
+        tmp_path):
     # The transactional wrap (ray's round-3 review, 2026-07-19) is structural, not dependent on
     # catching every bad input in advance -- the duplicate-ids check above closes the ONE
     # currently-known trigger, but this proves the invariant holds even for a failure the input
-    # validation doesn't anticipate. Forced via a class-level monkeypatch of
-    # sqlite3.Connection.executemany (reverted automatically after the test) since there's no
-    # other way to make the second write fail with valid, non-duplicate input.
+    # validation doesn't anticipate.
     conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
     schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
     before = _count_claims(conn)
 
-    def _boom(self, *a, **k):
-        raise sqlite3.IntegrityError("forced failure")
-    monkeypatch.setattr(sqlite3.Connection, "executemany", _boom)
-
+    proxy_conn = _ExecutemanyFailsProxy(conn)
     with pytest.raises(sqlite3.IntegrityError):
         knowledge_delegation.record_delegation_verdict(
-            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            proxy_conn, "aws_s3_bucket", "acl", claim_text="anything",
             valid_from="2026-07-10T00:00:00Z", provider="aws", adjudicated_ids=[schema_id],
         )
+    # Checked on the REAL connection, not the proxy -- the proxy's rollback() call forwards to
+    # the same underlying connection, so the real connection is the one whose state matters.
     assert _count_claims(conn) == before
