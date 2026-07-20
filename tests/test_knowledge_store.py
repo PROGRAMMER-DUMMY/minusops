@@ -6,6 +6,17 @@ import pytest
 import knowledge_store
 
 
+def test_require_aware_passes_through_an_aware_datetime():
+    parsed = knowledge_store._parse_ts("2026-07-18T00:00:00Z")
+    knowledge_store._require_aware(parsed, "label")  # no raise
+
+
+def test_require_aware_rejects_a_naive_datetime():
+    parsed = knowledge_store._parse_ts("2026-07-18T00:00:00")
+    with pytest.raises(ValueError):
+        knowledge_store._require_aware(parsed, "label")
+
+
 def test_init_db_creates_the_claims_table(tmp_path):
     conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
     cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='claims'")

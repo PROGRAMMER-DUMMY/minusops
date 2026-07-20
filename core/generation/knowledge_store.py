@@ -128,8 +128,24 @@ def _parse_ts(ts):
     objects. Raw string '>' is NOT safe here: datetime.now(tz).isoformat() emits '+00:00' while
     hand-written/external timestamps often use 'Z' -- for the identical instant these two strings
     are not equal and don't even sort correctly ('+' < 'Z'), which silently corrupts the one
-    comparison resolve()'s freshness clause depends on (ray's review, 2026-07-18)."""
+    comparison resolve()'s freshness clause depends on (ray's review, 2026-07-18).
+
+    FORMAT only -- a well-formed ISO string with no timezone designator parses cleanly here but
+    produces a naive datetime. Awareness is a separate check: see _require_aware."""
     return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def _require_aware(parsed, label):
+    """Reject a naive datetime that already parsed cleanly via _parse_ts. A well-formed ISO
+    string with no timezone designator (e.g. "2026-07-10T00:00:00") is fine by FORMAT but
+    produces a naive datetime, and comparing that against the aware timestamps everywhere else
+    in this store raises TypeError deep inside resolve() (bug #9, final whole-step review,
+    2026-07-20). Call this on every timestamp entering the store from outside its own control,
+    after _parse_ts, before it's used in any comparison."""
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"{label} must be timezone-aware -- every other timestamp in this store is aware, "
+            f"and comparing a naive value against them raises TypeError deep inside resolve()")
 
 
 def _adjudicated_ids(conn, verdict_claim_id):

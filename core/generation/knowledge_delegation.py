@@ -84,14 +84,10 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
             f"record_delegation_verdict: valid_from/observed_at must be parseable ISO "
             f"timestamps -- got valid_from={valid_from!r}, observed_at={observed_at!r}"
         ) from exc
-    if parsed_valid_from.tzinfo is None or parsed_observed_at.tzinfo is None:
-        raise ValueError(
-            f"record_delegation_verdict: valid_from/observed_at must be timezone-aware -- got "
-            f"valid_from={valid_from!r}, observed_at={observed_at!r} -- every other timestamp in "
-            f"this store is timezone-aware, and comparing a naive value against them raises "
-            f"TypeError deep inside resolve(), permanently bricking it for this "
-            f"resource_type/attribute"
-        )
+    knowledge_store._require_aware(
+        parsed_valid_from, f"record_delegation_verdict: valid_from={valid_from!r}")
+    knowledge_store._require_aware(
+        parsed_observed_at, f"record_delegation_verdict: observed_at={observed_at!r}")
     if parsed_valid_from > parsed_observed_at:
         raise ValueError(
             f"record_delegation_verdict: valid_from ({valid_from!r}) is after observed_at "
