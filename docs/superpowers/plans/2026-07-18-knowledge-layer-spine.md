@@ -1768,12 +1768,99 @@ cached, never permanent. Three follow-up decisions locked in this round:
    state; no separate invalidation mechanism is needed.
 
 While designing Task 3's tie-breaking test (found proactively, before any code existed, not
-discovered as a defect afterward -- see the resolve-comparison-bugs-pattern memory, now an
-8th-instance candidate): a plain `max()` by `observed_at` can silently return an ARBITRARY one of
-several tied-newest claims. If a delegated verdict is ever tied for newest-observed with ONE OF
-ITS OWN adjudicated claims, an unspecified tie winner changes whether authority gets granted for
-the identical underlying state. Fixed by requiring the newest claim be UNIQUE (`len(newest_claims)
-== 1`), not just any `max()` result.
+discovered as a defect afterward -- this same root-cause class turned out to be bug #8 itself,
+just caught here before it ever shipped -- see below and the resolve-comparison-bugs-pattern
+memory): a plain `max()` by `observed_at` can silently return an ARBITRARY one of several
+tied-newest claims. If a delegated verdict is ever tied for newest-observed with ONE OF ITS OWN
+adjudicated claims, an unspecified tie winner changes whether authority gets granted for the
+identical underlying state. Fixed by requiring the newest claim be UNIQUE (`len(newest_claims) ==
+1`), not just any `max()` result.
+
+Round 3 (implementation-level review, ray, 2026-07-19 -- reading this plan's new code against the
+SHIPPED Step 2 `resolve()`, not just plan prose, the same method that originally found the
+`attribute=None` pooling bug): found a genuine 8th confirmed bug plus two more concrete gaps. All
+accepted and fixed before build, not deferred.
+
+1. **Bug #8, confirmed: `claims_agree` false positive on a row-order tie among non-schema
+   claims.** `resolve()`'s freshness clause -- `newest_schema = max(schema_claims, key=...)` /
+   `newest_other = max(non_schema_claims, key=...)`, Step 2-vintage, untouched until now -- each
+   pick ONE row via `max(..., key=)`, which on a tie returns whichever row is first in
+   unspecified SQL row order. Latent since Step 2 because nothing in production ever inserted a
+   non-schema claim (confirmed via `grep`: zero real `source_type="web"` producers exist
+   anywhere in this codebase); Step 4 makes it reachable, because `record_delegation_verdict` is
+   the FIRST real producer of non-schema claims and takes a caller-supplied `observed_at`
+   unrelated to any other claim's timestamp -- two claims landing on an identical timestamp (a
+   batch stamp, a retry, an agent reusing one "now") is ordinary, not contrived. Repro: schema
+   (07-01, "X"), an `agent_delegated` verdict (07-10, agrees with schema, text "X"), a web claim
+   (07-10, disagrees, text "Y") -- depending on row order, the AGREEING claim can win the
+   arbitrary pick, so the code reports `claims_agree` while the disagreeing claim sits there,
+   active and unseen. Confident, silent, no crash, no existing test catches it -- same shape as
+   bugs #4/#5. **Fixed in this step** (Task 3), not deferred: `claims_agree` now requires EVERY
+   claim tied for newest on either side (not one arbitrarily-selected row per side) to share one
+   identical normalized text; any disagreement among the tied cohort correctly falls through to
+   the freshness comparison instead. Deliberately NOT "require uniqueness on both sides" (ray's
+   first, rejected option) -- that would route every non-schema tie to `needs_review` even when
+   the tied claims genuinely agree, manufacturing exactly the queue noise ray's own Q2 argued
+   against.
+2. **Duplicate `adjudicated_ids` (Task 2): not validated, and it's a real defect, not just a
+   missing input check.** `record_delegation_verdict(..., adjudicated_ids=[schema_id,
+   schema_id])` passes validation as written (`set()` dedups both the input and the SQL lookup),
+   then `conn.executemany(INSERT INTO claim_adjudications ...)` hits the table's own `PRIMARY KEY
+   (verdict_claim_id, adjudicated_claim_id)` on the second row -- but `insert_claim`'s OWN
+   internal `commit()` had already made the verdict claim row permanent before that failure,
+   orphaning a live `agent_delegated` claim with no `verdict_id` ever returned to the caller.
+   **Fixed with two changes, not just an input check**: (1) reject duplicate ids explicitly, same
+   rigor as the empty-list check; (2) `insert_claim` gains an optional `commit=False` parameter
+   (default `True`, every existing caller unaffected) so the verdict claim insert and the
+   `claim_adjudications` rows share ONE transaction, with an explicit `rollback()` on any
+   failure -- making "no partial claim row" structural, not dependent on catching every bad input
+   in `record_delegation_verdict`'s own validation first. The duplicate check alone would only
+   have papered over the one currently-known trigger; the transaction closes the invariant for
+   any future failure mode too.
+3. **No `PRAGMA foreign_keys = ON`.** Every `REFERENCES claims(id)` in the schema (including
+   both new `claim_adjudications` columns) was decorative -- `resolve()`'s coverage check had
+   zero DB-level backstop, resting entirely on `record_delegation_verdict`'s own Python-level
+   validation. Fixed: `init_db()` now enables FK enforcement. Confirmed safe against every
+   existing caller (`invalidated_by` is always either `NULL` or a genuinely valid, just-inserted
+   id in every real code path in this codebase) and additive-only for Step 4's own new tests.
+4. **Task 2's fail-first verification (Step 5) mispredicted its own outcome.** Removing the WHOLE
+   validation block to verify all 7 rejection tests fail predicted `DID NOT RAISE ValueError`
+   uniformly -- but with an empty `adjudicated_ids`, the placeholder-building code still runs and
+   produces `... WHERE id IN () AND ...`, a SQLite syntax error (`OperationalError`), not a clean
+   "nothing raised." Restructured to per-check removal: each validation clause is removed
+   independently (the two-clock checks are removed together, since the ordering check's
+   variables are produced by the parse step -- genuinely coupled in the code as written, not
+   artificially split for the sake of the exercise), confirming ONLY the test(s) targeting that
+   specific clause are affected, with the ACTUAL predicted exception type for each -- including
+   the cases where the new transaction (item 2) or the new FK enforcement (item 3) now catches
+   something that used to fail silently, which is itself worth demonstrating, not just a
+   misprediction to avoid.
+5. **The tie-breaking test's assertion was too weak.** `result["reason"] !=
+   "delegated_verdict_covers_active_claims"` is a negative check -- it would still pass under bug
+   #8's exact failure mode (a `claims_agree` fallthrough also satisfies `!=`). Now that bug #8 is
+   fixed, both of the test's monkeypatched orderings produce the SAME fully-determined outcome
+   (the fixed `claims_agree`/freshness code is order-independent by construction), so the
+   assertion is strengthened to the full expected `status`/`winner`/`reason`, not just a negative.
+
+**Accepted as holding, no change**: the proper-subset decision (Q2) -- traced every real
+invalidation pathway in this codebase and confirmed every one pairs `invalidate_claim` with a new
+`insert_claim` for the same attribute, which always breaks the subset test on its own; a pure
+shrink with no replacement isn't a capability anything here exercises today. Flagged, not fixed:
+re-examine this reasoning the moment a manual-retraction/admin-invalidate feature (invalidate
+without a replacement insert) is proposed -- a claim retracted BECAUSE it was substantively wrong
+is a different kind of event than one superseded by fresher evidence, and "shrink can't matter,
+the verdict already accounted for it" doesn't obviously extend to that case. The empty-set
+unreachability claim (Q3) is also confirmed exactly as designed -- traced every path into
+`resolve()`; the early return is unconditional and runs first, and nothing else can reach the
+authority-check code with fewer than 2 active claims -- and ray verified the Step 3 fail-first
+(moving the early return) correctly predicts the resulting failure.
+
+**Accepted as deferred, documented not built**: the TOCTOU gap between
+`record_delegation_verdict`'s validation `SELECT` and its `INSERT` (a concurrent invalidation of
+one of the `adjudicated_ids` between the two). No concurrent multi-process access to `claims.db`
+exists anywhere in this codebase today (unlike the audit-chain lock case) -- noted in
+`record_delegation_verdict`'s own docstring as a known, currently-unreachable gap, not built
+around.
 
 **Consumes**: `knowledge_store.resolve`, `knowledge_store._active_claims`, `knowledge_store.
 _parse_ts`, `knowledge_store.insert_claim`, `knowledge_store.invalidate_claim` (all existing,
@@ -1967,26 +2054,58 @@ test_knowledge_core_boundary.py automatically via its existing glob."
 
 ---
 
-### Task 2: `knowledge_store.py` (`claim_adjudications` table) + `knowledge_delegation.py` (`record_delegation_verdict()`)
+### Task 2: `knowledge_store.py` (`claim_adjudications` table, transactional `insert_claim`, FK enforcement) + `knowledge_delegation.py` (`record_delegation_verdict()`)
 
 **Files:**
-- Modify: `core/generation/knowledge_store.py` (add `claim_adjudications` table to `_SCHEMA`)
+- Modify: `core/generation/knowledge_store.py` (add `claim_adjudications` table to `_SCHEMA`; add
+  `PRAGMA foreign_keys = ON` to `init_db()`; add an optional `commit=True` parameter to
+  `insert_claim()`)
 - Modify: `core/generation/knowledge_delegation.py`
+- Modify: `tests/test_knowledge_store.py` (one new test for `insert_claim`'s `commit` parameter)
 - Modify: `tests/test_knowledge_delegation.py`
 
 **Interfaces:**
-- Consumes: `knowledge_store._parse_ts`, `knowledge_store.insert_claim` (both existing).
+- Consumes: `knowledge_store._parse_ts`, `knowledge_store.insert_claim` (both existing;
+  `insert_claim` gains an optional `commit=True` kwarg -- default-compatible with every existing
+  caller, none of which pass it).
 - Produces: `record_delegation_verdict(conn, resource_type, attribute, *, claim_text, valid_from,
   provider, adjudicated_ids, observed_at=None, source_url=None, confidence=None,
   provider_version=None) -> int` (the new verdict claim's id); the `claim_adjudications` table,
-  read by Task 3's `_adjudicated_ids()`.
+  read by Task 3's `_adjudicated_ids()`. The verdict claim insert and its `claim_adjudications`
+  rows are written in a single transaction (`insert_claim(..., commit=False)` then
+  `executemany()` then one `commit()`, with an explicit `rollback()` on any failure) -- "no
+  partial claim row on rejection" is structural, not dependent on catching every bad input in
+  `record_delegation_verdict`'s own validation first (ray's round-3 review, 2026-07-19).
 
 - [ ] **Step 1: Write the failing tests**
 
-Update the top of `tests/test_knowledge_delegation.py` to add the two new imports:
+Append to `tests/test_knowledge_store.py` (this file already imports `knowledge_store`; add
+`import sqlite3` at the top alongside the existing imports):
+
+```python
+def test_insert_claim_with_commit_false_can_be_rolled_back(tmp_path):
+    # The property record_delegation_verdict's transactional wrap (Task 2) depends on: an
+    # insert_claim(..., commit=False) call does NOT auto-commit, so a caller-issued rollback()
+    # on the SAME connection undoes it. Deliberately not a second-connection/cross-process
+    # visibility test -- this project has a standing note about Windows lock/handle semantics
+    # diverging from POSIX under concurrency; a single-connection rollback proves the exact
+    # property needed without touching that surface at all.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl", claim_text="acl is deprecated",
+        method="structural", source_type="schema", provider="aws",
+        valid_from="2026-07-01T00:00:00Z", observed_at="2026-07-01T00:00:00Z", commit=False,
+    )
+    conn.rollback()
+    count = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+    assert count == 0
+```
+
+Update the top of `tests/test_knowledge_delegation.py` to add the new imports:
 
 ```python
 import datetime
+import sqlite3
 
 import pytest
 
@@ -2141,11 +2260,56 @@ def test_record_delegation_verdict_rejects_adjudicated_id_from_different_attribu
             valid_from="2026-07-10T00:00:00Z", provider="aws", adjudicated_ids=[other_attr_id],
         )
     assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rejects_duplicate_adjudicated_ids(tmp_path):
+    # ray's round-3 review, 2026-07-19: without this check, set(adjudicated_ids) silently dedups
+    # the input during validation (which passes), then the claim_adjudications INSERT hits its
+    # own PRIMARY KEY on the second (verdict_id, schema_id) row -- but only AFTER insert_claim
+    # has already committed the verdict claim. This test alone doesn't prove the orphan is
+    # avoided; that's what the transactional-rollback test below proves independently.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+    with pytest.raises(ValueError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-10T00:00:00Z", provider="aws",
+            adjudicated_ids=[schema_id, schema_id],
+        )
+    assert _count_claims(conn) == before
+
+
+def test_record_delegation_verdict_rolls_back_the_verdict_claim_if_the_adjudication_write_fails(
+        tmp_path, monkeypatch):
+    # The transactional wrap (ray's round-3 review, 2026-07-19) is structural, not dependent on
+    # catching every bad input in advance -- the duplicate-ids check above closes the ONE
+    # currently-known trigger, but this proves the invariant holds even for a failure the input
+    # validation doesn't anticipate. Forced via a class-level monkeypatch of
+    # sqlite3.Connection.executemany (reverted automatically after the test) since there's no
+    # other way to make the second write fail with valid, non-duplicate input.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    before = _count_claims(conn)
+
+    def _boom(self, *a, **k):
+        raise sqlite3.IntegrityError("forced failure")
+    monkeypatch.setattr(sqlite3.Connection, "executemany", _boom)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        knowledge_delegation.record_delegation_verdict(
+            conn, "aws_s3_bucket", "acl", claim_text="anything",
+            valid_from="2026-07-10T00:00:00Z", provider="aws", adjudicated_ids=[schema_id],
+        )
+    assert _count_claims(conn) == before
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_knowledge_delegation.py -v -k record_delegation_verdict`
+Run: `pytest tests/test_knowledge_store.py -v -k commit_false`
+Expected: FAIL -- `TypeError: insert_claim() got an unexpected keyword argument 'commit'`.
+
+Run: `pytest tests/test_knowledge_delegation.py -v -k "record_delegation_verdict or rolls_back"`
 Expected: FAIL -- `AttributeError: module 'knowledge_delegation' has no attribute
 'record_delegation_verdict'`.
 
@@ -2183,6 +2347,44 @@ CREATE TABLE IF NOT EXISTS claim_adjudications (
 """
 ```
 
+Enable FK enforcement in `init_db()` (ray's round-3 review, 2026-07-19: every `REFERENCES
+claims(id)` above -- including the two new ones -- was decorative without this; confirmed safe
+against every existing caller, since `invalidated_by` is always either `NULL` or a genuinely
+valid, just-inserted id in every real code path in this codebase):
+
+```python
+def init_db(path):
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    return conn
+```
+
+Add an optional `commit` parameter to `insert_claim()` (default `True`, so every existing caller
+in Step 2/3 is unaffected -- this lets `record_delegation_verdict` below defer the commit until
+its own `claim_adjudications` write also succeeds):
+
+```python
+def insert_claim(conn, *, resource_type, attribute, claim_text, method, source_type, provider,
+                  valid_from, observed_at, source_url=None, provider_version=None,
+                  confidence=None, ingested_at=None, commit=True):
+    ingested_at = ingested_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    content_hash = _content_hash(resource_type, attribute, claim_text, provider_version)
+    cursor = conn.execute(
+        """INSERT INTO claims
+           (resource_type, attribute, claim_text, method, source_type, source_url, provider,
+            provider_version, confidence, valid_from, observed_at, ingested_at, content_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (resource_type, attribute, claim_text, method, source_type, source_url, provider,
+         provider_version, confidence, valid_from, observed_at, ingested_at, content_hash),
+    )
+    if commit:
+        conn.commit()
+    return cursor.lastrowid
+```
+
 In `core/generation/knowledge_delegation.py`, add `import datetime` at the top and append:
 
 ```python
@@ -2200,10 +2402,15 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
     default (same no-default precedent as invalidate_claim's valid_until).
 
     adjudicated_ids is the second external-input boundary surface: required (no default), must
-    be non-empty, and every id must reference a currently-active claim for this exact
-    resource_type/attribute -- a stale or fabricated id would make the coverage test in
-    resolve() (Task 3) meaningless, silently. All validation runs BEFORE any write: a rejection
-    leaves no partial claim row behind."""
+    be non-empty, free of duplicates, and every id must reference a currently-active claim for
+    this exact resource_type/attribute -- a stale, fabricated, or duplicated id would make the
+    coverage test in resolve() (Task 3) meaningless, silently. All validation runs BEFORE any
+    write, AND the verdict claim insert and its claim_adjudications rows share a single
+    transaction (rolled back on any failure) -- "no partial claim row on rejection" does not
+    depend on this function's own validation having anticipated every possible failure mode
+    (ray's round-3 review, 2026-07-19: insert_claim's own internal commit() used to make the
+    verdict row permanent before the claim_adjudications write could fail on it, e.g. via a
+    duplicate id slipping past a set()-based check)."""
     observed_at = observed_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
     try:
         parsed_valid_from = knowledge_store._parse_ts(valid_from)
@@ -2224,6 +2431,12 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
         raise ValueError(
             "record_delegation_verdict: adjudicated_ids must be non-empty -- a verdict "
             "adjudicating nothing is incoherent"
+        )
+    if len(adjudicated_ids) != len(set(adjudicated_ids)):
+        raise ValueError(
+            f"record_delegation_verdict: adjudicated_ids contains duplicates -- "
+            f"{sorted(adjudicated_ids)} -- a verdict adjudicating the same claim twice is "
+            f"incoherent"
         )
     placeholders = ",".join("?" * len(adjudicated_ids))
     if attribute is None:
@@ -2251,44 +2464,106 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
         conn, resource_type=resource_type, attribute=attribute, claim_text=claim_text,
         method="semantic", source_type="agent_delegated", provider=provider,
         provider_version=provider_version, source_url=source_url, confidence=confidence,
-        valid_from=valid_from, observed_at=observed_at,
+        valid_from=valid_from, observed_at=observed_at, commit=False,
     )
-    conn.executemany(
-        "INSERT INTO claim_adjudications (verdict_claim_id, adjudicated_claim_id) VALUES (?, ?)",
-        [(verdict_id, aid) for aid in adjudicated_ids],
-    )
+    try:
+        conn.executemany(
+            "INSERT INTO claim_adjudications (verdict_claim_id, adjudicated_claim_id) "
+            "VALUES (?, ?)",
+            [(verdict_id, aid) for aid in adjudicated_ids],
+        )
+    except Exception:
+        # Structural, not input-dependent: whatever failed, the verdict claim insert above
+        # (deferred via commit=False) is rolled back with it, so no orphaned claims row survives
+        # a failed adjudication write, regardless of why it failed.
+        conn.rollback()
+        raise
     conn.commit()
     return verdict_id
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
+Run: `pytest tests/test_knowledge_store.py -v -k commit_false`
+Expected: PASS (1 passed).
+
 Run: `pytest tests/test_knowledge_delegation.py -v`
-Expected: PASS (16 passed) -- 5 from Task 1 + 11 new above.
+Expected: PASS (18 passed) -- 5 from Task 1 + 13 new above (4 basic + 8 rejects + 1 rollback).
 
-- [ ] **Step 5: Empirically verify every rejection actually rejects**
+- [ ] **Step 5: Empirically verify every rejection actually rejects -- per clause, not in aggregate**
 
-Temporarily comment out the entire validation block in `record_delegation_verdict` -- everything
-between the docstring and `verdict_id = knowledge_store.insert_claim(...)` (the timestamp parse,
-the `valid_from > observed_at` check, the empty-`adjudicated_ids` check, and the
-found/missing-id check). Run `pytest tests/test_knowledge_delegation.py -v -k rejects` (7 tests),
-confirm all 7 FAIL (each with `Failed: DID NOT RAISE <class 'ValueError'>`). Restore the
-validation block. Re-run, confirm all 7 PASS. Paste both results in the report.
+Removing the whole validation block at once (as an earlier version of this plan proposed) hides a
+real mismatch: with `adjudicated_ids` empty, the leftover `placeholders = ""` still flows into
+`... WHERE id IN () AND ...`, which is a SQLite syntax error, not a clean "nothing raised" --
+someone skimming the aggregate break for "did the 7 tests fail, yes/no" would get a false
+confirmation for that one case. Remove each clause independently instead, confirming ONLY the
+test(s) targeting that clause are affected, with the actual predicted exception type. The two
+clock checks are removed together (the `valid_from > observed_at` check reads
+`parsed_valid_from`/`parsed_observed_at`, which only exist because the parse `try` block created
+them -- removing the parse alone leaves the ordering check referencing undefined names, so these
+two are genuinely coupled in the code as written, not artificially split for the exercise).
+
+1. **Remove the parse `try`/`except` AND the `valid_from > observed_at` check together.** Run
+   `pytest tests/test_knowledge_delegation.py -v -k "unparseable or after_observed_at"` (3
+   tests). Confirm all 3 FAIL with `Failed: DID NOT RAISE <class 'ValueError'>` -- `insert_claim`
+   stores `valid_from`/`observed_at` as raw `TEXT` with no parsing of its own, so garbage or
+   misordered timestamps are written without complaint. Restore, confirm all 3 PASS.
+2. **Remove the empty-`adjudicated_ids` check only.** Run
+   `pytest tests/test_knowledge_delegation.py -v -k rejects_empty_adjudicated_ids` alone. Confirm
+   it FAILS, but with `sqlite3.OperationalError: near ")": syntax error` propagating out of the
+   `with pytest.raises(ValueError):` block (an empty `adjudicated_ids` list produces an empty
+   `IN ()`) -- NOT a clean "DID NOT RAISE ValueError". Restore, confirm it PASSES.
+3. **Remove the duplicate-`adjudicated_ids` check only.** Run
+   `pytest tests/test_knowledge_delegation.py -v -k rejects_duplicate_adjudicated_ids` alone.
+   Confirm it FAILS with `sqlite3.IntegrityError` (the `claim_adjudications` `PRIMARY KEY`
+   collision, propagated through the transactional wrap's `except: conn.rollback(); raise`) --
+   NOT "DID NOT RAISE ValueError". Also confirm `_count_claims(conn) == before` STILL holds even
+   with this specific guard missing -- the transaction from Step 3 catches the orphan
+   independently of the input check, which is the whole point of making it structural. Restore,
+   confirm it PASSES.
+4. **Remove the found/missing check only.** Run
+   `pytest tests/test_knowledge_delegation.py -v -k "nonexistent_adjudicated_id or inactive_adjudicated_id or adjudicated_id_from_different_attribute"`
+   (3 tests). Confirm:
+   - `rejects_nonexistent_adjudicated_id` (id `999999`, which does not exist in `claims` at
+     all) FAILS with `sqlite3.IntegrityError: FOREIGN KEY constraint failed` (caught by
+     `PRAGMA foreign_keys = ON` from Step 3, propagated through the same rollback path) -- NOT
+     "DID NOT RAISE ValueError". `_count_claims(conn) == before` still holds.
+   - `rejects_inactive_adjudicated_id` and `rejects_adjudicated_id_from_different_attribute`
+     FAIL with the originally-predicted `Failed: DID NOT RAISE <class 'ValueError'>` -- both ids
+     genuinely exist in `claims` (just invalidated, or for the wrong attribute), so FK
+     enforcement is satisfied and there's no DB-level backstop for either; the insert succeeds
+     silently, and `_count_claims(conn)` INCREASES rather than matching `before`.
+
+   Restore the found/missing check, confirm all 3 PASS again.
+
+Paste the actual output for each of the four removals in the report -- the point is confirming
+the ACTUAL exception type/message for each, not just that something failed.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add core/generation/knowledge_store.py core/generation/knowledge_delegation.py tests/test_knowledge_delegation.py
+git add core/generation/knowledge_store.py core/generation/knowledge_delegation.py tests/test_knowledge_store.py tests/test_knowledge_delegation.py
 git commit -m "feat: knowledge-layer spine Step 4 -- record_delegation_verdict() + claim_adjudications table
 
 record_delegation_verdict() is the second external-input boundary in this
 codebase (after the clocks): valid_from/observed_at are parsed and
-validated (valid_from must not be after observed_at), and adjudicated_ids
-is validated non-empty with every id required to reference a currently-
-active claim for the exact resource_type/attribute -- all validation runs
-before any write, so a rejection leaves no partial claim row behind. Always
+validated (valid_from must not be after observed_at), adjudicated_ids is
+validated non-empty and duplicate-free with every id required to reference
+a currently-active claim for the exact resource_type/attribute. All
+validation runs before any write, AND the verdict claim insert and its
+claim_adjudications rows now share a single transaction (insert_claim
+gains an optional commit=False; rollback() on any executemany failure) --
+'no partial claim row on rejection' is structural, not dependent on this
+function's own validation having anticipated every bad input (ray's
+round-3 review, 2026-07-19: insert_claim's internal commit() used to make
+the verdict row permanent before a claim_adjudications failure -- e.g. a
+duplicate id slipping past a naive check -- could ever be caught). Always
 an INSERT, never an UPDATE; source_type='agent_delegated' and
 method='semantic' are fixed by this function, not caller-supplied.
+
+init_db() now sets PRAGMA foreign_keys = ON -- every REFERENCES claims(id)
+in this schema was previously decorative; confirmed safe against every
+existing caller.
 
 claim_adjudications is a join table (verdict_claim_id, adjudicated_claim_id),
 tracking exactly what a verdict adjudicated for Task 3's scoped-authority
@@ -2308,7 +2583,11 @@ check in resolve()."
   unchanged).
 - Produces: `_adjudicated_ids(conn, verdict_claim_id) -> set[int]`; `resolve()`'s new
   `"delegated_verdict_covers_active_claims"` reason string, returned before the existing
-  schema/non-schema comparison, which is otherwise completely unchanged below it.
+  schema/non-schema comparison. That comparison branch is NOT left unchanged this time -- ray's
+  round-3 review found bug #8 in it (a row-order-dependent `claims_agree` false positive on a
+  tie among non-schema claims, Step-2-vintage code, latent until `record_delegation_verdict`
+  became the first real producer of non-schema claims), and this task fixes it as part of the
+  same `resolve()` edit rather than deferring it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2410,6 +2689,12 @@ def test_resolve_delegated_verdict_tie_breaking_does_not_grant_authority_on_ambi
     rows = {c["id"]: c for c in knowledge_store._active_claims(conn, "aws_s3_bucket", "acl")}
     schema_row, web_row, verdict_row = rows[schema_id], rows[web_id], rows[verdict_id]
 
+    # A negative assertion here ("!= delegated_verdict_covers_active_claims") would still pass
+    # under bug #8 (the claims_agree row-order bug fixed below in this same task) -- a
+    # claims_agree fallthrough also satisfies "!=". Now that bug #8 is fixed, the fixed
+    # claims_agree/freshness code is order-independent by construction, so BOTH orderings here
+    # resolve to the identical, fully-determined outcome -- asserted directly, not just ruled out
+    # (ray's round-3 review, 2026-07-19).
     for ordering_name, ordering in [
         ("verdict_before_tied_claim", [schema_row, verdict_row, web_row]),
         ("tied_claim_before_verdict", [schema_row, web_row, verdict_row]),
@@ -2417,8 +2702,48 @@ def test_resolve_delegated_verdict_tie_breaking_does_not_grant_authority_on_ambi
         monkeypatch.setattr(knowledge_store, "_active_claims",
                              lambda *a, _o=ordering, **k: list(_o))
         result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
-        assert result["reason"] != "delegated_verdict_covers_active_claims", (
-            f"authority wrongly granted under ordering {ordering_name}")
+        assert result["status"] == "needs_review", f"ordering {ordering_name}"
+        assert result["winner"] is None, f"ordering {ordering_name}"
+        assert result["reason"] == "non_schema_claim_observed_more_recently_than_schema_fetch", \
+            f"ordering {ordering_name}"
+
+
+def test_resolve_claims_agree_checks_every_claim_tied_for_newest_not_one_arbitrary_row(
+        tmp_path, monkeypatch):
+    # Bug #8 (ray's round-3 review, 2026-07-19): the pre-existing claims_agree comparison picked
+    # ONE row per side via max(..., key=parse_ts), which on a tie returns whichever row is first
+    # in unspecified SQL row order. Constructed so one of two claims tied for newest_other AGREES
+    # with schema and the other genuinely DISAGREES -- if the agreeing one happens to be picked,
+    # the old code confidently reports claims_agree while the disagreeing claim sits there,
+    # active and unaddressed. Reachable in real usage now, not just tests:
+    # record_delegation_verdict is the first real producer of non-schema claims, and it accepts
+    # a caller-supplied observed_at unrelated to any other claim's timestamp -- two claims
+    # landing on the identical observed_at (a batch stamp, a retry, an agent reusing one "now")
+    # is ordinary, not contrived.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    agreeing_id = _record_verdict(
+        conn, [schema_id], claim_text="acl is deprecated", observed_at="2026-07-10T00:00:00Z")
+    disagreeing_id = _insert(conn, "web", "acl is fine", "2026-07-10T00:00:00Z")  # same literal ts
+    rows = {c["id"]: c for c in knowledge_store._active_claims(conn, "aws_s3_bucket", "acl")}
+    schema_row = rows[schema_id]
+    agreeing_row = rows[agreeing_id]
+    disagreeing_row = rows[disagreeing_id]
+
+    # Both orderings of the tied pair -- the fix must not depend on which one SQLite happens to
+    # return. The OLD code was only wrong under "agreeing row first" (max() on a tie keeps the
+    # first-scanned element), which is exactly what makes this the discriminating construction.
+    for ordering_name, ordering in [
+        ("agreeing_before_disagreeing", [schema_row, agreeing_row, disagreeing_row]),
+        ("disagreeing_before_agreeing", [schema_row, disagreeing_row, agreeing_row]),
+    ]:
+        monkeypatch.setattr(knowledge_store, "_active_claims",
+                             lambda *a, _o=ordering, **k: list(_o))
+        result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+        assert result["reason"] != "claims_agree", (
+            f"claims_agree wrongly fired under ordering {ordering_name} -- a genuinely "
+            f"conflicting claim was silently absorbed")
+        assert result["status"] == "needs_review"
 
 
 def test_resolve_when_verdict_is_the_only_active_claim_uses_single_or_no_claim_not_authority_check(
@@ -2445,11 +2770,13 @@ def test_resolve_when_verdict_is_the_only_active_claim_uses_single_or_no_claim_n
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_knowledge_store.py -v -k delegated_verdict`
+Run: `pytest tests/test_knowledge_store.py -v -k "delegated_verdict or claims_agree_checks_every"`
 Expected: FAIL -- `AttributeError: module 'knowledge_store' has no attribute '_adjudicated_ids'`
 for tests that reach it; the others fail with `AssertionError` (falling through to ordinary
 schema/non-schema comparison, e.g. `reason == "needs_review"`/`"no_ground_truth_arbiter"` instead
-of `"delegated_verdict_covers_active_claims"`).
+of `"delegated_verdict_covers_active_claims"`). The bug-#8 test specifically fails under the
+`agreeing_before_disagreeing` ordering with `reason == "claims_agree"` (the pre-fix single-row
+`max()` pick), not under `disagreeing_before_agreeing`.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -2523,12 +2850,30 @@ def resolve(conn, resource_type, attribute=None):
     schema_claims = [c for c in claims if c["source_type"] == "schema"]
     non_schema_claims = [c for c in claims if c["source_type"] != "schema"]
     if schema_claims and non_schema_claims:
-        newest_schema = max(schema_claims, key=lambda c: _parse_ts(c["observed_at"]))
-        newest_other = max(non_schema_claims, key=lambda c: _parse_ts(c["observed_at"]))
-        if newest_schema["claim_text"].strip().lower() == newest_other["claim_text"].strip().lower():
+        # Bug #8 fix (ray's round-3 review, 2026-07-19): each side's "newest" used to be picked
+        # via max(..., key=parse_ts), a SINGLE row -- on a tie, max() returns whichever row is
+        # first in unspecified SQL row order. Now every claim tied for newest on EITHER side is
+        # collected into a cohort, and agreement requires ALL of them (not one arbitrarily-picked
+        # row per side) to share one identical normalized text. A single disagreeing claim inside
+        # a tied cohort now correctly falls through to the freshness comparison instead of being
+        # silently outvoted by whichever claim the row-order pick happened to favor.
+        newest_schema_ts = max(_parse_ts(c["observed_at"]) for c in schema_claims)
+        newest_schema_claims = [c for c in schema_claims
+                                 if _parse_ts(c["observed_at"]) == newest_schema_ts]
+        newest_other_ts = max(_parse_ts(c["observed_at"]) for c in non_schema_claims)
+        newest_other_claims = [c for c in non_schema_claims
+                                if _parse_ts(c["observed_at"]) == newest_other_ts]
+        # Deterministic pick for the WINNER claim object (id order, never SQL row order) -- when
+        # claims_agree fires, every member of both cohorts shares identical text by construction,
+        # so which specific row is returned doesn't change the answer; this only makes the choice
+        # reproducible.
+        newest_schema = min(newest_schema_claims, key=lambda c: c["id"])
+        all_newest_texts = {c["claim_text"].strip().lower()
+                             for c in newest_schema_claims + newest_other_claims}
+        if len(all_newest_texts) == 1:
             return {"status": "resolved", "winner": newest_schema, "claims": claims,
                     "reason": "claims_agree"}
-        if _parse_ts(newest_other["observed_at"]) > _parse_ts(newest_schema["observed_at"]):
+        if newest_other_ts > newest_schema_ts:
             return {"status": "needs_review", "winner": None, "claims": claims,
                     "reason": "non_schema_claim_observed_more_recently_than_schema_fetch"}
         return {"status": "resolved", "winner": newest_schema, "claims": claims,
@@ -2540,7 +2885,8 @@ def resolve(conn, resource_type, attribute=None):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_knowledge_store.py -v`
-Expected: PASS (27 passed) -- 22 existing + 5 new above.
+Expected: PASS (29 passed) -- 22 existing + 1 from Task 2 (`commit_false`) + 6 new above (the 5
+scoped-authority tests plus the bug-#8 `claims_agree` test).
 
 - [ ] **Step 5: Empirically verify the tie-breaking fix actually matters**
 
@@ -2556,13 +2902,39 @@ with a naive single `max()`:
 ```
 (adjusting the two lines below accordingly). Run
 `pytest tests/test_knowledge_store.py -v -k tie_breaking` alone. Confirm it FAILS specifically
-under the `verdict_before_tied_claim` ordering (`AssertionError: authority wrongly granted under
-ordering verdict_before_tied_claim`) while the reasoning above predicts `tied_claim_before_verdict`
-still passes (Python's `max()` returns the first-encountered maximal element on a tie, and
-`web_row` -- not `agent_delegated` -- comes first in that ordering, so the naive code never even
-enters the branch). Revert, confirm both orderings pass again. Paste both results in the report.
+under the `verdict_before_tied_claim` ordering -- now on the strengthened assertion
+(`AssertionError: ordering verdict_before_tied_claim`, `assert 'delegated_verdict_covers_active_
+claims' == 'non_schema_claim_observed_more_recently_than_schema_fetch'`, since the naive code
+wrongly grants authority instead of falling through) -- while `tied_claim_before_verdict` still
+passes (Python's `max()` returns the first-encountered maximal element on a tie, and `web_row` --
+not `agent_delegated` -- comes first in that ordering, so the naive code never even enters the
+branch, and the now-fixed claims_agree/freshness code below still produces the correct answer).
+Revert, confirm both orderings pass again. Paste both results in the report.
 
-- [ ] **Step 6: Empirically verify the empty-set case is genuinely guarded by the early return**
+- [ ] **Step 6: Empirically verify the claims_agree fix (bug #8) actually matters**
+
+Temporarily revert the schema/non-schema comparison to the pre-fix single-row selection:
+```python
+        newest_schema = max(schema_claims, key=lambda c: _parse_ts(c["observed_at"]))
+        newest_other = max(non_schema_claims, key=lambda c: _parse_ts(c["observed_at"]))
+        if newest_schema["claim_text"].strip().lower() == newest_other["claim_text"].strip().lower():
+            return {"status": "resolved", "winner": newest_schema, "claims": claims,
+                    "reason": "claims_agree"}
+        if _parse_ts(newest_other["observed_at"]) > _parse_ts(newest_schema["observed_at"]):
+            return {"status": "needs_review", "winner": None, "claims": claims,
+                    "reason": "non_schema_claim_observed_more_recently_than_schema_fetch"}
+        return {"status": "resolved", "winner": newest_schema, "claims": claims,
+                "reason": "schema_observed_same_or_more_recently_than_non_schema_claim"}
+```
+Run `pytest tests/test_knowledge_store.py -v -k claims_agree_checks_every` alone. Confirm it
+FAILS specifically under the `agreeing_before_disagreeing` ordering (`AssertionError:
+claims_agree wrongly fired under ordering agreeing_before_disagreeing`) while
+`disagreeing_before_agreeing` still passes (the pre-fix `max()` picks the first-scanned tied
+element -- the disagreeing claim -- so it correctly falls through by coincidence in that specific
+ordering, not by design). Revert, confirm both orderings pass again. Paste both results in the
+report.
+
+- [ ] **Step 7: Empirically verify the empty-set case is genuinely guarded by the early return**
 
 Temporarily move the `len(claims) <= 1` early-return block to AFTER the new authority-check block
 (so the authority check runs first even when there's only one active claim). Run
@@ -2572,11 +2944,11 @@ anything, so the reordered code now returns `reason == "delegated_verdict_covers
 instead of the expected `"single_or_no_claim"`. This proves the test would catch a regression if
 the early return ever moved. Revert, confirm it passes again. Paste both results in the report.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add core/generation/knowledge_store.py tests/test_knowledge_store.py
-git commit -m "feat: knowledge-layer spine Step 4 -- scoped-authority extension to resolve()
+git commit -m "feat: knowledge-layer spine Step 4 -- scoped-authority extension to resolve() + bug #8 fix
 
 A delegated verdict becomes resolve()'s winner only when it is the UNIQUE
 newest-observed active claim (a plain max() by observed_at is not enough --
@@ -2595,8 +2967,21 @@ scenario in a dedicated test.
 The vacuous-subset case (verdict is the only active claim) is claimed
 structurally unreachable -- guarded by resolve()'s own len(claims) <= 1
 early return, which fires first -- and is asserted by its own dedicated
-test, not left as an inference. Flagged for ray's review: verify this is
-ACTUALLY unreachable, not just apparently."
+test, not left as an inference.
+
+Also fixes bug #8 (ray's round-3 review, 2026-07-19): the pre-existing
+claims_agree comparison picked one row per side via max(..., key=parse_ts),
+which silently returns whichever row is first in unspecified SQL row order
+on a tie. Latent since Step 2 (nothing in production ever inserted a
+non-schema claim); Step 4 makes it reachable, since record_delegation_verdict
+is the first real producer of non-schema claims with a caller-supplied
+observed_at unrelated to any other claim's timestamp. Fixed by requiring
+EVERY claim tied for newest on either side to agree, not one arbitrarily-
+selected row per side -- deliberately not 'require uniqueness on both
+sides' (would manufacture queue noise on every tied-but-agreeing case).
+The tie-breaking test's assertion is strengthened accordingly, from a
+negative check to the full expected outcome -- the negative check would
+have passed even with bug #8 present."
 ```
 
 ---
@@ -2697,7 +3082,7 @@ diagnose and fix the production code (in `knowledge_delegation.py` or `knowledge
 whichever the failure implicates) before proceeding; do not weaken these tests to make them pass.
 
 Run: `pytest tests/test_knowledge_delegation.py tests/test_knowledge_store.py tests/test_knowledge_diff.py tests/test_knowledge_core_boundary.py tests/test_knowledge_degradation.py -v`
-Expected: PASS (19 + 27 + 4 + 5 + 13 = 68 passed).
+Expected: PASS (21 + 29 + 4 + 5 + 13 = 72 passed).
 
 - [ ] **Step 3: Commit**
 
