@@ -132,6 +132,14 @@ def _parse_ts(ts):
     return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+def _adjudicated_ids(conn, verdict_claim_id):
+    rows = conn.execute(
+        "SELECT adjudicated_claim_id FROM claim_adjudications WHERE verdict_claim_id = ?",
+        (verdict_claim_id,),
+    ).fetchall()
+    return {row["adjudicated_claim_id"] for row in rows}
+
+
 def resolve(conn, resource_type, attribute=None):
     """Returns {"status": "resolved"|"needs_review", "winner": claim_or_None, "claims": [...],
     "reason": str}. Never writes -- pure read, same discipline as every gate in this project.
@@ -150,24 +158,67 @@ def resolve(conn, resource_type, attribute=None):
     claims_agree" -- agreeing claims carry no conflict to adjudicate, so routing them into the
     freshness comparison (or silently discarding one) is noise, not signal. This is a literal
     string comparison, not semantic judgment -- semantic agreement/disagreement stays delegated
-    to the driving agent (Step 4), never adjudicated here.
+    to the driving agent, never adjudicated here.
 
-    Any non-schema source_type is treated uniformly (not just "web") -- a Step-4
-    "agent_delegated" claim must not silently skip the freshness clause just because it isn't
-    literally "web"."""
+    Any non-schema source_type is treated uniformly (not just "web") -- an "agent_delegated"
+    claim does not silently skip the freshness clause just because it isn't literally "web".
+
+    SCOPED AUTHORITY (Step 4): a delegated verdict (source_type="agent_delegated") becomes the
+    resolved winner via a dedicated early-return, BEFORE the schema/non-schema comparison below,
+    when it is the UNIQUE newest-observed active claim AND the other currently-active claims are
+    a subset-or-equal of what it adjudicated (recorded via record_delegation_verdict's
+    claim_adjudications rows, read through _adjudicated_ids()). Proper-subset, not exact-match,
+    deliberately: coverage means nothing NEW has appeared since the verdict, not that the active
+    set is frozen at exactly what was adjudicated. A verdict is NEVER permanently authoritative --
+    it is only ever as good as its coverage of the CURRENT active set, checked fresh on every
+    call. This is deliberately not "the newest agent_delegated claim always wins": that would let
+    a stale verdict outrank fresh evidence forever, the exact failure mode this freshness clause
+    exists to prevent, through a new door.
+    """
     claims = _active_claims(conn, resource_type, attribute)
     if len(claims) <= 1:
         return {"status": "resolved", "winner": claims[0] if claims else None,
                 "claims": claims, "reason": "single_or_no_claim"}
+    # Unique-max requirement (not a plain max()) is load-bearing: if a delegated verdict is ever
+    # tied for newest-observed with one of its OWN adjudicated claims, a plain max() can silently
+    # return either one depending on unspecified row order, changing whether authority gets
+    # granted for the exact same underlying state (see the tie-breaking test).
+    newest_ts = max(_parse_ts(c["observed_at"]) for c in claims)
+    newest_claims = [c for c in claims if _parse_ts(c["observed_at"]) == newest_ts]
+    if len(newest_claims) == 1 and newest_claims[0]["source_type"] == "agent_delegated":
+        verdict = newest_claims[0]
+        adjudicated_ids = _adjudicated_ids(conn, verdict["id"])
+        other_active_ids = {c["id"] for c in claims if c["id"] != verdict["id"]}
+        if other_active_ids <= adjudicated_ids:
+            return {"status": "resolved", "winner": verdict, "claims": claims,
+                    "reason": "delegated_verdict_covers_active_claims"}
     schema_claims = [c for c in claims if c["source_type"] == "schema"]
     non_schema_claims = [c for c in claims if c["source_type"] != "schema"]
     if schema_claims and non_schema_claims:
-        newest_schema = max(schema_claims, key=lambda c: _parse_ts(c["observed_at"]))
-        newest_other = max(non_schema_claims, key=lambda c: _parse_ts(c["observed_at"]))
-        if newest_schema["claim_text"].strip().lower() == newest_other["claim_text"].strip().lower():
+        # Bug #8 fix (ray's round-3 review, 2026-07-19): each side's "newest" used to be picked
+        # via max(..., key=parse_ts), a SINGLE row -- on a tie, max() returns whichever row is
+        # first in unspecified SQL row order. Now every claim tied for newest on EITHER side is
+        # collected into a cohort, and agreement requires ALL of them (not one arbitrarily-picked
+        # row per side) to share one identical normalized text. A single disagreeing claim inside
+        # a tied cohort now correctly falls through to the freshness comparison instead of being
+        # silently outvoted by whichever claim the row-order pick happened to favor.
+        newest_schema_ts = max(_parse_ts(c["observed_at"]) for c in schema_claims)
+        newest_schema_claims = [c for c in schema_claims
+                                 if _parse_ts(c["observed_at"]) == newest_schema_ts]
+        newest_other_ts = max(_parse_ts(c["observed_at"]) for c in non_schema_claims)
+        newest_other_claims = [c for c in non_schema_claims
+                                if _parse_ts(c["observed_at"]) == newest_other_ts]
+        # Deterministic pick for the WINNER claim object (id order, never SQL row order) -- when
+        # claims_agree fires, every member of both cohorts shares identical text by construction,
+        # so which specific row is returned doesn't change the answer; this only makes the choice
+        # reproducible.
+        newest_schema = min(newest_schema_claims, key=lambda c: c["id"])
+        all_newest_texts = {c["claim_text"].strip().lower()
+                             for c in newest_schema_claims + newest_other_claims}
+        if len(all_newest_texts) == 1:
             return {"status": "resolved", "winner": newest_schema, "claims": claims,
                     "reason": "claims_agree"}
-        if _parse_ts(newest_other["observed_at"]) > _parse_ts(newest_schema["observed_at"]):
+        if newest_other_ts > newest_schema_ts:
             return {"status": "needs_review", "winner": None, "claims": claims,
                     "reason": "non_schema_claim_observed_more_recently_than_schema_fetch"}
         return {"status": "resolved", "winner": newest_schema, "claims": claims,

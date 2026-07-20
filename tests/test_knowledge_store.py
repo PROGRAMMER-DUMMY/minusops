@@ -310,3 +310,177 @@ def test_insert_claim_with_commit_false_can_be_rolled_back(tmp_path):
     conn.rollback()
     count = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
     assert count == 0
+
+
+def _record_verdict(conn, adjudicated_ids, claim_text="agent verdict",
+                     observed_at="2026-07-20T00:00:00Z", attribute="acl"):
+    verdict_id = knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute=attribute, claim_text=claim_text,
+        method="semantic", source_type="agent_delegated", provider="aws",
+        valid_from=observed_at, observed_at=observed_at,
+    )
+    conn.executemany(
+        "INSERT INTO claim_adjudications (verdict_claim_id, adjudicated_claim_id) VALUES (?, ?)",
+        [(verdict_id, aid) for aid in adjudicated_ids],
+    )
+    conn.commit()
+    return verdict_id
+
+
+def test_resolve_delegated_verdict_wins_when_it_covers_all_active_claims(tmp_path):
+    # Insertion order here necessarily matches timestamp order -- a verdict's adjudicated_ids
+    # must reference claims that already exist, so it structurally cannot be inserted before
+    # schema_id/web_id. This does NOT violate the standing "scramble insertion order" testing
+    # convention in spirit: that convention exists to stop a test passing by accident under a
+    # LAST/FIRST-inserted-wins bug, and the dedicated tie-breaking test below (which uses
+    # monkeypatch to force BOTH row orderings explicitly, independent of insertion order)
+    # supplies that guarantee for this exact selection logic instead.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    verdict_id = _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-10T00:00:00Z")
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["status"] == "resolved"
+    assert result["winner"]["id"] == verdict_id
+    assert result["reason"] == "delegated_verdict_covers_active_claims"
+
+
+def test_resolve_delegated_verdict_does_not_win_when_new_claim_appeared(tmp_path):
+    # The staleness scenario that sank the naive "newest agent_delegated claim always wins"
+    # design: a fresh schema re-fetch the verdict never adjudicated must NOT be silently
+    # outranked by a stale July verdict.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-10T00:00:00Z")
+    # September: a fresh schema re-fetch supersedes the July schema claim -- the verdict no
+    # longer covers the active set, since the new schema claim was never adjudicated.
+    new_schema_id = _insert(conn, "schema", "acl is required now", "2026-09-01T00:00:00Z")
+    knowledge_store.invalidate_claim(
+        conn, schema_id, valid_until="2026-09-01T00:00:00Z", invalidated_by=new_schema_id)
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["reason"] != "delegated_verdict_covers_active_claims"
+    assert result["status"] == "resolved"
+    assert result["winner"]["id"] == new_schema_id
+    assert result["reason"] == "schema_observed_same_or_more_recently_than_non_schema_claim"
+
+
+def test_resolve_delegated_verdict_wins_with_proper_subset_of_adjudicated_ids(tmp_path):
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    verdict_id = _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-10T00:00:00Z")
+    # One of the originally-adjudicated claims is later invalidated by something other than the
+    # verdict itself (not reachable via any real pathway today -- constructed directly to prove
+    # the subset test is PROPER-subset-or-equal by design, not exact-match).
+    knowledge_store.invalidate_claim(conn, web_id, valid_until="2026-07-11T00:00:00Z")
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["winner"]["id"] == verdict_id
+    assert result["reason"] == "delegated_verdict_covers_active_claims"
+
+
+def test_resolve_delegated_verdict_tie_breaking_does_not_grant_authority_on_ambiguous_newest(
+        tmp_path, monkeypatch):
+    # The tie-breaking fix: a verdict tied for newest-observed_at with ONE OF ITS OWN adjudicated
+    # claims must NOT be treated as an unambiguous newest claim. This is the only construction
+    # that actually discriminates a unique-max requirement from a plain max(): tying the verdict
+    # against a claim it did NOT adjudicate is theater (a new, unadjudicated claim breaks the
+    # subset test regardless of which side wins the tie, so naive and fixed code produce the same
+    # final outcome). Tying it against one of its OWN adjudicated claims is different: if the
+    # verdict wins the tie, other_active_ids becomes exactly {schema_id}, a PROPER SUBSET of
+    # {schema_id, web_id} -- authority is (wrongly) granted. If web_id wins the tie instead, the
+    # authority check never even fires. Only a unique-max requirement closes this off regardless
+    # of which row happens to be treated as "the" tied newest.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    # Verdict's observed_at is the EXACT SAME literal string as web_id's -- a deliberate tie.
+    verdict_id = _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-05T00:00:00Z")
+    rows = {c["id"]: c for c in knowledge_store._active_claims(conn, "aws_s3_bucket", "acl")}
+    schema_row, web_row, verdict_row = rows[schema_id], rows[web_id], rows[verdict_id]
+
+    # A negative assertion here ("!= delegated_verdict_covers_active_claims") would still pass
+    # under bug #8 (the claims_agree row-order bug fixed below in this same task) -- a
+    # claims_agree fallthrough also satisfies "!=". Now that bug #8 is fixed, the fixed
+    # claims_agree/freshness code is order-independent by construction, so BOTH orderings here
+    # resolve to the identical, fully-determined outcome -- asserted directly, not just ruled out
+    # (ray's round-3 review, 2026-07-19).
+    for ordering_name, ordering in [
+        ("verdict_before_tied_claim", [schema_row, verdict_row, web_row]),
+        ("tied_claim_before_verdict", [schema_row, web_row, verdict_row]),
+    ]:
+        monkeypatch.setattr(knowledge_store, "_active_claims",
+                             lambda *a, _o=ordering, **k: list(_o))
+        result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+        assert result["status"] == "needs_review", f"ordering {ordering_name}"
+        assert result["winner"] is None, f"ordering {ordering_name}"
+        assert result["reason"] == "non_schema_claim_observed_more_recently_than_schema_fetch", \
+            f"ordering {ordering_name}"
+
+
+def test_resolve_claims_agree_checks_every_claim_tied_for_newest_not_one_arbitrary_row(
+        tmp_path, monkeypatch):
+    # Bug #8 (ray's round-3 review, 2026-07-19): the pre-existing claims_agree comparison picked
+    # ONE row per side via max(..., key=parse_ts), which on a tie returns whichever row is first
+    # in unspecified SQL row order. Constructed so one of two claims tied for newest_other AGREES
+    # with schema and the other genuinely DISAGREES -- if the agreeing one happens to be picked,
+    # the old code confidently reports claims_agree while the disagreeing claim sits there,
+    # active and unaddressed. Reachable in real usage now, not just tests:
+    # record_delegation_verdict is the first real producer of non-schema claims, and it accepts
+    # a caller-supplied observed_at unrelated to any other claim's timestamp -- two claims
+    # landing on the identical observed_at (a batch stamp, a retry, an agent reusing one "now")
+    # is ordinary, not contrived.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    agreeing_id = _record_verdict(
+        conn, [schema_id], claim_text="acl is deprecated", observed_at="2026-07-10T00:00:00Z")
+    disagreeing_id = _insert(conn, "web", "acl is fine", "2026-07-10T00:00:00Z")  # same literal ts
+    rows = {c["id"]: c for c in knowledge_store._active_claims(conn, "aws_s3_bucket", "acl")}
+    schema_row = rows[schema_id]
+    agreeing_row = rows[agreeing_id]
+    disagreeing_row = rows[disagreeing_id]
+
+    # Both orderings of the tied pair -- the fix must not depend on which one SQLite happens to
+    # return. The OLD code was only wrong under "agreeing row first" (max() on a tie keeps the
+    # first-scanned element), which is exactly what makes this the discriminating construction.
+    for ordering_name, ordering in [
+        ("agreeing_before_disagreeing", [schema_row, agreeing_row, disagreeing_row]),
+        ("disagreeing_before_agreeing", [schema_row, disagreeing_row, agreeing_row]),
+    ]:
+        monkeypatch.setattr(knowledge_store, "_active_claims",
+                             lambda *a, _o=ordering, **k: list(_o))
+        result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+        assert result["reason"] != "claims_agree", (
+            f"claims_agree wrongly fired under ordering {ordering_name} -- a genuinely "
+            f"conflicting claim was silently absorbed")
+        assert result["status"] == "needs_review"
+
+
+def test_resolve_when_verdict_is_the_only_active_claim_uses_single_or_no_claim_not_authority_check(
+        tmp_path):
+    # The vacuous-subset case (other_active_ids == set() <= adjudicated_ids is trivially True) is
+    # claimed structurally UNREACHABLE: resolve()'s own len(claims) <= 1 early return fires first
+    # whenever the verdict is the only active claim, before the authority-check code ever runs.
+    # Constructed directly (not reachable via any real pathway today -- invalidating BOTH
+    # originally-adjudicated claims manually) specifically to prove this, not leave it as an
+    # inference: if the early-return above ever moves or changes, this test fails LOUDLY by
+    # landing in the authority-check branch instead of silently opening the vacuous-subset path.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    schema_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    web_id = _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
+    verdict_id = _record_verdict(
+        conn, [schema_id, web_id], claim_text="acl is deprecated, per agent review",
+        observed_at="2026-07-10T00:00:00Z")
+    knowledge_store.invalidate_claim(conn, schema_id, valid_until="2026-07-11T00:00:00Z")
+    knowledge_store.invalidate_claim(conn, web_id, valid_until="2026-07-11T00:00:00Z")
+    result = knowledge_store.resolve(conn, "aws_s3_bucket", "acl")
+    assert result["reason"] == "single_or_no_claim"
+    assert result["winner"]["id"] == verdict_id
