@@ -289,3 +289,21 @@ def test_invalidate_claim_requires_valid_until_explicitly():
     import pytest
     with pytest.raises(TypeError):
         knowledge_store.invalidate_claim(None, 1, invalidated_by=2)  # no valid_until -- must not silently default to now()
+
+
+def test_insert_claim_with_commit_false_can_be_rolled_back(tmp_path):
+    # The property record_delegation_verdict's transactional wrap (Task 2) depends on: an
+    # insert_claim(..., commit=False) call does NOT auto-commit, so a caller-issued rollback()
+    # on the SAME connection undoes it. Deliberately not a second-connection/cross-process
+    # visibility test -- this project has a standing note about Windows lock/handle semantics
+    # diverging from POSIX under concurrency; a single-connection rollback proves the exact
+    # property needed without touching that surface at all.
+    conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
+    knowledge_store.insert_claim(
+        conn, resource_type="aws_s3_bucket", attribute="acl", claim_text="acl is deprecated",
+        method="structural", source_type="schema", provider="aws",
+        valid_from="2026-07-01T00:00:00Z", observed_at="2026-07-01T00:00:00Z", commit=False,
+    )
+    conn.rollback()
+    count = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+    assert count == 0

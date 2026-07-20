@@ -31,12 +31,18 @@ CREATE TABLE IF NOT EXISTS claims (
     content_hash    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_claims_lookup ON claims(resource_type, attribute);
+CREATE TABLE IF NOT EXISTS claim_adjudications (
+    verdict_claim_id     INTEGER NOT NULL REFERENCES claims(id),
+    adjudicated_claim_id INTEGER NOT NULL REFERENCES claims(id),
+    PRIMARY KEY (verdict_claim_id, adjudicated_claim_id)
+);
 """
 
 
 def init_db(path):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
     conn.commit()
     return conn
@@ -49,7 +55,7 @@ def _content_hash(resource_type, attribute, claim_text, provider_version):
 
 def insert_claim(conn, *, resource_type, attribute, claim_text, method, source_type, provider,
                   valid_from, observed_at, source_url=None, provider_version=None,
-                  confidence=None, ingested_at=None):
+                  confidence=None, ingested_at=None, commit=True):
     ingested_at = ingested_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
     content_hash = _content_hash(resource_type, attribute, claim_text, provider_version)
     cursor = conn.execute(
@@ -60,7 +66,8 @@ def insert_claim(conn, *, resource_type, attribute, claim_text, method, source_t
         (resource_type, attribute, claim_text, method, source_type, source_url, provider,
          provider_version, confidence, valid_from, observed_at, ingested_at, content_hash),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return cursor.lastrowid
 
 
