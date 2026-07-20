@@ -43,12 +43,17 @@ def test_build_delegation_request_returns_well_formed_dict_when_needs_review(tmp
 
 
 def test_build_delegation_request_orders_claims_newest_first(tmp_path):
-    # Insertion order deliberately scrambled against timestamp order (standing convention, Global
-    # Constraints) -- the OLDER claim is inserted second so a bug that just returns resolve()'s
-    # claims list in whatever order it came back in cannot pass by coincidence.
+    # Insertion order deliberately scrambled against the EXPECTED (sorted, newest-first) order,
+    # not just "the older one is inserted second" -- inserting the older claim first means
+    # SQLite's rowid/insertion order is [older_id, newer_id], which DIVERGES from the expected
+    # [newer_id, older_id] assertion below. A bug that just returns resolve()'s claims list
+    # unsorted, in whatever (insertion/rowid) order it came back in, is caught by this
+    # divergence -- it would return [older_id, newer_id], not matching. (An earlier version of
+    # this test inserted the NEWER claim first, which coincidentally matches the expected sorted
+    # order and would pass even with no sort at all -- caught by task review, 2026-07-20.)
     conn = knowledge_store.init_db(str(tmp_path / "claims.db"))
-    newer_id = _insert(conn, "web", "acl is fine", "2026-07-10T00:00:00Z")
     older_id = _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
+    newer_id = _insert(conn, "web", "acl is fine", "2026-07-10T00:00:00Z")
     req = knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl")
     assert [c["id"] for c in req["claims"]] == [newer_id, older_id]
 
