@@ -111,20 +111,55 @@ demonstrably changes the output.
 `schema_watch._fetch_schema(provider, workdir)` (real `terraform providers schema -json`) and
 `schema_lint._reduce_full(schema, used_keys)` (attribute-table reduction) — into one call: given a
 resource type, return its current real attribute shape. Neither existing piece is rewritten
-(survey §2).
+(survey §2). This *is* "the registry of all services" — the entire AWS provider's schema comes
+back from one real `terraform providers schema -json` call against the installed, version-pinned
+provider plugin; nothing here is scraped from a web docs page. `discovery.py`'s
+`information_library.md`/`documentation_ledger.md` path stays reserved for narrative/usage
+guidance (examples, gotchas, best practices), never for the attribute list itself — the schema
+fetch is the only trusted source for "does this attribute exist."
+
+**Dedup, before researching from scratch:** check for a prior record first, same "in-repo pattern
+first" resolution order `discovery.py`'s docstring already states. Concrete order per resource
+type: (1) does sub-project 6's parity-tracking store already have a clean-pass record for this
+exact type? If so, reuse its authored HCL + provenance instead of re-authoring. (2) does
+`discovery.py`'s existing `load_record(topic)` cache already have a saved doc-research record for
+this type? Reuse the doc/URL set, but never the schema — the live schema fetch always re-runs
+fresh regardless of cache hits, matching `modules.py`'s own stated principle that a grounding
+example "is never staler than the catalog itself."
 **Done when:** calling it for a type absent from every existing module (survey's own example:
 `aws_dynamodb_table`) returns a real attribute table sourced from a live schema fetch, not a
-synthetic test fixture.
+synthetic test fixture; and calling it a second time for a type with an existing clean-pass record
+returns the cached authored content without re-invoking the LLM.
 
 ### 5. Authoring + validate loop
 **New:** the actual generation logic — given a resource type and item 4's schema, an LLM authors
-HCL into item 1's module-shaped seam, grounded in that schema and `discovery.py`'s doc URLs.
-Validate runs G2 (existing) → offline `terraform validate` (existing `tf_validate.py`) → a G9
-ephemeral apply (existing `ephemeral_apply.py`, `run_ephemeral_apply(..., emulator="ministack")`
-then `"floci"`) — each attempt's outcome recorded.
+HCL into item 1's module-shaped seam, grounded in that schema and `discovery.py`'s doc URLs (plus
+`retrieve_grounding_examples()`'s existing catalog-as-RAG content — real, tested, zero production
+callers today, a natural fit here). Before authoring, the engine resolves — and records — the
+following for the resource type, all against real existing gates, not invented checks:
+
+| Check | Source | Why it matters before writing |
+|---|---|---|
+| Required/optional attributes, types, deprecated flags | Item 4's live schema | What's actually valid to emit |
+| G5 classification (stateful / IAM / reviewed-unsafe / auto-ship-eligible) | `core/governance/destructive_change_gate.py` | Known up front whether this can ever auto-ship or will always stage |
+| G6 rule coverage (does a SEC-*/COST-* rule fire for this type?) | `policy/g6/rules.rego` | Author toward passing a known rule instead of failing validate blind |
+| G9 emulator representability | `core/governance/ephemeral_apply.py`'s allowlist | Some types (e.g. `aws_sfn_state_machine`'s real `ValidateStateMachineDefinition` API call) have no honest emulator equivalent — this must be a disclosed carve-out in validate, not a silently-forever-failing check |
+| Tag/naming convention | `compose()`'s existing `tags_all` wrapping (proven 2026-07-18) | Authored content must not duplicate what `compose()` already injects |
+| Companion asset need | Item 1's asset-carrying mechanism | Detect when a type needs a script file (Glue-style `path.module` reference), not just HCL |
+| Cross-resource wiring | New convention, this sub-project | When preplan produces multiple types for one pipeline, later authoring calls receive earlier ones' output identifiers so real references (e.g. a Glue job needing the bucket ARN) can be written, not left as `# REVIEW` stubs |
+
+Validate then runs G2 (existing) → offline `terraform validate` (existing `tf_validate.py`) → a
+G9 ephemeral apply (existing `ephemeral_apply.py`, `run_ephemeral_apply(..., emulator="ministack")`
+then `"floci"`).
+
+**Audit record**, same reviewable-JSON shape as `architecture_decision.json`/`module_provenance.py`
+(never opaque model output): resource type; which requirements fields drove its selection
+(preplan's own reasoning); the schema hash used (drift-detectable, same idea as G2's existing
+`schema_hash`); which doc sources were cited; the G5/G6/G9 pre-checks above; G2/`terraform
+validate`/MiniStack/Floci results; running clean-pass count.
 **Done when:** at least one resource type not in any existing module's corpus is generated,
 passes all three validation stages, and the record shows why (schema used, which docs cited,
-emulator results) — auditable the same way `architecture_decision.json` is.
+emulator results, pre-checks resolved) — auditable the same way `architecture_decision.json` is.
 
 ### 6. Parity proof + cutover
 **New:** a harness (parallel in spirit to `tests/test_teardown_regression_harness.py`) that runs
@@ -169,8 +204,5 @@ to blocking/staging on anything unrecognized or unverified, never silently passi
 ## Open items deferred to sub-project specs
 
 - Sub-project 3's exact field-to-resource-type mapping design.
-- Sub-project 5's prompt/grounding strategy for the LLM authoring step (what exactly gets fed to
-  it beyond schema + doc URLs — e.g., `retrieve_grounding_examples()`'s existing catalog-as-RAG
-  content, which has zero production callers today and is a natural fit here).
 - Sub-project 6's exact harness structure and the human sign-off mechanism (a file, a CLI flag, a
   manual PR review — TBD in that sub-project's own plan).
