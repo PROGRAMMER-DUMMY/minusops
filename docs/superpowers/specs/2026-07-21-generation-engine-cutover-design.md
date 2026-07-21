@@ -71,9 +71,27 @@ During sub-projects 1-5, this path runs *alongside* the existing catalog match, 
 the parity-proving harness (sub-project 6) — never the default for a live `synthesize()` call
 until parity is proven and the cutover happens.
 
+## Correction (2026-07-21, after live testing)
+
+Testing the loop live surfaced that `docs/phase7_item5_authoring_scope.md` — a scope doc this
+design missed on first pass — already resolved Item 5's core architecture back on 2026-07-16:
+**MinusOps never calls a model itself; the driving agentic CLI (Claude Code, Codex, "agy"/
+Antigravity, etc.) authors the HCL, MinusOps only supplies context and gates the result.** Under
+that architecture, sub-projects 2, 4, and most of 5's plumbing are **already built and working**,
+confirmed by a live run this session (`aws_dynamodb_table`, `author-context` → hand-authored HCL →
+`author --allow-incomplete` → composed with zero catalog modules → `tf_validate.py` clean). Status
+per sub-project, corrected below. Sub-projects 3 and 6, and the dynamic-block gap in sub-project 1,
+remain real, unbuilt work.
+
 ## Sub-projects (dependency order)
 
 ### 1. Module-shaped authoring + G2 dynamic-block support
+**Status: partially done.** The module-shaped form (`authored_modules/<key>/`, with
+`variable`/`output`, auto-wiring of `name_prefix`/`tags`, companion assets) already exists in
+`synthesizer.py` (`_render_authored_module_call` and neighbors). **Still unbuilt:** G2's
+`schema_lint.py` still unconditionally flags every `dynamic { ... }` block as
+`unparseable_reference` (confirmed live, 2026-07-21) — this remains the real gap blocking
+`table-format-iceberg` reproduction.
 **Extends:** `core/generation/synthesizer.py`'s `authored_content` contract, `core/generation/schema_lint.py`'s `gate_content()`.
 Today `authored_content` is `dict[str, str]` — one flat HCL blob per resource type, composed as
 `authored_{type}.tf` at the composition root, no `variable`/`output`/`locals` boundary, no
@@ -87,16 +105,16 @@ test-only workaround — including the 2 `path.module`-asset blockers and the 1 
 blocker.
 
 ### 2. Fix `synthesize()`'s zero-catalog path
-**Extends:** `core/generation/synthesizer.py`'s `synthesize()`.
-It always calls `select_modules()` → `match_modules()`, auto-adding `governance-observability`
-even when the caller wants zero catalog modules. A real catalog-free composition today only works
-by calling `compose()` directly, bypassing the public entry point (survey §1).
-**Done when:** a test calls the real public `synthesize()` (not `compose()` directly) with empty
-module selection and non-empty authored content, and gets a clean authored-only result — no
-silent fallback, no auto-added module.
+**Status: done.** `select_modules(explicit_ids=...)` now distinguishes `None` ("infer by keyword")
+from `[]` ("explicitly zero catalog modules"), checked by identity not truthiness. Confirmed live,
+2026-07-21: `synthesizer.py author aws_dynamodb_table --allow-incomplete ...` composed with
+`"modules": []` through the real public `synthesize()` entry point, no `compose()` bypass needed.
 
 ### 3. Full-requirements-driven preplan
-**New:** a function in `core/architecture/` (exact module TBD in that sub-project's own plan)
+**Status: not built — this remains the real gap.** The live test above required manually declaring
+`resource_type` + `justification` via `--allow-incomplete`; nothing today reads a full
+`requirements.json` and derives that list itself. A function in `core/architecture/` (exact module
+TBD in that sub-project's own plan)
 that reads `requirements.json`'s complete schema — `functional`, all `data_pipeline` fields
 (`sources`, `storage_zones`, `transforms`, `catalog`, `consumption`, `data_quality`,
 `freshness_sla`, `governance`, `orchestration` — currently validated, never read downstream per
@@ -107,16 +125,19 @@ produces the same resource-type list, and changing a previously-inert field (e.g
 demonstrably changes the output.
 
 ### 4. Live per-type schema query
-**New:** a thin function composing two existing, individually-tested pieces —
-`schema_watch._fetch_schema(provider, workdir)` (real `terraform providers schema -json`) and
-`schema_lint._reduce_full(schema, used_keys)` (attribute-table reduction) — into one call: given a
-resource type, return its current real attribute shape. Neither existing piece is rewritten
-(survey §2). This *is* "the registry of all services" — the entire AWS provider's schema comes
-back from one real `terraform providers schema -json` call against the installed, version-pinned
-provider plugin; nothing here is scraped from a web docs page. `discovery.py`'s
-`information_library.md`/`documentation_ledger.md` path stays reserved for narrative/usage
-guidance (examples, gotchas, best practices), never for the attribute list itself — the schema
-fetch is the only trusted source for "does this attribute exist."
+**Status: done.** `schema_watch.get_type_schema(provider, type_name, kind="resource")` already
+composes `_fetch_schema()` + a raw block lookup (deliberately not `_reduce_full`, which strips
+detail for a different, drift-comparison purpose). Confirmed live, 2026-07-21:
+`synthesizer.py author-context aws_dynamodb_table ...` returned the real, current, full attribute
+schema (including nested `block_types` like `global_secondary_index`, `point_in_time_recovery`)
+straight from a real `terraform providers schema -json` call — not a synthetic fixture.
+Deliberately uncached (schemas drift; a caller needing to avoid refetching must cache at its own
+layer, per the function's own docstring). This *is* "the registry of all services" — the entire
+AWS provider's schema comes back from one real `terraform providers schema -json` call against
+the installed, version-pinned provider plugin; nothing here is scraped from a web docs page.
+`discovery.py`'s `information_library.md`/`documentation_ledger.md` path stays reserved for
+narrative/usage guidance (examples, gotchas, best practices), never for the attribute list itself
+— the schema fetch is the only trusted source for "does this attribute exist."
 
 **Dedup, before researching from scratch:** check for a prior record first, same "in-repo pattern
 first" resolution order `discovery.py`'s docstring already states. Concrete order per resource
@@ -132,11 +153,24 @@ synthetic test fixture; and calling it a second time for a type with an existing
 returns the cached authored content without re-invoking the LLM.
 
 ### 5. Authoring + validate loop
-**New:** the actual generation logic — given a resource type and item 4's schema, an LLM authors
-HCL into item 1's module-shaped seam, grounded in that schema and `discovery.py`'s doc URLs (plus
-`retrieve_grounding_examples()`'s existing catalog-as-RAG content — real, tested, zero production
-callers today, a natural fit here). Before authoring, the engine resolves — and records — the
-following for the resource type, all against real existing gates, not invented checks:
+**Status: core loop already built and proven live (2026-07-21), pre-authoring checklist and
+emulator validation are not.** `assemble_authoring_context()` already assembles item 4's live
+schema + `retrieve_grounding_examples()`'s real catalog content (confirmed: `retrieve_grounding_
+examples()` DOES have a production caller now — this function — contrary to the survey's
+"zero call sites" finding, which predates this). `synthesizer.py author-context`/`author` already
+run the driving-agent loop end to end: this session fetched real context, hand-authored
+`aws_dynamodb_table` HCL grounded in it, and it passed G2 + composed cleanly with zero catalog
+modules, confirmed by `tf_validate.py` afterward. `write_authoring_record()` exists for the audit
+trail (not exercised in this session's CLI path — needs confirming whether `_main_author` actually
+calls it, or whether that wiring is itself a remaining gap).
+
+**Still not built:** the pre-authoring checklist below (G5/G6/G9 pre-checks surfaced *before*
+authoring, not just discovered after) and the G9 MiniStack/Floci ephemeral-apply step — this
+session's run only went through G2 + offline `terraform validate`, no emulator apply. Given a
+resource type and item 4's schema, the driving agent authors HCL into item 1's module-shaped seam,
+grounded in that schema and `discovery.py`'s doc URLs plus the grounding examples. Before
+authoring, the engine should resolve — and record — the following for the resource type, all
+against real existing gates, not invented checks:
 
 | Check | Source | Why it matters before writing |
 |---|---|---|
