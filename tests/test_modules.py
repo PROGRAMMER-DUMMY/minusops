@@ -298,3 +298,17 @@ def test_main_preplan_reports_no_recommendations(tmp_path, capsys):
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "no enumerable-field recommendations" in out
+
+
+def test_derive_module_ids_surfaces_both_alternatives_on_a_genuine_tie():
+    # "interactive BI for many analysts" ties: query-athena matches "bi" (score 1),
+    # consumption-redshift-serverless matches "many analysts" (score 1). A prior review found
+    # a tie silently returned both with no signal they're alternatives -- this locks in the
+    # fix: both are returned, each reason explicitly says they're tied alternatives.
+    data = {"data_pipeline": {"consumption": "interactive BI for many analysts"}}
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert picked_ids == {"query-athena", "consumption-redshift-serverless"}
+    for p in picks:
+        assert "tied with" in p["reason"]
+        assert "mutually-exclusive alternatives" in p["reason"]

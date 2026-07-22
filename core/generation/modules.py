@@ -331,7 +331,9 @@ def _match_score(text, module_id):
     """Count of module_id's own `satisfies` phrases the text hits (whole-phrase substring OR
     every one of a phrase's tokens present) -- 0 means no match. Used both as a yes/no check
     (score > 0) and, within one enumerable field's candidate group, as a specificity signal so
-    the single best-matching alternative wins instead of every independently-matching one."""
+    the single best-matching alternative wins instead of every independently-matching one. On a
+    genuine tie (two alternatives scoring equally), derive_module_ids() surfaces both, labeled as
+    mutually-exclusive alternatives for a human to pick between -- it never silently drops one."""
     module = get_module(module_id)
     if module is None:
         return 0
@@ -354,19 +356,35 @@ def derive_module_ids(requirements_data):
     review into architecture_decision.json's `selected_modules` -- never auto-applied, same
     discipline as match_modules()'s own callers.
 
-    Within data_pipeline.consumption/orchestration/catalog, each field's candidate modules
-    are mutually-exclusive alternatives (e.g. Athena vs. Redshift Serverless) -- only the
-    single highest-specificity match (by matched-phrase count) is recommended, not every
-    candidate that happens to share one weak token with the text. non_functional.latency's
-    streaming modules are complementary, not alternatives (a real streaming architecture
-    commonly uses both Kinesis and Firehose together), so both are included independently
-    whenever they match -- no tie-break there."""
+    Within data_pipeline.consumption/orchestration/catalog, each field's candidate modules are
+    mutually-exclusive alternatives (e.g. Athena vs. Redshift Serverless) -- only the
+    highest-specificity match(es) (by matched-phrase count) are recommended, never a weaker
+    candidate alongside a stronger one. On a genuine tie between two or more alternatives, ALL
+    tied candidates are surfaced (never silently narrowed to one arbitrary pick), and each tied
+    pick's `reason` is annotated to say so explicitly -- the human reviewing must choose, this
+    function never guesses on their behalf. non_functional.latency's streaming modules are
+    complementary, not alternatives (a real streaming architecture commonly uses both Kinesis
+    and Firehose together), so both are included independently whenever they match -- no
+    tie-break there.
+
+    Known disclosed limitation (latency path only): some of speed-layer-kinesis's `satisfies`
+    phrases are bare generic single words ("events", "streaming") -- a batch-cadence answer that
+    happens to mention one of those words in a non-streaming sense (e.g. "process events in
+    hourly batches") can still trigger a false-positive streaming recommendation. This is the
+    same class of weak-single-token-match issue the enumerable-field tie-break above was built
+    to avoid, but is not fixed on the latency path in this pass: the two streaming modules'
+    complementary (non-exclusive) semantics mean a specificity threshold that fixes this would
+    also risk dropping ingest-firehose's own legitimate weaker single-phrase matches (e.g. "near
+    real-time ingest" scoring only 1) for genuinely-streaming answers. Recommendations here are
+    advisory only -- exactly like every other pick this function returns -- so a human reviewing
+    before it reaches architecture_decision.json is the actual safety net for this residual gap,
+    not a claim that the latency path is airtight."""
     data_pipeline = (requirements_data or {}).get("data_pipeline") or {}
     non_functional = (requirements_data or {}).get("non_functional") or {}
     picks = []
 
     for field, candidate_ids in _ENUMERABLE_FIELD_MODULES.items():
-        value = str(data_pipeline.get(field, ""))
+        value = str(data_pipeline.get(field) or "")
         if _is_deferred_or_blank(value):
             continue
         text = value.lower()
@@ -374,15 +392,20 @@ def derive_module_ids(requirements_data):
         best = max(scores.values())
         if best == 0:
             continue
-        for module_id in candidate_ids:
-            if scores[module_id] == best:
-                picks.append({
-                    "module_id": module_id,
-                    "reason": f"data_pipeline.{field} = {value!r}",
-                    "source_field": f"data_pipeline.{field}",
-                })
+        tied = [module_id for module_id in candidate_ids if scores[module_id] == best]
+        for module_id in tied:
+            reason = f"data_pipeline.{field} = {value!r}"
+            if len(tied) > 1:
+                others = ", ".join(m for m in tied if m != module_id)
+                reason += (f" -- tied with {others}: mutually-exclusive alternatives, "
+                           f"a human must pick one")
+            picks.append({
+                "module_id": module_id,
+                "reason": reason,
+                "source_field": f"data_pipeline.{field}",
+            })
 
-    latency = str(non_functional.get("latency", ""))
+    latency = str(non_functional.get("latency") or "")
     if not _is_deferred_or_blank(latency):
         text = latency.lower()
         for module_id in _LATENCY_STREAMING_MODULES:
