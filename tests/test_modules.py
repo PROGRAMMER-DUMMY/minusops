@@ -143,3 +143,115 @@ def test_retrieve_grounding_examples_never_selects_by_itself():
     modules.retrieve_grounding_examples(req)
     after = modules.match_modules(req)
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# derive_module_ids() (Phase 7 Item 3, docs/phase7_generation_engine_plan.md):
+# Read structured requirements fields (not free-text keyword scoring) to recommend
+# module ids deterministically. Fixes the live bug where match_modules() on free text
+# containing "ingest" pulled in streaming modules even for batch requests.
+# ---------------------------------------------------------------------------
+
+def test_derive_module_ids_picks_athena_for_sql_consumption_not_redshift():
+    data = {
+        "data_pipeline": {
+            "consumption": "ad-hoc SQL access for analysts over curated S3 data",
+        },
+        "non_functional": {
+            "latency": "batch job, results needed within 4 hours",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "query-athena" in picked_ids
+    assert "consumption-redshift-serverless" not in picked_ids
+
+
+def test_derive_module_ids_excludes_streaming_modules_for_batch_latency():
+    # This is the exact live bug this plan fixes: match_modules() on a free-text sentence
+    # containing "ingest" pulled in speed-layer-kinesis/ingest-firehose even for a plain
+    # batch request. derive_module_ids reads the structured latency field instead and must
+    # not recommend either streaming module when latency describes a batch cadence.
+    data = {
+        "data_pipeline": {
+            "consumption": "ad-hoc SQL access for analysts over curated S3 data",
+        },
+        "non_functional": {
+            "latency": "batch job, results needed within 4 hours",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "speed-layer-kinesis" not in picked_ids
+    assert "ingest-firehose" not in picked_ids
+
+
+def test_derive_module_ids_picks_streaming_modules_for_real_time_latency():
+    data = {
+        "data_pipeline": {},
+        "non_functional": {
+            "latency": "sub-second streaming ingest, near real-time delivery required",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "speed-layer-kinesis" in picked_ids
+    assert "ingest-firehose" in picked_ids
+
+
+def test_derive_module_ids_picks_redshift_for_high_concurrency_bi():
+    data = {
+        "data_pipeline": {
+            "consumption": "BI dashboards at scale for many analysts, high concurrency",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "consumption-redshift-serverless" in picked_ids
+    assert "query-athena" not in picked_ids
+
+
+def test_derive_module_ids_picks_mwaa_for_airflow_orchestration():
+    data = {
+        "data_pipeline": {
+            "orchestration": "managed Apache Airflow for DAG scheduling",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "orchestrator-mwaa" in picked_ids
+    assert "orchestrator-stepfunctions" not in picked_ids
+
+
+def test_derive_module_ids_picks_schema_registry_for_data_contracts():
+    data = {
+        "data_pipeline": {
+            "catalog": "schema registry with enforced data contracts, Avro compatibility",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "schema-registry-glue" in picked_ids
+
+
+def test_derive_module_ids_skips_deferred_and_blank_fields():
+    data = {
+        "data_pipeline": {
+            "consumption": "deferred: not decided yet, revisit after pilot",
+            "orchestration": "",
+            "catalog": "   ",
+        },
+        "non_functional": {
+            "latency": "deferred: revisit after load testing",
+        },
+    }
+    assert modules.derive_module_ids(data) == []
+
+
+def test_derive_module_ids_reports_reason_and_source_field():
+    data = {"data_pipeline": {"catalog": "schema registry with data contracts"}}
+    picks = modules.derive_module_ids(data)
+    assert len(picks) == 1
+    assert picks[0]["module_id"] == "schema-registry-glue"
+    assert picks[0]["source_field"] == "data_pipeline.catalog"
+    assert "data_pipeline.catalog" in picks[0]["reason"]

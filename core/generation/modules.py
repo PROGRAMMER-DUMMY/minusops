@@ -159,7 +159,7 @@ MODULES = [
     {
         "id": "query-athena", "category": "serving",
         "title": "Athena workgroup for SQL / BI access",
-        "satisfies": ["athena", "sql", "ad-hoc query", "bi", "tableau", "powerbi",
+        "satisfies": ["athena", "sql", "ad-hoc query", "tableau", "powerbi",
                       "analyst access", "interactive query", "presto"],
         "services": ["Amazon Athena", "Amazon S3"],
         "inputs": ["name_prefix", "tags", "results_kms_key_arn", "bytes_scanned_cutoff", "run_id"],
@@ -306,6 +306,82 @@ def retrieve_grounding_examples(requirements, top_n=3, min_score=1):
             "score": m["score"], "matched": m["matched"], "content": content,
         })
     return examples
+
+
+# Phase 7 Item 3 (docs/phase7_generation_engine_plan.md), scoped to requirements.py's own named
+# carve-out (see that module's docstring): non_functional.latency and data_pipeline.consumption/
+# orchestration/catalog are enumerable answers grill-me already gathers and nothing downstream
+# reads today. Deliberately NOT storage/compute/data-quality (sources, storage_zones, transforms,
+# data_quality) -- those need real text understanding beyond a closed enumerable answer and stay
+# on match_modules()'s free-text path.
+_ENUMERABLE_FIELD_MODULES = {
+    "consumption": ["query-athena", "consumption-redshift-serverless"],
+    "orchestration": ["orchestrator-mwaa", "orchestrator-stepfunctions"],
+    "catalog": ["schema-registry-glue"],
+}
+_LATENCY_STREAMING_MODULES = ["speed-layer-kinesis", "ingest-firehose"]
+
+
+def _is_deferred_or_blank(value):
+    text = str(value or "").strip()
+    return (not text) or text.lower().startswith("deferred")
+
+
+def _matches_module(text, module_id):
+    """Whole-phrase substring OR every one of a phrase's tokens present -- deliberately
+    stricter than match_modules()'s any-single-token-overlap rule. A single shared common word
+    (e.g. "analysts" alone matching "many analysts") is exactly the kind of false positive that
+    caused match_modules() to recommend the wrong module on free text; this function only
+    recommends a module into architecture_decision.json for human review, so biasing toward
+    fewer, correct hits over broad recall is the right tradeoff here."""
+    module = get_module(module_id)
+    if module is None:
+        return False
+    text_tokens = _tokens(text)
+    for phrase in module["satisfies"]:
+        if phrase in text:
+            return True
+        phrase_tokens = _tokens(phrase)
+        if phrase_tokens and phrase_tokens <= text_tokens:
+            return True
+    return False
+
+
+def derive_module_ids(requirements_data):
+    """Read exactly requirements.py's named-carve-out fields and recommend module ids --
+    deterministic and explainable, never a keyword score against one accumulated free-text
+    blob. Returns a list of {module_id, reason, source_field} dicts, for a human/agent to
+    review into architecture_decision.json's `selected_modules` -- never auto-applied, same
+    discipline as match_modules()'s own callers."""
+    data_pipeline = (requirements_data or {}).get("data_pipeline") or {}
+    non_functional = (requirements_data or {}).get("non_functional") or {}
+    picks = []
+
+    for field, candidate_ids in _ENUMERABLE_FIELD_MODULES.items():
+        value = str(data_pipeline.get(field, ""))
+        if _is_deferred_or_blank(value):
+            continue
+        text = value.lower()
+        for module_id in candidate_ids:
+            if _matches_module(text, module_id):
+                picks.append({
+                    "module_id": module_id,
+                    "reason": f"data_pipeline.{field} = {value!r}",
+                    "source_field": f"data_pipeline.{field}",
+                })
+
+    latency = str(non_functional.get("latency", ""))
+    if not _is_deferred_or_blank(latency):
+        text = latency.lower()
+        for module_id in _LATENCY_STREAMING_MODULES:
+            if _matches_module(text, module_id):
+                picks.append({
+                    "module_id": module_id,
+                    "reason": f"non_functional.latency = {latency!r}",
+                    "source_field": "non_functional.latency",
+                })
+
+    return picks
 
 
 def module_dir(module_id):
