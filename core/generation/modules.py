@@ -434,6 +434,9 @@ def main(argv=None):
     sub.add_parser("validate")
     mp = sub.add_parser("match")
     mp.add_argument("requirements")
+    pp = sub.add_parser(
+        "preplan", help="recommend module ids from a requirements.json's enumerable fields")
+    pp.add_argument("requirements_file")
     args = ap.parse_args(argv)
 
     if args.cmd == "list":
@@ -452,6 +455,17 @@ def main(argv=None):
     if args.cmd == "match":
         for m in match_modules(args.requirements):
             print(f"[{m['score']:>2}] {m['id']:<28} matched: {', '.join(m['matched'])}")
+        return 0
+    if args.cmd == "preplan":
+        with open(args.requirements_file, encoding="utf-8") as f:
+            data = json.load(f)
+        picks = derive_module_ids(data)
+        if not picks:
+            print("[preplan] no enumerable-field recommendations "
+                  "(fields blank/deferred, or no keyword hit)")
+            return 0
+        for p in picks:
+            print(f"{p['module_id']:<28} <- {p['source_field']:<24} {p['reason']}")
         return 0
     return 1
 

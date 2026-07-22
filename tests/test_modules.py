@@ -1,3 +1,4 @@
+import json
 import os
 
 import modules
@@ -272,3 +273,28 @@ def test_derive_module_ids_picks_more_specific_match_when_consumption_mentions_b
     picks = modules.derive_module_ids(data)
     picked_ids = {p["module_id"] for p in picks}
     assert picked_ids == {"consumption-redshift-serverless"}
+
+
+def test_main_preplan_prints_recommendations(tmp_path, capsys):
+    req_path = tmp_path / "requirements.json"
+    req_path.write_text(json.dumps({
+        "data_pipeline": {"catalog": "schema registry with data contracts"},
+    }), encoding="utf-8")
+
+    exit_code = modules.main(["preplan", str(req_path)])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "schema-registry-glue" in out
+    assert "data_pipeline.catalog" in out
+
+
+def test_main_preplan_reports_no_recommendations(tmp_path, capsys):
+    req_path = tmp_path / "requirements.json"
+    req_path.write_text(json.dumps({"data_pipeline": {}, "non_functional": {}}), encoding="utf-8")
+
+    exit_code = modules.main(["preplan", str(req_path)])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "no enumerable-field recommendations" in out
