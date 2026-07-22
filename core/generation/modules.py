@@ -159,7 +159,7 @@ MODULES = [
     {
         "id": "query-athena", "category": "serving",
         "title": "Athena workgroup for SQL / BI access",
-        "satisfies": ["athena", "sql", "ad-hoc query", "tableau", "powerbi",
+        "satisfies": ["athena", "sql", "ad-hoc query", "bi", "tableau", "powerbi",
                       "analyst access", "interactive query", "presto"],
         "services": ["Amazon Athena", "Amazon S3"],
         "inputs": ["name_prefix", "tags", "results_kms_key_arn", "bytes_scanned_cutoff", "run_id"],
@@ -327,24 +327,24 @@ def _is_deferred_or_blank(value):
     return (not text) or text.lower().startswith("deferred")
 
 
-def _matches_module(text, module_id):
-    """Whole-phrase substring OR every one of a phrase's tokens present -- deliberately
-    stricter than match_modules()'s any-single-token-overlap rule. A single shared common word
-    (e.g. "analysts" alone matching "many analysts") is exactly the kind of false positive that
-    caused match_modules() to recommend the wrong module on free text; this function only
-    recommends a module into architecture_decision.json for human review, so biasing toward
-    fewer, correct hits over broad recall is the right tradeoff here."""
+def _match_score(text, module_id):
+    """Count of module_id's own `satisfies` phrases the text hits (whole-phrase substring OR
+    every one of a phrase's tokens present) -- 0 means no match. Used both as a yes/no check
+    (score > 0) and, within one enumerable field's candidate group, as a specificity signal so
+    the single best-matching alternative wins instead of every independently-matching one."""
     module = get_module(module_id)
     if module is None:
-        return False
+        return 0
     text_tokens = _tokens(text)
+    score = 0
     for phrase in module["satisfies"]:
         if phrase in text:
-            return True
-        phrase_tokens = _tokens(phrase)
-        if phrase_tokens and phrase_tokens <= text_tokens:
-            return True
-    return False
+            score += 1
+        else:
+            phrase_tokens = _tokens(phrase)
+            if phrase_tokens and phrase_tokens <= text_tokens:
+                score += 1
+    return score
 
 
 def derive_module_ids(requirements_data):
@@ -352,7 +352,15 @@ def derive_module_ids(requirements_data):
     deterministic and explainable, never a keyword score against one accumulated free-text
     blob. Returns a list of {module_id, reason, source_field} dicts, for a human/agent to
     review into architecture_decision.json's `selected_modules` -- never auto-applied, same
-    discipline as match_modules()'s own callers."""
+    discipline as match_modules()'s own callers.
+
+    Within data_pipeline.consumption/orchestration/catalog, each field's candidate modules
+    are mutually-exclusive alternatives (e.g. Athena vs. Redshift Serverless) -- only the
+    single highest-specificity match (by matched-phrase count) is recommended, not every
+    candidate that happens to share one weak token with the text. non_functional.latency's
+    streaming modules are complementary, not alternatives (a real streaming architecture
+    commonly uses both Kinesis and Firehose together), so both are included independently
+    whenever they match -- no tie-break there."""
     data_pipeline = (requirements_data or {}).get("data_pipeline") or {}
     non_functional = (requirements_data or {}).get("non_functional") or {}
     picks = []
@@ -362,8 +370,12 @@ def derive_module_ids(requirements_data):
         if _is_deferred_or_blank(value):
             continue
         text = value.lower()
+        scores = {module_id: _match_score(text, module_id) for module_id in candidate_ids}
+        best = max(scores.values())
+        if best == 0:
+            continue
         for module_id in candidate_ids:
-            if _matches_module(text, module_id):
+            if scores[module_id] == best:
                 picks.append({
                     "module_id": module_id,
                     "reason": f"data_pipeline.{field} = {value!r}",
@@ -374,7 +386,7 @@ def derive_module_ids(requirements_data):
     if not _is_deferred_or_blank(latency):
         text = latency.lower()
         for module_id in _LATENCY_STREAMING_MODULES:
-            if _matches_module(text, module_id):
+            if _match_score(text, module_id) > 0:
                 picks.append({
                     "module_id": module_id,
                     "reason": f"non_functional.latency = {latency!r}",

@@ -255,3 +255,20 @@ def test_derive_module_ids_reports_reason_and_source_field():
     assert picks[0]["module_id"] == "schema-registry-glue"
     assert picks[0]["source_field"] == "data_pipeline.catalog"
     assert "data_pipeline.catalog" in picks[0]["reason"]
+
+
+def test_derive_module_ids_picks_more_specific_match_when_consumption_mentions_both():
+    # Real requirements answers can plausibly mention both Athena-ish and Redshift-ish
+    # language. This must not recommend both -- the more specific match (more matched
+    # phrases) should win alone.
+    data = {
+        "data_pipeline": {
+            "consumption": (
+                "ad-hoc SQL access, but also BI dashboards at scale for many analysts "
+                "with high concurrency"
+            ),
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert picked_ids == {"consumption-redshift-serverless"}
