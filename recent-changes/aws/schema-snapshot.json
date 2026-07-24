@@ -1,46 +1,21 @@
 {
   "provider": "aws",
-  "resolved_version": "6.54.0",
-  "generated_at": "2026-07-09T12:59:44.940514+00:00",
+  "resolved_version": "6.56.0",
+  "generated_at": "2026-07-24T08:03:03.702203+00:00",
   "resource_types": {
-    "resource:aws_iam_role_policy": {
+    "resource:aws_iam_role": {
       "kind": "resource",
       "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_budgets_budget": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_kinesis_firehose_delivery_stream": {
-      "kind": "resource",
-      "version": 1,
-      "deprecated_attributes": []
-    },
-    "resource:aws_mwaa_environment": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_default_security_group": {
-      "kind": "resource",
-      "version": 1,
-      "deprecated_attributes": []
-    },
-    "resource:aws_internet_gateway": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_cloudwatch_event_rule": {
-      "kind": "resource",
-      "version": 1,
       "deprecated_attributes": [
-        "is_enabled"
+        "managed_policy_arns"
       ]
     },
-    "resource:aws_glue_catalog_database": {
+    "resource:aws_s3_bucket_public_access_block": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_iam_role_policy": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
@@ -53,99 +28,12 @@
         "name"
       ]
     },
-    "resource:aws_kms_alias": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_kms_key": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_kinesisanalyticsv2_application": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_glue_schema": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_vpc": {
-      "kind": "resource",
-      "version": 1,
-      "deprecated_attributes": []
-    },
-    "resource:aws_redshiftserverless_workgroup": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_sns_topic": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_s3_bucket_public_access_block": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_athena_workgroup": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_iam_role": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": [
-        "managed_policy_arns"
-      ]
-    },
-    "resource:aws_redshiftserverless_namespace": {
+    "resource:aws_route_table_association": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
     },
     "resource:aws_glue_registry": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_glue_trigger": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_sfn_state_machine": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_kinesis_stream": {
-      "kind": "resource",
-      "version": 1,
-      "deprecated_attributes": []
-    },
-    "data:aws_caller_identity": {
-      "kind": "data",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "data:aws_availability_zones": {
-      "kind": "data",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_glue_catalog_table": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_nat_gateway": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
@@ -157,21 +45,47 @@
         "expected_bucket_owner"
       ]
     },
-    "resource:aws_s3_object": {
+    "resource:aws_sns_topic": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
     },
-    "resource:aws_s3_bucket_lifecycle_configuration": {
+    "data:aws_caller_identity": {
+      "kind": "data",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_cloudwatch_metric_alarm": {
       "kind": "resource",
       "version": 1,
-      "deprecated_attributes": [
-        "expected_bucket_owner",
-        "id",
-        "rule.prefix"
-      ]
+      "deprecated_attributes": []
+    },
+    "data:aws_availability_zones": {
+      "kind": "data",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_vpc_endpoint": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_sfn_state_machine": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_kms_key": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
     },
     "resource:aws_emrserverless_application": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_glue_catalog_database": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
@@ -184,12 +98,7 @@
         "source_json"
       ]
     },
-    "resource:aws_s3_bucket_policy": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:aws_route_table": {
+    "resource:aws_glue_trigger": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
@@ -201,17 +110,67 @@
         "expected_bucket_owner"
       ]
     },
-    "resource:aws_sns_topic_subscription": {
+    "resource:aws_internet_gateway": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
     },
-    "resource:aws_route_table_association": {
+    "resource:aws_redshiftserverless_workgroup": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_s3_bucket_policy": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_redshiftserverless_namespace": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_nat_gateway": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_subnet": {
+      "kind": "resource",
+      "version": 1,
+      "deprecated_attributes": []
+    },
+    "resource:aws_s3_object": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_mwaa_environment": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_glue_job": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_kinesis_stream": {
+      "kind": "resource",
+      "version": 1,
+      "deprecated_attributes": []
+    },
+    "resource:aws_kms_alias": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
     },
     "resource:aws_eip": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_route_table": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
@@ -229,12 +188,16 @@
         "website_endpoint"
       ]
     },
-    "resource:aws_glue_job": {
+    "resource:aws_s3_bucket_lifecycle_configuration": {
       "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": []
+      "version": 1,
+      "deprecated_attributes": [
+        "expected_bucket_owner",
+        "id",
+        "rule.prefix"
+      ]
     },
-    "resource:aws_vpc_endpoint": {
+    "resource:aws_kinesisanalyticsv2_application": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
@@ -244,12 +207,49 @@
       "version": 1,
       "deprecated_attributes": []
     },
-    "resource:aws_cloudwatch_metric_alarm": {
+    "resource:aws_glue_schema": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_sns_topic_subscription": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_budgets_budget": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_cloudwatch_event_rule": {
+      "kind": "resource",
+      "version": 1,
+      "deprecated_attributes": [
+        "is_enabled"
+      ]
+    },
+    "resource:aws_default_security_group": {
       "kind": "resource",
       "version": 1,
       "deprecated_attributes": []
     },
-    "resource:aws_subnet": {
+    "resource:aws_glue_catalog_table": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_kinesis_firehose_delivery_stream": {
+      "kind": "resource",
+      "version": 1,
+      "deprecated_attributes": []
+    },
+    "resource:aws_athena_workgroup": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:aws_vpc": {
       "kind": "resource",
       "version": 1,
       "deprecated_attributes": []
@@ -997,6 +997,8 @@
     "aws_elasticache_reserved_cache_node",
     "aws_elasticache_reserved_cache_node_offering",
     "aws_elasticache_serverless_cache",
+    "aws_elasticache_service_update_actions",
+    "aws_elasticache_service_updates",
     "aws_elasticache_subnet_group",
     "aws_elasticache_user",
     "aws_elasticache_user_group",
@@ -1760,6 +1762,7 @@
     "aws_s3_bucket_server_side_encryption_configuration",
     "aws_s3_bucket_versioning",
     "aws_s3_bucket_website_configuration",
+    "aws_s3_buckets",
     "aws_s3_directory_bucket",
     "aws_s3_directory_buckets",
     "aws_s3_object",

@@ -1,40 +1,19 @@
 {
   "provider": "databricks",
-  "resolved_version": "1.121.0",
-  "generated_at": "2026-07-09T12:59:50.398939+00:00",
+  "resolved_version": "1.122.0",
+  "generated_at": "2026-07-24T08:03:05.281314+00:00",
   "resource_types": {
-    "data:databricks_aws_crossaccount_policy": {
-      "kind": "data",
-      "version": 0,
-      "deprecated_attributes": []
-    },
-    "resource:databricks_metastore_assignment": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": [
-        "default_catalog_name"
-      ]
-    },
-    "data:databricks_aws_bucket_policy": {
-      "kind": "data",
-      "version": 0,
-      "deprecated_attributes": [
-        "databricks_account_id"
-      ]
-    },
-    "resource:databricks_mws_credentials": {
-      "kind": "resource",
-      "version": 0,
-      "deprecated_attributes": [
-        "account_id"
-      ]
-    },
-    "resource:databricks_catalog": {
+    "resource:databricks_sql_endpoint": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
     },
     "resource:databricks_metastore": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:databricks_mws_storage_configurations": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
@@ -46,10 +25,22 @@
         "databricks_account_id"
       ]
     },
-    "resource:databricks_mws_storage_configurations": {
+    "resource:databricks_catalog": {
       "kind": "resource",
       "version": 0,
       "deprecated_attributes": []
+    },
+    "data:databricks_aws_crossaccount_policy": {
+      "kind": "data",
+      "version": 0,
+      "deprecated_attributes": []
+    },
+    "resource:databricks_mws_credentials": {
+      "kind": "resource",
+      "version": 0,
+      "deprecated_attributes": [
+        "account_id"
+      ]
     },
     "resource:databricks_mws_networks": {
       "kind": "resource",
@@ -57,6 +48,13 @@
       "deprecated_attributes": [
         "gcp_network_info.pod_ip_range_name",
         "gcp_network_info.service_ip_range_name"
+      ]
+    },
+    "data:databricks_aws_bucket_policy": {
+      "kind": "data",
+      "version": 0,
+      "deprecated_attributes": [
+        "databricks_account_id"
       ]
     },
     "resource:databricks_mws_workspaces": {
@@ -68,10 +66,12 @@
         "gcp_managed_network_config.gke_cluster_service_ip_range"
       ]
     },
-    "resource:databricks_sql_endpoint": {
+    "resource:databricks_metastore_assignment": {
       "kind": "resource",
       "version": 0,
-      "deprecated_attributes": []
+      "deprecated_attributes": [
+        "default_catalog_name"
+      ]
     }
   },
   "all_type_names": [
@@ -234,6 +234,10 @@
     "databricks_postgres_branch",
     "databricks_postgres_branches",
     "databricks_postgres_catalog",
+    "databricks_postgres_cdf_config",
+    "databricks_postgres_cdf_configs",
+    "databricks_postgres_cdf_status",
+    "databricks_postgres_cdf_statuses",
     "databricks_postgres_data_api",
     "databricks_postgres_database",
     "databricks_postgres_databases",

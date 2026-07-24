@@ -1,0 +1,27 @@
+{
+  "provider": "databricks",
+  "generated_at": "2026-07-24T08:03:05.281314+00:00",
+  "previous_version": "1.121.0",
+  "resolved_version": "1.122.0",
+  "used_types_tracked": [
+    "data:databricks_aws_assume_role_policy",
+    "data:databricks_aws_bucket_policy",
+    "data:databricks_aws_crossaccount_policy",
+    "resource:databricks_catalog",
+    "resource:databricks_metastore",
+    "resource:databricks_metastore_assignment",
+    "resource:databricks_mws_credentials",
+    "resource:databricks_mws_networks",
+    "resource:databricks_mws_storage_configurations",
+    "resource:databricks_mws_workspaces",
+    "resource:databricks_sql_endpoint"
+  ],
+  "findings": [],
+  "new_resources_of_interest": [
+    "databricks_postgres_cdf_config",
+    "databricks_postgres_cdf_config",
+    "databricks_postgres_cdf_configs",
+    "databricks_postgres_cdf_status",
+    "databricks_postgres_cdf_statuses"
+  ]
+}
