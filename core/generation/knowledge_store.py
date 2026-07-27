@@ -284,10 +284,15 @@ def resolve(conn, resource_type, attribute=None):
 # Committed to git so a fact that grounds infrastructure is reviewed in a PR rather than
 # appearing silently in one engineer's local database. Sharded per resource type so two
 # people researching different types never touch the same file.
-_CLAIM_COLUMNS = ("id", "scope", "resource_type", "attribute", "claim_text", "method",
+# `id` is deliberately NOT exported. It is a machine-local autoincrement: two people
+# researching on separate branches both get id 1, so an id-keyed corpus silently drops one
+# claim on merge and -- worse -- can point an invalidation chain at an unrelated claim.
+# content_hash is the stable cross-machine identity, so cross-references travel as hashes and
+# are re-resolved to local ids on import.
+_CLAIM_COLUMNS = ("scope", "resource_type", "attribute", "claim_text", "method",
                   "source_type", "source_url", "provider", "provider_version", "confidence",
                   "valid_from", "valid_until", "observed_at", "ingested_at", "invalidated_at",
-                  "invalidated_by", "content_hash")
+                  "content_hash")
 _ADJUDICATIONS_FILE = "_adjudications.jsonl"
 
 
@@ -300,33 +305,56 @@ def shard_name(scope, resource_type):
 
 
 def export_jsonl(conn, root):
-    """Write every claim to <root>/<shard>.jsonl, sorted by id for a stable diff.
+    """Write every claim to <root>/<shard>.jsonl, hash-keyed and merge-safe.
 
-    # ponytail: ids are exported verbatim, which is correct for the real use case (rebuild
-    # this machine's cache) but NOT for merging two branches that both allocated id 7.
-    # Switch the cross-references to content_hash if concurrent branch authoring happens.
+    Shards are MERGED, not overwritten: exporting from a second machine into the same corpus
+    must not erase the first machine's claims. Existing lines are read back and deduped on
+    content_hash, then rewritten sorted so the diff is stable.
     """
     os.makedirs(root, exist_ok=True)
+    hash_by_id = {r["id"]: r["content_hash"]
+                  for r in conn.execute("SELECT id, content_hash FROM claims")}
+
     shards = {}
-    for row in conn.execute(f"SELECT {','.join(_CLAIM_COLUMNS)} FROM claims ORDER BY id"):
+    for row in conn.execute(f"SELECT id, invalidated_by, {','.join(_CLAIM_COLUMNS)} FROM claims"):
         record = {c: row[c] for c in _CLAIM_COLUMNS}
+        # Cross-reference by hash, never by the local id.
+        record["invalidated_by_hash"] = hash_by_id.get(row["invalidated_by"])
         shards.setdefault(shard_name(row["scope"], row["resource_type"]), []).append(record)
+
     for name, records in shards.items():
-        with open(os.path.join(root, name), "w", encoding="utf-8") as f:
-            for record in records:
-                f.write(json.dumps(record, sort_keys=True) + "\n")
+        path = os.path.join(root, name)
+        merged = {}
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        existing = json.loads(line)
+                        merged[existing["content_hash"]] = existing
+        for record in records:
+            merged[record["content_hash"]] = record
+        with open(path, "w", encoding="utf-8") as f:
+            for content_hash in sorted(merged):
+                f.write(json.dumps(merged[content_hash], sort_keys=True) + "\n")
 
     pairs = conn.execute(
-        "SELECT verdict_claim_id, adjudicated_claim_id FROM claim_adjudications "
-        "ORDER BY verdict_claim_id, adjudicated_claim_id").fetchall()
+        "SELECT verdict_claim_id, adjudicated_claim_id FROM claim_adjudications").fetchall()
     path = os.path.join(root, _ADJUDICATIONS_FILE)
-    if pairs:
+    merged_pairs = set()
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    rec = json.loads(line)
+                    merged_pairs.add((rec["verdict_hash"], rec["adjudicated_hash"]))
+    for p in pairs:
+        v, a = hash_by_id.get(p["verdict_claim_id"]), hash_by_id.get(p["adjudicated_claim_id"])
+        if v and a:
+            merged_pairs.add((v, a))
+    if merged_pairs:
         with open(path, "w", encoding="utf-8") as f:
-            for p in pairs:
-                f.write(json.dumps({"verdict_claim_id": p["verdict_claim_id"],
-                                    "adjudicated_claim_id": p["adjudicated_claim_id"]}) + "\n")
-    elif os.path.exists(path):
-        os.remove(path)
+            for v, a in sorted(merged_pairs):
+                f.write(json.dumps({"verdict_hash": v, "adjudicated_hash": a}) + "\n")
     return sorted(shards)
 
 
@@ -341,6 +369,10 @@ def import_jsonl(conn, root):
     conn.execute("PRAGMA defer_foreign_keys = ON")
     placeholders = ",".join("?" * len(_CLAIM_COLUMNS))
     imported = 0
+    pending_invalidations = []      # (content_hash, invalidated_by_hash)
+
+    # Pass 1: claims. Ids are assigned locally; dedupe is on content_hash, so re-importing
+    # or merging another machine's corpus is idempotent regardless of what ids it used.
     for name in sorted(os.listdir(root)):
         if not name.endswith(".jsonl") or name == _ADJUDICATIONS_FILE:
             continue
@@ -350,21 +382,38 @@ def import_jsonl(conn, root):
                 if not line:
                     continue
                 record = json.loads(line)
-                conn.execute(
-                    f"INSERT OR IGNORE INTO claims ({','.join(_CLAIM_COLUMNS)}) "
-                    f"VALUES ({placeholders})",
-                    tuple(record.get(c) for c in _CLAIM_COLUMNS))
-                imported += 1
+                exists = conn.execute("SELECT 1 FROM claims WHERE content_hash = ?",
+                                      (record["content_hash"],)).fetchone()
+                if not exists:
+                    conn.execute(
+                        f"INSERT INTO claims ({','.join(_CLAIM_COLUMNS)}) "
+                        f"VALUES ({placeholders})",
+                        tuple(record.get(c) for c in _CLAIM_COLUMNS))
+                    imported += 1
+                if record.get("invalidated_by_hash"):
+                    pending_invalidations.append(
+                        (record["content_hash"], record["invalidated_by_hash"]))
+
+    # Pass 2: re-point cross-references at the ids this machine just assigned.
+    id_by_hash = {r["content_hash"]: r["id"]
+                  for r in conn.execute("SELECT id, content_hash FROM claims")}
+    for content_hash, by_hash in pending_invalidations:
+        target, source = id_by_hash.get(by_hash), id_by_hash.get(content_hash)
+        if target and source:
+            conn.execute("UPDATE claims SET invalidated_by = ? WHERE id = ?", (target, source))
+
     adj = os.path.join(root, _ADJUDICATIONS_FILE)
     if os.path.exists(adj):
         with open(adj, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if line:
-                    record = json.loads(line)
+                if not line:
+                    continue
+                record = json.loads(line)
+                v, a = id_by_hash.get(record["verdict_hash"]), id_by_hash.get(record["adjudicated_hash"])
+                if v and a:
                     conn.execute(
                         "INSERT OR IGNORE INTO claim_adjudications "
-                        "(verdict_claim_id, adjudicated_claim_id) VALUES (?, ?)",
-                        (record["verdict_claim_id"], record["adjudicated_claim_id"]))
+                        "(verdict_claim_id, adjudicated_claim_id) VALUES (?, ?)", (v, a))
     conn.commit()
     return imported
