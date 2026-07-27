@@ -16,15 +16,12 @@ explicit, auditable states instead of silently vanishing from the cost report:
                                  it's a visible, auditable gap plan_gate.py can warn or block on.
 
 Reuses bcm_pricing_calculator._plan_inventory()/_amount_for() rather than re-deriving usage
-logic, and classifies through the CloudProvider abstraction (providers.base.get_provider()) so
-this file is genuinely cloud-agnostic — it never imports pricing_catalog.py directly. Audit
-finding 2026-07-03: an earlier version of this file DID import pricing_catalog directly,
-bypassing the provider contract entirely; that made "multi-cloud coverage" aspirational rather
-than real despite what the provider docstrings implied. Fixed here: whichever cloud MINUS_CLOUD
-selects, this file only ever calls through the provider's resolve_resource_type()/
-confirmed_free() — for AWS that still reaches pricing_catalog.py underneath, for Azure/GCP it
-honestly returns everything unresolved (their pricing methods aren't implemented yet) instead
-of crashing or silently assuming AWS. This file only classifies, it never prices.
+logic, and classifies through providers.base.get_provider() rather than importing
+pricing_catalog.py directly. Audit finding 2026-07-03: an earlier version of this file DID
+import pricing_catalog directly, bypassing the provider entirely. Fixed here: this file only
+ever calls through the provider's resolve_resource_type()/confirmed_free() — for AWS that
+reaches pricing_catalog.py underneath, and a provider that resolves nothing honestly returns
+everything unresolved instead of crashing. This file only classifies, it never prices.
 
 Usage:
   python core/cost/coverage_audit.py audit --report-dir artifacts/reports/<hash>
@@ -54,11 +51,9 @@ def classify(plan, provider=None):
     """Classify every resource type discovered in the plan. Never prices anything — only
     reports which of the four coverage states each resource type is in.
 
-    `provider` defaults to providers.base.get_provider() (whichever cloud MINUS_CLOUD selects).
-    Goes through the CloudProvider contract exclusively — for a cloud whose pricing discovery
-    isn't implemented yet, resolve_resource_type()/confirmed_free() honestly return None for
-    everything, so every resource type lands in `unresolved` rather than this function crashing
-    or silently assuming AWS."""
+    `provider` defaults to providers.base.get_provider(). Goes through the provider
+    exclusively — one that resolves nothing returns None for everything, so every resource
+    type lands in `unresolved` rather than this function crashing or inventing a price."""
     provider = provider or pb.get_provider()
     inventory = bcm._plan_inventory(plan)
     inputs = {k: (v or {}).get("value") for k, v in (plan.get("variables") or {}).items()}

@@ -3,6 +3,16 @@
 __pycache__/
 *.pyc
 .pytest_tmp*/
+.pytest_cache/
+# Ad hoc test scratch dirs and captured pytest output that accumulated at repo root
+Temppytest/
+tmp_test/
+test_log_*.txt
+# Tooling caches (agent/editor local state, never shared)
+.serena/
+.memory/
+# claims.db is a rebuildable cache -- knowledge/claims/*.jsonl is the source of truth
+*.db
 # Build / packaging artifacts
 build/
 dist/

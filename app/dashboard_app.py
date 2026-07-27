@@ -34,7 +34,7 @@ SCRIPTS = os.path.join(ROOT, "core")
 for _sub in ("generation", "architecture", "governance", "cost", "reporting", "providers"):
     sys.path.insert(0, os.path.join(SCRIPTS, _sub))
 sys.path.insert(0, SCRIPTS)
-from providers.base import get_provider, active_cloud  # noqa: E402
+from providers.base import get_provider  # noqa: E402
 import plan_inspector  # noqa: E402
 import reporter as report_builder  # noqa: E402
 import runs as run_store  # noqa: E402
@@ -69,7 +69,7 @@ MONO = "'JetBrains Mono', monospace"
 
 
 # ---------------------------------------------------------------------------
-# Data assembly (live cloud, via the active CloudProvider — aws | azure | gcp)
+# Data assembly (live AWS, via providers.base.get_provider())
 # ---------------------------------------------------------------------------
 def derive_severity(impact):
     if impact >= 100:
@@ -1842,7 +1842,7 @@ def _serve_run_file(run_id, filename):
 def _serve_run_report_file(run_id, report_id, filename):
     from flask import abort, send_file
     allowed = {
-        "architecture.svg", "dataflow.svg", "report.html", "plan.html", "cost.html",
+        "architecture.svg", "dataflow.svg", "report.html", "cost.html",
         "plan.pdf", "cost.pdf", "inspect.pdf", "plan.json", "cost.json",
         "bcm-assumptions.json", "bcm-create-workload-estimate.json", "bcm-usage.json", "bcm-commands.json",
     }

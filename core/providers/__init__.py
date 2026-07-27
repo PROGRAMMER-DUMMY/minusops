@@ -1,7 +1,6 @@
-"""Cloud provider abstraction.
+"""AWS provider access.
 
-The governance core (dispatcher, finops, dashboard) talks to clouds ONLY through
-the CloudProvider interface in base.py — never to a cloud CLI directly. This is what
-makes the framework multi-cloud: add a provider, not a rewrite.
+The governance core (finops, dashboard, coverage_audit) reaches AWS only through
+get_provider() — never a cloud CLI directly.
 """
-from .base import CloudProvider, get_provider, active_cloud  # noqa: F401
+from .base import get_provider, active_cloud  # noqa: F401

@@ -608,103 +608,6 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
     return "\n".join(parts)
 
 
-def build_gate_flow_svg():
-    """
-    Deterministic process-flow diagram of the deploy gate (verify -> plan -> approve ->
-    apply) with its decision gates and refusal paths. The gate logic is fixed, so this
-    takes no inputs and always renders the same governed, self-contained SVG (MinusOps
-    palette). Used in docs and the deploy report to explain the safety model.
-    """
-    # Semantic step types (process-flow convention) mapped to the MinusOps palette:
-    # pill/start-end = sand, automated = terra-soft, manual/review = sage, decision = gold,
-    # refuse/exception = terracotta. Decisions are diamonds with Yes/No branches; refusals
-    # are dashed exception paths into a single REFUSED sink.
-    AUTO, MANUAL, START, DEC, REFUSE = "#e8825f", "#8da189", "#d4a373", "#cb9a3e", "#d95d39"
-
-    def pill(x, y, w, label, hue):
-        return (f'<g><rect x="{x}" y="{y}" width="{w}" height="64" rx="32" fill="#1c1714" stroke="{hue}" '
-                f'stroke-width="1.7"/><text class="pill" x="{x + w // 2}" y="{y + 39}" text-anchor="middle">{label}</text></g>')
-
-    def stepbox(n, x, y, w, title, sub, hue):
-        return (f'<g><rect x="{x}" y="{y}" width="{w}" height="70" rx="9" fill="#1c1714" stroke="{hue}" stroke-width="1.6"/>'
-                f'<circle cx="{x}" cy="{y}" r="12" fill="#14110f" stroke="{hue}" stroke-width="1.5"/>'
-                f'<text class="bd" x="{x}" y="{y + 4}" text-anchor="middle">{n}</text>'
-                f'<text class="st" x="{x + 18}" y="{y + 31}">{title}</text>'
-                f'<text class="ss" x="{x + 18}" y="{y + 50}">{sub}</text></g>')
-
-    def diamond(cx, cy, label, sub):
-        r = 42
-        pts = f"{cx},{cy - r} {cx + r},{cy} {cx},{cy + r} {cx - r},{cy}"
-        return (f'<g><polygon points="{pts}" fill="#1c1714" stroke="{DEC}" stroke-width="1.6"/>'
-                f'<text class="dl" x="{cx}" y="{cy - r - 7}" text-anchor="middle">{label}</text>'
-                f'<text class="dsub" x="{cx}" y="{cy + r + 15}" text-anchor="middle">{sub}</text></g>')
-
-    def arrow(d, color="#b8a79e", dash=False):
-        da = ' stroke-dasharray="6 5"' if dash else ''
-        return f'<path d="{d}" stroke="{color}" stroke-width="1.6" fill="none" marker-end="url(#a)"{da}/>'
-
-    def lbl(x, y, text, cls="al"):
-        return f'<text class="{cls}" x="{x}" y="{y}" text-anchor="middle">{text}</text>'
-
-    style = ("<style>"
-             ".t{font:600 18px Outfit,system-ui,sans-serif;fill:#fbf7f4}"
-             ".pill{font:600 12px Outfit,system-ui,sans-serif;fill:#fbf7f4}"
-             ".st{font:600 12px Outfit,system-ui,sans-serif;fill:#fbf7f4}"
-             ".ss{font:500 9px 'JetBrains Mono',ui-monospace,monospace;fill:#b09c93}"
-             ".bd{font:600 10px Inter,system-ui,sans-serif;fill:#fbf7f4}"
-             ".dl{font:600 10px Outfit,system-ui,sans-serif;fill:#cb9a3e}"
-             ".dsub{font:500 8px 'JetBrains Mono',ui-monospace,monospace;fill:#d4a373}"
-             ".al{font:600 9px Inter,system-ui,sans-serif;fill:#b8a79e}"
-             ".lg{font:500 11px Inter,system-ui,sans-serif;fill:#b09c93}</style>")
-
-    refuse = (f'<g><rect x="556" y="330" width="220" height="60" rx="9" fill="#1c1714" stroke="{REFUSE}" stroke-width="1.6"/>'
-              f'<text class="st" x="574" y="358">REFUSED</text>'
-              f'<text class="ss" x="574" y="376">audited · approval preserved</text></g>')
-
-    legend = ('<g><rect x="24" y="424" width="14" height="14" rx="7" fill="none" stroke="#d4a373" stroke-width="1.6"/>'
-              '<text class="lg" x="46" y="435">start/end</text>'
-              '<rect x="150" y="424" width="14" height="14" rx="3" fill="none" stroke="#e8825f" stroke-width="1.6"/>'
-              '<text class="lg" x="172" y="435">automated</text>'
-              '<rect x="280" y="424" width="14" height="14" rx="3" fill="none" stroke="#8da189" stroke-width="1.6"/>'
-              '<text class="lg" x="302" y="435">manual / review</text>'
-              '<polygon points="445,424 459,431 445,438 431,431" fill="none" stroke="#cb9a3e" stroke-width="1.6"/>'
-              '<text class="lg" x="466" y="435">decision</text>'
-              '<line x1="560" y1="431" x2="592" y2="431" stroke="#b8a79e" stroke-width="1.6" marker-end="url(#a)"/>'
-              '<text class="lg" x="598" y="435">Yes / pass</text>'
-              '<line x1="690" y1="431" x2="722" y2="431" stroke="#d95d39" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#a)"/>'
-              '<text class="lg" x="728" y="435">No / refuse</text></g>')
-
-    p = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 470" width="100%" role="img">',
-         '<title>MinusOps deploy gate — process flow</title>',
-         '<desc>verify, plan, approve, apply with decision gates and refusal paths; apply runs only the approved plan hash.</desc>',
-         '<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
-         'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#fbf7f4"/></marker>'
-         '<pattern id="g" width="40" height="40" patternUnits="userSpaceOnUse">'
-         '<path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.06)" stroke-width="0.5"/></pattern>' + style + '</defs>',
-         '<rect width="1400" height="470" fill="#14110f"/><rect width="1400" height="470" fill="url(#g)"/>',
-         '<rect width="1400" height="54" fill="#1c1714"/><rect y="53" width="1400" height="1" fill="rgba(217,93,57,.18)"/>',
-         '<text class="t" x="24" y="33">Deploy Gate — process flow</text>',
-         # happy path (left -> right)
-         pill(24, 143, 124, "plan ready", START),
-         stepbox(1, 178, 140, 148, "verify", "fmt·validate·scan", AUTO),
-         stepbox(2, 356, 140, 148, "plan", "record plan-hash", AUTO),
-         stepbox(3, 556, 140, 148, "approve", "RBAC · review", MANUAL),
-         diamond(800, 175, "approve gate", "authorized·CURRENT·hash"),
-         stepbox(4, 882, 140, 148, "apply", "exact tfplan", AUTO),
-         diamond(1126, 175, "apply gate", "hash==approved·MFA"),
-         pill(1212, 143, 128, "APPLIED", START),
-         arrow("M148,175 H178"), arrow("M326,175 H356"), arrow("M504,175 H556"), arrow("M704,175 H758"),
-         arrow("M842,175 H882"), arrow("M1030,175 H1084"), arrow("M1168,175 H1212"),
-         lbl(862, 166, "Yes"), lbl(1190, 166, "Yes"),
-         # exception paths -> REFUSED
-         refuse,
-         arrow("M800,217 V300 H666 V330", REFUSE, True), lbl(816, 280, "No"),
-         arrow("M1126,217 V360 H776", REFUSE, True), lbl(1142, 300, "No"),
-         legend,
-         '</svg>']
-    return "\n".join(p)
-
-
 def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     """
     Render the deploy architecture diagram (docs/architecture_svg_spec.md v2).
@@ -887,36 +790,6 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     return "\n".join(parts)
 
 
-def _v3_summary_cards(rows, findings):
-    """Deterministic content for the three summary cards (Services / Security / Findings)."""
-    services = [f"{label} ×{count}" for label, count in _service_summary(rows)][:6]
-    pab = any(r["type"] == "aws_s3_bucket_public_access_block" for r in rows)
-    sse = any("server_side_encryption" in r["type"] for r in rows)
-    lifecycle = any("lifecycle" in r["type"] for r in rows)
-    kms = any(r["type"].startswith("aws_kms_key") for r in rows)
-    roles = sum(1 for r in rows if r["type"] == "aws_iam_role")
-    controls = []
-    if pab:
-        controls.append("S3 public access blocked")
-    if sse:
-        controls.append("Server-side encryption")
-    if lifecycle:
-        controls.append("Lifecycle retention policies")
-    if kms:
-        controls.append("Customer-managed KMS key")
-    if roles:
-        controls.append(f"{roles} scoped IAM role(s)")
-    if not controls:
-        controls = ["No governance controls detected"]
-    cats = {}
-    for f in (findings or []):
-        cats[f.get("category", "Other")] = cats.get(f.get("category", "Other"), 0) + 1
-    finds = [f"{k}: {v}" for k, v in sorted(cats.items())] or ["No findings — passes scan"]
-    return [("Services", SAND_C, services[:6]),
-            ("Security & IAM", SAGE_C, controls[:6]),
-            ("Findings", GOLD_C, finds[:6])]
-
-
 # palette constants shared by v3 (the MinusOps warm dusk palette)
 BG_C = "#14110f"; PANEL_C = "#1c1714"; PANEL2_C = "#221a16"; TEXT_C = "#fbf7f4"
 MUTED_C = "#b09c93"; FAINT_C = "#6f635c"; TERRA_C = "#d95d39"; SAND_C = "#d4a373"
@@ -938,15 +811,6 @@ _V3_ROLE = {
     "aws_cloudwatch_metric_alarm": "failure alarm", "aws_kms_key": "encryption key",
     "aws_lambda_function": "function",
 }
-# Tier-to-tier relationship verbs for the numbered flow narrative.
-_V3_REL = {
-    ("storage", "compute"): "read", ("compute", "orchestration"): "run",
-    ("orchestration", "observability"): "watch", ("storage", "orchestration"): "orchestrate",
-    ("compute", "observability"): "monitor", ("storage", "observability"): "monitor",
-    ("sources", "storage"): "ingest", ("sources", "compute"): "ingest",
-}
-
-
 def _v3_role(r):
     """A short, deterministic role line for a node (falls back to zone key / action)."""
     role = _V3_ROLE.get(r["type"])
@@ -957,195 +821,6 @@ def _v3_role(r):
         return f"{key} zone" if key in ("bronze", "silver", "gold") else "object store"
     cfg = r.get("config_count", 0)
     return f"+{cfg} config" if cfg else r["action"]
-
-
-def build_svg_v3(rows, template, cloud, short_hash, ts, findings=None, plan=None, region="us-east-1"):
-    """Architecture diagram v3 (PROTOTYPE) — deterministic and plan-derived like build_svg,
-    with a richer presentation adapted from the Cocoon diagram style but in the MinusOps
-    warm palette: a dashed AWS Region containment box, three-line nodes (type / name / a
-    real accent detail), labelled data-flow edges, only non-empty tiers evenly spaced, and
-    Services / Security / Findings summary cards below the canvas.
-
-    Not wired into the report; build_svg remains the contract renderer until this is approved.
-    """
-    def esc(s):
-        return html.escape(str(s), quote=True)
-
-    fmap = {}
-    for f in (findings or []):
-        if f.get("resource"):
-            fmap.setdefault(f["resource"].split("[")[0], []).append(f)
-
-    def nfind(addr):
-        return fmap.get(addr.split("[")[0], [])
-
-    original = list(rows)
-    has_kms = any(r["type"].startswith("aws_kms_key") for r in rows)
-    comps = _collapse_components(rows)
-    order = ["sources", "storage", "compute", "orchestration", "observability"]
-    by_tier = {t: [c for c in comps if c["tier"] == t] for t in order}
-    sec = [c for c in comps if c["tier"] == "security"]
-    tiers = [t for t in order if by_tier[t]]  # only non-empty tiers
-
-    # geometry
-    node_w, node_h, vgap = 212, 68, 18
-    region_x, region_w, region_top = 40, 1200, 96
-    region_side, head_h = 30, 56
-    inner_w = region_w - 2 * region_side
-    n = max(len(tiers), 1)
-    col_gap = (inner_w - n * node_w) / (n - 1) if n > 1 else 0
-    colx = {t: region_x + region_side + int(i * (node_w + col_gap)) for i, t in enumerate(tiers)}
-    maxrows = max((len(by_tier[t]) for t in tiers), default=1)
-    rows_top = region_top + head_h
-    region_h = head_h + maxrows * (node_h + vgap) + 8
-    region_bottom = region_top + region_h
-    sec_y = region_bottom + 18
-    sec_h = 60 if sec else 0
-    canvas_bottom = (sec_y + sec_h if sec else region_bottom) + 20
-    cards_y = canvas_bottom + 26
-    card_h = 150
-    legend_y = cards_y + card_h + 30
-    total_h = legend_y + 22
-
-    P = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 {total_h}" width="100%" role="img">',
-        f'<title>Architecture v3 — {esc(template)}</title>',
-        f'<desc>Deterministic plan-derived architecture (v3) for {esc(template)} on {esc(cloud)}.</desc>',
-        '<defs>'
-        '<marker id="av3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
-        f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{MUTED_C}"/></marker>'
-        '<pattern id="g3" width="40" height="40" patternUnits="userSpaceOnUse">'
-        '<path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.05)" stroke-width="0.5"/></pattern>'
-        '<style>'
-        f'.t{{font:600 22px Outfit,system-ui,sans-serif;fill:{TEXT_C}}}'
-        f'.s{{font:500 12px "JetBrains Mono",monospace;fill:{MUTED_C}}}'
-        f'.rg{{font:600 12px "JetBrains Mono",monospace;fill:{SAND_C};letter-spacing:.08em}}'
-        f'.ch{{font:600 12px Outfit,system-ui,sans-serif;letter-spacing:.14em}}'
-        f'.nt{{font:600 13px Inter,system-ui,sans-serif;fill:{TEXT_C}}}'
-        f'.nn{{font:400 11px "JetBrains Mono",monospace;fill:{MUTED_C}}}'
-        f'.nd{{font:600 10px "JetBrains Mono",monospace}}'
-        f'.el{{font:500 9px "JetBrains Mono",monospace;fill:{MUTED_C}}}'
-        f'.ct{{font:600 13px Outfit,system-ui,sans-serif;fill:{TEXT_C}}}'
-        f'.cb{{font:400 11px Inter,system-ui,sans-serif;fill:{MUTED_C}}}'
-        f'.lg{{font:500 11px Inter,system-ui,sans-serif;fill:{MUTED_C}}}'
-        f'.bd{{font:600 9px Inter,system-ui,sans-serif;fill:{BG_C}}}'
-        '</style></defs>',
-        f'<rect x="0" y="0" width="1280" height="{total_h}" fill="{BG_C}"/>',
-        f'<rect x="0" y="0" width="1280" height="{total_h}" fill="url(#g3)"/>',
-        # title bar
-        f'<text class="t" x="24" y="34">{esc(template)}</text>'
-        f'<text class="s" x="24" y="54">{esc(cloud)} · plan {esc(short_hash)} · {esc(ts)}</text>',
-        # canvas panel
-        f'<rect x="16" y="{region_top - 18}" width="1248" height="{canvas_bottom - (region_top - 18)}" '
-        f'rx="16" fill="{PANEL_C}" stroke="rgba(217,93,57,.16)"/>',
-        # region containment box
-        f'<rect x="{region_x}" y="{region_top}" width="{region_w}" height="{region_h}" rx="14" '
-        f'fill="rgba(217,93,57,.04)" stroke="{TERRA_C}" stroke-width="1.3" stroke-dasharray="8 4"/>',
-        f'<text class="rg" x="{region_x + 20}" y="{region_top + 26}">AWS Region: {esc(region)}</text>',
-    ]
-
-    # column headers
-    for t in tiers:
-        x = colx[t]
-        P.append(f'<text class="ch" x="{x}" y="{region_top + head_h - 6}" fill="{TIER_HUE[t]}">{t.upper()}</text>'
-                 f'<rect x="{x}" y="{region_top + head_h + 2}" width="{node_w}" height="2" fill="{TIER_HUE[t]}"/>')
-
-    # edges: numbered choreography between consecutive tiers, with a relationship verb
-    ecx = rows_top + node_h // 2
-    P.append('<g id="edges3">')
-    for i, (a, b) in enumerate(zip(tiers, tiers[1:]), start=1):
-        x1 = colx[a] + node_w
-        x2 = colx[b]
-        mx = (x1 + x2) // 2
-        rel = _V3_REL.get((a, b), "flow")
-        P.append(f'<path d="M{x1},{ecx} C{mx},{ecx} {mx},{ecx} {x2},{ecx}" stroke="{MUTED_C}" '
-                 f'stroke-width="1.5" fill="none" marker-end="url(#av3)" opacity="0.75"/>')
-        # numbered step badge on the line + the relationship verb beneath it
-        P.append(f'<circle cx="{mx}" cy="{ecx}" r="11" fill="{TERRA_C}" stroke="{BG_C}" stroke-width="2"/>'
-                 f'<text class="bd" x="{mx}" y="{ecx + 3}" text-anchor="middle" fill="{TEXT_C}">{i}</text>'
-                 f'<text class="el" x="{mx}" y="{ecx + 26}" text-anchor="middle">{esc(rel)}</text>')
-    P.append('</g>')
-
-    # nodes
-    for t in tiers:
-        x = colx[t]
-        y = rows_top
-        for r in by_tier[t]:
-            tint = ACTION_TINT.get(r["action"], MUTED_C)
-            locked = has_kms and (r["type"].startswith("aws_s3_") or "athena" in r["type"]
-                                  or r["type"].startswith("aws_kms"))
-            detail, dcol = _v3_role(r), SAND_C
-            nf = nfind(r["address"])
-            df = f' data-findings="{esc(",".join(f["id"] for f in nf))}"' if nf else ""
-            P.append(
-                f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}"{df} '
-                f'transform="translate({x},{y})">'
-                f'<rect width="{node_w}" height="{node_h}" rx="11" fill="{PANEL2_C}" '
-                f'stroke="{TIER_HUE[t]}" stroke-width="1.5"/>'
-                f'<rect width="4" height="{node_h}" rx="2" fill="{tint}"/>'
-                + _icon(_icon_for(r["type"]), TIER_HUE[t], 15, 15)
-                + f'<text class="nt" x="44" y="26">{esc(_fit_text(_V3_NICE.get(r["type"], _humanize(r["type"])), 22))}</text>'
-                f'<text class="nn" x="44" y="44">{esc(_fit_text(_node_label(r), 24))}</text>'
-                f'<text class="nd" x="44" y="59" fill="{dcol}">{esc(_fit_text(detail, 24))}</text>')
-            if locked:
-                P.append(f'<g transform="translate({node_w - 22},9)">' + _LOCK + '</g>')
-            if nf:
-                top = min(nf, key=lambda f: _SEV_ORDER.index(f["severity"]) if f["severity"] in _SEV_ORDER else 9)
-                lab = top["id"] + (f" +{len(nf) - 1}" if len(nf) > 1 else "")
-                bw = 12 + len(lab) * 6
-                bx = (node_w - 26 if locked else node_w - 8) - bw
-                P.append(f'<g transform="translate({bx},{node_h - 20})">'
-                         f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], MUTED_C)}"/>'
-                         f'<text class="bd" x="{bw // 2}" y="10" text-anchor="middle">{esc(lab)}</text></g>')
-            P.append('</g>')
-            y += node_h + vgap
-
-    # security band
-    if sec:
-        P.append(f'<rect x="{region_x}" y="{sec_y}" width="{region_w}" height="{sec_h}" rx="10" '
-                 f'fill="none" stroke="{MUTED_C}" stroke-dasharray="4 4"/>'
-                 f'<text class="ch" x="{region_x + 18}" y="{sec_y + 24}" fill="{MUTED_C}">SECURITY &amp; IAM</text>')
-        cap = 6
-        for i, r in enumerate(sec[:cap]):
-            cx = region_x + 200 + i * 158
-            nf = nfind(r["address"])
-            st = _SEV_COLOR.get(nf[0]["severity"], MUTED_C) if nf else MUTED_C
-            P.append(f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}">'
-                     f'<rect x="{cx}" y="{sec_y + 16}" width="142" height="28" rx="8" fill="{PANEL2_C}" '
-                     f'stroke="{st}" stroke-width="1"/>'
-                     f'<text class="nn" x="{cx + 10}" y="{sec_y + 34}">{esc(_fit_text(_V3_NICE.get(r["type"], _humanize(r["type"])), 17))}</text></g>')
-        if len(sec) > cap:
-            P.append(f'<text class="lg" x="{region_x + region_w - 30}" y="{sec_y + 34}">+{len(sec) - cap}</text>')
-
-    # summary cards
-    cards = _v3_summary_cards(original, findings)
-    cw = (1248 - 2 * 20) // 3
-    for i, (title_, dot, bullets) in enumerate(cards):
-        cx = 16 + i * (cw + 20)
-        P.append(f'<rect x="{cx}" y="{cards_y}" width="{cw}" height="{card_h}" rx="12" '
-                 f'fill="{PANEL_C}" stroke="rgba(217,93,57,.14)"/>'
-                 f'<circle cx="{cx + 20}" cy="{cards_y + 26}" r="4" fill="{dot}"/>'
-                 f'<text class="ct" x="{cx + 32}" y="{cards_y + 30}">{esc(title_)}</text>')
-        by = cards_y + 56
-        for b in bullets:
-            P.append(f'<text class="cb" x="{cx + 20}" y="{by}">• {esc(_fit_text(b, 40))}</text>')
-            by += 20
-
-    # legend
-    P.append(f'<line x1="24" y1="{legend_y}" x2="58" y2="{legend_y}" stroke="{MUTED_C}" stroke-width="1.5" '
-             f'marker-end="url(#av3)"/><text class="lg" x="64" y="{legend_y + 4}">data flow</text>'
-             f'<g transform="translate(150,{legend_y - 8})">' + _LOCK + '</g>'
-             f'<text class="lg" x="172" y="{legend_y + 4}">encrypted (KMS)</text>'
-             f'<rect x="292" y="{legend_y - 7}" width="12" height="12" rx="3" fill="{SAGE_C}"/>'
-             f'<text class="lg" x="310" y="{legend_y + 4}">create</text>'
-             f'<rect x="360" y="{legend_y - 7}" width="12" height="12" rx="3" fill="{MUTED_C}"/>'
-             f'<text class="lg" x="378" y="{legend_y + 4}">no-op</text>'
-             f'<rect x="430" y="{legend_y - 7}" width="12" height="12" rx="3" fill="{TERRA_C}"/>'
-             f'<text class="lg" x="448" y="{legend_y + 4}">delete</text>'
-             f'<text class="lg" x="520" y="{legend_y + 4}">dashed boundary = AWS Region containment</text>')
-
-    P.append('</svg>')
-    return "\n".join(P)
 
 
 _SVG_ACTIVE_ELEMS = ("script", "foreignobject", "iframe", "embed", "object", "image", "animate", "set")
@@ -2073,7 +1748,33 @@ def _architecture_sentence(manifest):
     return "The composed modules for this plan are: " + "; ".join(titles) + "."
 
 
-def build_html(template, cloud, short_hash, ts, rows, counts, cost, svg, plan=None, manifest=None, tf_dir=None, git_sha=None):
+def _verification_coverage_html(coverage):
+    """Render what the gate actually checked. Without this the reviewer cannot distinguish
+    'checked and clean' from 'no rule exists for this type' -- both render as silence."""
+    if not coverage or coverage.get("error") or not coverage.get("types"):
+        return ('<p class="flow muted">Verification coverage unavailable for this plan.</p>')
+    label = {"rule_covered": "Policy rule fired",
+             "claim_informed": "No rule — claims only (informational, not verification)",
+             "unchecked": "No rule, no claims"}
+    body = "".join(
+        f"<tr><td class=\"mono\">{html.escape(r['resource_type'])}</td>"
+        f"<td>{r['resource_count']}</td>"
+        f"<td>{html.escape(label.get(r['state'], r['state']))}</td>"
+        f"<td>{html.escape(', '.join(r['rule_ids']) or '-')}</td></tr>"
+        for r in coverage["types"])
+    ratio = coverage.get("coverage_ratio")
+    pct = f"{ratio * 100:.0f}%" if ratio is not None else "n/a"
+    return (
+        f'<p class="flow">Policy-rule coverage for this plan: <strong>{pct}</strong> '
+        f'({coverage["rule_covered_count"]} of {coverage["type_count"]} resource types had an '
+        f'executable rule fire). Types marked <em>no rule</em> were not checked by policy — '
+        f'a clean result for them means nothing was evaluated, not that nothing is wrong. '
+        f'Claims inform authoring only and never grant permission to ship.</p>'
+        f'<table><thead><tr><th>Resource type</th><th>Count</th><th>Verification</th>'
+        f'<th>Rules fired</th></tr></thead><tbody>{body}</tbody></table>')
+
+
+def build_html(template, cloud, short_hash, ts, rows, counts, cost, svg, plan=None, manifest=None, tf_dir=None, git_sha=None, coverage=None):
     def esc(s):
         return html.escape(str(s))
 
@@ -2158,6 +1859,7 @@ def build_html(template, cloud, short_hash, ts, rows, counts, cost, svg, plan=No
     outputs_html = _outputs_html(plan)
     iam_html = _iam_summary_html(plan)
     security_html = _security_governance_html(rows)
+    coverage_html = _verification_coverage_html(coverage)
     approval_html = _approval_status_html(manifest, tf_dir)
     artifacts_html = _artifact_index_html(short_hash)
     toc_html = _toc_html(sections)
@@ -2241,6 +1943,8 @@ footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid rgba(212,163,11
 <div class="sub">IAM resources and controls reviewers should inspect before approval.</div></div>
 <div class="panel">{security_html}</div>
 <div class="panel">{iam_html}</div>
+<h2>Verification coverage</h2>
+<div class="panel">{coverage_html}</div>
 </section>
 <section class="page">
 <div class="header"><div class="section-no">Section 8</div><h1>Cost Summary</h1>
@@ -2512,22 +2216,6 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
     return _simple_report_html("Cost Report", template, cloud, short_hash, ts, body)
 
 
-def build_plan_html(template, cloud, short_hash, ts, rows, counts):
-    def esc(s):
-        return html.escape(str(s))
-
-    table_rows = "".join(
-        f"<tr><td>{esc(r['address'])}</td><td>{esc(_humanize(r['type']))}</td><td>{esc(r['action'])}</td></tr>"
-        for r in rows
-    )
-    body = (
-        f"<p>Summary: +{counts['create']} create, ~{counts['update']} update, "
-        f"-{counts['delete']} delete, {counts['no-op']} no-op.</p>"
-        f"<table><thead><tr><th>Resource</th><th>Type</th><th>Action</th></tr></thead><tbody>{table_rows}</tbody></table>"
-    )
-    return _simple_report_html("Plan Report", template, cloud, short_hash, ts, body)
-
-
 def _simple_report_html(title, template, cloud, short_hash, ts, body):
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>{html.escape(title)} - {html.escape(template)}</title>
@@ -2670,18 +2358,6 @@ def render_pdf(html_path, pdf_path):
     if _write_builtin_pdf(html_path, pdf_path, title=os.path.basename(pdf_path)):
         return True, "built-in text PDF fallback"
     return False, info or err or "render failed"
-
-
-def render_png(input_path, png_path, window_size="1400,1000"):
-    browser = find_browser()
-    if not browser:
-        return False, "no headless browser (Edge/Chrome) found"
-    rc, _, err = run([browser, "--headless", "--disable-gpu", "--no-first-run",
-                      f"--window-size={window_size}", f"--screenshot={png_path}", input_path],
-                     timeout=40)
-    if rc == 0 and os.path.exists(png_path):
-        return True, browser
-    return False, err or "screenshot failed"
 
 
 def _free_local_port():
@@ -2870,6 +2546,28 @@ def git_commit():
     return out.strip() if rc == 0 else None
 
 
+def _verification_coverage(plan, findings):
+    """Per-plan disclosure of what was actually checked. Never raises -- a report that fails
+    to render because its own honesty section broke would be worse than the ambiguity it
+    exists to remove."""
+    try:
+        import verification_coverage
+        import synthesizer
+        claims_by_type = {}
+        for rc in (plan or {}).get("resource_changes") or []:
+            rtype = rc.get("type") if isinstance(rc, dict) else None
+            if rtype and rtype not in claims_by_type:
+                claims_by_type[rtype] = [
+                    c for c in synthesizer._grounding_claims(rtype)
+                    if c.get("resource_type") == rtype
+                ]
+        return verification_coverage.classify(plan, findings=findings,
+                                              claims_by_type=claims_by_type)
+    except Exception as exc:
+        return {"error": str(exc), "types": [], "type_count": 0,
+                "rule_covered_count": 0, "coverage_ratio": None}
+
+
 def _generate_report_bundle(dir_, data, template=None):
     h = plan_hash(data)
     short = h[:12]
@@ -2940,7 +2638,11 @@ def _generate_report_bundle(dir_, data, template=None):
             manifest = json.load(f)
     except Exception:
         manifest = None
-    htmldoc = build_html(template, cloud, short, ts, rows, counts, cost, svg, data, manifest, dir_, git_commit())
+    # Computed once and shared by the PDF and the manifest -- it queries the claim store,
+    # so doing it twice would double that work for identical output.
+    coverage = _verification_coverage(data, findings)
+    htmldoc = build_html(template, cloud, short, ts, rows, counts, cost, svg, data, manifest,
+                         dir_, git_commit(), coverage=coverage)
 
     # v3 lake-house data-flow diagram (additive; shares the six-layer classifier with the
     # conformance model). Icons resolve inside the renderer (_default_icons_dir). When an
@@ -2967,11 +2669,10 @@ def _generate_report_bundle(dir_, data, template=None):
     with open(os.path.join(out, "cost.json"), "w", encoding="utf-8") as f:
         json.dump(cost, f, indent=2)
     source_hashes = plan_inspector.write_source_snapshot(dir_, out)
-    html_path = os.path.join(out, "plan.html")
+    # One HTML per report: report.html is both the UI-served document and the print
+    # source for plan.pdf. (It used to be written twice, byte-identical, as plan.html too.)
+    html_path = os.path.join(out, "report.html")
     with open(html_path, "w", encoding="utf-8") as f:
-        f.write(htmldoc)
-    report_html_path = os.path.join(out, "report.html")
-    with open(report_html_path, "w", encoding="utf-8") as f:
         f.write(htmldoc)
 
     pdf_path = os.path.join(out, "plan.pdf")
@@ -3003,7 +2704,7 @@ def _generate_report_bundle(dir_, data, template=None):
     files = [
         "plan.json", "architecture.svg", "cost.json",
         "bcm-assumptions.json", "bcm-create-workload-estimate.json", "bcm-usage.json", "bcm-commands.json",
-        "plan.html", "cost.html", "report.html",
+        "cost.html", "report.html",
     ]
     if dataflow_svg:
         files.append("dataflow.svg")
@@ -3024,6 +2725,9 @@ def _generate_report_bundle(dir_, data, template=None):
         "files": files,
         "public_files": (["architecture.svg", "dataflow.svg"] if dataflow_svg else ["architecture.svg"])
         + ["plan.pdf", "cost.pdf"] + (["inspect.pdf"] if inspect_pdf_ok else []),
+        # What the gate actually checked, per resource type. A green report must not be
+        # mistakable for a verified one -- see core/governance/verification_coverage.py.
+        "verification_coverage": coverage,
         "source_snapshot": "source_snapshot",
         "source_hashes_file": "source_hashes.json",
         "source_file_count": len(source_hashes),

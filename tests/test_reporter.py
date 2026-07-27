@@ -430,14 +430,6 @@ def test_cost_report_omits_variance_without_actuals(tmp_path):
     assert "Forecast vs. actual" not in html
 
 
-def test_gate_flow_svg_is_wellformed_and_labeled():
-    svg = reporter.build_gate_flow_svg()
-    ET.fromstring(svg)  # valid, self-contained XML
-    for label in ("verify", "plan", "approve", "apply", "REFUSED", "APPLIED"):
-        assert label in svg
-    assert svg.count("<svg") == 1
-
-
 def test_pipeline_flow_has_posture_summary():
     rows, _ = reporter.summarize(PLAN)
     plan = dict(PLAN, variables={"owner": {"value": "data-platform"}, "region": {"value": "us-east-1"}})
@@ -528,7 +520,7 @@ def test_destroy_plan_gets_no_bcm_forecast_not_a_blank_one(tmp_path, monkeypatch
     assert manifest["cost"]["destroy"] is True
 
     cost_html = (__import__("pathlib").Path(out) / "cost.html").read_text(encoding="utf-8")
-    plan_html = (__import__("pathlib").Path(out) / "plan.html").read_text(encoding="utf-8")
+    plan_html = (__import__("pathlib").Path(out) / "report.html").read_text(encoding="utf-8")
     for doc in (cost_html, plan_html):
         assert "Destroy plan" in doc
         assert "no cost forecast applies" in doc

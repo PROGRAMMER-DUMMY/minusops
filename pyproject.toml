@@ -17,12 +17,11 @@ classifiers = [
     "Topic :: System :: Systems Administration",
 ]
 
-# Core CLIs (gate, approval, audit, scanner, intent) use only the standard library
-# plus your cloud CLI. The dependencies below are for the optional FinOps dashboard.
-dependencies = [
-    "dash>=2.14,<3",
-    "plotly>=5.18,<6",
-]
+# Core CLIs (gate, approval, audit, scanner, intent) use only the standard library plus
+# your cloud CLI -- so the base install has NO runtime dependencies. The Plotly Dash
+# console is the `dashboard` extra below; it was also listed here, which meant
+# `pip install .` pulled a plotting stack in just to run `minus-gate`.
+dependencies = []
 
 [project.optional-dependencies]
 dashboard = [

@@ -1,9 +1,7 @@
 """
 FinOps Agent — live cost intelligence over the active cloud (no mock data).
 
-Runs against whichever cloud MINUS_CLOUD selects (aws | azure | gcp) through the
-CloudProvider abstraction in core/providers/. Cost + anomalies are cloud-generic;
-activity-log correlation (CloudTrail) is currently AWS-only.
+Runs against AWS through providers.base.get_provider(); never touches a cloud CLI directly.
 
 Read / analysis path (safe, read-only):
   --cost        Spend by service + month-over-month change
@@ -189,7 +187,7 @@ def cmd_notify_jira(approval_mode):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="FinOps Agent (live, multi-cloud via MINUS_CLOUD)")
+    parser = argparse.ArgumentParser(description="FinOps Agent (live AWS spend and anomalies)")
     parser.add_argument("--cost", action="store_true", help="Spend breakdown + month-over-month")
     parser.add_argument("--anomalies", action="store_true", help="List active cost anomalies")
     parser.add_argument("--correlate", action="store_true", help="Root-cause anomalies (AWS only)")

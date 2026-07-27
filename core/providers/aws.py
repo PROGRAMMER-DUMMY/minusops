@@ -1,13 +1,12 @@
 """
-AWS implementation of CloudProvider — uses the AWS CLI credential chain (never
-handles secrets itself). Cost Explorer / Cost Anomaly Detection / STS / tagging.
+AWS provider — uses the AWS CLI credential chain (never handles secrets itself).
+Cost Explorer / Cost Anomaly Detection / STS / tagging. Return shapes are documented
+in base.py.
 """
 import json
 import os
 import datetime
 import subprocess
-
-from .base import CloudProvider
 
 
 def classify_credentials(arn, access_key_id=None):
@@ -61,7 +60,7 @@ def _days_ago(n):
     return (datetime.date.today() - datetime.timedelta(days=n)).isoformat()
 
 
-class AWSProvider(CloudProvider):
+class AWSProvider:
     name = "aws"
     status = "implemented"
 
