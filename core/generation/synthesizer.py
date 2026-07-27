@@ -188,6 +188,69 @@ def _grounding_claims(resource_type):
         conn.close()
 
 
+# Wording that would turn a mapping claim into a PRICE. Decision #19: agents may contribute
+# tf_type -> serviceCode mappings (checkable against AWS's own service list, and a wrong one
+# surfaces as a BCM error rather than a wrong number), but never a rate and never a
+# free-ness assertion. Both of those ARE cost claims, and a wrong one silently under-reports
+# a bill -- the exact failure FinOps tooling exists to prevent. "BCM prices forecasts, Cost
+# Explorer gives actuals, MinusOps never fabricates a number" stays literally true.
+_PRICE_MARKERS = ("$", "usd", "per gb", "per hour", "per month", "/gb", "/hr",
+                  "is free", "no charge", "costs nothing", "zero cost", "free tier",
+                  "costs 0", "0 usd")
+
+
+def _reject_priced_claim(claim_text):
+    lowered = (claim_text or "").lower()
+    for marker in _PRICE_MARKERS:
+        if marker in lowered:
+            raise ValueError(
+                f"remember_claim: refusing a claim containing {marker!r} -- agents may record "
+                f"tf_type->serviceCode MAPPINGS but never prices or free-ness assertions. "
+                f"Real numbers come from BCM (forecast) and Cost Explorer (actuals) only.")
+
+
+def remember_claim(*, claim_text, source_url, valid_from, resource_type=None, attribute=None,
+                   scope="schema", source_type="agent_researched", provider="aws",
+                   confidence=None, observed_at=None, provider_version=None):
+    """Record what an agent researched, so the next run starts from it instead of re-reading
+    the same docs. The write half of the author-context loop.
+
+    MinusOps does no research itself and runs no model -- the driving agent does that and
+    hands the finding here. `source_url` is REQUIRED: provenance is the whole point, and an
+    unsourced claim is a rumour with a timestamp that would be indistinguishable from a
+    verified one at read time.
+
+    INFORMS ONLY, like every other claim. Nothing recorded here can grant permission to ship.
+    """
+    if not (claim_text or "").strip():
+        raise ValueError("remember_claim: claim_text is required")
+    if not (source_url or "").strip():
+        raise ValueError(
+            "remember_claim: source_url is required -- an unsourced claim is a rumour with a "
+            "timestamp, indistinguishable from a verified one when it is read back")
+    if scope == "pricing_map":
+        _reject_priced_claim(claim_text)
+
+    import knowledge_store
+    conn = _claims_conn() or knowledge_store.init_db(_ensure_claims_db_path())
+    try:
+        return knowledge_store.insert_claim(
+            conn, scope=scope, resource_type=resource_type, attribute=attribute,
+            claim_text=claim_text, method="semantic", source_type=source_type,
+            source_url=source_url, provider=provider, provider_version=provider_version,
+            confidence=confidence, valid_from=valid_from,
+            observed_at=observed_at or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        )
+    finally:
+        pass  # caller-owned in tests; the CLI closes its own connection
+
+
+def _ensure_claims_db_path():
+    path = _claims_db_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
+
+
 def assemble_authoring_context(resource_type, justification, requirements_text, provider="aws"):
     """Returns {resource_type, justification, schema, grounding_examples, blocked, detail}.
 
@@ -1218,6 +1281,53 @@ def _main_author(argv):
     return 0
 
 
+def _main_remember(argv):
+    """`synthesizer.py remember --claim ... --source-url ...` -- the write half of the
+    author-context loop.
+
+    An agent researched something (live schema, vendor docs, a provider changelog) and records
+    it here so the next author-context starts from it rather than re-reading the same page.
+    MinusOps runs no model and does no research: it stores what the driving agent found, with
+    provenance, and hands it back later.
+    """
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="synthesizer.py remember",
+        description="Record a researched claim so the next authoring run starts from it.")
+    ap.add_argument("--claim", required=True, help="the finding, in one sentence")
+    ap.add_argument("--source-url", required=True,
+                    help="where it came from -- required; an unsourced claim is a rumour")
+    ap.add_argument("--resource-type", default=None,
+                    help="e.g. aws_s3_bucket. Omit for architecture/practice/template scopes")
+    ap.add_argument("--attribute", default=None)
+    ap.add_argument("--scope", default="schema",
+                    choices=sorted(["schema", "pricing_map", "architecture", "practice", "template"]))
+    ap.add_argument("--source-type", default="agent_researched")
+    ap.add_argument("--provider", default="aws")
+    ap.add_argument("--provider-version", default=None)
+    ap.add_argument("--confidence", type=float, default=None)
+    ap.add_argument("--valid-from", required=True,
+                    help="when the fact became true (ISO 8601, timezone-aware)")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+    try:
+        claim_id = remember_claim(
+            claim_text=args.claim, source_url=args.source_url, valid_from=args.valid_from,
+            resource_type=args.resource_type, attribute=args.attribute, scope=args.scope,
+            source_type=args.source_type, provider=args.provider,
+            provider_version=args.provider_version, confidence=args.confidence)
+    except ValueError as exc:
+        payload = {"recorded": False, "reason": str(exc)}
+        print(json.dumps(payload, indent=2) if args.json else f"[remember] REFUSED: {exc}",
+              file=sys.stderr)
+        return 1
+    payload = {"recorded": True, "claim_id": claim_id, "scope": args.scope,
+               "resource_type": args.resource_type, "attribute": args.attribute}
+    print(json.dumps(payload, indent=2) if args.json
+          else f"[remember] claim #{claim_id} recorded ({args.scope})")
+    return 0
+
+
 def main(argv=None):
     import argparse
     peek = argv if argv is not None else sys.argv[1:]
@@ -1225,6 +1335,8 @@ def main(argv=None):
         return _main_author_context(peek[1:])
     if peek and peek[0] == "author":
         return _main_author(peek[1:])
+    if peek and peek[0] == "remember":
+        return _main_remember(peek[1:])
     ap = argparse.ArgumentParser(description="Compose vetted modules into governed Terraform")
     ap.add_argument("requirements", help="free-text requirements summary (from grill-me)")
     ap.add_argument("--requirements-file", default=None,
