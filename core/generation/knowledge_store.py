@@ -10,6 +10,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import sqlite3
 
 _SCHEMA = """
@@ -296,10 +297,28 @@ _CLAIM_COLUMNS = ("scope", "resource_type", "attribute", "claim_text", "method",
 _ADJUDICATIONS_FILE = "_adjudications.jsonl"
 
 
+# A Terraform resource type is [provider]_[name]: lowercase, digits, underscores. Anything
+# else is not a type, and since this value becomes a FILENAME an unvalidated one writes
+# outside the corpus -- confirmed exploitable before this check existed:
+# `--resource-type "../escaped"` produced knowledge/escaped.jsonl.
+_SAFE_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+
+
 def shard_name(scope, resource_type):
     """Resource-scoped claims shard by type; cross-cutting ones by scope (leading underscore
-    keeps them from ever colliding with a real resource type name)."""
+    keeps them from ever colliding with a real resource type name).
+
+    Validates rather than sanitises: silently rewriting `../escaped` to `escaped` would store
+    the claim under a name the caller never asked for, which is its own quiet wrongness.
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"shard_name: unknown scope {scope!r}")
     if scope in RESOURCE_SCOPED and resource_type:
+        if not _SAFE_TYPE.match(resource_type):
+            raise ValueError(
+                f"shard_name: {resource_type!r} is not a valid Terraform resource type "
+                f"(expected lowercase letters, digits and underscores). This value becomes a "
+                f"filename, so anything else is a path-traversal attempt.")
         return f"{resource_type}.jsonl"
     return f"_{scope}.jsonl"
 
