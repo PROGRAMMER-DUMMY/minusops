@@ -1,20 +1,28 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# >=77 for PEP 639: `license = "Apache-2.0"` as an SPDX string plus `license-files`.
+# Older setuptools only understands the deprecated table form and errors on this.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "minusops"
 version = "0.1.0"
-description = "MinusOps — a governed, multi-cloud Terraform control plane (plan-bound, MFA-gated, audited deploys)."
+description = "MinusOps — a governed AWS Terraform control plane (plan-bound, MFA-gated, audited deploys)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Proprietary" }
-authors = [{ name = "MinusOps" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "MinusOps contributors" }]
 keywords = ["terraform", "governance", "finops", "devops", "iac", "aws"]
 classifiers = [
+    # No "License ::" classifier: PEP 639 supersedes it with the `license` expression above,
+    # and setuptools>=77 errors if both are present.
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
     "Topic :: System :: Systems Administration",
+    "Topic :: Software Development :: Build Tools",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
 ]
 
 # Core CLIs (gate, approval, audit, scanner, intent) use only the standard library plus

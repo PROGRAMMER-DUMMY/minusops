@@ -253,3 +253,13 @@ tests/                pytest suite for the gate, approval, and scanner
 ```
 
 You provide the Terraform. MinusOps governs how it ships.
+
+---
+
+## License
+
+Apache License 2.0 — see [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).
+
+Terraform, the AWS CLI, OPA, Checkov, and tfsec are invoked as external processes and are
+never bundled or redistributed here; each stays under its own license and is installed by
+the operator. The base install has no runtime Python dependencies.
