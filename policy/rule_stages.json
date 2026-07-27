@@ -1,0 +1,64 @@
+{
+  "_comment": [
+    "Which policy rules may BLOCK an apply, and who decided that.",
+    "Default for any rule not listed here is 'warn' -- an agent can add a rule to the",
+    "Rego and it changes nothing about what ships until a human promotes it.",
+    "Every rule below starts at 'warn' because G6 has always run in shadow mode; this",
+    "file records that state explicitly instead of leaving it implicit in code.",
+    "Promote with: minusctl policy promote <RULE-ID> --by <you> --reason <what you checked>"
+  ],
+  "rules": {
+    "COST-01": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "COST-02": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "COST-03": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-01": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-02": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-03": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-04": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-05": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-06": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-07": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-08": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-09": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    },
+    "SEC-10": {
+      "note": "human-authored, shadow mode since G6 landed; never promoted",
+      "stage": "warn"
+    }
+  }
+}

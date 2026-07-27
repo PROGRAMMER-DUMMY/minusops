@@ -65,6 +65,7 @@ import authz  # noqa: E402
 import destructive_change_gate  # noqa: E402
 import cloud_drift  # noqa: E402
 import address_churn  # noqa: E402
+import rule_stages  # noqa: E402
 import optimize_analyzer  # noqa: E402
 import rego_gate  # noqa: E402
 import intent_assertions  # noqa: E402
@@ -873,6 +874,16 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     }
     _print_g6_shadow(g6_result)
 
+    # Issue #4 / decision #18: the shadow -> warn -> enforce path the comment above calls for,
+    # made per-rule rather than all-or-nothing. Every rule defaults to warn, and only a
+    # human promotion in policy/rule_stages.json lets one block. That is what makes accepting
+    # agent-authored rules safe: adding a rule cannot change what ships until someone signs
+    # off on it. Today every rule is seeded at warn, so this is a no-op until first promotion.
+    if plan_json_for_g6 is not None:
+        _rego_for_promotion = rego_gate.evaluate(plan_json_for_g6)
+        if _reject_if_promoted_policy_violated(dir_, _rego_for_promotion, destroy):
+            return False
+
     # G9 (docs/phase5_scope.md Phase 5, wired into the real flow per docs/
     # phase6_step1_authoring_scope.md section 3): unlike G6, this is NOT shadow-only -- a
     # not-clean verdict blocks the auto-approve enforcement path below (see
@@ -1135,6 +1146,39 @@ def _reject_if_audit_chain_tampered():
     print(f"[gate] Investigate {audit_path} before proceeding — do not delete/reset it to "
           "bypass this check.", file=sys.stderr)
     _audit("apply", "REJECTED", reason="audit_chain_tampered", errors=errors[:5])
+    return True
+
+
+def _reject_if_promoted_policy_violated(dir_, rego_result, destroy, registry_path=None):
+    """Block the plan on a policy rule a HUMAN promoted to blocking.
+
+    This is what makes agent-authored rules safe to accept (issue #4). An agent can add a
+    rule to the Rego and it changes nothing about what ships: every rule defaults to
+    warn-only, and only an attributable human promotion in policy/rule_stages.json gives one
+    teeth. Warn-stage findings are still printed and still counted in verification coverage;
+    only their ability to stop an apply is withheld.
+
+    A failed EVALUATION is not a violation. OPA is optional, and treating "opa not
+    installed" as a policy breach would make an optional tool a hard dependency of every
+    plan. plan_gate logs that case separately via the shadow reporting.
+    """
+    if rego_result.get("evaluation_failed"):
+        return False
+    split = rule_stages.partition(rego_result.get("findings") or [], registry_path=registry_path)
+    if not split["blocking"]:
+        if split["warning"]:
+            print(f"[gate] policy: {split['warning_count']} warn-stage finding(s) "
+                  f"(not promoted to blocking -- reported, not enforced)")
+        return False
+    print("[gate] REFUSING plan -- promoted policy rules are violated:", file=sys.stderr)
+    for f in split["blocking"]:
+        print(f"  - {f.get('id')}: {f.get('title') or ''} [{f.get('resource') or '-'}]",
+              file=sys.stderr)
+    print("[gate] These rules were explicitly promoted to blocking in policy/rule_stages.json. "
+          "Fix the plan, or demote the rule with a recorded reason if it is wrong.",
+          file=sys.stderr)
+    _audit("plan", "REJECTED", reason="promoted_policy_violation", dir=dir_, destroy=destroy,
+           blocking_findings=split["blocking"])
     return True
 
 

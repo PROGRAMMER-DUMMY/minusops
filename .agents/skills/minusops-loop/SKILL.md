@@ -127,6 +127,29 @@ loss. Add the `moved` block it prints. Never work around this.
 has reviewed. Re-run `apply` with `--mode gatekeeper` so a human confirms. There is no bypass
 flag; do not look for one.
 
+## 6b. If a resource type had no rule, propose one
+
+The report will tell you which types were *unchecked*. That is the coverage gap, and closing
+it is how MinusOps gets more useful over time.
+
+Add a rule to `policy/g6/rules.rego` following the existing `finding(...)` shape, and record
+a claim citing the source you based it on. **A proposed rule lands warn-only automatically** —
+it appears in reports and coverage but cannot block anything until a human promotes it:
+
+```bash
+python core/reporting/minusctl.py policy list
+```
+
+Do **not** promote it yourself. Promotion requires a named person and a statement of what
+they actually reviewed:
+
+```bash
+minusctl policy promote SEC-42 --by alice@corp --reason "verified against AWS docs, fires on the 3 known cases"
+```
+
+Write the rule so it fires on a case you can demonstrate. A rule that never fires is worse
+than no rule: it makes a type look reviewed when nothing checks it.
+
 ## 7. Hand over
 
 ```bash

@@ -22,6 +22,7 @@ import audit_chain  # noqa: E402
 import demo  # noqa: E402
 import plan_inspector  # noqa: E402
 import requirements as reqgate  # noqa: E402
+import rule_stages  # noqa: E402
 import runs  # noqa: E402
 import source_guard  # noqa: E402
 import tf_validate  # noqa: E402
@@ -804,6 +805,13 @@ def main(argv=None):
     create.add_argument("--generate", action="store_true", help="Compatibility flag; generation is blocked until requirements and architecture decision are complete")
     create.add_argument("--json", action="store_true")
 
+    policy = sub.add_parser("policy", help="inspect or promote policy rules")
+    policy.add_argument("action", choices=["list", "promote", "demote"])
+    policy.add_argument("rule_id", nargs="?", help="e.g. SEC-01")
+    policy.add_argument("--by", default="", help="who is promoting/demoting (required)")
+    policy.add_argument("--reason", default="", help="what you actually reviewed (required)")
+    policy.add_argument("--json", action="store_true")
+
     run_cmd = sub.add_parser("runs", help="list or show run workspaces")
     run_cmd.add_argument("action", choices=["list", "latest"])
     run_cmd.add_argument("--json", action="store_true")
@@ -877,6 +885,35 @@ def main(argv=None):
     demo_cmd.add_argument("--json", action="store_true")
 
     args = ap.parse_args(argv)
+
+    if args.cmd == "policy":
+        if args.action == "list":
+            rules = rule_stages.list_rules()
+            if args.json:
+                print(json.dumps(rules, indent=2))
+            else:
+                if not rules:
+                    print("no rules registered -- every rule defaults to warn-only")
+                for rid, entry in rules.items():
+                    stage = entry.get("stage", "warn")
+                    who = entry.get("promoted_by") or entry.get("demoted_by") or "-"
+                    mark = "BLOCKING" if stage == "blocking" else "warn    "
+                    print(f"  {mark}  {rid:<10} {who}")
+                print("")
+                print("Only BLOCKING rules can stop an apply. Promote with:")
+                print("  minusctl policy promote <RULE-ID> --by <you> --reason <what you checked>")
+            return 0
+        if not args.rule_id:
+            raise SystemExit(f"policy {args.action}: a rule id is required")
+        fn = rule_stages.promote if args.action == "promote" else rule_stages.demote
+        kwargs = {"promoted_by": args.by} if args.action == "promote" else {"demoted_by": args.by}
+        try:
+            entry = fn(args.rule_id, reason=args.reason, **kwargs)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        print(json.dumps(entry, indent=2) if args.json
+              else f"[policy] {args.rule_id} -> {entry['stage']} (by {args.by})")
+        return 0
 
     if args.cmd == "create":
         record = workflow.resolve_to_run(
