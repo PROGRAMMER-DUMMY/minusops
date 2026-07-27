@@ -16,7 +16,7 @@ AWS only. Every command below is read-only or writes local files, except `apply`
 ## 0. Before anything
 
 ```bash
-python -m pytest            # 524 passed / ~65s. If this is red, stop and report.
+python -m pytest            # 533 passed / ~75s. If this is red, stop and report.
 ```
 
 Do **not** pass `--basetemp` or `-m`; `pyproject.toml` already sets both. Live-Terraform
@@ -144,7 +144,7 @@ Do **not** promote it yourself. Promotion requires a named person and a statemen
 they actually reviewed:
 
 ```bash
-minusctl policy promote SEC-42 --by alice@corp --reason "verified against AWS docs, fires on the 3 known cases"
+python core/reporting/minusctl.py policy promote SEC-42 --by alice@corp --reason "verified against AWS docs, fires on the 3 known cases"
 ```
 
 Write the rule so it fires on a case you can demonstrate. A rule that never fires is worse
