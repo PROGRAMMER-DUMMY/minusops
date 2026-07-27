@@ -50,6 +50,7 @@ import getpass
 import argparse
 import datetime
 import threading
+import time
 import subprocess
 
 _CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -97,23 +98,60 @@ def _audit(action, status, **extra):
         print(f"[gate] WARNING: could not write audit record: {e}", file=sys.stderr)
 
 
+def _gate_state_lock(path):
+    """Mutual exclusion for read-modify-write on gate state.
+
+    Reuses audit_chain._AppendLock -- threading.Lock for intra-process plus an OS-native
+    advisory lock for inter-process, already hardened against this repo's recurring Windows
+    lock/handle divergences. Writing a second one is how the first acquired its bugs.
+
+    Needed because atomicity alone does not prevent LOST UPDATES: operator B's write can
+    land between A reading and A approving, so A records an approval bound to B's plan hash
+    while believing it is their own. That is approval integrity, the guarantee everything
+    else rests on.
+    """
+    return audit_chain._AppendLock(path)
+
+
 def _write_json_atomic(path, payload):
     """Write gate state so a crash can never leave it truncated.
 
     open(path, "w") truncates immediately, so a process killed mid-write destroys the
-    pending plan or the approval record outright. os.replace is atomic on POSIX and
-    Windows alike.
+    pending plan or the approval record outright. os.replace is atomic on POSIX and Windows.
 
-    # ponytail: fixes torn writes, NOT lost updates -- two operators planning the same
-    # dir concurrently can still have one pending_plan.json overwrite the other. Wrap
-    # in audit_chain._AppendLock if concurrent operators become real.
+    The temp file carries pid+thread so two concurrent writers cannot clobber each other's
+    staging file -- a single shared "<path>.tmp" made this corrupt under contention, which
+    is exactly the failure atomicity was supposed to remove (caught by
+    tests/test_gate_concurrency.py, not by inspection).
+
+    Atomic per write. For read-modify-write, hold _gate_state_lock across the whole cycle.
     """
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        # Windows: os.replace maps to MoveFileEx, which transiently fails with
+        # ERROR_ACCESS_DENIED while any other handle touches the destination -- a competing
+        # writer, an indexer, antivirus. POSIX rename has no such window. Retry briefly
+        # rather than surfacing a spurious PermissionError as gate-state corruption. Bounded
+        # so a GENUINE permissions problem still raises instead of hanging.
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _canonical_dir(dir_):
@@ -852,17 +890,10 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     _print_g9_result(g9_result)
     # Merge into the pending record already written above rather than recomputing it (planner
     # identity can be a real AWS STS call -- doing that twice per plan would be pure waste).
-    try:
-        pending_for_update = json.load(open(_pending_path(dir_), encoding="utf-8"))
-    except Exception:
-        pending_for_update = {}
-    pending_for_update["g9_result"] = g9_result
-
     # Issue #1 / decision #13: did the CLOUD change outside Terraform, and does this plan
-    # undo it? Computed here from the same plan JSON, carried to apply like g9_result.
+    # undo it? Computed from the same plan JSON, carried to apply like g9_result.
     drift_result = cloud_drift.classify(plan_json_for_g6 or {})
     print(cloud_drift.format_result(drift_result))
-    pending_for_update["cloud_drift"] = drift_result
 
     # Issue #2 / decision #15: a rename-shaped destroy+create of a STATEFUL resource is data
     # loss wearing an ordinary update's clothes. Blocks the PLAN outright rather than
@@ -871,8 +902,21 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     # approve time is not a sufficient answer. The fix is one `moved` block.
     churn_result = address_churn.classify(
         plan_json_for_g6 or {}, moved_blocks=address_churn.read_moved_blocks(dir_))
-    pending_for_update["address_churn"] = churn_result
-    _write_json_atomic(_pending_path(dir_), pending_for_update)
+
+    # All three verdicts merge in ONE locked read-modify-write. Computed above, outside the
+    # lock, because none of them touch the file and two shell out to terraform -- holding the
+    # lock across that would serialise unrelated work. Held end to end here so a second
+    # operator planning the same directory cannot land a write between the read and the
+    # write, silently dropping whichever verdict lost the race.
+    with _gate_state_lock(_pending_path(dir_)):
+        try:
+            pending_for_update = json.load(open(_pending_path(dir_), encoding="utf-8"))
+        except Exception:
+            pending_for_update = {}
+        pending_for_update["g9_result"] = g9_result
+        pending_for_update["cloud_drift"] = drift_result
+        pending_for_update["address_churn"] = churn_result
+        _write_json_atomic(_pending_path(dir_), pending_for_update)
     if churn_result["blocked"]:
         print(address_churn.format_result(churn_result), file=sys.stderr)
         _audit("plan", "REJECTED", reason="rename_shaped_address_churn", dir=dir_,
