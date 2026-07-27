@@ -112,6 +112,7 @@ core = ["py.typed"]
     "examples/iam/finops-readonly-policy.json",
 ]
 ".agents" = [".agents/AGENTS.md"]
+".agents/skills/minusops-loop" = [".agents/skills/minusops-loop/SKILL.md"]
 ".agents/skills/architect" = [".agents/skills/architect/SKILL.md"]
 ".agents/skills/architect/agents" = [".agents/skills/architect/agents/openai.yaml"]
 ".agents/skills/grill-me" = [".agents/skills/grill-me/SKILL.md"]
