@@ -149,8 +149,19 @@ def _claims_conn():
     """
     import knowledge_store
     path = _claims_db_path()
+    corpus = _claims_corpus_dir()
     if not os.path.exists(path):
-        return None
+        # Fresh clone: the committed corpus is present but this machine has no index yet.
+        # Rebuild it rather than reporting no knowledge -- the JSONL is the source of truth,
+        # so an absent cache means "not built here", never "nothing is known".
+        if not os.path.isdir(corpus):
+            return None
+        try:
+            conn = knowledge_store.init_db(_ensure_claims_db_path())
+            knowledge_store.import_jsonl(conn, corpus)
+            return conn
+        except Exception:
+            return None
     try:
         return knowledge_store.init_db(path)
     except Exception:
@@ -232,17 +243,36 @@ def remember_claim(*, claim_text, source_url, valid_from, resource_type=None, at
         _reject_priced_claim(claim_text)
 
     import knowledge_store
-    conn = _claims_conn() or knowledge_store.init_db(_ensure_claims_db_path())
+    conn = _claims_conn()
+    # Only a connection WE opened is ours to close. A caller-supplied one (tests, a longer
+    # session) stays open -- and closing a connection we do not own would be a use-after-free
+    # for the caller. Leaking one, conversely, holds a Windows file lock that blocks the very
+    # cache rebuild this function exists to enable.
+    owned = conn is None
+    if owned:
+        conn = knowledge_store.init_db(_ensure_claims_db_path())
     try:
-        return knowledge_store.insert_claim(
+        claim_id = knowledge_store.insert_claim(
             conn, scope=scope, resource_type=resource_type, attribute=attribute,
             claim_text=claim_text, method="semantic", source_type=source_type,
             source_url=source_url, provider=provider, provider_version=provider_version,
             confidence=confidence, valid_from=valid_from,
             observed_at=observed_at or datetime.datetime.now(datetime.timezone.utc).isoformat(),
         )
+        # Decision #8: JSONL is the source of truth, claims.db is a gitignored cache. Writing
+        # only SQLite would make every recorded claim invisible to the team and lost the
+        # moment anyone rebuilt their cache.
+        knowledge_store.export_jsonl(conn, _claims_corpus_dir())
+        return claim_id
     finally:
-        pass  # caller-owned in tests; the CLI closes its own connection
+        if owned:
+            conn.close()
+
+
+def _claims_corpus_dir():
+    """Where the committable JSONL lives. This is the source of truth; claims.db beside it
+    is a gitignored, rebuildable index."""
+    return os.path.join(module_registry.output_root(), "knowledge", "claims")
 
 
 def _ensure_claims_db_path():

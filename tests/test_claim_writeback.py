@@ -122,3 +122,38 @@ def test_remember_cli_round_trips(tmp_path):
     assert payload["recorded"] is True
     assert payload["claim_id"]
     assert os.path.exists(os.path.join(str(tmp_path), "knowledge", "claims.db"))
+
+
+def test_remember_writes_the_claim_to_committable_jsonl(tmp_path, monkeypatch):
+    """Decision #8: JSONL is the source of truth; claims.db is a gitignored cache. If
+    remember() only wrote SQLite, every recorded claim would be invisible to the team and
+    lost on any machine that rebuilt its cache."""
+    monkeypatch.setenv("MINUSOPS_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(synthesizer, "_claims_conn", lambda: None)
+
+    synthesizer.remember_claim(
+        resource_type="aws_s3_bucket", attribute="acl",
+        claim_text="acl is deprecated", source_url="https://registry.terraform.io/x",
+        valid_from=_TS)
+
+    shard = tmp_path / "knowledge" / "claims" / "aws_s3_bucket.jsonl"
+    assert shard.exists(), "claim never reached the committable corpus"
+    assert "acl is deprecated" in shard.read_text(encoding="utf-8")
+
+
+def test_a_missing_cache_is_rebuilt_from_the_committed_corpus(tmp_path, monkeypatch):
+    """Clone the repo, no claims.db yet -- the corpus in git must still be readable."""
+    monkeypatch.setenv("MINUSOPS_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(synthesizer, "_claims_conn", lambda: None)
+    synthesizer.remember_claim(
+        resource_type="aws_s3_bucket", attribute="acl",
+        claim_text="acl is deprecated", source_url="https://x", valid_from=_TS)
+
+    db = tmp_path / "knowledge" / "claims.db"
+    if db.exists():
+        db.unlink()                      # simulate a fresh clone
+    monkeypatch.undo()
+    monkeypatch.setenv("MINUSOPS_OUTPUT_DIR", str(tmp_path))
+
+    claims = synthesizer._grounding_claims("aws_s3_bucket")
+    assert any("acl is deprecated" in c["claim_text"] for c in claims)
