@@ -7,7 +7,7 @@ this up cold should be able to read only this file and know where things stand.
 increment, close a decision, or discover a bug, edit here before moving on. Stale entries are
 worse than missing ones.
 
-Last updated: 2026-07-27 · Branch: `restructure/multi-cloud-foundation`
+Last updated: 2026-07-27 (session 2) · Branch: `restructure/multi-cloud-foundation`
 
 ---
 
@@ -104,6 +104,16 @@ New file: `core/governance/verification_coverage.py`.
 - 10 tests in `tests/test_cloud_drift.py`.
 - **Still open:** Class 2 — resources *added* outside Terraform are invisible because they were never in state, so no plan mentions them. Needs discovery (AWS Config / Resource Explorer or `hashicorp/agent-skills@terraform-search-import`), not drift reading.
 
+### Session 2 additions
+- **Suite runnable at last.** 14 live-Terraform files marked `slow` and deselected by default; `--basetemp` moved into `addopts`. **535 passed / ~50s**, from never-completing. Gotcha recorded: six files already had a module-level `pytestmark = pytest.mark.skipif(...)`, and adding a second `pytestmark =` below it does NOT combine — the second assignment wins and the mark is discarded. All six now use a list.
+- **`create` no longer silently no-ops.** A bare infra noun phrase is now a creation request; interrogatives and operations on existing infra veto. The old rule needed a create verb AND an infra noun, so `create "governed AWS data pipeline"` printed success and created nothing.
+- **Claim write-back (`synthesizer.py remember`)** — the missing half of the loop. `--source-url` required; `pricing_map` scope refuses prices and free-ness claims.
+- **Claims reach git.** `remember` exports to `knowledge/claims/*.jsonl`; a fresh clone with no `claims.db` rebuilds the index from the committed corpus.
+- **Corpus is merge-safe.** Row ids are no longer exported — two branches both allocating id 1 used to silently drop a claim and could mis-wire an invalidation chain. Cross-references travel as `content_hash`.
+- **Lost-update race closed.** `_gate_state_lock` reuses `audit_chain._AppendLock`. Two further defects found by the tests, not by reading: `_write_json_atomic` staged every write to one shared `.tmp` (concurrent writers clobbered each other), and `os.replace` transiently fails with ACCESS_DENIED on Windows (bounded retry added).
+- **Team files preserved (issue #3).** `GENERATED_FILES` are MinusOps'; any other `.tf` is the team's and is never rewritten.
+- **`.agents/skills/minusops-loop/SKILL.md`** — one end-to-end guide for an external agent runtime; every command in it was executed before commit.
+
 ### Feature: address-churn / `moved` block enforcement (issue #2, decision #15) — CLOSED
 - `core/governance/address_churn.py`. Rename-shaped = delete + create, same type, same plan, **matching identifying attributes**. The identity comparison keeps it honest both ways: without it every delete+create looks like a rename (real deletions waved through), and a genuinely different bucket gets mistaken for a move.
 - `read_moved_blocks()` parses `moved { from/to }` by regex, not a full HCL parser — fixed two-field shape, and a missed block fails SAFE (gate objects to already-declared churn: noisy, never silently destructive).
@@ -115,25 +125,20 @@ New file: `core/governance/verification_coverage.py`.
 
 ## 4. Verification status
 
-**233 passed, 1 skipped** across every touched subsystem, plus 43 of 51 `test_synthesizer.py`
-tests. The 8 not run exercise `_validate_novel_resources` (live schema fetches, ~30 s each),
-a path this work did not modify; all 4 tests covering the changed
-`assemble_authoring_context` pass, including their live fetches.
-
-⚠️ **The full suite has never been run to completion on this machine.**
-`tests/test_destructive_change_gate.py`'s 16-module baseline does 16 sequential
-`terraform init` + `terraform test` runs and exceeds 9 minutes; three attempts were killed.
-Its non-module half (27 tests) passes in 16 s. Run with `-k "not module"` for a usable signal.
-
-⚠️ **Use `--basetemp=.pytest_tmp`.** `%TEMP%\pytest-of-shubh` is ACL-broken on this machine and
-`takeown` cannot repair it. Without the flag every test errors at setup.
+**535 passed, 77 skipped, 303 deselected in ~50s.** The suite now runs to completion, which
+it never once did before: 14 files doing live `terraform init` / provider-schema fetches are
+marked `slow` and deselected by default. CI runs them with `pytest -m slow`.
 
 ```bash
-python -m pytest -q --basetemp=.pytest_tmp -k "not module"
+python -m pytest          # no flags needed; pyproject sets --basetemp and -m 'not slow'
 ```
 
-⚠️ Module provider constraints float, so a new AWS provider release makes the suite download
-~700 MB before it can run. Pinning in each module's `versions.tf` would fix it.
+⚠️ Module provider constraints still float, so a new AWS provider release makes the `slow`
+suite download ~700 MB before it can run. Pinning in each module's `versions.tf` would fix
+it. `module_provenance.py` already records a `provider_version` to pin against.
+
+⚠️ `tests/test_query_athena_module.py` exited 1 once during a sequential per-file scan but
+passes standalone. Suspected contention, not a real failure — worth watching.
 
 ---
 
