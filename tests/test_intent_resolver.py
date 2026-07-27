@@ -1,5 +1,4 @@
 import blueprints
-import dispatcher
 import intent_resolver
 
 
@@ -38,5 +37,8 @@ def test_non_creation_request_falls_back_to_operation_path():
     assert result["blueprint"] is None
 
 
-def test_dispatcher_routes_creation_to_blueprint_not_deploy():
-    assert dispatcher.classify_intent("build a data pipeline") == "REQUIREMENTS"
+def test_creation_requests_route_to_requirements_not_deploy():
+    """dispatcher.py was removed -- an agent routes intent now. The property it protected
+    (a build request must reach the requirements gate, never a deploy) belongs here, on the
+    resolver that actually decides it."""
+    assert intent_resolver.resolve("build a data pipeline")["intent"] == "REQUIREMENTS"
