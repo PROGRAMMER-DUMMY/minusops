@@ -170,7 +170,6 @@ Provision the MFA-gated deploy role and read-only FinOps role from
 python core/generation/intent_resolver.py --validate-blueprints
 python core/generation/intent_resolver.py --list-blueprints
 python core/generation/intent_resolver.py "create a governed AWS data pipeline"
-python core/reporting/dispatcher.py "build a data pipeline"
 
 # 4b. Create a fresh governed requirements workspace
 python core/reporting/minusctl.py create "create a governed AWS data pipeline"

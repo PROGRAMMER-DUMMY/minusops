@@ -58,7 +58,6 @@ core/
 | `bcm_pricing_calculator.py` | AWS BCM Pricing Calculator integration: `prepare` (no AWS calls) -> `run` (gated estimate). |
 | `pricing_catalog.py` | Terraform-type -> AWS serviceCode resolution; longest-prefix match against `pricing_data/`. |
 | `coverage_audit.py` | Fail-closed gate: every resource type is auto-priced / needs a profile / confirmed free / unresolved — never silently absent. |
-| `budget_calculator.py` | Honest cost guidance for the dispatcher's BUDGET intent — never a number of its own. |
 | `pricing_data/aws_resource_map.json` | Reviewed resource-type -> serviceCode map. |
 | `pricing_data/free_resources.json` | Reviewed allowlist of resource types confirmed to carry no billable SKU. |
 
@@ -72,7 +71,6 @@ core/
 | `finops_agent.py` | Live cost intelligence over the active cloud (cost, anomalies, CloudTrail correlation). |
 | `health_checker.py` | Operational health probes over the active cloud/credential posture. |
 | `runs.py` | Run-workspace manager — `runs/<run-id>/` (gitignored, never source control). |
-| `dispatcher.py` | Natural-language intent router; dispatches to the right script via subprocess. |
 | `minusctl.py` | Operator-facing CLI. Never mutates infrastructure itself. |
 | `toolpath.py` | Cross-platform discovery of external CLIs (terraform, aws). |
 
@@ -152,6 +150,5 @@ first.
   just `core/`) needs one more `dirname()` than it did when everything lived flat in `core/` —
   see `discovery.py`, `modules.py` (`REPO_ROOT`), `reporter.py` (`assets/architecture-icons`),
   and `bcm_pricing_calculator.py` (`examples/bcm-usage-profile.example.json`).
-- `dispatcher.py`'s `INTENT_MAPPING` and `plan_gate.py`'s `SCAN` constant hardcode sibling
   script paths for `subprocess` calls, not imports — those need the subpackage segment added
   explicitly when the target script lives in a different subpackage than the caller.

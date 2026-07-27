@@ -144,7 +144,7 @@ def resolve(query, cloud=None):
         "confidence": "none",
         "blueprint": None,
         "missing_inputs": [],
-        "recommendation": "Use the normal dispatcher or direct tool path.",
+        "recommendation": "Use the direct tool path.",
         "next_safe_actions": [],
     }
 

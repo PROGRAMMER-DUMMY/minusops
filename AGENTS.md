@@ -53,7 +53,6 @@ Because there is no bundled IaC, **every tool that acts on infrastructure requir
 │   ├── plan_gate.py                # deploy gate: verify → plan → dir/hash approval → apply
 │   ├── approval.py                 # approval gate: gatekeeper | auto-approve (audited)
 │   ├── audit_logger.py             # append-only audit trail (.agents/logs/audit.jsonl)
-│   ├── dispatcher.py               # NL query → routes to tools or safe blueprint resolution
 │   ├── intent_resolver.py          # short creation intent → requirements-first run path
 │   ├── blueprints.py               # approved blueprint registry
 │   ├── finops_agent.py             # live cost intelligence (provider-driven) + gated notify
@@ -117,14 +116,12 @@ All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws
 | **Gate any side effect** | `python core/governance/approval.py --action <a> --details <d> --mode {gatekeeper\|auto-approve}` | HITL / auto + audit |
 | **Resolve creation intent** | `python core/generation/intent_resolver.py "create a data pipeline"` | requirements-first resolver |
 | **Validate blueprints** | `python core/generation/intent_resolver.py --validate-blueprints` | blueprint schema validator |
-| **Route a vague request** | `python core/reporting/dispatcher.py "<natural language>"` | resolver + keyword classifier |
 | **Clarify ambiguous work** | Read `.agents/skills/resolve-ambiguity/SKILL.md`, then ask one targeted question with a recommended answer | `resolve-ambiguity` skill |
 | **Stress-test a plan** | Read `.agents/skills/grill-me/SKILL.md`, then interview one decision at a time until major branches are resolved | `grill-me` skill |
 | **Audit an action** | `python core/governance/audit_logger.py --action <a> --details <d>` | append to tamper-evident `audit.jsonl` |
 | **Verify the audit chain** | `python core/reporting/minusctl.py audit verify` (or `python core/governance/audit_chain.py verify`) | hash-chain integrity check |
 | **Diagnose local env** | `powershell -ExecutionPolicy Bypass -File ./tools/doctor.ps1` | PowerShell |
 
-The **dispatcher** routes operational requests to five tool intents — `HEALTH`, `DEPLOY`, `OPTIMIZE`, `BUDGET`, `FINOPS`. Creation requests such as "create a data pipeline" are first passed through `intent_resolver.py`, which creates a requirements-first path without generating or deploying infrastructure. You may also call any tool directly.
 
 ### 3.1 Project-local decision skills
 
