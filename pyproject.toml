@@ -123,4 +123,14 @@ core = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# --basetemp: pytest's default basetemp under %TEMP% can end up ACL-broken on Windows (takeown
+# cannot repair it), and every test then errors at setup with PermissionError. A repo-local
+# basetemp sidesteps it entirely and is already gitignored.
+# -m "not slow": the 16-module Terraform baseline runs 16 sequential `terraform init` +
+# `terraform test` cycles and takes 9+ minutes, which is why the suite was never once seen
+# green end to end. It is deselected by default and run explicitly in CI:
+#     python -m pytest -m slow
+addopts = "-q --basetemp=.pytest_tmp -m 'not slow'"
+markers = [
+    "slow: real-Terraform tests that init/plan against live providers (minutes, not seconds)",
+]

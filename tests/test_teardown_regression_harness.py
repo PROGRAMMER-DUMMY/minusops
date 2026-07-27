@@ -35,6 +35,8 @@ import subprocess
 
 import pytest
 
+
+
 import architecture_decision as archdec
 import modules as module_registry
 import schema_lint
@@ -45,7 +47,12 @@ import toolpath
 
 TERRAFORM = toolpath.find_tool("terraform")
 
-pytestmark = pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+# Live Terraform: minutes, not seconds. Deselected from the default run (pyproject
+# addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = [
+    pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed"),
+    pytest.mark.slow,
+]
 
 _CANNOT_PLAN_STANDALONE = g6test._CANNOT_PLAN_STANDALONE
 _DUMMY_AWS_PROVIDER = g6test._DUMMY_AWS_PROVIDER

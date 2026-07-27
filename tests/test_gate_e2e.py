@@ -23,7 +23,12 @@ import toolpath
 
 TERRAFORM = toolpath.find_tool("terraform")
 
-pytestmark = pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+# Real terraform init/plan/apply against live providers: minutes, not seconds. Deselected from
+# the default run (see pyproject addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = [
+    pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed"),
+    pytest.mark.slow,
+]
 
 MAIN_TF = """terraform {
   required_version = ">= 1.4.0"

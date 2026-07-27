@@ -9,6 +9,11 @@ import os
 
 import pytest
 
+
+# Live Terraform/provider-schema access: minutes, not seconds. Deselected from the
+# default run (see pyproject addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = pytest.mark.slow
+
 import knowledge_degradation
 import knowledge_store
 import toolpath

@@ -608,6 +608,10 @@ def _plan_json_events(output_text):
             yield evt["test_plan"]
 
 
+# 16 sequential `terraform init` + `terraform test` cycles -- 9+ minutes, and the sole reason
+# this suite was never once observed green end to end. Deselected by default via addopts;
+# run explicitly with `python -m pytest -m slow`, which CI does.
+@pytest.mark.slow
 @pytest.mark.parametrize("module_id", _all_module_ids())
 def test_every_current_module_plans_as_create_only(module_id, tmp_path):
     src = os.path.join(MODULES_DIR, module_id)

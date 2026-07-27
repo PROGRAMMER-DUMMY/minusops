@@ -4,6 +4,11 @@ same discipline as test_schema_watch.py. Skips if terraform isn't installed.
 """
 import pytest
 
+
+# Live Terraform/provider-schema access: minutes, not seconds. Deselected from the
+# default run (see pyproject addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = pytest.mark.slow
+
 import knowledge_diff
 import toolpath
 

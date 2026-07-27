@@ -13,6 +13,11 @@ import json
 
 import pytest
 
+
+# Live Terraform/provider-schema access: minutes, not seconds. Deselected from the
+# default run (see pyproject addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = pytest.mark.slow
+
 import module_provenance
 import modules as module_registry
 import toolpath
