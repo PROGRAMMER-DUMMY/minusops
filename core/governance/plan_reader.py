@@ -61,6 +61,21 @@ def read_resource_changes(plan_json, treat_absent_as_error):
     return raw, None
 
 
+def resource_drift(plan_json):
+    """Objects Terraform found changed OUTSIDE Terraform, from the plan's top-level
+    `resource_drift` array.
+
+    Absent is normal and means "no drift detected", NOT an error -- unlike resource_changes,
+    where absence is a fail-closed signal (see read_resource_changes). Terraform only emits
+    this key when a refresh actually found something, so treating absence as an error would
+    make every clean plan look broken.
+    """
+    drift = (plan_json or {}).get("resource_drift")
+    if not isinstance(drift, list):
+        return []
+    return drift
+
+
 def managed_only(resource_changes):
     """Filter to managed resource changes, reporting malformed entries distinctly rather than
     silently dropping or crashing on them. Returns (managed_list, malformed_entries) where each
