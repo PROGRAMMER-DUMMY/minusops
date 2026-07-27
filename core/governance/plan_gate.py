@@ -62,6 +62,8 @@ import toolpath  # noqa: E402
 import audit_chain  # noqa: E402
 import authz  # noqa: E402
 import destructive_change_gate  # noqa: E402
+import cloud_drift  # noqa: E402
+import address_churn  # noqa: E402
 import optimize_analyzer  # noqa: E402
 import rego_gate  # noqa: E402
 import intent_assertions  # noqa: E402
@@ -93,6 +95,25 @@ def _audit(action, status, **extra):
         audit_chain.append(os.path.join(LOG_DIR, "audit.jsonl"), rec)
     except Exception as e:
         print(f"[gate] WARNING: could not write audit record: {e}", file=sys.stderr)
+
+
+def _write_json_atomic(path, payload):
+    """Write gate state so a crash can never leave it truncated.
+
+    open(path, "w") truncates immediately, so a process killed mid-write destroys the
+    pending plan or the approval record outright. os.replace is atomic on POSIX and
+    Windows alike.
+
+    # ponytail: fixes torn writes, NOT lost updates -- two operators planning the same
+    # dir concurrently can still have one pending_plan.json overwrite the other. Wrap
+    # in audit_chain._AppendLock if concurrent operators become real.
+    """
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def _canonical_dir(dir_):
@@ -765,8 +786,7 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
         _audit("plan", "FAILED", reason="hash", dir=dir_, destroy=destroy)
         return False
     os.makedirs(_state_dir(dir_), exist_ok=True)
-    with open(_pending_path(dir_), "w", encoding="utf-8") as f:
-        json.dump({
+    _write_json_atomic(_pending_path(dir_), {
             "plan_hash": h,
             "dir": dir_,
             "canonical_dir": _canonical_dir(dir_),
@@ -778,7 +798,7 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
             "planner": authz.verified_operator() or authz.operator(),
             "created": _now(),
             "destroy": destroy,
-        }, f, indent=2)
+    })
     _clear_approvals(dir_)  # a new plan for this dir invalidates prior approvals
     print(f"[gate] plan saved. plan_hash = {h[:16]}...")
 
@@ -837,8 +857,29 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     except Exception:
         pending_for_update = {}
     pending_for_update["g9_result"] = g9_result
-    with open(_pending_path(dir_), "w", encoding="utf-8") as f:
-        json.dump(pending_for_update, f, indent=2)
+
+    # Issue #1 / decision #13: did the CLOUD change outside Terraform, and does this plan
+    # undo it? Computed here from the same plan JSON, carried to apply like g9_result.
+    drift_result = cloud_drift.classify(plan_json_for_g6 or {})
+    print(cloud_drift.format_result(drift_result))
+    pending_for_update["cloud_drift"] = drift_result
+
+    # Issue #2 / decision #15: a rename-shaped destroy+create of a STATEFUL resource is data
+    # loss wearing an ordinary update's clothes. Blocks the PLAN outright rather than
+    # deferring to apply -- unlike the auto-approve checks, there is no mode in which
+    # silently destroying a bucket is the intended outcome, so a human reviewing it at
+    # approve time is not a sufficient answer. The fix is one `moved` block.
+    churn_result = address_churn.classify(
+        plan_json_for_g6 or {}, moved_blocks=address_churn.read_moved_blocks(dir_))
+    pending_for_update["address_churn"] = churn_result
+    _write_json_atomic(_pending_path(dir_), pending_for_update)
+    if churn_result["blocked"]:
+        print(address_churn.format_result(churn_result), file=sys.stderr)
+        _audit("plan", "REJECTED", reason="rename_shaped_address_churn", dir=dir_,
+               destroy=destroy, address_churn=churn_result)
+        return False
+    if churn_result["advisory"]:
+        print(address_churn.format_result(churn_result))
 
     # Phase 4 (docs/phase4_scope.md, G3/G4): intent-vs-reality advisory checks. ADVISORY ONLY --
     # never blocks stage_plan, same shadow discipline as G6. requirements.json/architecture_
@@ -1024,10 +1065,12 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
         # phase6_step1_authoring_scope.md section 3): stage_apply's auto-approve enforcement
         # reads this rather than re-running a real, expensive ephemeral-apply cycle.
         "g9_result": pending.get("g9_result"),
+        # Same carry-forward: the reviewer approved a plan whose out-of-band-revert status was
+        # known at plan time; apply enforces against that recorded verdict.
+        "cloud_drift": pending.get("cloud_drift"),
     }
     os.makedirs(_approval_dir(dir_), exist_ok=True)
-    with open(_approved_path(dir_, h), "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2)
+    _write_json_atomic(_approved_path(dir_, h), record)
     print("[gate] approved — bound to this plan hash. (No credentials stored.)")
     _audit("approve", "APPROVED", plan_hash=h, dir=dir_, identity=account, approver=approver, authz_mode=authz_mode)
     return True
@@ -1048,6 +1091,30 @@ def _reject_if_audit_chain_tampered():
     print(f"[gate] Investigate {audit_path} before proceeding — do not delete/reset it to "
           "bypass this check.", file=sys.stderr)
     _audit("apply", "REJECTED", reason="audit_chain_tampered", errors=errors[:5])
+    return True
+
+
+def _reject_if_reverts_out_of_band_and_auto_approve(dir_, mode, drift_result, destroy):
+    """Same hard, non-overridable shape as the destructive check below, and for the same
+    reason: auto-approve means nobody looks. A plan that silently undoes a change someone
+    made directly in the account -- an emergency permission fix, a hand-widened security
+    group -- is exactly the case a human must see. Terraform renders it as an ordinary
+    `update`, so without this it sails through unreviewed.
+
+    Drift the plan does NOT revert is advisory only; nothing is being undone, so it prints
+    but never blocks.
+    """
+    if mode != "auto-approve" or not drift_result.get("reverts_out_of_band_changes"):
+        return False
+    print("[gate] REFUSING auto-approve apply — this plan reverts changes made outside "
+          "Terraform:", file=sys.stderr)
+    for row in drift_result["reverted"]:
+        print(f"  - {row['address']}: {', '.join(row['attributes'])}", file=sys.stderr)
+    print("[gate] Someone changed these directly in the account. Re-run with --mode gatekeeper "
+          "so a human can confirm the revert is intended. There is no bypass flag.",
+          file=sys.stderr)
+    _audit("apply", "REJECTED", reason="plan_reverts_out_of_band_changes", dir=dir_,
+           destroy=destroy, cloud_drift=drift_result)
     return True
 
 
@@ -1165,6 +1232,12 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
         return False  # approval kept; apply as the identity that actually approved this
 
     if _reject_if_destructive_and_auto_approve(dir_, mode, classification, destroy):
+        return False  # approval kept; re-run apply with --mode gatekeeper for human review
+
+    # Computed from the approved plan JSON, not re-read from the cloud -- same "decided once
+    # at plan, enforced at apply" shape the other checks use.
+    if _reject_if_reverts_out_of_band_and_auto_approve(
+            dir_, mode, approval.get("cloud_drift") or {}, destroy):
         return False  # approval kept; re-run apply with --mode gatekeeper for human review
 
     if _reject_if_g9_not_clean_and_auto_approve(dir_, mode, approval.get("g9_result"), destroy):

@@ -24,6 +24,16 @@ REPORTS = WORKSPACE / "artifacts" / "reports"
 SKIP_DIRS = {".terraform", ".git", "__pycache__"}
 SOURCE_SUFFIXES = {".tf", ".tfvars", ".py", ".md", ".yaml", ".yml", ".json"}
 SOURCE_NAMES = {"README.md"}
+# Hashed for drift detection, but never COPIED into a report bundle: .tfvars and backend
+# config routinely hold db passwords / tokens, and report bundles get served by the
+# dashboard and shipped by `minusctl package`. The digest is what proves non-drift, so
+# provenance is unaffected by withholding the bytes.
+SECRET_SUFFIXES = {".tfvars"}
+SECRET_NAMES = {"backend.hcl"}
+
+
+def is_secret_prone(path):
+    return Path(path).suffix in SECRET_SUFFIXES or Path(path).name in SECRET_NAMES
 
 # Service/file-hint naming now comes from core/cost/pricing_data/{aws_resource_map,free_resources}.json
 # via pricing_catalog — this used to be a second, independent copy of the same lookup table that
@@ -51,8 +61,11 @@ def iter_source_files(source_dir):
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        parts = set(path.parts)
-        if parts & SKIP_DIRS:
+        # Skip-dirs must be matched against the path RELATIVE to root, not its absolute
+        # parts: an absolute workspace path that happens to contain a component named
+        # .git / __pycache__ / .minus made this skip every file, silently hashing nothing
+        # and blinding source-drift detection. Matches source_guard.iter_source_files.
+        if set(path.relative_to(root).parts) & SKIP_DIRS:
             continue
         if path.name in {"tfplan", ".terraform.lock.hcl"}:
             continue
@@ -77,10 +90,11 @@ def write_source_snapshot(source_dir, report_dir):
     hashes = {}
     for path in iter_source_files(source_dir):
         rel = path.relative_to(source_dir)
-        target = snapshot_dir / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
         data = path.read_bytes()
-        target.write_bytes(data)
+        if not is_secret_prone(path):
+            target = snapshot_dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
         hashes[str(rel).replace("\\", "/")] = _sha256_bytes(data)
     (report_dir / "source_hashes.json").write_text(json.dumps(hashes, indent=2), encoding="utf-8")
     return hashes
