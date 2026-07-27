@@ -663,12 +663,59 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
     }
 
 
-def _ensure_empty_or_overwrite(terraform_dir, overwrite=False):
+# Files MinusOps writes and therefore owns. Everything else a team drops in the workspace is
+# theirs. Terraform loads every .tf in a directory, so a team's ADDITIONS need no merge at
+# all -- which is why this is a naming convention rather than a merge engine.
+GENERATED_FILES = frozenset({
+    "main.tf", "variables.tf", "versions.tf", "providers.tf", "provider.tf", "outputs.tf",
+    "locals.tf", "minus-generated.json",
+})
+# Regenerable or operational, never a team's source of truth.
+_IGNORED_ENTRIES = frozenset({
+    ".terraform", ".terraform.lock.hcl", ".minus", "tfplan",
+    "terraform.tfstate", "terraform.tfstate.backup",
+})
+
+
+def _is_generated(name):
+    return name in GENERATED_FILES or name.startswith("authored_") or name.startswith("generated_")
+
+
+def team_owned_files(terraform_dir):
+    """The team's own .tf files in a generated workspace -- theirs, never rewritten.
+
+    A team that adds one CloudWatch alarm previously had to choose between blocking
+    regeneration forever and losing the alarm. Now their files simply are not ours.
+    """
     if not os.path.isdir(terraform_dir):
+        return []
+    return sorted(
+        name for name in os.listdir(terraform_dir)
+        if name.endswith(".tf") and not _is_generated(name) and name not in _IGNORED_ENTRIES
+    )
+
+
+def _ensure_empty_or_overwrite(terraform_dir, overwrite=False):
+    """Refuse only on what we cannot account for.
+
+    Generated files are ours to rewrite. A team's own .tf files are preserved untouched.
+    Anything else -- a stray archive, a half-finished checkout -- is unexplained, so a human
+    still looks before we write over the directory. Fail-safe, not fail-closed-on-everything.
+    """
+    if not os.path.isdir(terraform_dir) or overwrite:
         return
-    entries = [name for name in os.listdir(terraform_dir) if name not in {".terraform"}]
-    if entries and not overwrite:
-        raise ValueError(f"terraform directory is not empty: {terraform_dir}; pass --overwrite after review")
+    unexplained = [
+        name for name in os.listdir(terraform_dir)
+        if name not in _IGNORED_ENTRIES
+        and not _is_generated(name)
+        and not name.endswith(".tf")
+    ]
+    if unexplained:
+        raise ValueError(
+            f"terraform directory has files MinusOps cannot account for: "
+            f"{', '.join(sorted(unexplained))} (in {terraform_dir}). Generated files are "
+            f"rewritten and your own .tf files are preserved, but these are neither -- "
+            f"review, then pass --overwrite.")
 
 
 def _write_manifest(terraform_dir, result, requirements_text, decision=None):
