@@ -8,12 +8,18 @@ bi-temporal model or the freshness clause resolve() depends on (see resolve()'s 
 """
 import datetime
 import hashlib
+import json
+import os
 import sqlite3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS claims (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    resource_type   TEXT NOT NULL,
+    scope           TEXT NOT NULL DEFAULT 'schema',
+    -- NULL only for cross-cutting scopes (architecture/practice/template): knowledge like
+    -- "sub-second latency -> Kinesis, not batch Glue" is not about one resource type.
+    -- insert_claim() still requires it for scope='schema'/'pricing_map'.
+    resource_type   TEXT,
     attribute       TEXT,
     claim_text      TEXT NOT NULL,
     method          TEXT NOT NULL,
@@ -30,7 +36,7 @@ CREATE TABLE IF NOT EXISTS claims (
     invalidated_by  INTEGER REFERENCES claims(id),
     content_hash    TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_claims_lookup ON claims(resource_type, attribute);
+CREATE INDEX IF NOT EXISTS idx_claims_lookup ON claims(scope, resource_type, attribute);
 CREATE TABLE IF NOT EXISTS claim_adjudications (
     verdict_claim_id     INTEGER NOT NULL REFERENCES claims(id),
     adjudicated_claim_id INTEGER NOT NULL REFERENCES claims(id),
@@ -39,10 +45,25 @@ CREATE TABLE IF NOT EXISTS claim_adjudications (
 """
 
 
+# What KIND of knowledge a claim is. Only the resource-scoped ones can have their staleness
+# derived from provider schema drift (knowledge_degradation); the cross-cutting ones have no
+# attribute whose schema can move, so they are superseded only by agent adjudication.
+SCOPES = frozenset({"schema", "pricing_map", "architecture", "practice", "template"})
+RESOURCE_SCOPED = frozenset({"schema", "pricing_map"})
+DEFAULT_SCOPE = "schema"
+
+
 def init_db(path):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Two agent sessions researching at once must not collide. WAL lets a reader keep working
+    # while a write is in flight (the default rollback journal blocks it outright). Skipped for
+    # :memory:, which has no journal file and reports "memory".
+    # busy_timeout is already 5000ms via sqlite3.connect()'s own `timeout` default -- asserted
+    # in tests so it can't be silently dropped to 0.
+    if path != ":memory:":
+        conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(_SCHEMA)
     conn.commit()
     return conn
@@ -55,15 +76,29 @@ def _content_hash(resource_type, attribute, claim_text, provider_version):
 
 def insert_claim(conn, *, resource_type, attribute, claim_text, method, source_type, provider,
                   valid_from, observed_at, source_url=None, provider_version=None,
-                  confidence=None, ingested_at=None, commit=True):
+                  confidence=None, ingested_at=None, commit=True, scope=DEFAULT_SCOPE):
+    """`scope` classifies what KIND of knowledge this is (see SCOPES).
+
+    Validated here rather than by a CHECK constraint so a typo'd scope raises at the call
+    site with a readable message: a claim filed under a scope nothing queries is invisible
+    knowledge, which is worse than no claim at all.
+
+    resource_type is required for the per-type scopes and must be None-able only for the
+    cross-cutting ones -- a 'schema' claim about no particular resource type is incoherent.
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"insert_claim: unknown scope {scope!r} -- expected one of {sorted(SCOPES)}")
+    if scope in RESOURCE_SCOPED and not resource_type:
+        raise ValueError(f"insert_claim: scope={scope!r} requires a resource_type")
     ingested_at = ingested_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
     content_hash = _content_hash(resource_type, attribute, claim_text, provider_version)
     cursor = conn.execute(
         """INSERT INTO claims
-           (resource_type, attribute, claim_text, method, source_type, source_url, provider,
-            provider_version, confidence, valid_from, observed_at, ingested_at, content_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (resource_type, attribute, claim_text, method, source_type, source_url, provider,
+           (scope, resource_type, attribute, claim_text, method, source_type, source_url,
+            provider, provider_version, confidence, valid_from, observed_at, ingested_at,
+            content_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (scope, resource_type, attribute, claim_text, method, source_type, source_url, provider,
          provider_version, confidence, valid_from, observed_at, ingested_at, content_hash),
     )
     if commit:
@@ -243,3 +278,93 @@ def resolve(conn, resource_type, attribute=None):
                 "reason": "schema_observed_same_or_more_recently_than_non_schema_claim"}
     return {"status": "needs_review", "winner": None, "claims": claims,
             "reason": "no_ground_truth_arbiter"}
+
+
+# --- JSONL: the source of truth; claims.db is a rebuildable cache -------------------
+# Committed to git so a fact that grounds infrastructure is reviewed in a PR rather than
+# appearing silently in one engineer's local database. Sharded per resource type so two
+# people researching different types never touch the same file.
+_CLAIM_COLUMNS = ("id", "scope", "resource_type", "attribute", "claim_text", "method",
+                  "source_type", "source_url", "provider", "provider_version", "confidence",
+                  "valid_from", "valid_until", "observed_at", "ingested_at", "invalidated_at",
+                  "invalidated_by", "content_hash")
+_ADJUDICATIONS_FILE = "_adjudications.jsonl"
+
+
+def shard_name(scope, resource_type):
+    """Resource-scoped claims shard by type; cross-cutting ones by scope (leading underscore
+    keeps them from ever colliding with a real resource type name)."""
+    if scope in RESOURCE_SCOPED and resource_type:
+        return f"{resource_type}.jsonl"
+    return f"_{scope}.jsonl"
+
+
+def export_jsonl(conn, root):
+    """Write every claim to <root>/<shard>.jsonl, sorted by id for a stable diff.
+
+    # ponytail: ids are exported verbatim, which is correct for the real use case (rebuild
+    # this machine's cache) but NOT for merging two branches that both allocated id 7.
+    # Switch the cross-references to content_hash if concurrent branch authoring happens.
+    """
+    os.makedirs(root, exist_ok=True)
+    shards = {}
+    for row in conn.execute(f"SELECT {','.join(_CLAIM_COLUMNS)} FROM claims ORDER BY id"):
+        record = {c: row[c] for c in _CLAIM_COLUMNS}
+        shards.setdefault(shard_name(row["scope"], row["resource_type"]), []).append(record)
+    for name, records in shards.items():
+        with open(os.path.join(root, name), "w", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record, sort_keys=True) + "\n")
+
+    pairs = conn.execute(
+        "SELECT verdict_claim_id, adjudicated_claim_id FROM claim_adjudications "
+        "ORDER BY verdict_claim_id, adjudicated_claim_id").fetchall()
+    path = os.path.join(root, _ADJUDICATIONS_FILE)
+    if pairs:
+        with open(path, "w", encoding="utf-8") as f:
+            for p in pairs:
+                f.write(json.dumps({"verdict_claim_id": p["verdict_claim_id"],
+                                    "adjudicated_claim_id": p["adjudicated_claim_id"]}) + "\n")
+    elif os.path.exists(path):
+        os.remove(path)
+    return sorted(shards)
+
+
+def import_jsonl(conn, root):
+    """Rebuild the cache from JSONL. Idempotent: the cache is derived, never appended to,
+    so importing twice must not duplicate anything (INSERT OR IGNORE on the primary key)."""
+    if not os.path.isdir(root):
+        return 0
+    # A claim's invalidated_by points at the claim that superseded it, which may be written
+    # later in the file (or in another shard). Defer FK enforcement to commit time rather than
+    # ordering the inserts by dependency -- SQLite's own mechanism for exactly this.
+    conn.execute("PRAGMA defer_foreign_keys = ON")
+    placeholders = ",".join("?" * len(_CLAIM_COLUMNS))
+    imported = 0
+    for name in sorted(os.listdir(root)):
+        if not name.endswith(".jsonl") or name == _ADJUDICATIONS_FILE:
+            continue
+        with open(os.path.join(root, name), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                conn.execute(
+                    f"INSERT OR IGNORE INTO claims ({','.join(_CLAIM_COLUMNS)}) "
+                    f"VALUES ({placeholders})",
+                    tuple(record.get(c) for c in _CLAIM_COLUMNS))
+                imported += 1
+    adj = os.path.join(root, _ADJUDICATIONS_FILE)
+    if os.path.exists(adj):
+        with open(adj, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    record = json.loads(line)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO claim_adjudications "
+                        "(verdict_claim_id, adjudicated_claim_id) VALUES (?, ?)",
+                        (record["verdict_claim_id"], record["adjudicated_claim_id"]))
+    conn.commit()
+    return imported

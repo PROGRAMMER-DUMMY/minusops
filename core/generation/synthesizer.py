@@ -136,6 +136,58 @@ def write_authoring_record(run, resource_type, justification, schema_block, grou
 # the HCL itself, and hands it back through the SAME `authored_content` interface every other
 # caller of synthesize() already uses. Nothing about that interface changes -- this only answers
 # "where does an authoring agent get the schema+grounding it needs," not "who authors."
+def _claims_db_path():
+    return os.path.join(module_registry.output_root(), "knowledge", "claims.db")
+
+
+def _claims_conn():
+    """The local claim cache, or None when this workspace has no corpus yet.
+
+    Never creates the DB: an adopter who has never recorded a claim gets schema + grounding
+    and an empty claims list, not a surprise file. Rebuild the cache from the committed
+    knowledge/claims/*.jsonl with knowledge_store.import_jsonl().
+    """
+    import knowledge_store
+    path = _claims_db_path()
+    if not os.path.exists(path):
+        return None
+    try:
+        return knowledge_store.init_db(path)
+    except Exception:
+        return None
+
+
+def _grounding_claims(resource_type):
+    """What MinusOps already verified, for the agent to author against.
+
+    Two kinds, deliberately: claims about THIS resource type, plus the cross-cutting
+    architecture/practice/template knowledge that has no resource_type at all -- the latter
+    is the "best architectures and developer practices" grounding, and filtering it out
+    because it lacks a resource_type would drop the most reusable knowledge in the store.
+
+    INFORMS ONLY. Nothing here grants permission to ship; that stays with an executable
+    Rego rule plus human promotion. A wrong claim can mislead an agent (caught downstream
+    by G2/G5/G6); it can never auto-approve infrastructure.
+    """
+    conn = _claims_conn()
+    if conn is None:
+        return []
+    import knowledge_store
+    try:
+        cross = ",".join("?" * len(knowledge_store.RESOURCE_SCOPED))
+        rows = conn.execute(
+            f"SELECT scope, resource_type, attribute, claim_text, source_type, source_url, "
+            f"       method, confidence, provider_version, valid_from, observed_at "
+            f"FROM claims WHERE valid_until IS NULL "
+            f"  AND (resource_type = ? OR scope NOT IN ({cross})) "
+            f"ORDER BY observed_at DESC, id DESC",
+            (resource_type, *sorted(knowledge_store.RESOURCE_SCOPED)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def assemble_authoring_context(resource_type, justification, requirements_text, provider="aws"):
     """Returns {resource_type, justification, schema, grounding_examples, blocked, detail}.
 
@@ -151,13 +203,14 @@ def assemble_authoring_context(resource_type, justification, requirements_text, 
     if schema_block is None:
         return {
             "resource_type": resource_type, "justification": justification,
-            "schema": None, "grounding_examples": [], "blocked": True,
+            "schema": None, "grounding_examples": [], "claims": [], "blocked": True,
             "detail": f"resource_type '{resource_type}' does not exist in the live provider schema",
         }
     grounding_examples = module_registry.retrieve_grounding_examples(requirements_text)
     return {
         "resource_type": resource_type, "justification": justification,
         "schema": schema_block, "grounding_examples": grounding_examples,
+        "claims": _grounding_claims(resource_type),
         "blocked": False, "detail": "",
     }
 
