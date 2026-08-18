@@ -1,22 +1,27 @@
 name: "MinusOps PR Reviewer"
 description: >-
-  Plan a Terraform directory under the MinusOps gate and post the review to the PR:
-  planned changes, SEC findings, the architecture diagram, and BCM cost status.
+  Run the full MinusOps review on a Terraform directory and post it to the PR: gate verify,
+  a plan under read-only OIDC, BCM cost preparation, and the 5-gate Stage Reflector.
 
-# Why a composite action and not a workflow: a reviewer is something each repo wires into its
-# own PR workflow next to its own build steps. Shipping it as a workflow would force our
-# trigger conditions and concurrency rules onto them.
+# Composite, not a reusable workflow: a reviewer belongs next to each repo's own build steps,
+# and shipping it as a workflow would force our triggers and concurrency onto them.
 #
-# What this action deliberately does NOT do:
+# What this deliberately does NOT do:
 #   - apply anything. It plans. The apply path stays in deploy.yml behind the environment gate.
-#   - invent a cost number. If BCM evidence is absent the comment says "cost unavailable" and
-#     prints the command that would produce it. A plausible-looking made-up figure in a PR
-#     comment is worse than no figure, because reviewers believe it.
+#   - invent a cost. Absent BCM evidence renders "unavailable" plus the command that produces
+#     it. A plausible-looking figure in a PR comment gets believed.
+#   - treat the reflector's `unknown` as a pass. A gate that could not run has approved nothing.
 
 inputs:
   tf_dir:
     description: "Terraform directory to review (relative to the repo root)"
     required: true
+  run_root:
+    description: >-
+      Run workspace holding requirements.json and reports/ (defaults to tf_dir's parent).
+      The reflector's scope and cost gates read from here.
+    required: false
+    default: ""
   role_to_assume:
     description: >-
       READ-ONLY AWS role ARN for OIDC. A plan needs read access and nothing more; give this
@@ -24,13 +29,16 @@ inputs:
     required: false
     default: ""
   aws_region:
-    description: "AWS region for the plan"
     required: false
     default: "us-east-1"
   policy_mode:
     description: "standard | production (production additionally requires an external scanner)"
     required: false
     default: "standard"
+  budget_usd:
+    description: "Monthly ceiling to diff the BCM forecast against. Blank reads it from requirements.json."
+    required: false
+    default: ""
   terraform_version:
     required: false
     default: "1.10.5"
@@ -38,7 +46,7 @@ inputs:
     required: false
     default: "3.12"
   comment:
-    description: "Post the review as a PR comment. Set false to only produce the artifacts."
+    description: "Post the review as a PR comment. false produces the artifacts only."
     required: false
     default: "true"
   github_token:
@@ -49,10 +57,10 @@ inputs:
 outputs:
   verdict:
     description: "pass | blocked"
-    value: ${{ steps.review.outputs.verdict }}
-  report_dir:
-    description: "Path to the generated report bundle, if one was produced"
-    value: ${{ steps.review.outputs.report_dir }}
+    value: ${{ steps.reflect.outputs.verdict }}
+  plan_hash:
+    description: "SHA-256 of the reviewed plan, the value the merge gate re-verifies"
+    value: ${{ steps.plan.outputs.plan_hash }}
 
 runs:
   using: "composite"
@@ -66,8 +74,8 @@ runs:
         terraform_version: ${{ inputs.terraform_version }}
         terraform_wrapper: false
 
-    # Credentials are optional on purpose: `verify` (fmt, validate, SEC scan) needs none, so a
-    # fork PR still gets a real security review even with no role configured.
+    # Credentials are optional on purpose: `verify` needs none, so a fork PR still gets a real
+    # security review even with no role configured. It just does not get a plan.
     - name: Configure AWS credentials (OIDC, read-only)
       if: ${{ inputs.role_to_assume != '' }}
       uses: aws-actions/configure-aws-credentials@v4
@@ -75,111 +83,111 @@ runs:
         role-to-assume: ${{ inputs.role_to_assume }}
         aws-region: ${{ inputs.aws_region }}
 
-    - name: Verify, plan, and collect evidence
-      id: review
+    - name: Verify (fmt, validate, security scan)
+      id: verify
       shell: bash
       env:
         TF_DIR: ${{ inputs.tf_dir }}
         POLICY_MODE: ${{ inputs.policy_mode }}
-        HAS_AWS: ${{ inputs.role_to_assume != '' }}
       run: |
         set -uo pipefail
         mkdir -p .minus-review
-
-        # Static gate first. This is the part that must run for every PR, credentials or not.
         python core/governance/plan_gate.py verify --dir "$TF_DIR" \
           --policy-mode "$POLICY_MODE" > .minus-review/verify.txt 2>&1
-        VERIFY_RC=$?
+        echo "rc=$?" >> "$GITHUB_OUTPUT"
+        tail -n 20 .minus-review/verify.txt
 
-        # Scan output separately: the gate's pass/fail is a verdict, the report is the detail
-        # a reviewer actually reads.
-        python core/reporting/optimize_analyzer.py --source-dir "$TF_DIR" \
-          > .minus-review/scan.txt 2>&1 || true
+    - name: Plan (record the hash)
+      id: plan
+      if: ${{ inputs.role_to_assume != '' }}
+      shell: bash
+      env:
+        TF_DIR: ${{ inputs.tf_dir }}
+      run: |
+        set -uo pipefail
+        python core/governance/plan_gate.py plan --dir "$TF_DIR" > .minus-review/plan.txt 2>&1 || true
+        # The hash comes from the gate's own record, not scraped from log text: the log prints
+        # a truncated prefix, and the merge gate compares full digests.
+        python - <<'PY' >> "$GITHUB_OUTPUT"
+        import glob, json, os
+        target = os.path.abspath(os.environ["TF_DIR"])
+        for path in glob.glob(".agents/logs/plan_gate/*/pending_plan.json"):
+            try:
+                record = json.load(open(path, encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if os.path.abspath(record.get("dir", "")) == target:
+                print(f"plan_hash={record.get('plan_hash', '')}")
+                break
+        else:
+            print("plan_hash=")
+        PY
 
-        PLAN_RC=0
-        if [ "$HAS_AWS" = "true" ]; then
-          python core/governance/plan_gate.py plan --dir "$TF_DIR" \
-            > .minus-review/plan.txt 2>&1
-          PLAN_RC=$?
+    - name: BCM cost preparation
+      id: bcm
+      if: ${{ inputs.role_to_assume != '' && steps.plan.outputs.plan_hash != '' }}
+      shell: bash
+      env:
+        RUN_ROOT: ${{ inputs.run_root }}
+        TF_DIR: ${{ inputs.tf_dir }}
+        PLAN_HASH: ${{ steps.plan.outputs.plan_hash }}
+      run: |
+        set -uo pipefail
+        ROOT="${RUN_ROOT:-$(dirname "$TF_DIR")}"
+        REPORT="$ROOT/reports/${PLAN_HASH:0:12}"
+        if [ -d "$REPORT" ]; then
+          python core/cost/bcm_pricing_calculator.py prepare --report-dir "$REPORT" \
+            > .minus-review/bcm.txt 2>&1 || true
+          echo "estimate=$REPORT/bcm-estimate.json" >> "$GITHUB_OUTPUT"
         else
-          echo "No AWS role configured: static review only, no plan was run." \
-            > .minus-review/plan.txt
+          # No report bundle means the plan step did not get far enough. Say so; do not
+          # fabricate a directory and then report its absence as a cost of zero.
+          echo "no report bundle at $REPORT" > .minus-review/bcm.txt
+          echo "estimate=" >> "$GITHUB_OUTPUT"
         fi
 
-        REPORT_DIR="$(ls -dt artifacts/reports/*/ runs/*/reports/*/ 2>/dev/null | head -1 || true)"
-        echo "report_dir=${REPORT_DIR}" >> "$GITHUB_OUTPUT"
-        if [ "$VERIFY_RC" -ne 0 ] || [ "$PLAN_RC" -ne 0 ]; then
+    - name: Stage Reflector (5 gates)
+      id: reflect
+      shell: bash
+      env:
+        RUN_ROOT: ${{ inputs.run_root }}
+        TF_DIR: ${{ inputs.tf_dir }}
+      run: |
+        set -uo pipefail
+        ROOT="${RUN_ROOT:-$(dirname "$TF_DIR")}"
+        python core/governance/reflector.py --run-root "$ROOT" --dir "$TF_DIR" --json \
+          > .minus-review/reflector.json 2>.minus-review/reflector.err
+        RC=$?
+        python core/governance/reflector.py --run-root "$ROOT" --dir "$TF_DIR" || true
+        if [ "$RC" -eq 2 ] || [ "${{ steps.verify.outputs.rc }}" != "0" ]; then
           echo "verdict=blocked" >> "$GITHUB_OUTPUT"
         else
           echo "verdict=pass" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Build the comment
+    - name: Render the comment
       id: body
       shell: bash
       env:
+        RUN_ROOT: ${{ inputs.run_root }}
         TF_DIR: ${{ inputs.tf_dir }}
-        VERDICT: ${{ steps.review.outputs.verdict }}
-        REPORT_DIR: ${{ steps.review.outputs.report_dir }}
+        PLAN_HASH: ${{ steps.plan.outputs.plan_hash }}
+        BCM_JSON: ${{ steps.bcm.outputs.estimate }}
+        BUDGET: ${{ inputs.budget_usd }}
       run: |
         set -uo pipefail
-        {
-          if [ "$VERDICT" = "pass" ]; then
-            echo "## MinusOps review: passed"
-          else
-            echo "## MinusOps review: BLOCKED"
-          fi
-          echo
-          echo "\`$TF_DIR\`"
-          echo
-          echo "### Gate"
-          echo '```'
-          tail -n 40 .minus-review/verify.txt
-          echo '```'
-          echo
-          echo "### Planned changes"
-          echo '```'
-          # The add/change/destroy line is what a reviewer scans for first.
-          grep -E "Plan:|No changes|plan hash|Error" .minus-review/plan.txt | tail -n 20 \
-            || tail -n 20 .minus-review/plan.txt
-          echo '```'
-          echo
-          echo "### Security scan"
-          echo '```'
-          grep -E "^\| (SEC|COST|OBS|DATA)" .minus-review/scan.txt | head -n 30 \
-            || echo "no findings table produced"
-          echo '```'
-          echo
-          echo "### Cost"
-          if [ -n "$REPORT_DIR" ] && [ -f "${REPORT_DIR}bcm-estimate.json" ]; then
-            python - <<'PY'
-        import json, os
-        p = os.path.join(os.environ["REPORT_DIR"], "bcm-estimate.json")
-        d = json.load(open(p, encoding="utf-8"))
-        total = d.get("totalCost") or d.get("total_cost")
-        print(f"AWS BCM Pricing Calculator estimate: **${total}/month**" if total is not None
-              else "BCM evidence present but carried no total.")
-        PY
-          else
-            # Never guess. An invented number in a PR comment gets believed.
-            echo "**cost unavailable** - no AWS BCM Pricing Calculator evidence for this plan."
-            echo
-            echo "Produce it with:"
-            echo '```'
-            echo "python core/cost/bcm_pricing_calculator.py prepare --report-dir <report> --account-id <account>"
-            echo "python core/cost/bcm_pricing_calculator.py run --report-dir <report> --mode gatekeeper"
-            echo '```'
-          fi
-          echo
-          if [ -n "$REPORT_DIR" ] && [ -f "${REPORT_DIR}architecture.svg" ]; then
-            echo "### Architecture"
-            echo "\`${REPORT_DIR}architecture.svg\` is attached to this run's artifacts."
-            echo "(GitHub does not render SVG in comments; download it from the workflow run.)"
-          fi
-          echo
-          echo "<sub>Posted by the MinusOps PR reviewer. This is a plan, not an apply -- "
-          echo "applying still requires the environment gate and a hash-bound approval.</sub>"
-        } > .minus-review/comment.md
+        ROOT="${RUN_ROOT:-$(dirname "$TF_DIR")}"
+        SVG="$(ls -t "$ROOT"/reports/*/architecture.svg 2>/dev/null | head -1 || true)"
+        python .github/actions/pr-reviewer/comment.py \
+          --verify-log .minus-review/verify.txt \
+          --plan-log .minus-review/plan.txt \
+          --reflector-json .minus-review/reflector.json \
+          ${BCM_JSON:+--bcm-json "$BCM_JSON"} \
+          ${PLAN_HASH:+--plan-hash "$PLAN_HASH"} \
+          ${BUDGET:+--budget-usd "$BUDGET"} \
+          ${SVG:+--svg "$SVG"} \
+          --tf-dir "$TF_DIR" \
+          --out .minus-review/comment.md
 
     - name: Post the comment
       if: ${{ inputs.comment == 'true' && inputs.github_token != '' }}
@@ -187,8 +195,8 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
-        # Edit the existing comment rather than adding one per push: a 40-comment PR is a PR
-        # nobody reads.
+        # Sticky: edit the existing comment rather than appending one per push. A 40-comment
+        # PR is a PR nobody reads.
         gh pr comment "${{ github.event.pull_request.number }}" \
           --body-file .minus-review/comment.md --edit-last --create-if-none
 
@@ -199,6 +207,6 @@ runs:
         name: minusops-review
         path: |
           .minus-review/**
-          artifacts/reports/**
           runs/*/reports/**
+          artifacts/reports/**
         if-no-files-found: ignore

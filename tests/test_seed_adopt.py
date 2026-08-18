@@ -234,11 +234,15 @@ def test_pr_reviewer_is_packaged_and_never_applies():
 
 def test_pr_reviewer_refuses_to_invent_a_cost():
     """A plausible-looking made-up figure in a PR comment is worse than no figure, because
-    reviewers believe it."""
-    action = open(os.path.join(_ROOT, ".github", "actions", "pr-reviewer", "action.yml"),
-                  encoding="utf-8").read()
-    assert "cost unavailable" in action
-    assert "bcm_pricing_calculator.py" in action
+    reviewers believe it.
+
+    The guarantee moved from the action's inline bash into comment.py with MINUS-144; it is
+    asserted in depth in tests/test_pr_reviewer.py, and kept here so the rule survives even
+    if that file is ever narrowed."""
+    renderer = open(os.path.join(_ROOT, ".github", "actions", "pr-reviewer", "comment.py"),
+                    encoding="utf-8").read()
+    assert "unavailable" in renderer
+    assert "bcm_pricing_calculator.py" in renderer
 
 
 def test_pr_workflow_uses_pull_request_not_pull_request_target():

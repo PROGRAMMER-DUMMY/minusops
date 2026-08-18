@@ -21,6 +21,14 @@ on:
         required: false
         default: false
         type: boolean
+      approved_plan_hash:
+        description: >-
+          MINUS-145. The SHA-256 the PR reviewer posted and a human signed off on. When set,
+          the deploy job re-plans and refuses to apply unless the hash it computes now matches
+          this one exactly. Leave blank only for a deploy that was never reviewed through a PR.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -115,7 +123,54 @@ jobs:
       # prompt, never the hash binding). Apply -> re-checks the hash and applies the
       # EXACT reviewed tfplan, or refuses. Every stage is appended to the audit log.
       - name: Plan (record plan hash)
-        run: python core/governance/plan_gate.py plan --dir "${{ inputs.tf_dir }}"
+        id: plan
+        run: |
+          python core/governance/plan_gate.py plan --dir "${{ inputs.tf_dir }}"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import glob, json, os
+          target = os.path.abspath("${{ inputs.tf_dir }}")
+          for path in glob.glob(".agents/logs/plan_gate/*/pending_plan.json"):
+              try:
+                  record = json.load(open(path, encoding="utf-8"))
+              except (OSError, ValueError):
+                  continue
+              if os.path.abspath(record.get("dir", "")) == target:
+                  print(f"plan_hash={record.get('plan_hash', '')}")
+                  break
+          else:
+              print("plan_hash=")
+          PY
+
+      # MINUS-145. The plan gate already refuses to apply a tfplan that drifted from the one it
+      # recorded. This is the other half: it checks the plan recorded HERE against the hash a
+      # human approved on the PR. Without it, a merge that changed the Terraform still applies
+      # cleanly -- the gate would be verifying this run against its own fresh plan, which always
+      # matches, and the reviewer's sign-off would bind to nothing.
+      - name: Re-verify the approved plan hash
+        if: ${{ inputs.approved_plan_hash != '' }}
+        env:
+          APPROVED: ${{ inputs.approved_plan_hash }}
+          COMPUTED: ${{ steps.plan.outputs.plan_hash }}
+        run: |
+          if [ -z "$COMPUTED" ]; then
+            echo "::error::no plan hash was recorded for ${{ inputs.tf_dir }} -- refusing to apply"
+            exit 1
+          fi
+          if [ "$APPROVED" != "$COMPUTED" ]; then
+            echo "::error::plan hash mismatch -- the reviewed plan is not the plan on main."
+            echo "  approved on the PR : $APPROVED"
+            echo "  computed on main   : $COMPUTED"
+            echo "Re-run the PR reviewer on the merged commit and get a fresh sign-off."
+            exit 1
+          fi
+          echo "Plan hash matches the PR sign-off: $COMPUTED"
+
+      # An unreviewed deploy is allowed, but it is never silent: the run log has to say that
+      # nothing bound this apply to a human-reviewed plan.
+      - name: Warn on an unreviewed deploy
+        if: ${{ inputs.approved_plan_hash == '' }}
+        run: |
+          echo "::warning::approved_plan_hash was not supplied -- this apply is bound to no PR sign-off."
       - name: Approve (hash-bound; human gate already passed)
         run: python core/governance/plan_gate.py approve --dir "${{ inputs.tf_dir }}" --mode auto-approve
       - name: Apply (exact approved plan only)
