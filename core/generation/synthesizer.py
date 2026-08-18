@@ -1200,6 +1200,18 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
     _w("variables.tf", _render_variables(present_ids))
     _w("main.tf", _render_main(chosen, present_ids, monthly_budget_usd=monthly_budget_usd,
                                glue_execution_class=glue_execution_class))
+
+    # MINUS-138. TF_PLUGIN_CACHE_DIR alone does NOT make init offline: with no lock file entry
+    # for a provider, Terraform still contacts the registry for the official checksums and
+    # downloads the whole ~855 MB package to verify them, ignoring the cache. Measured on this
+    # repo: no lock file, init never finished in 15 minutes; with one, 8.3 seconds.
+    # The lock file is a real Terraform artifact meant to be committed, so seeding it is not a
+    # workaround -- it is the thing that was missing. A provider it does not name still
+    # resolves from the registry, so this degrades rather than breaks.
+    _lock = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), ".agents", "terraform.lock.hcl")
+    if os.path.exists(_lock):
+        shutil.copyfile(_lock, os.path.join(out_dir, ".terraform.lock.hcl"))
     _w("outputs.tf", _render_outputs(present_ids))
     write_env_tfvars(out_dir, name_prefix, owner=owner, run_id=run_id,
                      monthly_budget_usd=monthly_budget_usd)

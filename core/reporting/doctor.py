@@ -18,6 +18,8 @@ than shelling out to `aws` directly, per AGENTS.md §1.
 """
 import argparse
 import importlib.util
+import socket
+import urllib.parse
 import json
 import os
 import platform
@@ -29,9 +31,21 @@ for _sub in ("generation", "architecture", "governance", "cost", "reporting", "p
     sys.path.insert(0, os.path.join(_CORE_DIR, _sub))
 sys.path.insert(0, _CORE_DIR)
 
+import ephemeral_apply  # noqa: E402
+import plan_gate  # noqa: E402
 import toolpath  # noqa: E402
 from providers.base import get_provider  # noqa: E402
 from optimize_analyzer import EXTERNAL_SCANNERS  # noqa: E402
+
+
+def _port_open(host, port, timeout=0.4):
+    """Is anything accepting TCP on host:port? Short timeout -- doctor is a pre-flight, and a
+    stalled probe against a dead emulator must not hold the whole report."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def _check(name, status, detail, fix=""):
@@ -105,6 +119,48 @@ def _scanner_check():
                   "still runs without them.")
 
 
+def _emulator_check():
+    """G9 ephemeral-apply readiness: is an emulator selected, and is anything listening?
+
+    Two separate facts, because they fail independently and the fix differs. A selected
+    emulator with nothing behind it is the worse of the two -- the gate looks configured and
+    then fails on every plan -- so it is reported distinctly rather than folded into "not
+    ready". Warn, never error: G9 is an assurance layer, and a machine without Docker must
+    still be able to plan.
+    """
+    name = (os.environ.get(plan_gate.G9_EMULATOR_ENV) or "").strip().lower()
+    endpoint = os.environ.get(ephemeral_apply.LOCALSTACK_ENDPOINT_ENV,
+                              ephemeral_apply.DEFAULT_LOCALSTACK_ENDPOINT)
+    parsed = urllib.parse.urlparse(endpoint)
+    host, port = parsed.hostname or "127.0.0.1", parsed.port or 4566
+    listening = _port_open(host, port)
+    where = f"{host}:{port}"
+    supported = ", ".join(ephemeral_apply.SUPPORTED_EMULATORS)
+    start = (f'docker run -d --name localstack -p {port}:{port} localstack/localstack  '
+             f'&&  set {plan_gate.G9_EMULATOR_ENV}=localstack')
+
+    if name and name not in ephemeral_apply.SUPPORTED_EMULATORS:
+        # ephemeral_apply BLOCKS on an unrecognized name rather than guessing, so a typo here
+        # disables G9 on every plan without ever saying why.
+        return _check("g9 emulator", "warn",
+                      f"{plan_gate.G9_EMULATOR_ENV}={name!r} is not a supported emulator",
+                      f"Set it to one of: {supported}.")
+    if name and listening:
+        return _check("g9 emulator", "ok", f"{name} selected, {where} listening")
+    if name:
+        return _check("g9 emulator", "warn",
+                      f"{name} selected but nothing is listening on {where} -- G9 will fail "
+                      "on every plan", f"Start it: {start}")
+    if listening:
+        return _check("g9 emulator", "warn",
+                      f"something is listening on {where} but {plan_gate.G9_EMULATOR_ENV} is "
+                      "unset, so G9 stays off",
+                      f"Name it: set {plan_gate.G9_EMULATOR_ENV}=localstack (or {supported}).")
+    return _check("g9 emulator", "warn",
+                  f"no emulator configured and nothing on {where} -- G9 ephemeral apply is "
+                  "skipped", f"Start one: {start}")
+
+
 def diagnose():
     """Run every check. Returns {"ok": bool, "checks": [...]} — ok is False iff any error."""
     checks = [
@@ -120,6 +176,7 @@ def diagnose():
                    "Install TFLint for provider-level lint findings in optimize_analyzer; "
                    "run `tflint --init` in a Terraform dir to add the AWS ruleset."),
         _scanner_check(),
+        _emulator_check(),
         _packages_check(),
     ]
     return {"ok": not any(c["status"] == "error" for c in checks), "checks": checks}

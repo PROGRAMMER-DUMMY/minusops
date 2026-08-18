@@ -156,6 +156,24 @@ def test_cost_gate_blocks_a_forecast_over_the_ceiling(tmp_path):
     assert gate["evidence"]["forecast_usd"] == 900.0
 
 
+def test_cost_gate_reads_the_real_bcm_shape_not_a_top_level_total(tmp_path):
+    """Found live on 2026-08-18: bcm-estimate.json nests the total under `estimate`, and the
+    gate was reading a top-level `totalCost` that does not exist -- so a $430/mo forecast
+    against a $300 ceiling reported "no evidence" instead of blocking. `create` must NOT be
+    preferred: it is the estimate BEFORE usage lines and reads 0.0 for every stack, which
+    would pass any ceiling."""
+    root = _run(tmp_path, main_tf=_WIRED_GLUE,
+                requirements={"non_functional": {"budget": "$300/mo"}})
+    report = os.path.join(root, "reports", "abc123")
+    os.makedirs(report)
+    with open(os.path.join(report, "bcm-estimate.json"), "w", encoding="utf-8") as handle:
+        json.dump({"create": {"totalCost": 0.0}, "estimate": {"totalCost": 430.29}}, handle)
+
+    gate = _gate(reflector.reflect(root), "G4_cost")
+    assert gate["status"] == reflector.BLOCKED
+    assert gate["evidence"]["forecast_usd"] == 430.29
+
+
 def test_reflect_runs_every_gate_even_after_one_blocks(tmp_path):
     """An operator fixing three problems wants all three now, not one per round trip."""
     root = _run(tmp_path, main_tf='module "compute_glue_etl" {\n  source = "./m"\n}\n',

@@ -200,6 +200,26 @@ def gate_security(run_root, tf_dir):
 
 # --- G4: cost -----------------------------------------------------------------------------
 
+def _estimate_total(doc):
+    """Monthly total out of a bcm-estimate.json, or None.
+
+    The `estimate` block is the authoritative one: `create` is the workload estimate BEFORE
+    the usage lines are attached and reads 0.0 for every stack. Preferring it would report a
+    $0 forecast that passes any ceiling -- a silent false green in the one gate whose entire
+    job is catching an unaffordable plan.
+    """
+    if not isinstance(doc, dict):
+        return None
+    for key in ("estimate", "create"):
+        block = doc.get(key)
+        if isinstance(block, dict) and block.get("totalCost") is not None:
+            return float(block["totalCost"])
+    for key in ("totalCost", "total_cost"):
+        if doc.get(key) is not None:
+            return float(doc[key])
+    return None
+
+
 def gate_cost(run_root, tf_dir):
     """A budget was stated; BCM evidence must exist and sit under it.
 
@@ -213,9 +233,9 @@ def gate_cost(run_root, tf_dir):
     if os.path.isdir(reports):
         for entry in sorted(os.listdir(reports)):
             doc = _read_json(os.path.join(reports, entry, "bcm-estimate.json"))
-            total = (doc or {}).get("totalCost") or (doc or {}).get("total_cost")
+            total = _estimate_total(doc)
             if total is not None:
-                estimates.append((entry, float(total)))
+                estimates.append((entry, total))
 
     if not budget:
         return _result(GATES[3], UNKNOWN,

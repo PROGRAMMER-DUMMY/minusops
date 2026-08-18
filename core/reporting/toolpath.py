@@ -63,6 +63,12 @@ def ensure_external_tools():
     if _ensured:
         return
     _refresh_windows_path()
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cache_dir = os.path.join(repo_root, ".agents", "tf-plugin-cache")
+    # makedirs, not isdir: on a fresh clone the cache does not exist yet, so the isdir guard
+    # meant the very first init -- the slow one -- ran without a cache and never populated it.
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ.setdefault("TF_PLUGIN_CACHE_DIR", cache_dir)
     _ensured = True
 
 
