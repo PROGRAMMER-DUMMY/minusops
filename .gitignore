@@ -63,3 +63,7 @@ assets/architecture-icons/
 # generated repo-structure snapshot — a point-in-time reference, not maintained documentation;
 # would go stale in source control, so it's local-only (regenerate on demand instead)
 docs/REPO_MAP.md
+
+# MINUS-153: the real team directory names people and their alert routing -- reconnaissance
+# a repo should not hand out. configs/teams.yaml.example is the committed template.
+configs/teams.yaml

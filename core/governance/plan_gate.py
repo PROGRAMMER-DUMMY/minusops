@@ -43,6 +43,7 @@ Examples (point --dir at any Terraform directory — the engine is workload-agno
     python core/governance/plan_gate.py apply   --dir path/to/terraform
 """
 import os
+import re
 import sys
 import json
 import hashlib
@@ -59,6 +60,7 @@ for _sub in ("generation", "architecture", "governance", "cost", "reporting", "p
 sys.path.insert(0, _CORE_DIR)
 from providers.base import get_provider  # noqa: E402
 import plan_inspector  # noqa: E402
+import team_resolver  # noqa: E402
 import toolpath  # noqa: E402
 import audit_chain  # noqa: E402
 import authz  # noqa: E402
@@ -604,6 +606,60 @@ def _identity():
         return None, False
 
 
+def _backend_team(dir_):
+    """The team id this directory's remote state is scoped to, or None.
+
+    Read from the generated backend key rather than a flag: the flag is what an operator
+    TYPED, the key is what the stack actually writes. Checking the flag would let a wrong
+    --team argument authorise an apply against another team's state.
+    """
+    for name in ("providers.tf", "backend.tf", "main.tf"):
+        path = os.path.join(dir_, name)
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError:
+            continue
+        match = re.search(r'key\s*=\s*"teams/([a-z0-9][a-z0-9-]*)/', text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _reject_if_wrong_team_role(dir_, posture, mode):
+    """MINUS-142. Refuse to approve when the active session is not the team's deploy role.
+
+    Only applies to a stack whose state is team-scoped -- an unscoped stack has no team to
+    check against, and inventing one would block every existing run.
+
+    Fails CLOSED on an unreadable identity: if we cannot tell whose session this is, we
+    cannot tell that it is allowed to write another squad's state. `auto-approve` gets NO
+    exemption; an unattended runner is exactly the case this exists for.
+    """
+    team_id = _backend_team(dir_)
+    if not team_id:
+        return False
+
+    record = team_resolver.resolve(team_id)
+    pattern = record["deploy_role_pattern"]
+    arn = (posture or {}).get("arn")
+    if not arn:
+        print(f"[gate] REFUSED - state is scoped to team {team_id!r} but the active identity "
+              f"could not be read, so it cannot be shown to be that team's deploy role.",
+              file=sys.stderr)
+        return True
+    if team_resolver.role_matches(arn, pattern):
+        print(f"[gate] team role OK: {arn} matches {pattern}")
+        return False
+    print(f"[gate] REFUSED - this session is not authorised to apply team {team_id!r}.",
+          file=sys.stderr)
+    print(f"        active session : {arn}", file=sys.stderr)
+    print(f"        required role  : {pattern}", file=sys.stderr)
+    if not record["configured"]:
+        print(f"        (no entry for {team_id!r} in {team_resolver.config_path()}; the "
+              "pattern above is the default. Add the team to override it.)", file=sys.stderr)
+    return True
+
+
 def _credential_posture():
     """Active credential posture for the apply session (temporary vs long-term)."""
     try:
@@ -1047,6 +1103,12 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
         print(f"[gate] no valid plan to approve ({herr}). Run `plan` first.", file=sys.stderr)
         return False
     _warn_if_over_budget(dir_, h)
+
+    # MINUS-142: before recording any approval, prove this session may write this team's
+    # state. Placed here rather than at apply so an unauthorised operator never produces an
+    # approval record at all -- an approval that exists is one somebody can later act on.
+    if _reject_if_wrong_team_role(dir_, _credential_posture(), mode):
+        return False
 
     pending = {}
     pending_path = _pending_path(dir_)

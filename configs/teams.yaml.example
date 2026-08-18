@@ -1,0 +1,43 @@
+# MinusOps team directory (MINUS-153).
+#
+# Copy to configs/teams.yaml, or point $MINUS_TEAMS_CONFIG at it somewhere else. The real
+# file is gitignored: it names people, and a directory of who-owns-what plus who-gets-paged
+# is exactly the reconnaissance a repo should not hand out.
+#
+# Everything here is OPTIONAL. With no file at all, `--owner acme-data` resolves to a team of
+# that id with no metadata and the pipeline generates exactly as it does today. The directory
+# adds routing and attribution; it is not a gate.
+#
+# The team id is the only field that reaches infrastructure. It becomes the state-key segment
+# (teams/<team_id>/<workload>/terraform.tfstate) and the deploy-role suffix
+# (minusops-deploy-<team_id>), so it must be stable and DNS-safe: lowercase letters, digits
+# and hyphens. Renaming a team after an apply orphans its state.
+
+teams:
+  acme-data:
+    name: "Acme Data Platform"
+    lead_email: "dana.reyes@example.com"
+    # Distribution list, not a person: an alert routed to one human is an alert that goes
+    # unread the week they are on leave.
+    team_dl: "data-platform@example.com"
+    slack_channel: "#data-platform-alerts"
+    # A REFERENCE, never the webhook itself. A Teams webhook URL is a credential -- anyone
+    # holding it can post as your bot -- and this file is read by tooling and copied between
+    # machines. Store the value in Secrets Manager and name it here.
+    teams_webhook_secret: "arn:aws:secretsmanager:us-east-1:111111111111:secret:msteams/data-platform"
+    cost_center: "CC-4471"
+    # Optional. Defaults to minusops-deploy-<team_id> when omitted; set it when your naming
+    # convention differs. plan_gate checks the ACTIVE session against this before approving.
+    deploy_role_pattern: "arn:aws:iam::*:role/minusops-deploy-acme-data"
+
+  acme-ml:
+    name: "Acme ML Engineering"
+    lead_email: "sam.okafor@example.com"
+    team_dl: "ml-eng@example.com"
+    slack_channel: "#ml-platform"
+    cost_center: "CC-5120"
+
+  # A team with nothing but an id is valid. Add fields as they are actually decided, rather
+  # than filling them with placeholders that later read as real.
+  acme-sandbox:
+    name: "Sandbox / experiments"

@@ -33,6 +33,7 @@ for _sub in ("generation", "architecture", "governance", "cost", "reporting", "p
 sys.path.insert(0, _CORE_DIR)
 
 import ephemeral_apply  # noqa: E402
+import team_resolver  # noqa: E402
 import plan_gate  # noqa: E402
 import toolpath  # noqa: E402
 from providers.base import get_provider  # noqa: E402
@@ -169,6 +170,27 @@ def _scanner_check():
                   "still runs without them.")
 
 
+def _teams_check():
+    """Team directory (MINUS-153). Absent is `ok`, not a warning: the directory is opt-in and
+    a machine without one generates exactly as it did before. Reporting it as a problem would
+    make every clean environment look degraded."""
+    path = team_resolver.config_path()
+    if not os.path.exists(path):
+        return _check("team directory", "ok",
+                      "not configured -- --owner resolves to a bare team id (optional)")
+    try:
+        teams = team_resolver.list_teams(path)
+    except Exception as exc:
+        # A file someone wrote and got wrong. Silently ignoring it would look identical to
+        # "no teams configured", hiding the mistake behind plausible behaviour.
+        return _check("team directory", "error", f"{path} is unreadable: {exc}",
+                      "Fix the YAML, or unset MINUS_TEAMS_CONFIG to run without a directory.")
+    if not teams:
+        return _check("team directory", "warn", f"{path} declares no teams",
+                      "Add entries under `teams:`, or remove the file.")
+    return _check("team directory", "ok", f"{len(teams)} team(s): {', '.join(teams[:6])}")
+
+
 def _emulator_check():
     """G9 ephemeral-apply readiness: is an emulator selected, and is anything listening?
 
@@ -230,6 +252,7 @@ def diagnose():
                    "Install TFLint for provider-level lint findings in optimize_analyzer; "
                    "run `tflint --init` in a Terraform dir to add the AWS ruleset."),
         _scanner_check(),
+        _teams_check(),
         _lockfile_check(),
         _emulator_check(),
         _packages_check(),

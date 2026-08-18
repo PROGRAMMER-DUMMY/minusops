@@ -22,6 +22,7 @@ for _sub in ("generation", "architecture", "governance", "cost", "reporting", "p
 sys.path.insert(0, _CORE_DIR)
 
 import architecture_decision as archdec
+import team_resolver
 import audit_chain
 import modules as module_registry
 import requirements as reqgate
@@ -1095,6 +1096,16 @@ def _render_backend(state_backend, name_prefix, run_id):
     The key is directory-bound (MINUS-134): `<name_prefix>/<run_id>/terraform.tfstate`. Two
     pipelines sharing one state bucket cannot collide on a key or block each other's lock,
     which is TerraShark FM-03 (blast radius: shared state across environments).
+
+    With a team (MINUS-141) the key becomes `teams/<team_id>/<workload_id>/terraform.tfstate`.
+    That is a stronger isolation than the default: the team segment is also what the deploy
+    role is scoped to (MINUS-142), so a role that may write one team's prefix cannot reach
+    another's even when both squads share a state bucket. `team_resolver.state_key` validates
+    both segments -- they are operator-supplied and a `..` in either escapes the prefix.
+
+    Falls back to the run-scoped key when no team is given, because a team id is opt-in and an
+    existing stack's key must not silently move: a changed key is an orphaned state file and a
+    plan that proposes creating everything a second time.
     """
     if not state_backend:
         return ""
@@ -1102,7 +1113,12 @@ def _render_backend(state_backend, name_prefix, run_id):
     region_line = (f'    region       = "{region}"'
                    if region else
                    "    # region resolves from AWS_REGION or -backend-config=region=...")
-    key = f"{name_prefix}/{run_id or 'default'}/terraform.tfstate"
+    team_id = state_backend.get("team_id")
+    if team_id:
+        workload_id = state_backend.get("workload_id") or name_prefix
+        key = team_resolver.state_key(team_id, workload_id)
+    else:
+        key = f"{name_prefix}/{run_id or 'default'}/terraform.tfstate"
     return (_BACKEND_TEMPLATE
             .replace("@BUCKET@", state_backend["bucket"])
             .replace("@KEY@", key)
@@ -2087,6 +2103,11 @@ def main(argv=None):
                     help="inherit organisational settings (region, owner, cost centre, data "
                          "classification, architecture) from an existing run id (MINUS-135). "
                          "Volume, latency, and functional requirements are never inherited.")
+    ap.add_argument("--team", default=None,
+                    help="team id for state isolation (MINUS-141): the backend key becomes "
+                         "teams/<team>/<workload>/terraform.tfstate")
+    ap.add_argument("--workload", default=None,
+                    help="workload id within the team; defaults to the stack name")
     ap.add_argument("--state-bucket", default=None,
                     help="emit an S3 remote state backend using this EXISTING bucket "
                          "(MINUS-104). Omit to keep local state.")
@@ -2098,6 +2119,12 @@ def main(argv=None):
         print("[architect] REFUSED - --state-region without --state-bucket")
         return 2
     state_backend = {"bucket": args.state_bucket, "region": args.state_region} if args.state_bucket else None
+    if state_backend and args.team:
+        # Validated here rather than at render time so a bad id fails before anything is
+        # written, not halfway through a composed directory.
+        state_backend["team_id"] = team_resolver.validate_team_id(args.team)
+        if args.workload:
+            state_backend["workload_id"] = team_resolver.validate_team_id(args.workload)
 
     if args.based_on:
         base = runs.get_run(args.based_on)
