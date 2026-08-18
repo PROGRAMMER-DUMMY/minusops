@@ -28,6 +28,7 @@ for _sub in ("generation", "architecture", "governance", "cost", "reporting", "p
 sys.path.insert(0, _CORE_DIR)
 from approval import request_approval  # noqa: E402
 import pricing_catalog  # noqa: E402
+import requirements as reqgate  # noqa: E402
 import toolpath  # noqa: E402
 
 PLACEHOLDER = "REVIEW_REQUIRED"
@@ -141,6 +142,105 @@ def _assumption_doc(plan, usage_profile=None):
             "operation, account, and monthly amount values."
         ),
     }
+
+
+# MINUS-146. DEFAULT_ASSUMPTIONS are the values used when nobody said otherwise, and they are
+# STATIC -- glue_runs_per_day is 24 whether the pipeline is a nightly batch or a 15-minute
+# micro-batch. Requirements usually DO say, in prose, and reading them turns a fixed guess into
+# a stated one. Measured on runs/20260818-085523: the requirements say "15-minute micro-batch"
+# and "Bronze retained 90 days", against defaults of hourly and 30 days -- a 4x understatement
+# on Glue and 3x on S3 in an estimate that had already passed the budget gate.
+#
+# Every override records the phrase it came from. A derived assumption nobody can trace is
+# worse than a default everybody knows is a default.
+
+# Cadence phrases -> runs per day. Ordered most-specific first: "15-minute" must win over
+# "minute", and "hourly" must not match inside "4-hourly".
+_CADENCE_PATTERNS = (
+    (r"(?:every\s+)?(\d+)\s*[-\s]?minute", lambda m: 1440.0 / max(float(m.group(1)), 1)),
+    (r"(?:every\s+)?(\d+)\s*[-\s]?hour", lambda m: 24.0 / max(float(m.group(1)), 1)),
+    (r"micro-?batch", lambda m: 96.0),          # 15 minutes is the conventional micro-batch
+    (r"continuous|streaming|real-?time", lambda m: 288.0),   # 5-minute equivalent
+    (r"hourly", lambda m: 24.0),
+    (r"twice\s+(?:a\s+)?day|bi-?daily", lambda m: 2.0),
+    (r"daily|nightly|overnight|once\s+a\s+day", lambda m: 1.0),
+    (r"weekly", lambda m: 1.0 / 7.0),
+)
+
+_RETENTION_RE = re.compile(r"(\d+)\s*(day|week|month|year)s?", re.I)
+_RETENTION_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+
+
+def _cadence_runs_per_day(text):
+    for pattern, to_runs in _CADENCE_PATTERNS:
+        match = re.search(pattern, text or "", re.I)
+        if match:
+            return round(to_runs(match), 4), match.group(0).strip()
+    return None, None
+
+
+def _raw_zone_retention_days(text):
+    """Days of RAW data retained -- the driver for S3 volume.
+
+    Deliberately NOT the longest period stated. Requirements normally name several ("Bronze
+    90 days, Gold 3 years"), and taking the maximum assumes every byte is kept for the
+    longest one: on runs/20260818-085523 that turned 100 GB/day into 109,500 GB-Mo, a 36x
+    overstatement. Raw volume dominates the bill, so the period stated alongside bronze/raw
+    wins, and the SHORTEST stated period is the fallback -- understating storage is a
+    recoverable surprise, overstating it by 36x makes the whole forecast unusable.
+    """
+    text = text or ""
+    for match in _RETENTION_RE.finditer(text):
+        window = text[max(0, match.start() - 60):match.end() + 20].lower()
+        if "bronze" in window or "raw" in window:
+            return (int(match.group(1)) * _RETENTION_DAYS[match.group(2).lower()],
+                    match.group(0))
+    periods = [(int(m.group(1)) * _RETENTION_DAYS[m.group(2).lower()], m.group(0))
+               for m in _RETENTION_RE.finditer(text)]
+    return min(periods) if periods else (None, None)
+
+
+def auto_populate_usage(requirements):
+    """Derive BCM usage assumptions from stated requirements.
+
+    Returns {"assumptions": {...}, "provenance": {key: phrase}, "unresolved": [...]}. Only
+    fields the prose actually supports are returned -- an unstated cadence leaves
+    glue_runs_per_day alone rather than inventing one, because a fabricated assumption that
+    looks derived is worse than a default that is visibly a default.
+    """
+    data_pipeline = (requirements or {}).get("data_pipeline") or {}
+    non_functional = (requirements or {}).get("non_functional") or {}
+    assumptions, provenance, unresolved = {}, {}, []
+
+    daily_gb, volume_phrase = reqgate.parse_daily_gb(requirements or {})
+    if daily_gb:
+        assumptions["daily_data_gb"] = daily_gb
+        provenance["daily_data_gb"] = volume_phrase
+    else:
+        unresolved.append("daily_data_gb (data_pipeline.data_volume states no volume)")
+
+    # Cadence: the transform description usually names it; the freshness SLA is the fallback,
+    # since "query availability within 15 minutes" implies the job runs at least that often.
+    cadence_text = " ".join(str(v) for v in (
+        data_pipeline.get("transforms"), data_pipeline.get("orchestration"),
+        data_pipeline.get("freshness_sla"), non_functional.get("latency")) if v)
+    runs, cadence_phrase = _cadence_runs_per_day(cadence_text)
+    if runs:
+        assumptions["glue_runs_per_day"] = runs
+        provenance["glue_runs_per_day"] = cadence_phrase
+    else:
+        unresolved.append("glue_runs_per_day (no cadence stated in transforms/orchestration/SLA)")
+
+    retention_days, retention_phrase = _raw_zone_retention_days(
+        " ".join(str(v) for v in (non_functional.get("retention"),
+                                  data_pipeline.get("storage_zones")) if v))
+    if retention_days:
+        assumptions["s3_storage_retention_factor"] = retention_days
+        provenance["s3_storage_retention_factor"] = retention_phrase
+    else:
+        unresolved.append("s3_storage_retention_factor (non_functional.retention states no period)")
+
+    return {"assumptions": assumptions, "provenance": provenance, "unresolved": unresolved}
 
 
 def _load_usage_profile(path):
@@ -431,6 +531,41 @@ def validate_usage(usage):
         if _has_placeholder(entry):
             errors.append(f"usage[{i}] still contains REVIEW_REQUIRED placeholders")
     return errors
+
+
+def _merge_assumptions(report_dir, requirements_path, explicit):
+    """Requirements-derived assumptions, overridden by anything the operator passed.
+
+    Explicit --assume wins on purpose: a derived value is a reading of prose, and an operator
+    who disagrees with the reading needs a way to say so that does not involve editing the
+    requirements.
+    """
+    path = requirements_path
+    if not path and report_dir:
+        # reports/<hash>/ sits inside the run root, beside requirements.json.
+        candidate = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(report_dir))),
+                                 reqgate.FILENAME)
+        path = candidate if os.path.exists(candidate) else None
+    if not path or not os.path.exists(path):
+        return explicit
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            requirements = json.load(handle)
+    except (OSError, ValueError) as exc:
+        print(f"[bcm] could not read {path}: {exc}", file=sys.stderr)
+        return explicit
+
+    derived = auto_populate_usage(requirements)
+    for key, value in derived["assumptions"].items():
+        print(f"[bcm] derived {key}={value}  (from {derived['provenance'][key]!r})")
+    for gap in derived["unresolved"]:
+        # Named, not silent: an unstated driver falls back to a static default, and the
+        # reviewer should know which numbers are prose-derived and which are guesses.
+        print(f"[bcm] NOT derived, using default: {gap}")
+    merged = dict(derived["assumptions"])
+    merged.update(explicit)
+    return merged
 
 
 def prepare(report_dir, account_id=None, region="us-east-1", rate_type="BEFORE_DISCOUNTS",
@@ -829,6 +964,10 @@ def main():
                    help="optional reviewed JSON profile containing BCM usage entries (catalog fields)")
     p.add_argument("--derive", action="store_true",
                    help="derive monthly usage amounts from blueprint inputs + assumptions (no prices)")
+    p.add_argument("--requirements", default=None,
+                   help="requirements.json to derive usage assumptions from (MINUS-146). "
+                        "Defaults to the one beside the report's run when present. "
+                        "Explicit --assume always wins over a derived value.")
     p.add_argument("--assume", action="append", default=[],
                    help="override a usage assumption, e.g. --assume glue_runs_per_day=12")
     r = sub.add_parser("run", help="create the BCM workload estimate (free pricing object; audited)")
@@ -853,7 +992,9 @@ def main():
 
     if args.cmd == "prepare":
         paths = prepare(args.report_dir, args.account_id, args.region, args.rate_type,
-                        args.usage_profile, derive=args.derive, assumptions=_parse_assumptions(args.assume))
+                        args.usage_profile, derive=args.derive,
+                        assumptions=_merge_assumptions(args.report_dir, args.requirements,
+                                                       _parse_assumptions(args.assume)))
         print("[bcm] prepared:")
         for key in ("assumptions", "create", "usage", "commands"):
             print(f"  {key}: {paths[key]}")

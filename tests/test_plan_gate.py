@@ -556,6 +556,15 @@ def test_verify_fails_when_security_scan_blocks(gate_env, monkeypatch):
     assert plan_gate.stage_verify("d") is False
 
 
+
+def _with_policy_engine(monkeypatch):
+    """MINUS-155: production policy mode now REFUSES when OPA is absent -- a passing verify
+    with no evaluator would assert a compliance check that never ran. These tests exercise the
+    scanner and identity paths, not that refusal, so they declare an engine explicitly."""
+    real = plan_gate.toolpath.find_tool
+    monkeypatch.setattr(plan_gate.toolpath, "find_tool",
+                        lambda name, *a, **k: "/usr/bin/opa" if name == "opa" else real(name, *a, **k))
+
 def test_verify_passes_policy_mode_and_log_dir_to_scanner(gate_env, monkeypatch):
     seen = {}
 
@@ -569,6 +578,7 @@ def test_verify_passes_policy_mode_and_log_dir_to_scanner(gate_env, monkeypatch)
     monkeypatch.setattr(plan_gate, "_tf", ok_tf)
     monkeypatch.setattr(plan_gate, "_run", scan)
     monkeypatch.setattr(plan_gate, "SCAN", __file__)
+    _with_policy_engine(monkeypatch)
 
     assert plan_gate.stage_verify("d", policy_mode="production") is True
     assert "--policy-mode" in seen["args"]

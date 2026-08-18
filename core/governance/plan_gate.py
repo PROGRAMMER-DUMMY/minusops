@@ -817,8 +817,59 @@ def stage_verify(dir_, policy_mode=None):
                 print(err, file=sys.stderr)
             _audit("verify", "FAILED", reason="scan", dir=dir_, policy_mode=policy_mode)
             return False
+    # MINUS-155: G6 promoted from shadow to a real verify-stage requirement -- but as an
+    # AVAILABILITY requirement, not a blanket blocker. Two separate facts:
+    #
+    #   1. Can policy be evaluated at all? In production mode, no -- OPA absent means the run
+    #      cannot make any claim about Rego compliance, and reporting "verify OK" while the
+    #      evaluator is missing is the false assurance this promotion exists to remove. That
+    #      is now a hard failure. In standard mode it stays a warning; a developer without OPA
+    #      must still be able to iterate.
+    #
+    #   2. Does a violated rule stop the run? That stays with the per-rule promotion registry
+    #      (policy/rule_stages.json, enforced at plan by _reject_if_promoted_policy_violated).
+    #      Flipping all 13 rules to blocking here was considered and REJECTED: they cover 8 of
+    #      the 47 reviewed resource types, and an enforcing gate at 17% coverage reads as
+    #      "policy is enforced" while 83% passes unexamined -- worse than an honest shadow
+    #      gate, and exactly what this file's own G6 note warns against. The prescribed path
+    #      is shadow -> warn -> enforce per rule, with an attributable human promotion.
+    if not _reject_if_policy_engine_unavailable(dir_, policy_mode):
+        return False
+
     print("[gate] verify OK")
     _audit("verify", "OK", dir=dir_, policy_mode=policy_mode)
+    return True
+
+
+def _reject_if_policy_engine_unavailable(dir_, policy_mode):
+    """True to continue. In production mode an unusable Rego engine fails verify.
+
+    Checked here rather than at plan because verify is where an operator learns whether this
+    machine can produce a governed result at all -- discovering it after a plan has already
+    been recorded wastes the plan and buries the reason.
+    """
+    opa = toolpath.find_tool("opa")
+    stages = rule_stages.summary() if hasattr(rule_stages, "summary") else None
+    if opa:
+        detail = f"opa at {opa}"
+        if stages:
+            detail += f"; rule stages: {stages}"
+        print(f"[gate] policy engine available ({detail})")
+        return True
+
+    if policy_mode == "production":
+        print("[gate] REFUSED - production policy mode requires OPA, and it is not on PATH.",
+              file=sys.stderr)
+        print("        Without it no Rego rule is evaluated, so a passing verify would be "
+              "asserting a compliance check that never ran.", file=sys.stderr)
+        print("        Install OPA, or run with --policy-mode standard and accept that "
+              "G6 findings are unavailable.", file=sys.stderr)
+        _audit("verify", "FAILED", reason="opa_missing_production", dir=dir_,
+               policy_mode=policy_mode)
+        return False
+
+    print("[gate] policy engine UNAVAILABLE (opa not on PATH) -- G6 rules are not evaluated "
+          "in this run. Production policy mode refuses this state.")
     return True
 
 

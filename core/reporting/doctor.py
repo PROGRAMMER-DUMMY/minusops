@@ -18,6 +18,7 @@ than shelling out to `aws` directly, per AGENTS.md §1.
 """
 import argparse
 import importlib.util
+import time
 import re
 import socket
 import urllib.parse
@@ -231,6 +232,95 @@ def _emulator_check():
     return _check("g9 emulator", "warn",
                   f"no emulator configured and nothing on {where} -- G9 ephemeral apply is "
                   "skipped", f"Start one: {start}")
+
+
+# MINUS-154. Docker's CLI can hang indefinitely when the daemon is wedged -- observed on this
+# project 2026-08-18, where every Docker Desktop process was alive, the named pipe existed, the
+# WSL distro was Running, and `docker version` never returned. Every docker call here therefore
+# carries a hard timeout, and a timeout is reported as "unresponsive", never as "not installed":
+# they need completely different fixes and conflating them sends people to reinstall a working
+# Docker.
+_DOCKER_TIMEOUT_SECONDS = 20
+_LOCALSTACK_START_TIMEOUT_SECONDS = 90
+
+
+def _docker(args, timeout=_DOCKER_TIMEOUT_SECONDS):
+    """(ok, stdout, error). `error` is "unresponsive" when the CLI itself never returns."""
+    binary = toolpath.find_tool("docker")
+    if not binary:
+        return False, "", "docker not found on PATH"
+    try:
+        result = subprocess.run([binary, *args], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, "", f"unresponsive: `docker {args[0]}` did not return in {timeout}s"
+    except Exception as exc:
+        return False, "", str(exc)
+    if result.returncode != 0:
+        return False, result.stdout or "", (result.stderr or "").strip()[:300]
+    return True, (result.stdout or "").strip(), ""
+
+
+def start_local_emulator(port=4566, container="localstack", image="localstack/localstack"):
+    """Bring up LocalStack and report what happened. Returns {"ok", "action", "detail"}.
+
+    Never raises, and never restarts Docker Desktop: a restart kills every other container on
+    the machine, and this command was asked to fix an emulator, not to take over the host.
+    """
+    if _port_open("127.0.0.1", port):
+        return {"ok": True, "action": "already-listening",
+                "detail": f"something already answers on 127.0.0.1:{port}"}
+
+    ok, _, err = _docker(["info", "--format", "{{.ServerVersion}}"])
+    if not ok:
+        return {"ok": False, "action": "docker-unavailable",
+                "detail": f"{err}. Start Docker Desktop (or fix the daemon) and re-run; "
+                          "this command will not restart it for you, because that would kill "
+                          "every other container on this machine."}
+
+    # An existing stopped container is started rather than recreated: recreating silently
+    # discards whatever state a previous session left in it.
+    ok, existing, _ = _docker(["ps", "-aq", "--filter", f"name=^{container}$"])
+    if ok and existing:
+        ok, _, err = _docker(["start", container], timeout=_LOCALSTACK_START_TIMEOUT_SECONDS)
+        if not ok:
+            return {"ok": False, "action": "start-failed", "detail": err}
+    else:
+        ok, _, err = _docker(["run", "-d", "--name", container, "-p", f"{port}:{port}", image],
+                             timeout=_LOCALSTACK_START_TIMEOUT_SECONDS)
+        if not ok:
+            return {"ok": False, "action": "run-failed", "detail": err}
+
+    # The container being up is not the same as the port answering: LocalStack takes seconds to
+    # bind, and reporting success on `docker run` alone is how a green fix leaves a red gate.
+    deadline = time.time() + _LOCALSTACK_START_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        if _port_open("127.0.0.1", port):
+            return {"ok": True, "action": "started",
+                    "detail": f"{container} is listening on 127.0.0.1:{port}"}
+        time.sleep(2)
+    return {"ok": False, "action": "started-not-listening",
+            "detail": f"{container} started but nothing answers on {port} after "
+                      f"{_LOCALSTACK_START_TIMEOUT_SECONDS}s -- check `docker logs {container}`"}
+
+
+def fix(checks):
+    """Attempt the repairs doctor knows how to make. Returns a list of result dicts.
+
+    Only the G9 emulator is auto-fixable today. The other warnings need a package install or a
+    credential decision -- things this command must not make on someone's behalf.
+    """
+    results = []
+    emulator = next((c for c in checks if c["name"] == "g9 emulator"), None)
+    if emulator and emulator["status"] != "ok":
+        outcome = start_local_emulator()
+        # The env var to set is RETURNED, not applied here. A diagnostic function that mutates
+        # process environment leaks into everything that runs after it -- caught directly:
+        # setting it inside fix() changed plan_gate's behaviour in three unrelated tests that
+        # happened to run later in the same session.
+        results.append({"check": "g9 emulator",
+                        "env": {plan_gate.G9_EMULATOR_ENV: "localstack"} if outcome["ok"] else {},
+                        **outcome})
+    return results
 
 
 def diagnose():

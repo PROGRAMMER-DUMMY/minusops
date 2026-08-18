@@ -896,6 +896,11 @@ def main(argv=None):
 
     doctor_cmd = sub.add_parser("doctor", help="diagnose the local environment (cross-platform)")
     doctor_cmd.add_argument("--json", action="store_true")
+    doctor_cmd.add_argument("--fix", action="store_true",
+                            help="attempt the repairs doctor knows how to make (MINUS-154). "
+                                 "Today that is starting a LocalStack container for G9; it "
+                                 "will never restart Docker Desktop, which would kill every "
+                                 "other container on the machine.")
 
     adopt_cmd = sub.add_parser(
         "adopt", help="inventory + scan an existing Terraform directory and bring it under the gate")
@@ -922,6 +927,22 @@ def main(argv=None):
 
     if args.cmd == "doctor":
         result = doctor.diagnose()
+        if args.fix:
+            repairs = doctor.fix(result["checks"])
+            for repair in repairs:
+                mark = "[FIXED]" if repair["ok"] else "[FAILED]"
+                print(f"{mark} {repair['check']}: {repair['detail']}")
+            if any(r["ok"] for r in repairs):
+                # Applying the returned env is the CLI's job, not the diagnostic's -- see the
+                # note in doctor.fix(). Applied before re-diagnosing so the second report
+                # reflects the repaired machine.
+                for repair in repairs:
+                    for key, value in (repair.get("env") or {}).items():
+                        os.environ.setdefault(key, value)
+                result = doctor.diagnose()
+                print("export MINUS_G9_EMULATOR=localstack   "
+                      "# (set for this process; your shell needs its own)")
+            result["repairs"] = repairs
         _json_or_text(result, args.json, doctor.format_result(result))
         return 0 if result["ok"] else 1
 
