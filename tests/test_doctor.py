@@ -151,3 +151,55 @@ def test_doctor_includes_the_emulator_check(monkeypatch):
     _fake_env(monkeypatch, {"terraform", "aws"},
               {"connected": True, "account": "1", "arn": "a", "type": "temporary"})
     assert any(c["name"] == "g9 emulator" for c in doctor.diagnose()["checks"])
+
+
+# --- MINUS-156: version floors, lock seed, and the skill manifest --------------------------
+
+def test_version_parser_handles_both_tool_formats():
+    """`terraform version` prints "Terraform v1.15.7"; the AWS CLI prints
+    "aws-cli/2.35.11 Python/3.14.5". Taking the FIRST match is what makes both work -- and is
+    why the CLI's own version must be read before the Python one it embeds."""
+    import doctor
+    assert doctor._parse_version("Terraform v1.15.7") == (1, 15, 7)
+    assert doctor._parse_version("aws-cli/2.35.11 Python/3.14.5") == (2, 35, 11)
+    assert doctor._parse_version("no version here") is None
+
+
+def test_terraform_below_the_generated_required_version_is_an_error(monkeypatch):
+    """The synthesizer writes `required_version = ">= 1.5"` into every composed root, so an
+    older binary cannot plan what this repo generates."""
+    import doctor
+    monkeypatch.setattr(doctor.toolpath, "find_tool", lambda name, *a, **k: "/usr/bin/terraform")
+    monkeypatch.setattr(doctor, "_version", lambda path, args: "Terraform v1.4.6")
+    check = doctor._cli_check("terraform", "terraform", ("version",), True, "fix",
+                              min_version=(1, 5))
+    assert check["status"] == "error"
+    assert "below the required 1.5" in check["detail"]
+
+
+def test_unreadable_version_warns_rather_than_blocks(monkeypatch):
+    """Present and runnable but with unparseable output: the tool works, we just cannot prove
+    the floor. Blocking on a parse failure would be worse than saying so."""
+    import doctor
+    monkeypatch.setattr(doctor.toolpath, "find_tool", lambda name, *a, **k: "/usr/bin/terraform")
+    monkeypatch.setattr(doctor, "_version", lambda path, args: "(version probe failed: boom)")
+    check = doctor._cli_check("terraform", "terraform", ("version",), True, "fix",
+                              min_version=(1, 5))
+    assert check["status"] == "warn"
+
+
+def test_missing_lock_seed_is_reported(monkeypatch, tmp_path):
+    """Without the seed every fresh run re-downloads ~855 MB per provider (MINUS-138)."""
+    import doctor
+    monkeypatch.setattr(doctor.os.path, "exists", lambda p: False)
+    check = doctor._lockfile_check()
+    assert check["status"] == "warn"
+    assert "terraform.lock.hcl" in check["detail"]
+
+
+def test_doctor_skill_manifest_exists_and_names_the_command():
+    skill = open(os.path.join(_ROOT, ".agents", "skills", "doctor", "SKILL.md"),
+                 encoding="utf-8").read()
+    assert "minusctl.py doctor --json" in skill
+    # The manifest must not promise a check the code does not make.
+    assert "configs/teams.yaml" in skill and "no such file" in skill.lower()

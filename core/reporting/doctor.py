@@ -18,6 +18,7 @@ than shelling out to `aws` directly, per AGENTS.md §1.
 """
 import argparse
 import importlib.util
+import re
 import socket
 import urllib.parse
 import json
@@ -62,11 +63,60 @@ def _version(path, args):
     return text.splitlines()[0] if text else "(no version output)"
 
 
-def _cli_check(name, tool, version_args, required, fix):
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def _parse_version(text):
+    """First dotted version in the tool's own output, as a tuple, or None.
+
+    Deliberately forgiving: `terraform version` prints "Terraform v1.15.7", the AWS CLI prints
+    "aws-cli/2.35.11 Python/3.14.5 ...". Taking the FIRST match is what makes both work, and
+    is also why the AWS CLI's own version has to be read before Python's.
+    """
+    match = _VERSION_RE.search(text or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups(default="0"))
+
+
+def _cli_check(name, tool, version_args, required, fix, min_version=None):
     path = toolpath.find_tool(tool)
     if not path:
         return _check(name, "error" if required else "warn", f"`{tool}` not found on PATH", fix)
-    return _check(name, "ok", f"{_version(path, version_args)}  [{path}]")
+    reported = _version(path, version_args)
+    detail = f"{reported}  [{path}]"
+    if min_version:
+        found = _parse_version(reported)
+        if found is None:
+            # Present and runnable but unreadable version output. Warn rather than error: the
+            # tool works, we just cannot prove the floor, and blocking on a parse would be
+            # worse than saying so.
+            return _check(name, "warn", f"{detail} -- could not read a version number",
+                          f"MinusOps needs {tool} >= {'.'.join(str(v) for v in min_version)}.")
+        if found[:len(min_version)] < tuple(min_version):
+            return _check(name, "error" if required else "warn",
+                          f"{detail} -- below the required "
+                          f"{'.'.join(str(v) for v in min_version)}", fix)
+    return _check(name, "ok", detail)
+
+
+def _lockfile_check():
+    """The seeded dependency lock file (MINUS-138). Without it every fresh run workspace
+    re-downloads ~855 MB per provider instead of using the shared plugin cache, because with
+    no lock entry Terraform must reach the registry for official checksums."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    lock = os.path.join(os.path.dirname(root), ".agents", "terraform.lock.hcl")
+    cache = os.environ.get("TF_PLUGIN_CACHE_DIR", "")
+    if not os.path.exists(lock):
+        return _check("terraform lock seed", "warn",
+                      "no .agents/terraform.lock.hcl -- new runs will resolve providers from "
+                      "the registry on every init",
+                      "Copy a good .terraform.lock.hcl from an initialized run into "
+                      ".agents/terraform.lock.hcl.")
+    providers = sum(1 for line in open(lock, encoding="utf-8") if line.startswith("provider "))
+    cached = "shared cache set" if cache and os.path.isdir(cache) else "NO plugin cache"
+    return _check("terraform lock seed", "ok",
+                  f"{providers} provider(s) pinned, {cached}")
 
 
 def _python_check():
@@ -165,10 +215,14 @@ def diagnose():
     """Run every check. Returns {"ok": bool, "checks": [...]} — ok is False iff any error."""
     checks = [
         _python_check(),
+        # >= 1.5 matches the `required_version` the synthesizer writes into every composed
+        # root, so a machine below it cannot plan what this repo generates.
         _cli_check("terraform", "terraform", ("version",), True,
-                   "Install Terraform (winget install Hashicorp.Terraform / brew install terraform)."),
+                   "Install Terraform >= 1.5 (winget install Hashicorp.Terraform / "
+                   "brew install terraform).", min_version=(1, 5)),
         _cli_check("aws cli", "aws", ("--version",), True,
-                   "Install the AWS CLI v2 (winget install Amazon.AWSCLI / brew install awscli)."),
+                   "Install the AWS CLI v2 (winget install Amazon.AWSCLI / brew install awscli).",
+                   min_version=(2,)),
         _credentials_check(),
         _cli_check("opa", "opa", ("version",), False,
                    "Install OPA to enable the Rego plan gate; it degrades to warn-only without it."),
@@ -176,6 +230,7 @@ def diagnose():
                    "Install TFLint for provider-level lint findings in optimize_analyzer; "
                    "run `tflint --init` in a Terraform dir to add the AWS ruleset."),
         _scanner_check(),
+        _lockfile_check(),
         _emulator_check(),
         _packages_check(),
     ]
