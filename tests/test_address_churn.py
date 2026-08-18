@@ -105,3 +105,45 @@ def test_unreadable_tf_file_does_not_crash_the_scan(tmp_path):
     (tmp_path / "ok.tf").write_text('moved { from = a.b to = c.d }', encoding="utf-8")
     (tmp_path / "notes.md").write_text("not terraform", encoding="utf-8")
     assert address_churn.read_moved_blocks(str(tmp_path)) == [{"from": "a.b", "to": "c.d"}]
+
+
+# --- MINUS-137: generating the moved blocks, not just demanding them -------------------
+
+def test_generated_moved_block_clears_the_churn_it_was_generated_from(tmp_path):
+    """The round trip is the whole point: what write_moved() emits must be what
+    read_moved_blocks() + classify() then accept as declared."""
+    plan = _plan("aws_s3_bucket.data", "module.storage.aws_s3_bucket.lake")
+    before = address_churn.classify(plan, moved_blocks=[])
+    assert before["blocked"] is True
+
+    path = address_churn.write_moved(str(tmp_path), before)
+    assert path is not None
+
+    after = address_churn.classify(
+        plan, moved_blocks=address_churn.read_moved_blocks(str(tmp_path)))
+    assert after["blocked"] is False
+    assert after["covered_by_moved"] == 1
+
+
+def test_advisory_churn_gets_no_moved_block(tmp_path):
+    """An IAM role rename recreates harmlessly. Writing state surgery for it turns a no-op
+    into an unreviewed change."""
+    result = address_churn.classify(
+        _plan("aws_iam_role.a", "aws_iam_role.b", rtype="aws_iam_role",
+              before={"name": "etl"}, after={"name": "etl"}), moved_blocks=[])
+    assert result["advisory_count"] == 1
+    assert address_churn.render_moved(result) == ""
+    assert address_churn.write_moved(str(tmp_path), result) is None
+
+
+def test_write_moved_refuses_to_overwrite_reviewed_state_surgery(tmp_path):
+    (tmp_path / "moved.tf").write_text("# hand-written, already reviewed\n", encoding="utf-8")
+    result = address_churn.classify(
+        _plan("aws_s3_bucket.data", "module.storage.aws_s3_bucket.lake"), moved_blocks=[])
+    try:
+        address_churn.write_moved(str(tmp_path), result)
+    except FileExistsError as exc:
+        assert "review and merge by hand" in str(exc)
+    else:
+        raise AssertionError("an existing moved.tf must never be silently replaced")
+    assert (tmp_path / "moved.tf").read_text(encoding="utf-8").startswith("# hand-written")

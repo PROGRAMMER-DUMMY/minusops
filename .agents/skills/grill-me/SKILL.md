@@ -1,6 +1,6 @@
 ---
 name: grill-me
-description: Gather complete requirements before building ANY system (web/app backend, API/service, data pipeline, ML/inference, batch/event system, internal tool, or anything else), and stress-test uncertain plans. Grounded in standard requirements engineering — functional vs. non-functional requirements, the ISO/IEC 25010 quality model and FURPS+ as the non-functional checklist, the 5 W's, and MoSCoW for scope. Interrogate one question at a time with a recommended default, quantify vague terms, cross-question contradictions, flag the requirements people forget, then map answers to a governed blueprint. Use when the user wants to build something, when a request is vague/too-simple/too-broad, or when they say "grill me".
+description: Gather complete requirements before building ANY system (web/app backend, API/service, data pipeline, ML/inference, batch/event system, internal tool, or anything else), and stress-test uncertain plans. Grounded in standard requirements engineering — functional vs. non-functional requirements, the ISO/IEC 25010 quality model and FURPS+ as the non-functional checklist, the 5 W's, and MoSCoW for scope. Interrogate one question at a time with a recommended default, quantify vague terms, cross-question contradictions, flag the requirements people forget, interrogate the 7 data-engineering pillars and the TerraShark failure modes, then map answers to vetted modules for composition. Use when the user wants to build something, when a request is vague/too-simple/too-broad, or when they say "grill me".
 ---
 
 # Grill Me — Requirements Interrogation
@@ -68,6 +68,48 @@ A rough back-of-envelope — requests/sec, storage/day, bandwidth, concurrency �
 single-node vs. distributed compute, caching / CDN, sharding, and batch vs. streaming. Do it
 *before* choosing an architecture, not after.
 
+## Step 3.4 — The 7 pillars (data pipelines only)
+
+Skip this for a web backend or an internal tool. For a **data pipeline**, Steps 0-3 stop short
+of the answers the generator actually needs, and the gap is not academic: the 2026-08-17 live
+run provisioned three empty buckets and a Glue job that crashed, because nobody had been asked
+where the data comes from or what triggers the job.
+
+Ask in this order. **Pillar 1 is question one** — everything downstream is shaped by it, and a
+lake with no inbound path is the one failure that cannot be fixed after the fact.
+
+| # | Pillar | Ask | Answers map to |
+| :-- | :--- | :--- | :--- |
+| **1** | **Ingestion source** | "Where does the data come from *today*?" Give the archetypes, don't ask open-ended: an operational **database** (CDC), a **SaaS** system, a partner dropping **files**, a system that **pushes events** to you, or data already **landing in S3**. | `ingestion-dms` · `ingestion-appflow` · `ingestion-sftp` · `ingestion-webhook` · `ingest-firehose` · none |
+| **2** | **Storage & format** | Zones (bronze/silver/gold, or their names for them), file format, partitioning, retention per zone, and whether any zone holds PII. | `storage-medallion-s3` · `table-format-iceberg` |
+| **3** | **Compute engine** | Volume per run and the transformation's shape. **SQL-only transformations do not need Spark** — that is `transform_engine: "dbt"`, and it deletes the whole Glue bill. | `compute-glue-etl` · `compute-emr-serverless` · dbt-on-Athena |
+| **4** | **Orchestration** | What starts a run: a **schedule** (which cadence, exactly), an **event** (a file landing), or a human. "Whatever's easiest" means nothing will ever start it. | `orchestrator-stepfunctions` · `orchestrator-mwaa` |
+| **5** | **Data quality** | Which assertions must hold, and **what happens to a row that fails** — is the run aborted, or is the row quarantined and the run continues? Most teams say "abort" and mean "quarantine". | `dq-great-expectations` (+ quarantine zone) |
+| **6** | **Serving layer** | Who reads the output and with what — ad-hoc SQL, a BI tool, a reverse ETL, another pipeline. Concurrency matters more than volume here. | `query-athena` · `consumption-redshift-serverless` |
+| **7** | **Alert routing** | **Three questions, not one.** Who is paged when the pipeline *crashes*; who is told when *data quality* fails; who is told about *spend*. One inbox for all three is why nobody reads the inbox. | `governance-observability` 3-tier routing |
+
+Two of these are the ones people skip and then discover in production: **Pillar 4** (a pipeline
+nobody scheduled never runs) and **Pillar 5**'s failure branch (one bad row kills the run).
+Push on both even when the user waves them off.
+
+## Step 3.5 — Failure-mode pre-flight (FM-01..05)
+
+Steps 0–3 ask what the system must do. This step asks how the *Terraform for it* typically
+breaks, **before** any HCL exists — the TerraShark taxonomy (`NextStackHelper.md` §2, mirrored in
+code as `architecture_decision.FAILURE_MODES`). Ask only the modes the answers put in play; note
+the ones you rule out and why.
+
+| ID | Ask | Put in play by |
+| :--- | :--- | :--- |
+| **FM-01** Identity churn | "Is this a refactor of existing infrastructure, or greenfield? If a refactor, which addresses move?" Capture `old_address -> new_address` tuples — they drive `moved {}` generation. Prefer `for_each` over `count` on anything keyed by a mutable list. | any refactor, module upgrade, or resource keyed on a list |
+| **FM-02** Secret exposure | "Which inputs are credentials, and where do they come from?" No hardcoded variable defaults; `sensitive = true` hides output, **not** state; plan JSON must not land in a CI artifact. | any credential, connection string, or API token |
+| **FM-03** Blast radius | "Which environments share this state file, and what is the largest thing one apply can destroy?" One state per environment; state locking on. | more than one environment, or persistent data resources |
+| **FM-04** CI drift | "Will this apply from CI? Is `.terraform.lock.hcl` committed, and are provider versions pinned?" The apply must consume the *reviewed* `tfplan`, never re-plan. | any pipeline-driven apply |
+| **FM-05** Compliance gate gaps | "Which policies must be machine-enforced rather than documented?" Prefer a blocking OPA/Checkov rule over a paragraph; no blanket `ignore_changes`. | any stated compliance, audit, or regulatory requirement |
+
+Record the modes the design actively mitigates on the decision record:
+`python core/architecture/architecture_decision.py add-failure-mode <path> FM-03`.
+
 ## How to ask — cross-question, recommend, catch problems
 
 This is the value of the skill, not just collecting answers:
@@ -91,24 +133,28 @@ inspect it instead of asking. Ask the user only for intent, priorities, tradeoff
 facts not discoverable locally. For deciding *whether* to ask on a borderline point, the
 companion `resolve-ambiguity` skill applies.
 
-## Map to a MinusOps blueprint + inputs
+## Map to modules, not to a blueprint
 
-As answers land, map them to a governed blueprint and its required inputs. The supported
-blueprint today is **`aws-data-pipeline-standard`**, inputs: `environment`, `region`, `owner`,
-`ingestion_mode` (`batch`|`streaming`), `daily_data_gb` (verify against `core/generation/blueprints.py` —
-it is the source of truth). When the requirements match, end by emitting the exact command:
+There is no single production blueprint to map onto. Generation is **requirements -> research
+-> compose -> govern**: the answers select vetted modules from the catalog, which the
+synthesizer composes into one governed Terraform root.
+
+As answers land, name the modules they imply (the right-hand column of the pillar table) and
+say so out loud, so the user can object before anything is generated. Check the choice against
+the registry rather than memory:
 
 ```bash
-minusctl create "governed AWS data pipeline" \
-  --input owner=<team> --input environment=<env> --input region=<region> \
-  --input ingestion_mode=<batch|streaming> --input daily_data_gb=<n> --generate
+python core/generation/modules.py match "<the requirements so far>"
 ```
 
-For a system class with no existing blueprint (e.g., a web backend), **hand off to the
-[`architect`](../architect/SKILL.md) skill** with the gathered requirements: it deep-researches
-current services and reference architectures, picks the best-fit for these requirements, and
-synthesizes governed Terraform that flows through the same deploy gate — so a missing blueprint is
-not a dead end. Pass the MoSCoW-prioritized requirements spec (Steps 0–2) as its input.
+Then hand off to [`architect`](../architect/SKILL.md) with the gathered requirements. It
+researches the current services, confirms the module set, records the decision, and calls the
+synthesizer.
+
+> **Do not** emit `minusctl create ... --generate` or map onto `aws-data-pipeline-standard`.
+> That blueprint is the cached demo fixture behind `minusctl demo` and the golden tests, not
+> the production generator; `AGENTS.md` calls guidance that points at it stale. Requirements
+> first, always.
 
 ## Question shape
 
@@ -144,6 +190,18 @@ resolved; and MoSCoW prioritization is done. Then:
    capability), and every `non_functional` axis (value or `deferred: …`), save it as the run's
    `requirements.json`, and verify with `python core/architecture/requirements.py check <path>`.
 3. Hand off to [`architect`](../architect/SKILL.md), which calls the synthesizer with that record.
+
+The architecture decision that follows is held to a **4-part output contract** — the record is
+incomplete, and synthesis stays blocked, until all four are answered:
+
+| Part | Field on `architecture_decision.json` |
+| :--- | :--- |
+| Assumptions | `assumptions` — what is taken as true and would invalidate the design if wrong |
+| Tradeoffs | `alternatives` — each `name \| decision \| reason` |
+| Validation | `validation` — the checks that prove this design correct (validate, SEC scan, conformance, BCM evidence) |
+| Rollback | `rollback` — how the change is undone once applied |
+
+`failure_modes` (Step 3.5) is optional, but an id outside FM-01..05 is refused rather than stored.
 
 The synthesizer is **fail-closed**: without a complete record it refuses to generate and lists
 what's unanswered. A vague request can never be silently turned into infrastructure — it's blocked

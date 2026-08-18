@@ -298,3 +298,41 @@ def test_per_resource_covers_for_each_buckets(tmp_path):
 def _w(tmp_path, hcl):
     (tmp_path / "main.tf").write_text(hcl, encoding="utf-8")
     return str(tmp_path)
+
+
+def test_tflint_issues_parsed_and_never_satisfy_production_mode(tmp_path, monkeypatch):
+    """MINUS-137. Shape is TFLint's own formatter/json.go: {"issues":[{"rule":{...},
+    "message","range":{"filename","start":{"line"}}}],"errors":[...]}.
+
+    The second assertion is the load-bearing one: tflint lints correctness, not compliance,
+    so having it on PATH must NOT let `--policy-mode production` through without checkov or
+    trivy. Otherwise a linter silently replaces the security gate.
+    """
+    import json as _json
+    import subprocess as _subprocess
+    from unittest import mock
+
+    tflint_output = _json.dumps({
+        "issues": [{
+            "rule": {"name": "terraform_deprecated_interpolation",
+                     "severity": "warning",
+                     "link": "https://github.com/terraform-linters/tflint/..."},
+            "message": 'Interpolation-only expressions are deprecated',
+            "range": {"filename": "main.tf", "start": {"line": 12, "column": 3}},
+        }],
+        "errors": [],
+    })
+
+    monkeypatch.setattr(toolpath, "find_tool", lambda name: "tflint" if name == "tflint" else None)
+    # returncode 2 is TFLint's "issues found" signal, not a run failure.
+    fake = _subprocess.CompletedProcess(args=[], returncode=2, stdout=tflint_output, stderr="")
+    with mock.patch.object(optimize_analyzer.subprocess, "run", return_value=fake):
+        findings = optimize_analyzer.run_external_scanners(str(tmp_path), required=True)
+
+    lint = [f for f in findings if f["category"] == "External:tflint"]
+    assert len(lint) == 1
+    assert lint[0]["id"] == "terraform_deprecated_interpolation"
+    assert "main.tf:12" in lint[0]["description"]
+
+    blocked = [f for f in findings if f["id"] == "POLICY-EXT" and f["resource"] == "required"]
+    assert blocked, "tflint alone must not satisfy production mode's scanner requirement"

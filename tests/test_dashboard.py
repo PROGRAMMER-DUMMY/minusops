@@ -97,6 +97,8 @@ def test_control_decision_writer_saves_complete_record(tmp_path):
         sources_text="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket",
         assumptions_text="AWS is approved.",
         risks_text="BCM pricing must be run before publishing totals.",
+        validation_text="terraform validate + SEC scan clean before approval.",
+        rollback_text="plan_gate.py run --destroy under the same hash-bound gate.",
         alternatives_text="Redshift warehouse | rejected | Lake-first storage was required.",
     )
 

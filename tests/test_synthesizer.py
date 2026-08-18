@@ -32,6 +32,8 @@ COMPLETE_DECISION = {
     ],
     "assumptions": ["AWS is the target cloud."],
     "risks": ["MWAA cost must be checked during BCM estimate."],
+    "validation": ["terraform validate + SEC scan clean before approval."],
+    "rollback": ["plan_gate.py run --destroy under the same hash-bound gate."],
     "sources": ["AWS MWAA documentation", "Terraform AWS provider registry"],
 }
 

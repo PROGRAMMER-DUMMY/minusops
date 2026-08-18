@@ -101,6 +101,11 @@ STATEFUL_RESOURCE_TYPES = frozenset({
     "databricks_metastore_assignment",     # governs which workspace can reach which metastore's data
     "databricks_catalog",                  # schemas/tables/permissions
     "databricks_mws_workspaces",           # root of an entire environment (notebooks, jobs, clusters)
+    # Added with the Step 7 ingestion catalog (2026-08-18). Same bar as the entries above:
+    # what the TYPE represents, not what one plan does to it.
+    "aws_sqs_queue",                       # holds in-flight events; a replace drops the backlog
+    "aws_secretsmanager_secret",           # the container IS the secret's identity; recreating
+                                           # it orphans every consumer's ARN reference
 })
 
 # IAM is a separate dimension from "holds data" -- a privilege-escalation-risk category the
@@ -110,6 +115,13 @@ STATEFUL_RESOURCE_TYPES = frozenset({
 IAM_RESOURCE_TYPES = frozenset({
     "aws_iam_role",
     "aws_iam_role_policy",
+    # Added 2026-08-18 with compute-emr-ec2-spot. Both are privilege-granting in exactly the
+    # sense this set exists for: an instance profile hands a role to every EC2 node in a
+    # cluster, and a policy attachment binds an AWS-MANAGED policy whose contents this repo
+    # does not author and cannot scan (compute-emr-ec2-spot attaches
+    # AmazonEMRServicePolicy_v2). A wildcard inside a managed policy is invisible to SEC-02.
+    "aws_iam_instance_profile",
+    "aws_iam_role_policy_attachment",
 })
 
 # Types explicitly reviewed and found NOT safe to auto-ship, despite being neither
@@ -138,6 +150,50 @@ REVIEWED_UNSAFE_TYPES = frozenset({
     # hardening change costs one human glance; auto-shipping the one that opens inbound to the
     # world is the exact failure mode this whole fix exists to prevent.
     "aws_default_security_group",
+
+    # ---- Reviewed 2026-08-18 for the Step 7/8 catalog additions (MINUS-123..128) ----
+    # Every one of these was considered for AUTO_SHIP_ELIGIBLE_TYPES and rejected, each on its
+    # own reason, against the same asymmetric-downside test aws_default_security_group was held
+    # to: staging a good change costs one human glance; auto-shipping the bad one is the failure
+    # this gate exists to prevent.
+
+    # Internet-facing surfaces. A partner SFTP endpoint and a webhook receiver are, by design,
+    # reachable from outside the account -- the network-layer equivalent of the public-exposure
+    # content risk that put aws_s3_bucket_policy and aws_default_security_group here. This
+    # classifier reads type and action only; it cannot tell a correctly-scoped endpoint from one
+    # that exposes the wrong prefix.
+    "aws_transfer_server",
+    "aws_transfer_user",                   # grants an external party a credentialed path in
+    "aws_transfer_ssh_key",                # the credential binding itself
+    "aws_apigatewayv2_api",
+    "aws_apigatewayv2_route",
+    "aws_apigatewayv2_stage",
+    "aws_apigatewayv2_integration",        # carries credentials_arn: the API's write path into SQS
+
+    # Continuously-running, materially-priced compute. Creating one of these is not a
+    # configuration change that can be glanced past on a cost report a month later; an EMR
+    # cluster at the tier this module targets is the largest single line item this repo can
+    # produce. auto_termination_policy bounds a FORGOTTEN cluster, not an unintended one.
+    "aws_emr_cluster",
+    "aws_emr_instance_fleet",
+    "aws_dms_replication_instance",
+
+    # Data MOVEMENT. Unlike the storage types in STATEFUL_RESOURCE_TYPES, these do not hold
+    # data -- they copy it, continuously, somewhere else. A replication task pointed at the
+    # wrong schema, a flow pulling the wrong SaaS object, or a CRR rule targeting the wrong
+    # destination bucket is an exfiltration path that plans as an ordinary create.
+    "aws_dms_endpoint",
+    "aws_dms_s3_endpoint",
+    "aws_dms_replication_task",
+    "aws_appflow_flow",
+    "aws_s3_bucket_replication_configuration",
+
+    # Audit and retention integrity. A CloudTrail with S3 data events bills per event and is
+    # the record SecOps reads; object lock makes objects undeletable for the full window, by
+    # anyone, which is a commitment rather than a setting. Both are usually hardening -- and
+    # both are worth one human glance precisely because they are hard to walk back.
+    "aws_cloudtrail",
+    "aws_s3_bucket_object_lock_configuration",
 })
 
 # Reviewed allowlist of resource types confirmed safe to auto-ship (docs/
@@ -214,6 +270,11 @@ AUTO_SHIP_ELIGIBLE_TYPES = frozenset({
     # not just these two additions): confirmed via `grep -rn 'resource "..."' tests/*.py` that
     # only these two non-cloud types are used as test fixtures anywhere in this repo's test
     # suite, so this is now a complete, not partial, exemption list.
+    # Reviewed 2026-08-18 with modules/ingestion-dms. A replication subnet group is a named
+    # list of existing subnet ids -- it holds no data, grants no permission, has no endpoint,
+    # and costs nothing. The one type out of the Step 7/8 additions that met this set's bar;
+    # everything else went to REVIEWED_UNSAFE_TYPES or the stateful/IAM sets above.
+    "aws_dms_replication_subnet_group",
     "random_id",             # hashicorp/random, tests/test_destructive_change_gate.py
     "terraform_data",        # built into Terraform core itself, tests/test_gate_e2e.py
 })

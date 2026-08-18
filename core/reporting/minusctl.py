@@ -1,9 +1,15 @@
 """
 Operator-facing CLI for MinusOps.
 
-This is a thin safe wrapper around the repo tools. It does not run Terraform,
-cloud CLIs, or mutating commands. Commands either create local run files, inspect
-local artifacts, or print the next safe command to run.
+This is a thin safe wrapper around the repo tools. Commands either create local run files,
+inspect local artifacts, or print the next safe command to run.
+
+ONE EXCEPTION, added with MINUS-113: `minusctl seed --execute` uploads a fixture, starts a
+Glue job, and runs an Athena query. It is the only command here that reaches AWS, it is
+opt-in (without `--execute` it prints the commands and changes nothing), and every side
+effect passes through `approval.py` first -- gatekeeper by default, fail-closed without a
+TTY, audited either way. `minusctl adopt` writes only `.minus/` inside the directory it is
+pointed at, and only with `--anchor`.
 """
 import argparse
 import json
@@ -19,7 +25,10 @@ import architecture_decision as archdec  # noqa: E402
 import architecture_model  # noqa: E402
 import accelerators  # noqa: E402
 import audit_chain  # noqa: E402
+import adopt as adopt_engine  # noqa: E402
 import demo  # noqa: E402
+import doctor  # noqa: E402
+import seed as seed_engine  # noqa: E402
 import plan_inspector  # noqa: E402
 import requirements as reqgate  # noqa: E402
 import rule_stages  # noqa: E402
@@ -371,7 +380,8 @@ def _readiness(run):
                 decision_ok,
                 "blocker",
                 ", ".join(missing_decision) if missing_decision else "complete",
-                "Fill selected architecture, selected modules, alternatives, assumptions, risks, and sources.",
+                "Fill selected architecture, selected modules, alternatives, assumptions, risks, "
+                "validation, rollback, and sources.",
             ),
         ]
         blockers = [item for item in checks if not item["ok"] and item["severity"] == "blocker"]
@@ -884,7 +894,58 @@ def main(argv=None):
     demo_cmd.add_argument("--daily-data-gb", type=float, default=50)
     demo_cmd.add_argument("--json", action="store_true")
 
+    doctor_cmd = sub.add_parser("doctor", help="diagnose the local environment (cross-platform)")
+    doctor_cmd.add_argument("--json", action="store_true")
+
+    adopt_cmd = sub.add_parser(
+        "adopt", help="inventory + scan an existing Terraform directory and bring it under the gate")
+    adopt_cmd.add_argument("--dir", required=True)
+    adopt_cmd.add_argument("--anchor", action="store_true",
+                           help="write the source baseline (the only write this makes)")
+    adopt_cmd.add_argument("--label", default="adopted")
+    adopt_cmd.add_argument("--json", action="store_true")
+
+    seed_cmd = sub.add_parser(
+        "seed", help="prove an APPLIED stack end to end: seed Bronze, run the job, query Gold")
+    seed_cmd.add_argument("--run", default=None, help="run id (default: latest)")
+    seed_cmd.add_argument("--dir", default=None, help="Terraform directory (overrides --run)")
+    seed_cmd.add_argument("--fixture", default=None)
+    seed_cmd.add_argument("--table", default="customer_gold")
+    seed_cmd.add_argument("--execute", action="store_true",
+                          help="perform the AWS side effects (routed through approval.py). "
+                               "Without it, seed only prints the commands.")
+    seed_cmd.add_argument("--approval-mode", default="gatekeeper",
+                          choices=["gatekeeper", "auto-approve"])
+    seed_cmd.add_argument("--json", action="store_true")
+
     args = ap.parse_args(argv)
+
+    if args.cmd == "doctor":
+        result = doctor.diagnose()
+        _json_or_text(result, args.json, doctor.format_result(result))
+        return 0 if result["ok"] else 1
+
+    if args.cmd == "adopt":
+        try:
+            result = adopt_engine.adopt(args.dir, anchor=args.anchor, label=args.label)
+        except NotADirectoryError as exc:
+            raise SystemExit(str(exc))
+        _json_or_text(result, args.json, adopt_engine.format_result(result))
+        return 0 if result["ok"] else 1
+
+    if args.cmd == "seed":
+        # The one mutating command in this CLI, and only with --execute. Everything else here
+        # is local-only by contract (see the module docstring), so the default stays a plan.
+        tf_dir = args.dir or _run_by_id_or_latest(args.run)["terraform_dir"]
+        fixture = args.fixture or os.path.join(
+            os.path.dirname(os.path.abspath(tf_dir)), seed_engine.FIXTURE)
+        try:
+            result = seed_engine.seed(tf_dir, fixture, table=args.table, execute=args.execute,
+                                      approval_mode=args.approval_mode)
+        except seed_engine.SeedError as exc:
+            raise SystemExit(str(exc))
+        _json_or_text(result, args.json, seed_engine.format_result(result))
+        return 0 if result["ok"] else 1
 
     if args.cmd == "policy":
         if args.action == "list":

@@ -71,7 +71,7 @@ Because there is no bundled IaC, **every tool that acts on infrastructure requir
 │
 ├── docs/                           # information_library · documentation_ledger
 │   │                               #   enterprise_iam_manifest · architecture_svg_spec · pricing_catalog_support
-├── tools/doctor.ps1                # env diagnostics
+├── tools/doctor.ps1                # env diagnostics (Windows-only, superseded by `minusctl doctor`)
 │
 ├── .agents/                        # agent skill manifests + runtime logs
 │   ├── AGENTS.md                   # agy workspace rules (subset of this file)
@@ -120,7 +120,10 @@ All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws
 | **Stress-test a plan** | Read `.agents/skills/grill-me/SKILL.md`, then interview one decision at a time until major branches are resolved | `grill-me` skill |
 | **Audit an action** | `python core/governance/audit_logger.py --action <a> --details <d>` | append to tamper-evident `audit.jsonl` |
 | **Verify the audit chain** | `python core/reporting/minusctl.py audit verify` (or `python core/governance/audit_chain.py verify`) | hash-chain integrity check |
-| **Diagnose local env** | `powershell -ExecutionPolicy Bypass -File ./tools/doctor.ps1` | PowerShell |
+| **Adopt existing Terraform** | `python core/reporting/minusctl.py adopt --dir <dir> [--anchor]` (inventory + SEC scan; `--anchor` is the only write) | `core/reporting/adopt.py` |
+| **Prove a stack end to end** | `python core/reporting/minusctl.py seed --run <run-id>` (plan only) / `--execute` (**mutates AWS**, routed through `approval.py`) | `core/reporting/seed.py` |
+| **Independent stage review** | `python core/governance/reflector.py --run-root runs/<id>` (read-only; exit 2 when blocked) | `core/governance/reflector.py` |
+| **Diagnose local env** | `python core/reporting/minusctl.py doctor [--json]` (cross-platform; exit 1 when a check is `error`) | `core/reporting/doctor.py` |
 
 
 ### 3.1 Project-local decision skills
@@ -328,7 +331,7 @@ report is tied to exactly one plan; `git` versions the `.tf`, the plan-hash vers
 - **Approver RBAC:** set `MINUS_OPERATOR` (the acting principal; wire to SSO/OIDC or CI actor) and `MINUS_APPROVERS` (comma-separated allowlist) or `.minus/approvers.json`. With no allowlist the gates run in recorded "open" mode — never use open mode for production. See [`docs/security_model.md`](./docs/security_model.md) and [`docs/operations_runbook.md`](./docs/operations_runbook.md).
 - **Region/defaults:** none are bundled — your Terraform owns its own region, environment, and tagging. The engine reads `MINUS_CLOUD` and your CLI's configured region; it does not inject provider defaults.
 - **Git:** this **is** a git repo. Work on a branch; commit/push only when asked.
-- **Before touching infra:** run `./tools/doctor.ps1` to confirm Terraform, the cloud CLI, and credentials are present.
+- **Before touching infra:** run `python core/reporting/minusctl.py doctor` to confirm Terraform, the cloud CLI, credentials, and the policy tooling are present. It also warns when the active credentials are long-term or root, which is exactly the posture an unattended auto-approve run must not have.
 
 ---
 

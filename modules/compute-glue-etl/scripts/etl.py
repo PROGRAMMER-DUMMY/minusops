@@ -5,6 +5,7 @@ This is a runnable skeleton, not a finished pipeline. It reads from a source pat
 applies a no-op passthrough transform, and writes Parquet to a target path. Replace the
 transform with your real validate/clean/normalize logic, and wire real job arguments
 (--source_path, --target_path) via the Glue job's DefaultArguments before production use.
+The module wires those, plus --source_format / --target_format, automatically.
 
 Grounded in the medallion pattern (raw -> cleaned -> curated) and Well-Architected
 Performance guidance: write columnar Parquet, partitioned, to avoid the small-files problem.
@@ -15,10 +16,10 @@ from awsglue.context import GlueContext
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 
-# --source_path / --target_path are supplied as Glue job arguments (REVIEW: set before run).
+# Supplied as Glue job arguments by modules/compute-glue-etl (default_arguments).
 _args = getResolvedOptions(sys.argv, ["JOB_NAME"])
 _optional = {}
-for _key in ("source_path", "target_path"):
+for _key in ("source_path", "target_path", "source_format", "target_format"):
     try:
         _optional.update(getResolvedOptions(sys.argv, [_key]))
     except Exception:
@@ -37,10 +38,17 @@ if not source_path or not target_path:
         "REVIEW: set --source_path and --target_path Glue job arguments before running this ETL job."
     )
 
-df = spark.read.parquet(source_path) if source_path.endswith("/") else spark.read.json(source_path)
+# The format is declared, not guessed. This used to be
+# `spark.read.parquet(p) if p.endswith("/") else spark.read.json(p)`, which read the
+# trailing slash of a directory path as "this is Parquet" -- so the wired Bronze path
+# (s3://<bronze>/data/, raw JSON) was read as Parquet and the job died on its first read.
+source_format = _optional.get("source_format") or "json"
+target_format = _optional.get("target_format") or "parquet"
+
+df = spark.read.format(source_format).load(source_path)
 
 # TODO(operator): replace with real validation / cleaning / normalization / enrichment.
 transformed = df
 
 # Columnar, partition-friendly write (tune partitionBy to your query patterns).
-transformed.write.mode("overwrite").parquet(target_path)
+transformed.write.mode("overwrite").format(target_format).save(target_path)

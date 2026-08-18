@@ -654,6 +654,7 @@ def _find_dashboard_run(run_id):
 
 def write_control_decision(run, selected_architecture="", decision_summary="", modules_text="",
                            sources_text="", assumptions_text="", risks_text="", alternatives_text="",
+                           validation_text="", rollback_text="", failure_modes_text="",
                            decided_by="dashboard"):
     decision_path = os.path.join(run["root"], archdec.FILENAME)
     requirements_file = os.path.join(run["root"], reqgate.FILENAME)
@@ -669,9 +670,16 @@ def write_control_decision(run, selected_architecture="", decision_summary="", m
         if unknown:
             raise ValueError("unknown module id(s): " + ", ".join(unknown))
         data["selected_modules"] = module_ids
-    for field, text in (("sources", sources_text), ("assumptions", assumptions_text), ("risks", risks_text)):
+    for field, text in (("sources", sources_text), ("assumptions", assumptions_text),
+                        ("risks", risks_text), ("validation", validation_text),
+                        ("rollback", rollback_text), ("failure_modes", failure_modes_text)):
         values = _split_control_lines(text)
         if values:
+            if field == "failure_modes":
+                unknown = [v for v in values if v not in archdec.FAILURE_MODES]
+                if unknown:
+                    raise ValueError("unknown failure mode(s): " + ", ".join(unknown)
+                                     + " (valid: " + ", ".join(sorted(archdec.FAILURE_MODES)) + ")")
             data[field] = values
     alternatives = []
     for line in (alternatives_text or "").splitlines():
@@ -724,6 +732,9 @@ def control_editor_panel(rows, selected_run_id=None):
     sources_value = "\n".join(decision.get("sources") or [])
     assumptions_value = "\n".join(decision.get("assumptions") or [])
     risks_value = "\n".join(decision.get("risks") or [])
+    validation_value = "\n".join(decision.get("validation") or [])
+    rollback_value = "\n".join(decision.get("rollback") or [])
+    failure_modes_value = "\n".join(decision.get("failure_modes") or [])
     alternatives_value = "\n".join(
         f"{item.get('name', '')} | {item.get('decision', '')} | {item.get('reason', '')}"
         for item in (decision.get("alternatives") or [])
@@ -778,6 +789,24 @@ def control_editor_panel(rows, selected_run_id=None):
                 html.Span("Risks"),
                 dcc.Textarea(id="control-risks", value=risks_value,
                              placeholder="One risk per line", className="control-textarea small"),
+            ]),
+            html.Label(className="field-label", children=[
+                html.Span("Validation"),
+                dcc.Textarea(id="control-validation", value=validation_value,
+                             placeholder="One check per line that proves this design correct",
+                             className="control-textarea small"),
+            ]),
+            html.Label(className="field-label", children=[
+                html.Span("Rollback"),
+                dcc.Textarea(id="control-rollback", value=rollback_value,
+                             placeholder="One step per line for undoing this design",
+                             className="control-textarea small"),
+            ]),
+            html.Label(className="field-label", children=[
+                html.Span("Failure modes"),
+                dcc.Textarea(id="control-failure-modes", value=failure_modes_value,
+                             placeholder="FM-01 .. FM-05, one per line (optional)",
+                             className="control-textarea small"),
             ]),
             html.Label(className="field-label wide", children=[
                 html.Span("Alternatives"),
@@ -1905,12 +1934,16 @@ def _run_selector(_n_clicks):
     State("control-sources", "value"),
     State("control-assumptions", "value"),
     State("control-risks", "value"),
+    State("control-validation", "value"),
+    State("control-rollback", "value"),
+    State("control-failure-modes", "value"),
     State("control-alternatives", "value"),
     State("control-force", "value"),
     prevent_initial_call=True,
 )
 def _control_action(_accelerator_clicks, _save_clicks, run_id, architecture, summary, modules_text,
-                    sources_text, assumptions_text, risks_text, alternatives_text, force_values):
+                    sources_text, assumptions_text, risks_text, validation_text, rollback_text,
+                    failure_modes_text, alternatives_text, force_values):
     run = _find_dashboard_run(run_id)
     if not run:
         return html.Div("Run not found.", className="status-bad")
@@ -1929,6 +1962,9 @@ def _control_action(_accelerator_clicks, _save_clicks, run_id, architecture, sum
             sources_text=sources_text or "",
             assumptions_text=assumptions_text or "",
             risks_text=risks_text or "",
+            validation_text=validation_text or "",
+            rollback_text=rollback_text or "",
+            failure_modes_text=failure_modes_text or "",
             alternatives_text=alternatives_text or "",
         )
     except Exception as exc:

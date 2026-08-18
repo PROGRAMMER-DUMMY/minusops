@@ -29,6 +29,9 @@ import sys
 
 
 BLOCKING_PREFIXES = ("SEC-",)
+# Policy engines whose presence satisfies production mode. TFLint is run alongside these
+# (see run_external_scanners) but is intentionally not a member: it lints correctness, not
+# compliance, so it must never stand in for a security scanner.
 EXTERNAL_SCANNERS = ("checkov", "trivy")
 SKIP_DIRS = {".terraform", ".git", "__pycache__", ".minus"}
 
@@ -283,6 +286,42 @@ def run_external_scanners(source_dir, required=False):
         except Exception as exc:
             msg = f"trivy run failed: {exc}"
             findings.append(_scanner_error("trivy", msg, required))
+            print(f"[OPTIMIZER] {msg}", file=sys.stderr)
+
+    # TFLint (MINUS-137) is a LINTER, not a policy engine: it catches provider-level
+    # correctness -- invalid instance types, deprecated arguments, unused declarations --
+    # that a compliance scanner does not look for. That is why it is always advisory and
+    # deliberately does NOT satisfy the production-mode requirement below; swapping checkov
+    # for tflint would trade security coverage for syntax coverage.
+    #
+    # Without `tflint --init` the AWS ruleset plugin is absent and only the built-in
+    # terraform rules run. That still finds real defects and needs no setup, so a bare
+    # install is useful rather than a hard prerequisite.
+    tflint = toolpath.find_tool("tflint")
+    if tflint:
+        try:
+            # Exit 2 means "issues found" and 1 means "errors occurred" -- both still emit
+            # valid JSON, so returncode is not treated as a run failure (same reasoning as
+            # trivy above). Only unparseable/absent stdout counts as a scanner error.
+            res = subprocess.run([tflint, "--chdir", source_dir, "--format", "json"],
+                                 capture_output=True, text=True, timeout=120)
+            data = json.loads(res.stdout or "{}")
+            for item in (data.get("issues") or []):
+                rule = item.get("rule") or {}
+                where = (item.get("range") or {}).get("filename", "")
+                line = ((item.get("range") or {}).get("start") or {}).get("line")
+                findings.append(_finding(
+                    rule.get("name", "TFLINT"), "External:tflint",
+                    rule.get("name", "tflint finding"),
+                    f"{item.get('message', '')} ({where}{f':{line}' if line else ''})",
+                    "EXTERNAL", resource=where))
+            for item in (data.get("errors") or []):
+                findings.append(_scanner_error(
+                    "tflint", item.get("summary") or item.get("message", "tflint error"),
+                    required=False))
+        except Exception as exc:
+            msg = f"tflint run failed: {exc}"
+            findings.append(_scanner_error("tflint", msg, required=False))
             print(f"[OPTIMIZER] {msg}", file=sys.stderr)
 
     if required and not (checkov or trivy):

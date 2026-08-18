@@ -22,6 +22,53 @@ variable "jobs" {
   description = "job_name => script_s3_key (e.g. { bronze_to_silver = \"scripts/b2s.py\" })."
 }
 
+variable "data_buckets" {
+  type        = list(string)
+  default     = []
+  description = "Medallion bucket NAMES the job reads and writes (bronze/silver/gold). Named for the same shape dq-great-expectations' target_buckets uses, so the synthesizer wires both from values(module.storage_medallion_s3.bucket_names)."
+}
+
+variable "kms_key_arn" {
+  type        = string
+  default     = ""
+  description = "CMK encrypting the medallion buckets. Without kms:GenerateDataKey on it the job gets 403 AccessDenied writing to an SSE-KMS bucket, even with the S3 actions allowed."
+}
+
+variable "source_bucket" {
+  type        = string
+  default     = ""
+  description = "Bucket the starter job reads from (bronze). Empty means the operator wires --source_path themselves."
+}
+
+variable "target_bucket" {
+  type        = string
+  default     = ""
+  description = "Bucket the starter job writes to (silver). Empty means the operator wires --target_path themselves."
+}
+
+variable "source_format" {
+  type        = string
+  default     = "json"
+  description = "Spark reader format for source_path. Declared rather than inferred: scripts/etl.py used to pick parquet-vs-json from a trailing slash, which read the raw-JSON Bronze zone as Parquet."
+}
+
+variable "target_format" {
+  type        = string
+  default     = "parquet"
+  description = "Spark writer format for target_path. Columnar by default (WA Performance guidance)."
+}
+
+variable "execution_class" {
+  type        = string
+  default     = "STANDARD"
+  description = "STANDARD or FLEX. FLEX runs on spare capacity for roughly 35% less, at the cost of an unpredictable start time and possible interruption -- correct for a nightly batch whose SLA is measured in hours, wrong for anything a person is waiting on. Requires Glue 3.0+ and a G-series worker."
+
+  validation {
+    condition     = contains(["STANDARD", "FLEX"], var.execution_class)
+    error_message = "execution_class must be STANDARD or FLEX."
+  }
+}
+
 variable "worker_type" {
   type    = string
   default = "G.1X"
@@ -71,6 +118,31 @@ data "aws_iam_policy_document" "glue" {
     actions   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["arn:aws:logs:*:*:/aws-glue/*"]
   }
+  # The Scripts statement above only covers reading the job script. Without these the job
+  # reads bronze but 403s on the first write to silver/gold -- the exact failure the
+  # 2026-08-17 live run hit. Scoped to the named buckets: never Resource = "*" (SEC-02).
+  dynamic "statement" {
+    for_each = length(var.data_buckets) > 0 ? [1] : []
+    content {
+      sid     = "DataLake"
+      actions = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
+      resources = concat(
+        [for b in var.data_buckets : "arn:aws:s3:::${b}"],
+        [for b in var.data_buckets : "arn:aws:s3:::${b}/*"],
+      )
+    }
+  }
+  # SSE-KMS buckets need the data-key grants too; S3 actions alone still 403. The key's own
+  # policy keeps AWS's default root delegation (MINUS-112), so this IAM grant is what
+  # actually confers access -- no service-principal block, no lockout risk.
+  dynamic "statement" {
+    for_each = var.kms_key_arn == "" ? [] : [var.kms_key_arn]
+    content {
+      sid       = "LakeKey"
+      actions   = ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
+      resources = [statement.value]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "glue" {
@@ -95,6 +167,7 @@ resource "aws_glue_job" "this" {
   name              = "${var.name_prefix}-${each.key}"
   role_arn          = aws_iam_role.glue.arn
   glue_version      = "4.0"
+  execution_class   = var.execution_class
   worker_type       = var.worker_type
   number_of_workers = var.number_of_workers
   tags              = var.tags
@@ -107,9 +180,21 @@ resource "aws_glue_job" "this" {
 
   # Incremental processing by default (WA Analytics Lens BP10 / our DATA-01 check):
   # bookmarks stop re-scanning already-processed input on every run.
-  default_arguments = {
-    "--job-bookmark-option" = "job-bookmark-enable"
-  }
+  #
+  # --source_path / --target_path are injected here rather than left to the operator:
+  # scripts/etl.py raises SystemExit without them, so an unwired job fails on its first
+  # run (2026-08-17 live run). Omitted entirely when no bucket is wired, so a standalone
+  # use of this module does not get a malformed "s3:///data/".
+  default_arguments = merge(
+    { "--job-bookmark-option" = "job-bookmark-enable" },
+    var.source_bucket == "" ? {} : { "--source_path" = "s3://${var.source_bucket}/data/" },
+    var.target_bucket == "" ? {} : { "--target_path" = "s3://${var.target_bucket}/data/" },
+    # Read/write formats are declared, never inferred from the path shape.
+    {
+      "--source_format" = var.source_format
+      "--target_format" = var.target_format
+    },
+  )
 }
 
 # Failure monitoring: route Glue job FAILED/TIMEOUT/STOPPED events to the alerts topic

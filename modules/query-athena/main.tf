@@ -24,6 +24,12 @@ variable "bytes_scanned_cutoff" {
   description = "Per-query data scan limit in bytes (default 10 GiB)."
 }
 
+variable "gold_bucket" {
+  type        = string
+  default     = ""
+  description = "Curated (Gold) bucket the catalog database points at. Empty leaves location_uri unset, which is valid -- table-level locations still work."
+}
+
 variable "run_id" {
   type        = string
   default     = ""
@@ -80,6 +86,25 @@ resource "aws_athena_workgroup" "this" {
       }
     }
   }
+}
+
+# MINUS-110. An Athena workgroup with no catalog database has nothing to query: the
+# 2026-08-17 run provisioned the workgroup and stopped there. This creates the database the
+# Gold zone's tables live in.
+#
+# Deliberately NO table definitions. A table needs a real column schema, and inventing one
+# produces tables that do not match the data and fail on first query -- worse than no table.
+# Tables come from whatever actually knows the schema: dbt models (src/dbt/), a CTAS, or a
+# Glue crawler. Glue database names allow only lowercase alphanumerics and underscores, so
+# the hyphenated name_prefix is translated rather than passed through.
+resource "aws_glue_catalog_database" "gold" {
+  name         = "${replace(lower(var.name_prefix), "-", "_")}_gold"
+  description  = "Curated (Gold) tables for ${var.name_prefix}, queried through the ${aws_athena_workgroup.this.name} workgroup."
+  location_uri = var.gold_bucket == "" ? null : "s3://${var.gold_bucket}/"
+}
+
+output "catalog_database" {
+  value = aws_glue_catalog_database.gold.name
 }
 
 output "workgroup_name" {

@@ -370,12 +370,18 @@ def test_a_second_genuinely_novel_type_also_stages_not_just_the_one_hardcoded_ex
     """Proves the FIX is a real default, not a special case bolted on for one type. A
     completely different, also-never-declared type (docs/g5_autonomy_boundary_scope.md proof-bar
     item 4 -- confirmed absent from the real catalog by the same grep) must land on the exact
-    same fail-closed path."""
-    assert "aws_secretsmanager_secret" not in gate.STATEFUL_RESOURCE_TYPES
-    assert "aws_secretsmanager_secret" not in gate.IAM_RESOURCE_TYPES
-    assert "aws_secretsmanager_secret" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    same fail-closed path.
+
+    Fixture changed 2026-08-18: this used `aws_secretsmanager_secret`, which stopped being a
+    novel type when modules/ingestion-webhook started declaring one (MINUS-125) -- it is now a
+    reviewed member of STATEFUL_RESOURCE_TYPES. That is the fail-closed design doing its job,
+    not a regression: growing the catalog is supposed to force a review. `aws_neptune_cluster`
+    replaces it, re-confirmed absent from modules/, core/, and tests/ by the same grep."""
+    for bucket in (gate.STATEFUL_RESOURCE_TYPES, gate.IAM_RESOURCE_TYPES,
+                   gate.AUTO_SHIP_ELIGIBLE_TYPES, gate.REVIEWED_UNSAFE_TYPES):
+        assert "aws_neptune_cluster" not in bucket
     plan = {"resource_changes": [
-        {"address": "aws_secretsmanager_secret.x", "mode": "managed", "type": "aws_secretsmanager_secret",
+        {"address": "aws_neptune_cluster.x", "mode": "managed", "type": "aws_neptune_cluster",
          "change": {"actions": ["create"]}},
     ]}
     result = gate.classify(plan)

@@ -28,6 +28,17 @@ variable "max_memory" {
   default = "64 GB"
 }
 
+variable "architecture" {
+  type        = string
+  default     = "ARM64"
+  description = "ARM64 (Graviton) or X86_64. Graviton is the default because it is materially cheaper per vCPU-hour for Spark and the JVM runs on it unchanged -- switch to X86_64 only for a job with a native x86 dependency (some JNI libraries, a vendored .so)."
+
+  validation {
+    condition     = contains(["ARM64", "X86_64"], var.architecture)
+    error_message = "architecture must be ARM64 or X86_64."
+  }
+}
+
 variable "target_buckets" {
   type        = list(string)
   default     = []
@@ -35,6 +46,7 @@ variable "target_buckets" {
 }
 
 resource "aws_emrserverless_application" "spark" {
+  architecture  = var.architecture
   name          = "${var.name_prefix}-spark"
   release_label = var.release_label
   type          = "spark"

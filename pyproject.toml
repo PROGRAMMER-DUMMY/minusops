@@ -140,6 +140,14 @@ testpaths = ["tests"]
 # green end to end. It is deselected by default and run explicitly in CI:
 #     python -m pytest -m slow
 addopts = "-q --basetemp=.pytest_tmp -m 'not slow'"
+# Windows copies providers out of TF_PLUGIN_CACHE_DIR instead of symlinking them, so every
+# `terraform init` in a fresh tmp_path costs ~470 MB of disk that pytest keeps for the whole
+# session. The shared plugin cache stops the re-DOWNLOAD; it does not stop the re-COPY. At 306
+# slow tests that is ~140 GB, and it filled a 361 GB disk to 100% mid-run (2026-08-18) -- the
+# same failure mode the TF_PLUGIN_CACHE_DIR note in tests/conftest.py describes at 65 GB.
+# Deleting a passing test's tmp dir immediately caps peak usage at a handful of copies;
+# failures keep theirs, which is the only case anyone inspects afterwards.
+tmp_path_retention_policy = "failed"
 markers = [
     "slow: real-Terraform tests that init/plan against live providers (minutes, not seconds)",
 ]

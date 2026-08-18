@@ -7,7 +7,7 @@ this up cold should be able to read only this file and know where things stand.
 increment, close a decision, or discover a bug, edit here before moving on. Stale entries are
 worse than missing ones.
 
-Last updated: 2026-07-27 (session 2) · Branch: `restructure/multi-cloud-foundation`
+Last updated: 2026-08-18 · Branch: `feat/minusops-enterprise-nextgen-v2`
 
 ---
 
@@ -181,3 +181,344 @@ about auto-approve applying real infrastructure. Worth reconciling against the a
 - G6 runs shadow-only and blocks nothing. G9's `_g9_eval` can only return `g9_not_configured` — no emulator passes its own security-critical bar (LocalStack needs an unprovisioned paid token; MiniStack and Floci both fail negative fidelity on all three critical types).
 - `coverage_audit.classify()` is the honesty pattern `verification_coverage.py` was modelled on.
 - 21 % of `core/` is comments/docstrings (3,018 lines of multi-line strings), much of it dated audit narrative that git history already holds.
+
+
+---
+
+## 7. Enterprise Next-Gen upgrade (MINUS-101..137)
+
+Branch `feat/minusops-enterprise-nextgen-v2`, driven by the 9-step roadmap in section 21 of
+`2026-08-17_minusterraformrunaudit.md`. Ticket specs live in that file; this section records
+only what is actually done and what changed about the plan.
+
+**Step 1 — Diagnostics & pre-flight: DONE.**
+- MINUS-107: `core/reporting/doctor.py` + `minusctl doctor [--json]`. Cross-platform, exit 1 on
+  any `error` check. `tools/doctor.ps1` is kept but superseded and frozen.
+- MINUS-136: TerraShark FM-01..05 as `architecture_decision.FAILURE_MODES` (one definition,
+  shared with `grill-me` Step 3.5), plus the 4-part ADR output contract.
+
+**Deviations from the ticket text, and why:**
+- MINUS-107 asked for a Graphviz `dot` check. Nothing in the repo shells out to graphviz --
+  architecture SVGs are LLM-generated per `docs/architecture_svg_spec.md` and the PDFs are
+  hand-rolled stdlib. Checking for a tool the product never invokes is noise, so the slot went
+  to `checkov`/`trivy` instead, which `MINUS_POLICY_MODE=production` genuinely requires.
+- MINUS-136's 4-part contract was already half-built: `assumptions` and `alternatives`
+  (tradeoffs) existed. Only `validation` and `rollback` were added as required fields.
+  `failure_modes` is optional but id-validated -- five mandatory free-text fields per ADR is
+  box-ticking, and an id outside FM-01..05 means the author guessed at the taxonomy.
+
+**Already done before this branch (do not re-implement):**
+- MINUS-103 (Step 4, "auto-anchor source baseline"): `synthesizer.py` already calls
+  `source_guard.write_baseline(terraform_dir, label="synthesized")`. Step 4 is a no-op.
+
+**Open question blocking part of Step 2:**
+- MINUS-112 says to add service principals to the lake KMS key policy. `storage-medallion-s3`
+  sets *no* key policy today, so AWS's default applies: the account root is granted full
+  access, which is what makes IAM-based grants work at all. Attaching a custom policy that
+  lists only service principals is the classic way to lock yourself out of a CMK. The 403 the
+  audit actually observed is fixed by MINUS-108's IAM grants, not by a key policy. Decide
+  before implementing: (a) skip, (b) add a policy that keeps the root statement and adds
+  `via_service` conditions.
+
+**Pre-existing drift noticed, not fixed (out of Step 1 scope):**
+- `.agents/skills/grill-me/SKILL.md` still names `aws-data-pipeline-standard` and
+  `minusctl create ... --generate` as the production path, which `AGENTS.md` explicitly calls
+  stale demo-fixture guidance. Step 7 rewrites this file (MINUS-116/124) -- fix it there.
+
+**Step 2 — Core IAM & data-flow wiring: DONE.**
+- MINUS-108: `compute-glue-etl` gained `data_buckets` + `kms_key_arn` and two conditional
+  `dynamic "statement"` blocks (`DataLake` S3 read/write scoped to the named buckets, `LakeKey`
+  `kms:Decrypt/GenerateDataKey/DescribeKey`). Never `Resource = "*"` (SEC-02).
+- MINUS-109: `default_arguments` is now a `merge()` injecting `--source_path`/`--target_path`.
+  Omitted when the bucket input is empty, so standalone use never emits `s3:///data/`.
+- MINUS-112: **no key policy written**, per the 2026-08-18 directive. AWS's default root
+  delegation is what makes the IAM grants above work; the observed 403 was a missing
+  `kms:GenerateDataKey`, not a key-policy gap. Rationale is recorded in the module itself so
+  nobody "fixes" it later by adding a lockout.
+- MINUS-137: TFLint added to `optimize_analyzer.run_external_scanners()`, and `moved {}`
+  generation added to `address_churn.py` (`render_moved` / `write_moved` / CLI).
+
+**Step 3 — Lifecycle & state hardening: DONE.**
+- MINUS-101: `force_destroy = var.force_destroy` on the medallion buckets, default `false`;
+  the synthesizer emits `var.environment == "dev"`.
+- MINUS-102: KMS alias suffixed with the run hash.
+- MINUS-104 + MINUS-134: opt-in S3 remote backend via `synthesizer.py --state-bucket`, with a
+  directory-bound key `<name_prefix>/<run_id>/terraform.tfstate`.
+
+**Two more deviations from the ticket text, and why:**
+- MINUS-108 asked for `data_bucket_arns`. The module takes bucket **names** (`data_buckets`)
+  instead, matching `dq-great-expectations`' `target_buckets`, `compaction-glue`, and
+  `compute-emr-serverless` -- all three already take names and all wire from the same
+  `values(module.storage_medallion_s3.bucket_names)`. Adding a fourth convention, plus a
+  redundant `bucket_arns` output, buys nothing.
+- MINUS-104 asked for "S3 + DynamoDB state backend". DynamoDB locking is deprecated upstream
+  ("will be removed in a future minor version",
+  developer.hashicorp.com/terraform/language/backend/s3, checked 2026-08-18). The generator
+  emits `use_lockfile = true` and no DynamoDB table, so operators are not handed a resource
+  with a removal deadline attached.
+
+**Open defect found while wiring MINUS-109 (NOT fixed -- needs a decision):**
+`modules/compute-glue-etl/scripts/etl.py` picks its reader by suffix:
+`spark.read.parquet(path) if path.endswith("/") else spark.read.json(path)`. The wired
+`--source_path` is `s3://<bronze>/data/`, which ends in `/`, so the starter job now reads
+**Parquet from the raw-JSON Bronze zone**. MINUS-108/109 move the failure from "crashes at
+startup" to "crashes on read"; the job is still not end-to-end runnable. Not fixed here
+because it does not trace to either ticket. Cheapest fix is a `--source_format` default
+argument (default `json`) replacing the suffix heuristic. Natural home: MINUS-113
+(`minusctl seed`, Step 9), whose Athena smoke test is what would catch it.
+
+**etl.py reader defect: FIXED (authorized 2026-08-18).**
+`--source_format` (default `json`) and `--target_format` (default `parquet`) are now module
+variables, injected into `default_arguments`, and read by `scripts/etl.py` via
+`getResolvedOptions`. The suffix heuristic
+(`spark.read.parquet(p) if p.endswith("/") else spark.read.json(p)`) is gone; the script now
+does `spark.read.format(source_format).load(path)`. The synthesizer states `"json"` / `"parquet"`
+explicitly at the call site so the medallion intent is visible in the generated HCL and an
+operator landing CSV in Bronze knows which line to change.
+
+**Step 5 — Catalog, dbt & orchestration: DONE.**
+- MINUS-110: `aws_glue_catalog_database.gold` in `query-athena`, named
+  `${replace(lower(name_prefix), "-", "_")}_gold` (Glue rejects hyphens), `location_uri` from the
+  new `gold_bucket` input. **No table definitions** -- a table needs a real column schema and an
+  invented one fails on first query. Tables come from dbt, a CTAS, or a crawler.
+- MINUS-111: `schedule_expression` on `orchestrator-stepfunctions` with an EventBridge rule,
+  target, and its own `events.amazonaws.com` role (it cannot reuse the state machine's role).
+  All `count`-gated, so an event-driven pipeline gets no surprise cron.
+- MINUS-119: `write_dbt_project()` scaffolds `src/dbt/` at the run root whenever `query-athena`
+  is present. `profiles.yml` targets dbt-athena; account-dependent paths go through `env_var`
+  because the results bucket name contains the account id and run hash.
+- MINUS-120: `transform_engine: "dbt"` on the decision record drops `compute-glue-etl` (even if
+  explicitly selected) and refuses the composition if `query-athena` is absent.
+- Also added `outputs.tf` generation, keyed off present modules -- `README-dbt.md`'s commands
+  and MINUS-113 (`minusctl seed`) both need post-apply values that cannot be computed at
+  synthesis time.
+
+**Decisions worth not relitigating:**
+- `schedule_expression` is left as a `REVIEW` item, not defaulted to `rate(1 day)`. Nothing in
+  `requirements.json` states a batch cadence, and a default cron attaches recurring cost to a
+  pipeline nobody asked to run daily. Wire it when the requirements schema grows a cadence field.
+- `models/` is scaffolded empty for the same reason no Glue tables are generated.
+
+**Testing note (cost us a false signal once):** `pyproject.toml` pins
+`--basetemp=.pytest_tmp`, so two concurrent pytest runs share one temp root and produce
+spurious `PermissionError`s on Windows (16 of them in one run here). Run the slow suite and the
+fast suite one at a time, or pass a distinct `--basetemp`. Same class as the audit-chain lock
+and G9 issues already on record.
+
+**Step 6 — Enterprise promotion & DR: DONE.**
+- MINUS-114 + MINUS-130: `envs/{dev,staging,prod}.tfvars` generated into the Terraform root
+  from `_ENV_MATRIX`. Promotion is `-var-file`, never a forked `main.tf`. New root variables
+  `glue_worker_type`, `glue_number_of_workers`, `retention_days`, `monthly_budget_usd`,
+  `cost_center`, `data_classification` back it -- wiring them also cleared three REVIEW items
+  every composed stack used to carry.
+- MINUS-131: opt-in CloudTrail with S3 **data** event selectors in `governance-observability`,
+  writing to an Object-Locked, never-force-destroyable audit bucket. The synthesizer pre-wires
+  the bucket ARNs and CMK so enabling it is a one-line tfvars change.
+- MINUS-132: S3 CRR (per-zone destinations), multi-region KMS opt-in, and the mandatory tag
+  set on the provider's `default_tags` plus a `check` block.
+
+**Decisions worth not relitigating:**
+- **`force_destroy` is not in the promotion matrix.** `main.tf` derives it from
+  `var.environment == "dev"`, so no var-file can turn it on for prod. A test fails if anyone
+  adds it to `_ENV_MATRIX` as a convenience.
+- **CRR destinations are a `map(string)` keyed by zone, not one bucket ARN.** S3 replication
+  preserves the object key exactly and cannot add a prefix, so three zones replicating into
+  one destination would overwrite each other. Also guarded by a test.
+- **Object Lock is GOVERNANCE, not COMPLIANCE.** COMPLIANCE cannot be shortened or removed by
+  anyone including root for the full window; it has stranded more teams than it has caught.
+- **A declared budget is scaled per tier (0.25 / 0.5 / 1.0), not copied flat.** One identical
+  ceiling means the prod alarm is tuned for dev traffic or the dev alarm never fires.
+- **The SIEM trail is off by default.** S3 data events bill per event; on a busy pipeline that
+  is a volume-proportional bill nobody agreed to.
+- **`multi_region_kms` is a before-first-apply decision.** Flipping it on an existing key
+  REPLACES the key, and objects encrypted under the old one are not readable with the new one.
+
+**Known limitation, stated rather than papered over:**
+The mandatory-tag `check` block **warns at plan time; it does not fail the plan**.
+Cross-variable `validation` would hard-fail but needs Terraform >= 1.9, and `required_version`
+is `">= 1.5"` -- raising the floor would break operators on 1.5-1.8 to gain an error over a
+warning. Marked `ponytail:` in `synthesizer.py` with the upgrade path. Hard enforcement today
+is the deploy gate (plan_gate + SEC scan + OPA), not Terraform.
+
+**Step 7 — 7-pillar grilling & ingestion connectors: DONE except MINUS-126/127.**
+- MINUS-116: `grill-me/SKILL.md` gained Step 3.4, the 7 pillars, each mapped to the catalog
+  modules its answers imply, ingestion first. The stale `aws-data-pipeline-standard` /
+  `--generate` guidance is gone; the only surviving mention is an explicit prohibition, and a
+  test enforces that.
+- MINUS-117: three distinct SNS topics (on-call / data-quality / budget). The budget alarm and
+  the budget notification now route to the Tier 3 topic, not the on-call one. Quarantine bucket
+  in `dq-great-expectations`, separately encrypted, with `--quarantine_path` wired into the job.
+- MINUS-118: `write_project_scaffold()` creates `src/{compute,sql,quality,orchestration}` and
+  `tests/fixtures/sample.json` at the run root. Never overwrites.
+- MINUS-123/124/125: four new catalog modules -- `ingestion-dms`, `ingestion-appflow`,
+  `ingestion-sftp`, `ingestion-webhook` -- registered, keyword-reachable, and wired to Bronze.
+
+**NOT built, with reasons (needs a decision):**
+- **MINUS-126 (data hub / Lake Formation zero-copy, MSK, Delta Sharing, Data Exchange)**: four
+  unrelated integrations behind one ticket, none with a stated requirement here, and
+  cross-account RAM sharing cannot be verified without a consumer account. Building four
+  speculative modules is the boilerplate the catalog exists to avoid.
+- **MINUS-127 (GCP/Azure OIDC + on-prem DMS)**: the on-prem half is already covered --
+  `ingestion-dms` reaches an on-premise source over VPN/Direct Connect, which is the same
+  module. The multi-cloud half **contradicts a recorded decision in this codebase**:
+  `core/providers/base.py` says "AWS is the only cloud; the Azure/GCP scaffolds and the
+  one-implementation CloudProvider ABC were removed once multi-cloud was dropped from scope."
+  Adding google/azurerm providers to the catalog reverses that, which is not a call to make
+  inside a ticket. There IS a cheap AWS-side-only version -- an IAM OIDC provider trusting
+  Google/Azure workload identity so a GCP job can assume a role and write to S3, no third-party
+  provider needed. Say the word and it is a small module.
+
+**Verification notes:**
+- All four ingestion modules were validated against the **installed provider schema**
+  (`terraform providers schema -json`, AWS v6.60.0), not the rendered registry docs, which are
+  JS-only and unfetchable. That caught two real breaks the docs would not have: `s3_settings`
+  was removed from `aws_dms_endpoint` in provider v6, and `aws_appflow_flow`'s
+  `connector_operator` fields are attributes, not nested blocks.
+- The full 10-module composition validates once the three genuinely operator-supplied values
+  are set (`source_secret_arn`, `connector_profile_name`, `source_object`). Those stay required
+  with no default on purpose: there is no sane default for "which secret holds your database
+  password", and a placeholder would produce a stack that plans cleanly and fails at run time.
+
+**Regression caught and root-caused:** adding the ingestion keywords broke
+`test_patterns.py::test_match_reuses_a_prior_approved_pattern`. Cause was not the new modules
+but `match_modules`' weak single-token path scoring on `"data"`, which appears in most modules'
+`satisfies` phrases. Fixed at the root with `_WEAK_STOPWORDS` rather than by trimming the new
+keywords -- the same noise would have resurfaced with the next module added.
+
+**Disk-full incident (2026-08-18), worth not repeating:** the 361 GB disk hit 100% mid-session
+from pytest tmp dirs (7.5 + 14 GB) plus scratch Terraform workspaces (13 GB). It silently
+truncated a heredoc-written edit script to 0 bytes, so a `terraform validate` "Success!" was
+reported against an **unmodified** module -- a false green. Mitigations applied:
+`tmp_path_retention_policy = "failed"` in pyproject, and scratch workspaces are now deleted
+after use. Lesson: after a disk-full error, re-verify every file touched in that window rather
+than trusting the last command's exit status.
+
+**Step 8 — TB-scale compute & reflector: DONE.**
+- MINUS-128: `modules.compute_tier(daily_gb, latency)` plus three real tiers.
+  `compute-glue-etl` gained `execution_class` (FLEX = ~35% off spare capacity),
+  `compute-emr-serverless` gained `architecture` defaulting to ARM64/Graviton, and
+  `compute-emr-ec2-spot` is a new module: on-demand master and core fleets, Spot task fleet
+  diversified across >= 3 instance types with `capacity-optimized` allocation, and a 1-hour
+  auto-termination default.
+- MINUS-129: `core/governance/reflector.py`. Five gates, every one re-derived from artifacts
+  on disk. Read-only, exit 2 when blocked.
+- MINUS-135: `--based-on <run-id>` on `synthesizer.py`, backed by `inherit_from_run()`.
+
+**Decisions worth not relitigating:**
+- **Tier crossovers are cost crossovers, not round numbers.** Below 1 TB/day EMR's startup and
+  idle cost exceeds Glue's premium; above ~5 TB/day a real cluster with Spot task capacity
+  finally beats serverless. An **undeclared volume gets the smallest tier**, never an EMR
+  guess: that is how a $40/month pipeline acquires a $4,000/month bill.
+- **An SLA-intolerant phrase wins a tie for FLEX.** "hourly batch feeding a real-time
+  dashboard" mentions both; FLEX would be wrong, so STANDARD wins.
+- **Master and core fleets are on-demand, only task is Spot.** A lost master kills the cluster;
+  a reclaimed core node loses HDFS shuffle data and forces a recompute. Task nodes hold nothing
+  persistent, so that is where the ~70% saving safely lives.
+- **Spot diversification is validated, not suggested** (>= 3 instance types). Each
+  instance-type-and-AZ pair is one Spot pool; one type is one pool and one reclaim event takes
+  the whole fleet.
+- **The reflector has three statuses, and `unknown` is the important one.** A gate that could
+  not run is not a pass. `gate_security` reports how many `.tf` files it read for the same
+  reason -- "no findings" from a scan that read nothing looks identical to "no findings" from a
+  clean stack, and only one of those means anything.
+- **`--based-on` inherits organisational settings only.** Region, owner, cost centre,
+  classification, architecture. Never volume, latency, or functional requirements: those are
+  what make two pipelines different, and copying them sizes the new one for the old one's data.
+  `REVIEW_REQUIRED` placeholders are skipped so a stack is never tagged to a cost centre
+  literally named REVIEW_REQUIRED.
+
+**Verification:** all three compute modules validated together against AWS provider v6.60.0.
+`aws_emr_cluster` carries master and core fleets only, so task Spot capacity attaches as a
+separate `aws_emr_instance_fleet` -- confirmed from the installed provider schema, not assumed.
+
+**Step 9 — Verification, adoption & PR automation: DONE.**
+- MINUS-113: `core/reporting/seed.py` + `minusctl seed`. Upload fixture -> run Glue job ->
+  count rows in Gold.
+- MINUS-106: `core/reporting/adopt.py` + `minusctl adopt`. Inventory, scan, optionally anchor.
+- MINUS-115/133: `.github/actions/pr-reviewer/action.yml` (composite) plus a turnkey
+  `.github/workflows/pr-review.yml` that wires it.
+
+**Decisions worth not relitigating:**
+- **`seed` defaults to plan, not execute.** `minusctl` is local-only by contract; rather than
+  quietly breaking that, `seed` prints the exact AWS CLI commands and sends nothing until
+  `--execute`. The docstring at the top of `minusctl.py` was corrected to state the exception
+  rather than leaving the old "does not run cloud CLIs" claim standing.
+- **One approval naming every side effect**, not three prompts. Three prompts is how operators
+  learn to click yes.
+- **A queryable-but-empty Gold table raises.** The transform ran and produced nothing. That is
+  the exact false green this command exists to catch, so it must not read as success.
+- **Bucket names come from `terraform output`**, never re-derived from `name_prefix`: they
+  contain the account id and the run hash.
+- **`adopt --anchor` is opt-in.** Anchoring claims the current files are the reviewed starting
+  point; doing it during a look-around would silently bless the wildcard IAM policy the scan is
+  about to report. `adopt` also returns `ok = False` when SEC findings exist, because the
+  production gate blocks on them.
+- **The PR reviewer plans, never applies**, and refuses to invent a cost -- no BCM evidence
+  prints "cost unavailable" plus the command that would produce it. A plausible-looking made-up
+  figure in a PR comment is worse than none, because reviewers believe it.
+- **`pull_request`, not `pull_request_target`.** The latter runs with the base repo's secrets
+  against the fork's code, handing any fork author the OIDC role. The cost is that fork PRs get
+  the static review and no plan; that is the correct trade. The role input is documented as
+  read-only for the same reason.
+- The reviewer **edits its last comment** rather than appending: a 40-comment PR is a PR nobody
+  reads. A blocked verdict fails the check, so it is not just a comment someone can ignore.
+
+**Slow-suite failure, root-caused (2026-08-18).**
+The 5 failures in the serial slow run were all
+`test_destructive_change_gate.py::test_every_current_module_plans_as_create_only[<module>]`,
+one per new module added in Steps 7-8. **The gate was right and the modules were new.**
+
+G5's autonomy boundary is a fail-CLOSED allowlist (`AUTO_SHIP_ELIGIBLE_TYPES`): a resource type
+nobody has reviewed stages, tagged `unreviewed_resource_type`. Five new modules introduced ~20
+new types, so every one of them staged, and the test that asserts "every type the real catalog
+produces has been reviewed into one set or another" failed. That is the design working.
+
+The fix was NOT to bulk-add the types to the eligible set to get green -- that would be
+defeating the gate to satisfy its own test. Each type was reviewed individually against the
+same asymmetric-downside standard `aws_default_security_group` was held to:
+
+| Disposition | Types | Reason |
+| :--- | :--- | :--- |
+| `AUTO_SHIP_ELIGIBLE_TYPES` | `aws_dms_replication_subnet_group` | a named list of existing subnet ids: no data, no permission, no endpoint, no cost |
+| `STATEFUL_RESOURCE_TYPES` | `aws_sqs_queue`, `aws_secretsmanager_secret` | hold in-flight events / are the secret's identity |
+| `IAM_RESOURCE_TYPES` | `aws_iam_instance_profile`, `aws_iam_role_policy_attachment` | hand a role to every node; bind AWS-MANAGED policies SEC-02 cannot scan |
+| `REVIEWED_UNSAFE_TYPES` | Transfer + API Gateway (internet-facing), EMR + DMS instances (continuous priced compute), DMS/AppFlow/CRR (data movement), CloudTrail + object lock (audit and retention commitments) | 16 types, each with its own recorded reason |
+
+**Only one of ~20 new types was eligible.** That is the honest answer for a set of modules that
+provision public endpoints, multi-TB clusters, and cross-account data movement: they should
+stage. Promoting any of them to auto-ship is an owner decision, not an agent's.
+
+One collateral fix: `test_a_second_genuinely_novel_type_also_stages` used
+`aws_secretsmanager_secret` as its example of a never-declared type. `ingestion-webhook` now
+declares one, so the fixture was re-based on `aws_neptune_cluster`, re-confirmed absent from
+`modules/`, `core/`, and `tests/` by the same grep the original used.
+
+**Process note:** while investigating this I ran `git stash -u` to compare against baseline
+while a background test run was live. That contaminated the run AND briefly reverted every
+uncommitted change on the branch. Everything was restored and verified, but the correct tool
+was a separate `git worktree`. Do not stash a live tree to run a comparison.
+
+**Slow-suite verification, completed 2026-08-18.**
+After the type review above, all 21 `test_every_current_module_plans_as_create_only[...]`
+parametrisations pass, verified in five batches:
+
+| Batch | Modules | Result |
+| :--- | :--- | :--- |
+| 1 | the 4 new ingestion modules | 4 passed |
+| 2 | `compute-emr-ec2-spot`, `compute-emr-serverless`, `storage-medallion-s3`, `query-athena`, `dq-great-expectations` | 5 passed |
+| 3 | `compute-glue-etl`, `governance-observability`, `orchestrator-*`, `compaction-glue` | 6 passed |
+| 4 | `consumption-redshift-serverless`, `databricks-workspace`, `ingest-firehose` | 3 passed |
+| 5 | `networking-vpc`, `schema-registry-glue`, `speed-layer-kinesis`, `table-format-iceberg` | 4 passed |
+
+**Batching was not cosmetic.** The same seven modules in batches 4 and 5 produced 3 failures
+when run as one longer batch, and passed in the two shorter ones -- and those seven are modules
+this branch never touched. Every `terraform init` copies roughly 470 MB out of the plugin cache
+(Windows copies where POSIX symlinks), the disk was at 95-96% throughout, and the failures track
+disk pressure rather than any module's content.
+
+So: no code defect remains, but **the slow suite still cannot be run end to end on this machine
+as configured.** `tmp_path_retention_policy = "failed"` caps the growth but does not solve it,
+because failures are exactly the runs that keep their directories. The real fix is one of:
+enable Windows developer mode so Terraform symlinks the plugin cache instead of copying;
+run the slow suite in CI on a larger disk (the workflow already does this); or shard it.
+Until then, run it in batches of <= 6 and clear `.pytest_tmp_slow` between them.
