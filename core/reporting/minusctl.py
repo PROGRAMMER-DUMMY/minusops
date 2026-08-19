@@ -65,6 +65,13 @@ def _run_by_id_or_latest(run_id=None, command="next"):
     to fix a message. What changed is the MESSAGE -- a bare `run not found: <typo>` gives an
     agent nothing to do next.
     """
+    # `runs/<id>` is what our own error output shows and what an operator copies from a
+    # directory listing, so accept it rather than bouncing a paste that names the right run.
+    if run_id:
+        run_id = run_id.replace("\\", "/").rstrip("/")
+        if run_id.startswith("runs/"):
+            run_id = run_id[len("runs/"):]
+
     if not run_id or run_id == "latest":
         run = _latest_run_or_exit()
         _require_stage_or_exit(run, command)
@@ -75,18 +82,23 @@ def _run_by_id_or_latest(run_id=None, command="next"):
             return item
 
     suggestions = cli_diagnostics.suggest_runs(run_id)
-    listing = chr(10).join(f"       - runs/{rid}  (stage: {stage})"
-                        for rid, stage in cli_diagnostics.recent_runs())
     if suggestions:
-        reason = (f"No run matches {run_id!r}. Closest existing id is {suggestions[0]!r} -- "
-                  "likely a typo or a truncated timestamp.")
-        fix = f"python core/reporting/minusctl.py {command} --run {suggestions[0]}"
+        # Each candidate carries what it is FOR, because two runs from the same day differ
+        # only in that. Suggesting a bare id invites accepting the first one, which is how an
+        # agent ends up operating the wrong workload.
+        candidates = cli_diagnostics.format_candidates(suggestions)
+        reason = (f"No run matches {run_id!r}. {len(suggestions)} existing run(s) are close -- "
+                  "likely a typo or a truncated timestamp. Compare the descriptions before "
+                  "picking one.")
+        fix = [f"python core/reporting/minusctl.py {command} --run {rid}" for rid in suggestions]
+        context = {"possible matches": chr(10) + candidates}
     else:
         reason = f"No run matches {run_id!r}, and nothing in runs/ is close enough to guess at."
         fix = f"python core/reporting/minusctl.py {command} --run <id from the list below>"
+        context = {"recent runs": chr(10) + cli_diagnostics.format_candidates(
+            [rid for rid, _ in cli_diagnostics.recent_runs()])}
     raise SystemExit(cli_diagnostics.format_agent_error(
-        f"Run workspace {run_id!r} not found.", reason, fix,
-        {"recent runs": chr(10) + listing}))
+        f"Run workspace {run_id!r} not found.", reason, fix, context))
 
 
 # MINUS-158. up_to = the last lifecycle step this subcommand genuinely depends on.

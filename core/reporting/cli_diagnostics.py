@@ -89,6 +89,81 @@ def _safe_listdir(path):
         return []
 
 
+# A goal string is free text written by a person or an agent and it lands in terminal output.
+# Control characters in it can clear the screen or forge lines that look like our own -- so the
+# tip is sanitised on the way out, not trusted on the way in.
+_CONTROL = {c: None for c in range(32)}
+_CONTROL[127] = None
+_TIP_MAX = 110
+
+
+def _clean(value, limit=60):
+    text = str(value or "").translate(_CONTROL).strip()
+    text = " ".join(text.split())
+    # "..." not U+2026: this prints to a Windows console that is still cp1252 by default,
+    # where the ellipsis renders as a literal "?" -- noise inside the very field meant to
+    # help someone recognise a run.
+    return text[:limit - 3] + "..." if len(text) > limit else text
+
+
+def get_run_description_tip(run_root):
+    """One line describing what a run is FOR, so a suggested id can be recognised or rejected.
+
+    Fail-soft by construction: every failure mode -- absent, unreadable, malformed, or
+    half-written by a concurrent synthesis -- returns a usable string rather than raising.
+    A diagnostic that crashes while explaining an earlier error is worse than the error.
+
+    This describes INTENT, not what was built. requirements.json can be edited after
+    synthesis, so the tip disambiguates workloads; it is not a description of the stack.
+    """
+    path = os.path.join(run_root or "", "requirements.json")
+    if not os.path.exists(path):
+        return "workspace initialized (requirements pending)"
+    try:
+        with open(path, encoding="utf-8") as handle:
+            spec = json.load(handle)
+    except (OSError, ValueError):
+        # A partially-written file during `create` parses as invalid JSON; that is a normal
+        # transient, not a corrupted workspace, so it is reported plainly.
+        return "requirements.json present but unreadable right now"
+    if not isinstance(spec, dict):
+        return "requirements.json is not an object"
+
+    goal = _clean(spec.get("goal"), 60)
+    volume = _clean((spec.get("data_pipeline") or {}).get("data_volume")
+                    if isinstance(spec.get("data_pipeline"), dict) else "", 24)
+    owner = _clean(spec.get("owner") or spec.get("gathered_by"), 22)
+
+    parts = [goal or "(no goal recorded)"]
+    detail = ", ".join(p for p in (volume, f"owner: {owner}" if owner else "") if p)
+    if detail:
+        parts.append(f"({detail})")
+    return _clean(" ".join(parts), _TIP_MAX)
+
+
+def describe_run(run):
+    """(run_id, stage, tip) for one run record."""
+    return (run.get("run_id", "?"), _stage_of(run),
+            get_run_description_tip(run.get("root") or ""))
+
+
+def format_candidates(run_ids):
+    """Numbered candidates, each with its stage and what it is for.
+
+    Numbered rather than bulleted because the point is that a human or agent CHOOSES one.
+    A bare id list invites accepting the first suggestion, which is exactly the failure this
+    exists to prevent: two runs from the same day differ only in what they are for.
+    """
+    lines = []
+    for index, run_id in enumerate(run_ids, 1):
+        run = runs.get_run(run_id) or {"run_id": run_id}
+        _, stage, tip = describe_run(run)
+        lines.append(f"       [{index}] runs/{run_id}")
+        lines.append(f"           description: {tip}")
+        lines.append(f"           stage      : {stage}")
+    return chr(10).join(lines)
+
+
 def recent_runs(limit=_MAX_RECENT):
     return [(r.get("run_id", "?"), _stage_of(r)) for r in runs.list_runs()[:limit]]
 

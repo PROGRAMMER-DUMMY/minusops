@@ -247,3 +247,112 @@ def test_enriched_parsers_preserve_their_formatting():
     minusctl._rich(parser, ["a --b", "c --d"], requires=("x",))
     assert parser.formatter_class is argparse.RawDescriptionHelpFormatter
     assert "a --b\n" in parser.format_help()
+
+
+# --- Description tips: disambiguating same-day runs ------------------------------------------
+
+def _with_requirements(root, goal="", volume="", owner=""):
+    spec = {"goal": goal}
+    if volume:
+        spec["data_pipeline"] = {"data_volume": volume}
+    if owner:
+        spec["owner"] = owner
+    (root / "requirements.json").write_text(json.dumps(spec), encoding="utf-8")
+    return root
+
+
+def test_tip_names_what_a_run_is_for(workspace):
+    root = _with_requirements(_run_dir(workspace, "20260819-101423-x"),
+                              goal="Customer clickstream ingest to Gold",
+                              volume="100 GB/day", owner="analytics-platform")
+    tip = cd.get_run_description_tip(str(root))
+    assert "Customer clickstream ingest to Gold" in tip
+    assert "100 GB/day" in tip
+    assert "analytics-platform" in tip
+
+
+def test_two_same_day_runs_are_distinguishable_by_their_tips(workspace):
+    """The whole point: timestamp ids from the same day are indistinguishable, so a bare id
+    suggestion can send an agent to the wrong workload."""
+    a = _with_requirements(_run_dir(workspace, "20260819-101423-a"),
+                           goal="fraud detection CDC", owner="fraud-squad")
+    b = _with_requirements(_run_dir(workspace, "20260819-104512-b"),
+                           goal="marketing attribution", owner="growth")
+    assert cd.get_run_description_tip(str(a)) != cd.get_run_description_tip(str(b))
+    listing = cd.format_candidates(["20260819-101423-a", "20260819-104512-b"])
+    assert "fraud-squad" in listing and "growth" in listing
+
+
+def test_candidates_are_numbered_so_one_gets_chosen(workspace):
+    """A bare list invites accepting the first suggestion. Numbering frames it as a choice."""
+    _run_dir(workspace, "20260819-000001-a")
+    _run_dir(workspace, "20260819-000002-b")
+    listing = cd.format_candidates(["20260819-000001-a", "20260819-000002-b"])
+    assert "[1] runs/20260819-000001-a" in listing
+    assert "[2] runs/20260819-000002-b" in listing
+
+
+def test_a_run_without_requirements_says_so_rather_than_guessing(workspace):
+    root = _run_dir(workspace, "20260819-000003-bare")
+    assert cd.get_run_description_tip(str(root)) == \
+        "workspace initialized (requirements pending)"
+
+
+def test_a_half_written_requirements_file_does_not_crash_the_diagnostic(workspace):
+    """`create` writing concurrently leaves invalid JSON for an instant. A diagnostic that
+    crashes while explaining an earlier error is worse than the error."""
+    root = _run_dir(workspace, "20260819-000004-partial")
+    (root / "requirements.json").write_text('{"goal": "half writ', encoding="utf-8")
+    tip = cd.get_run_description_tip(str(root))
+    assert "unreadable" in tip
+
+
+def test_a_non_object_requirements_file_is_reported_not_unpacked(workspace):
+    root = _run_dir(workspace, "20260819-000005-list")
+    (root / "requirements.json").write_text("[1, 2, 3]", encoding="utf-8")
+    assert "not an object" in cd.get_run_description_tip(str(root))
+
+
+def test_control_characters_in_a_goal_cannot_forge_output(workspace):
+    """A goal is free text written by a person or an agent and it lands in terminal output.
+    An escape sequence there could clear the screen or fake lines that look like ours."""
+    root = _with_requirements(_run_dir(workspace, "20260819-000006-evil"),
+                              goal="ok\x1b[2J\x1b[H FAKE: approved\r\n[X] WHAT FAILED: nope")
+    tip = cd.get_run_description_tip(str(root))
+    assert "\x1b" not in tip and "\r" not in tip and "\n" not in tip
+
+
+def test_a_very_long_goal_is_truncated_with_ascii(workspace):
+    """The ellipsis is "..." not U+2026: a default Windows console is cp1252 and renders the
+    unicode one as "?", inside the field meant to aid recognition."""
+    root = _with_requirements(_run_dir(workspace, "20260819-000007-long"), goal="x" * 500)
+    tip = cd.get_run_description_tip(str(root))
+    assert len(tip) <= 110
+    assert "..." in tip and "\u2026" not in tip
+
+
+def test_a_missing_run_root_still_returns_a_string():
+    assert isinstance(cd.get_run_description_tip("/does/not/exist"), str)
+    assert isinstance(cd.get_run_description_tip(""), str)
+
+
+def test_the_not_found_error_shows_descriptions_for_every_candidate(workspace):
+    _with_requirements(_run_dir(workspace, "20260819-101423-fraud"),
+                       goal="fraud CDC", owner="fraud-squad")
+    _with_requirements(_run_dir(workspace, "20260819-101424-mktg"),
+                       goal="marketing attribution", owner="growth")
+    with pytest.raises(SystemExit) as excinfo:
+        minusctl._run_by_id_or_latest("20260819-101425-typo", command="next")
+    message = str(excinfo.value)
+    assert "possible matches" in message
+    assert "fraud-squad" in message and "growth" in message
+    # One suggested command per candidate: the agent must choose, not accept a default.
+    assert message.count("minusctl.py next --run") >= 2
+
+
+def test_a_runs_prefixed_id_resolves(workspace):
+    """Our own error output prints `runs/<id>`, and that is what gets pasted back."""
+    _run_dir(workspace, "20260819-000008-p", requirements=True, adr=True, terraform=True)
+    for form in ("runs/20260819-000008-p", "runs/20260819-000008-p/", "20260819-000008-p"):
+        assert minusctl._run_by_id_or_latest(form, command="next")["run_id"] == \
+            "20260819-000008-p"
