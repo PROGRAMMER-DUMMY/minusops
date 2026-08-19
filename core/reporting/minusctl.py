@@ -25,6 +25,7 @@ import architecture_decision as archdec  # noqa: E402
 import architecture_model  # noqa: E402
 import accelerators  # noqa: E402
 import audit_chain  # noqa: E402
+import cli_diagnostics  # noqa: E402
 import adopt as adopt_engine  # noqa: E402
 import demo  # noqa: E402
 import doctor  # noqa: E402
@@ -48,23 +49,75 @@ def _json_or_text(data, as_json, text):
 def _latest_run_or_exit():
     run = runs.latest_run()
     if not run:
-        raise SystemExit("no run workspaces found")
+        # MINUS-157/160: `no run workspaces found` told an agent nothing it could act on.
+        raise SystemExit(cli_diagnostics.format_agent_error(
+            "No run workspaces exist yet.",
+            "Nothing has been created in runs/ on this machine.",
+            'python core/reporting/minusctl.py create "<what you want to build>"'))
     return run
 
 
-def _run_by_id_or_latest(run_id=None):
+def _run_by_id_or_latest(run_id=None, command="next"):
+    """Resolve a run id, or exit with a suggestion (MINUS-157).
+
+    Still SystemExit rather than a return code: every call site here treats an unresolvable
+    run as fatal, and threading an error code through them all would change a dozen callers
+    to fix a message. What changed is the MESSAGE -- a bare `run not found: <typo>` gives an
+    agent nothing to do next.
+    """
     if not run_id or run_id == "latest":
-        return _latest_run_or_exit()
+        run = _latest_run_or_exit()
+        _require_stage_or_exit(run, command)
+        return run
     for item in runs.list_runs():
         if item.get("run_id") == run_id or item.get("run_id", "").startswith(run_id):
+            _require_stage_or_exit(item, command)
             return item
-    raise SystemExit(f"run not found: {run_id}")
+
+    suggestions = cli_diagnostics.suggest_runs(run_id)
+    listing = chr(10).join(f"       - runs/{rid}  (stage: {stage})"
+                        for rid, stage in cli_diagnostics.recent_runs())
+    if suggestions:
+        reason = (f"No run matches {run_id!r}. Closest existing id is {suggestions[0]!r} -- "
+                  "likely a typo or a truncated timestamp.")
+        fix = f"python core/reporting/minusctl.py {command} --run {suggestions[0]}"
+    else:
+        reason = f"No run matches {run_id!r}, and nothing in runs/ is close enough to guess at."
+        fix = f"python core/reporting/minusctl.py {command} --run <id from the list below>"
+    raise SystemExit(cli_diagnostics.format_agent_error(
+        f"Run workspace {run_id!r} not found.", reason, fix,
+        {"recent runs": chr(10) + listing}))
+
+
+# MINUS-158. up_to = the last lifecycle step this subcommand genuinely depends on.
+# `decision` deliberately needs only step 1: it is the command that WRITES step 2.
+_STAGE_REQUIREMENTS = {
+    "validate": 3, "conformance": 3, "readiness": 3, "package": 3, "prove": 3,
+    "accelerator": 1, "decision": 1, "seed": 3,
+}
+
+
+def _require_stage_or_exit(run, command):
+    """Block a subcommand whose prior lifecycle step never ran, naming that exact step."""
+    up_to = _STAGE_REQUIREMENTS.get(command)
+    if up_to is None:
+        return
+    gap = cli_diagnostics.missing_prerequisite(
+        run.get("root", ""), run.get("run_id", "<id>"), up_to=up_to)
+    if not gap:
+        return
+    raise SystemExit(cli_diagnostics.format_agent_error(
+        f"`{command}` needs step {gap['step']} ({gap['name']}), which has not run.",
+        f"{gap['artifact']} is missing from {run.get('root', '?')}.",
+        gap["command"],
+        {"run": run.get("run_id", "?")}))
 
 
 def _terraform_dir(args):
     if getattr(args, "dir", None):
         return args.dir
-    run = _run_by_id_or_latest(getattr(args, "run", None))
+    run = _run_by_id_or_latest(getattr(args, "run", None),
+                               command=getattr(args, "cmd", "next"))
     return run["terraform_dir"]
 
 
@@ -804,11 +857,24 @@ def _prove(run):
     return evidence
 
 
+def _rich(parser, examples, requires=(), produces=(), next_step=""):
+    """Attach a copy-pasteable epilog to a subcommand parser (MINUS-159)."""
+    parser.epilog = cli_diagnostics.epilog(examples, requires, produces, next_step)
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
+    return parser
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="MinusOps safe operator CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     create = sub.add_parser("create", help="resolve request and create a requirements-first run")
+    _rich(create,
+          [f'python core/reporting/minusctl.py create "governed lakehouse for 100 GB/day of clickstream"',
+           f'python core/reporting/minusctl.py create "nightly finance ETL" --json'],
+          requires=("nothing -- this is step 1 of the lifecycle",),
+          produces=("runs/<id>/requirements.json", "runs/<id>/run.json"),
+          next_step=f"answer the REVIEW fields, then python core/reporting/minusctl.py decision template --write")
     create.add_argument("request")
     create.add_argument("--cloud", default=None)
     create.add_argument("--input", action="append", default=[], help="Captured request input as name=value")
@@ -842,14 +908,30 @@ def main(argv=None):
     reports.add_argument("--latest", action="store_true")
 
     nxt = sub.add_parser("next", help="print safe next steps for a run")
+    _rich(nxt,
+          [f"python core/reporting/minusctl.py next", f"python core/reporting/minusctl.py next --run 20260818-085523 --json"],
+          requires=("runs/<id>/run.json",),
+          produces=("nothing -- read-only",),
+          next_step="whichever command it prints")
     nxt.add_argument("--run", default="latest")
     nxt.add_argument("--json", action="store_true")
 
     pkg = sub.add_parser("package", help="write an enterprise handoff package for a run")
+    _rich(pkg,
+          [f"python core/reporting/minusctl.py package --run 20260818-085523"],
+          requires=("runs/<id>/terraform/", "at least one report under runs/<id>/reports/"),
+          produces=("runs/<id>/handoff.md", "runs/<id>/handoff.json"),
+          next_step="share the package; it is evidence, not an approval")
     pkg.add_argument("--run", default="latest")
     pkg.add_argument("--json", action="store_true")
 
     ready = sub.add_parser("readiness", help="score enterprise presentation readiness for a run")
+    _rich(ready,
+          [f"python core/reporting/minusctl.py readiness --run 20260818-085523",
+           f"python core/reporting/minusctl.py readiness --strict   # exit 2 unless READY"],
+          requires=("runs/<id>/terraform/",),
+          produces=("nothing -- read-only",),
+          next_step="python core/governance/plan_gate.py verify --dir runs/<id>/terraform")
     ready.add_argument("--run", default="latest")
     ready.add_argument("--json", action="store_true")
     ready.add_argument("--strict", action="store_true", help="Exit non-zero unless status is READY")
@@ -884,6 +966,11 @@ def main(argv=None):
     prove_cmd.add_argument("--json", action="store_true")
 
     audit_cmd = sub.add_parser("audit", help="verify the tamper-evident audit chain")
+    _rich(audit_cmd,
+          [f"python core/reporting/minusctl.py audit", f"python core/reporting/minusctl.py audit --json"],
+          requires=(".agents/logs/audit.jsonl",),
+          produces=("nothing -- read-only",),
+          next_step="investigate any break; a broken chain is evidence, not noise")
     audit_cmd.add_argument("action", choices=["verify"])
     audit_cmd.add_argument("--path", default=os.path.join(os.getcwd(), ".agents", "logs", "audit.jsonl"))
     audit_cmd.add_argument("--json", action="store_true")
@@ -895,6 +982,11 @@ def main(argv=None):
     demo_cmd.add_argument("--json", action="store_true")
 
     doctor_cmd = sub.add_parser("doctor", help="diagnose the local environment (cross-platform)")
+    _rich(doctor_cmd,
+          [f"python core/reporting/minusctl.py doctor", f"python core/reporting/minusctl.py doctor --json", f"python core/reporting/minusctl.py doctor --fix"],
+          requires=("nothing -- run this first on a new machine",),
+          produces=("nothing, unless --fix starts a LocalStack container",),
+          next_step=f'python core/reporting/minusctl.py create "<what you want to build>"')
     doctor_cmd.add_argument("--json", action="store_true")
     doctor_cmd.add_argument("--fix", action="store_true",
                             help="attempt the repairs doctor knows how to make (MINUS-154). "
@@ -904,6 +996,12 @@ def main(argv=None):
 
     adopt_cmd = sub.add_parser(
         "adopt", help="inventory + scan an existing Terraform directory and bring it under the gate")
+    _rich(adopt_cmd,
+          [f"python core/reporting/minusctl.py adopt --dir infra/legacy",
+           f"python core/reporting/minusctl.py adopt --dir infra/legacy --anchor   # claims these files as reviewed"],
+          requires=("any directory containing .tf files",),
+          produces=("nothing, unless --anchor writes .minus/ inside the target",),
+          next_step="python core/governance/plan_gate.py verify --dir <dir> --policy-mode production")
     adopt_cmd.add_argument("--dir", required=True)
     adopt_cmd.add_argument("--anchor", action="store_true",
                            help="write the source baseline (the only write this makes)")
@@ -912,6 +1010,13 @@ def main(argv=None):
 
     seed_cmd = sub.add_parser(
         "seed", help="prove an APPLIED stack end to end: seed Bronze, run the job, query Gold")
+    _rich(seed_cmd,
+          [f"python core/reporting/minusctl.py seed --run 20260818-085523            # plan only, sends nothing",
+           f"python core/reporting/minusctl.py seed --run 20260818-085523 --execute  # MUTATES AWS"],
+          requires=("an APPLIED stack (terraform outputs must resolve)",
+                    "runs/<id>/tests/fixtures/sample.json"),
+          produces=("objects in Bronze, a Glue job run, one Athena query",),
+          next_step="read the row count it reports; an empty Gold table is a failure")
     seed_cmd.add_argument("--run", default=None, help="run id (default: latest)")
     seed_cmd.add_argument("--dir", default=None, help="Terraform directory (overrides --run)")
     seed_cmd.add_argument("--fixture", default=None)
@@ -957,7 +1062,7 @@ def main(argv=None):
     if args.cmd == "seed":
         # The one mutating command in this CLI, and only with --execute. Everything else here
         # is local-only by contract (see the module docstring), so the default stays a plan.
-        tf_dir = args.dir or _run_by_id_or_latest(args.run)["terraform_dir"]
+        tf_dir = args.dir or _run_by_id_or_latest(args.run, command=args.cmd)["terraform_dir"]
         fixture = args.fixture or os.path.join(
             os.path.dirname(os.path.abspath(tf_dir)), seed_engine.FIXTURE)
         try:
@@ -1060,12 +1165,12 @@ def main(argv=None):
         return 0
 
     if args.cmd == "next":
-        result = _next_steps(_run_by_id_or_latest(args.run))
+        result = _next_steps(_run_by_id_or_latest(args.run, command=args.cmd))
         _json_or_text(result, args.json, result["text"])
         return 0
 
     if args.cmd == "package":
-        result = _write_package(_run_by_id_or_latest(args.run))
+        result = _write_package(_run_by_id_or_latest(args.run, command=args.cmd))
         text = "\n".join([
             "Enterprise package written",
             f"markdown : {result['paths']['markdown']}",
@@ -1075,20 +1180,20 @@ def main(argv=None):
         return 0
 
     if args.cmd == "readiness":
-        result = _readiness(_run_by_id_or_latest(args.run))
+        result = _readiness(_run_by_id_or_latest(args.run, command=args.cmd))
         _json_or_text(result, args.json, _format_readiness(result))
         if args.strict and result["status"] != "READY":
             return 2
         return 0
 
     if args.cmd == "validate":
-        run = _run_by_id_or_latest(args.run)
+        run = _run_by_id_or_latest(args.run, command=args.cmd)
         result = tf_validate.validate_and_record(run["terraform_dir"])
         _json_or_text(result, args.json, tf_validate._format(result))
         return 0 if (result.get("ok") or result.get("ok") is None) else 2
 
     if args.cmd == "conformance":
-        run = _run_by_id_or_latest(args.run)
+        run = _run_by_id_or_latest(args.run, command=args.cmd)
         report = _conformance_for_run(run)
         _json_or_text(report or {"error": "no plan to analyze"}, args.json, _format_conformance(report))
         if args.strict and (not report or report["status"] != "READY"):
@@ -1096,7 +1201,7 @@ def main(argv=None):
         return 0 if report else 2
 
     if args.cmd == "decision":
-        run = _run_by_id_or_latest(args.run)
+        run = _run_by_id_or_latest(args.run, command=args.cmd)
         workflow_record = _read_workflow(run)
         requirements_file = workflow_record.get("requirements_file") or str(Path(run["root"]) / reqgate.FILENAME)
         decision_path = Path(run["root"]) / archdec.FILENAME
@@ -1124,7 +1229,7 @@ def main(argv=None):
         return 2
 
     if args.cmd == "accelerator":
-        run = _run_by_id_or_latest(args.run)
+        run = _run_by_id_or_latest(args.run, command=args.cmd)
         try:
             if args.name == "aws-lakehouse":
                 result = accelerators.write_lakehouse(
@@ -1149,7 +1254,7 @@ def main(argv=None):
         return 0
 
     if args.cmd == "prove":
-        result = _prove(_run_by_id_or_latest(args.run))
+        result = _prove(_run_by_id_or_latest(args.run, command=args.cmd))
         text = "\n".join([
             "Evidence bundle written",
             f"offline chain proven : {result['offline_chain_proven']}",

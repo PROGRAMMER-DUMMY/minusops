@@ -60,6 +60,7 @@ for _sub in ("generation", "architecture", "governance", "cost", "reporting", "p
 sys.path.insert(0, _CORE_DIR)
 from providers.base import get_provider  # noqa: E402
 import plan_inspector  # noqa: E402
+import cli_diagnostics  # noqa: E402
 import team_resolver  # noqa: E402
 import toolpath  # noqa: E402
 import audit_chain  # noqa: E402
@@ -1384,6 +1385,13 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
     _print_classification(classification)
     approval_path = _approved_path(dir_, current)
     if not os.path.exists(approval_path):
+        # MINUS-158/160: the old message named the STAGE ("run approve first") but not the
+        # command, so an agent had to reconstruct the --dir argument it already had.
+        print(cli_diagnostics.format_agent_error(
+            "`apply` needs step 5 (Approval), which has not run for this plan.",
+            f"no approval record for plan {current[:12]}... in {dir_}",
+            f"python core/governance/plan_gate.py approve --dir {dir_}"),
+            file=sys.stderr)
         print("[gate] no approval on record for this directory and plan hash. Run `approve` first.",
               file=sys.stderr)
         _audit("apply", "REJECTED", reason="no_matching_approval", dir=dir_)
