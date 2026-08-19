@@ -16,6 +16,7 @@ Generation in MinusOps is **requirements-first** and bound to reviewed records (
 | [`architecture_model.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/architecture_model.py) | Reference model & conformance | Analytics layer classification, Well-Architected & scale-tier scoring against terraform plans |
 | [`intent_assertions.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/intent_assertions.py) | Plan-to-intent assertion engine | Verifies generated plans against module selection, blueprint controls, and numeric ceilings |
 | [`discovery.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/discovery.py) | Authoritative source builder | Deterministic doc/pricing URL generation and research record caching for synthesis |
+| [`team_resolver.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py) | Team directory resolver | Resolves team metadata, team DLs, Slack/Teams webhooks, cost centers, and sanitizes team IDs for S3 state/IAM role scoping |
 
 ---
 
@@ -129,3 +130,24 @@ Generation in MinusOps is **requirements-first** and bound to reviewed records (
 * **Failure Modes:**
   * File I/O errors during save/load if `artifacts/research` permissions fail.
 * **Architectural Role:** Doc lookup & research recorder supporting the `architect` skill during requirement-to-HCL synthesis.
+ 
+---
+
+### 7. [`team_resolver.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py)
+
+* **Exact Purpose:** Resolves team directory definitions from `configs/teams.yaml` (or environment variable), sanitizes team and workload identifiers, constructs remote S3 state keys, and verifies team-scoped IAM deploy role ARNs.
+* **Key Functions & Classes:**
+  * `InvalidTeamId(ValueError)` ([L43-L44](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py#L43-L44)): Raised when an ID contains invalid characters for S3 prefixes or IAM role ARNs.
+  * `config_path()` ([L47-L49](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py#L47-L49)): Resolves the active teams configuration file path from `$env:MINUS_TEAMS_CONFIG` or default `configs/teams.yaml`.
+  * `validate_team_id(team_id)` ([L52-L59](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py#L52-L59)): Enforces `_TEAM_ID_RE` (`^[a-z0-9][a-z0-9-]{0,62}$`), refusing path traversals (`..`), slashes (`/`), and wildcards (`*`) that could escape S3 state prefixes or expand IAM role patterns.
+  * `load_directory(path=None)` ([L62-L85](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py#L62-L85)): Parses the teams YAML directory. Missing file/PyYAML returns `{}` (optional directory); malformed YAML raises `yaml.YAMLError` or `ValueError` if `teams` is not a dict.
+  * `resolve(team_id, path=None)` ([L88-L107](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py#L88-L107)): Returns a validated team record dictionary (`team_id`, `configured`, `source`, `lead_email`, `team_dl`, `slack_channel`, `teams_webhook_secret`, `cost_center`, `deploy_role_pattern`).
+  * `state_key(team_id, workload_id)` ([L110-L118](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py#L110-L118)): Builds `teams/<team_id>/<workload_id>/terraform.tfstate` with validation on both segments to prevent prefix escape.
+  * `role_matches(arn, pattern)` ([L121-L140](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py#L121-L140)): Verifies if an active STS session or IAM role ARN satisfies a team's deploy role pattern (e.g. `arn:aws:iam::*:role/minusops-deploy-<team_id>`), handling assumed-role STS session formats.
+* **Inputs / Outputs:**
+  * *Inputs:* Team ID string, workload ID string, optional custom YAML path, role ARN string.
+  * *Outputs:* Resolved metadata dictionary, state key path, or boolean role match result.
+* **Failure Modes:**
+  * Raises `InvalidTeamId` if team or workload ID contains invalid characters, slashes, or path traversal attempts.
+  * Raises `yaml.YAMLError` or `ValueError` if `teams.yaml` is malformed or invalid.
+* **Architectural Role:** Core organizational identity resolver powering multi-team remote S3 state isolation (`s3://.../teams/<team_id>/<workload_id>/`) and team-scoped deploy role enforcement (`arn:aws:iam::*:role/minusops-deploy-<team_id>`).

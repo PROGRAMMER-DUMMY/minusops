@@ -23,7 +23,7 @@ MinusOps (Workspace Root)
 │   ├── generation/
 │   │   └── CONTEXT-generation.md           # Synthesizer, module registry, provenance & pattern stores
 │   ├── architecture/
-│   │   └── CONTEXT-architecture.md         # Requirements gates, architecture decisions & 6-layer model
+│   │   └── CONTEXT-architecture.md         # Requirements gates, architecture decisions, team resolver & model
 │   ├── cost/
 │   │   └── CONTEXT-cost.md                 # BCM Pricing Calculator, catalog resolution & pricing audits
 │   ├── reporting/
@@ -35,10 +35,10 @@ MinusOps (Workspace Root)
 │   └── CONTEXT-app.md                      # Plotly Dash UI, click-to-code SVG inspector & HTTP routes
 │
 ├── modules/                                # INFRASTRUCTURE BUILDING BLOCKS
-│   └── CONTEXT-modules.md                  # 16 Terraform modules (VPC, S3, Glue, EMR, DBX, StepFunctions)
+│   └── CONTEXT-modules.md                  # 24 Terraform modules (VPC, S3, Glue, EMR, DBX, MSK, Snowflake, MWAA)
 │
 ├── .agents/                                # AGENT OPERATING SYSTEM
-│   └── CONTEXT-agents.md                   # AGENTS.md rules & 6 decision skills (grill-me, architect, etc.)
+│   └── CONTEXT-agents.md                   # AGENTS.md rules & 7 decision skills (grill-me, architect, doctor, etc.)
 │
 ├── docs/                                   # SPECIFICATIONS & MANIFESTS
 │   └── CONTEXT-docs.md                     # IAM manifest, security model, info library & phase scopes
@@ -50,7 +50,7 @@ MinusOps (Workspace Root)
 │   └── CONTEXT-examples.md                 # IAM trust policies & BCM usage profile examples
 │
 ├── tests/                                  # AUTOMATED TEST SUITE
-│   └── CONTEXT-tests.md                    # 57 pytest modules categorized by domain
+│   └── CONTEXT-tests.md                    # 76 pytest modules categorized by domain
 │
 ├── .github/                                # CI / PR AUTOMATION
 │   ├── actions/pr-reviewer/action.yml      # Composite PR reviewer (plan + scan + cost comment)

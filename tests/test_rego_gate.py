@@ -31,7 +31,10 @@ import pytest
 
 import modules as module_registry
 import rego_gate
-import test_destructive_change_gate as dcg
+try:
+    import test_destructive_change_gate as dcg
+except ImportError:
+    from tests import test_destructive_change_gate as dcg
 import toolpath
 
 OPA = toolpath.find_tool("opa")

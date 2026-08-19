@@ -41,8 +41,14 @@ import architecture_decision as archdec
 import modules as module_registry
 import schema_lint
 import synthesizer
-import test_destructive_change_gate as dcg
-import test_rego_gate as g6test
+try:
+    import test_destructive_change_gate as dcg
+except ImportError:
+    from tests import test_destructive_change_gate as dcg
+try:
+    import test_rego_gate as g6test
+except ImportError:
+    from tests import test_rego_gate as g6test
 import toolpath
 
 TERRAFORM = toolpath.find_tool("terraform")

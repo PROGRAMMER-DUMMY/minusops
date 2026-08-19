@@ -28,17 +28,23 @@ import platform
 import subprocess
 import sys
 
-_CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _sub in ("generation", "architecture", "governance", "cost", "reporting", "providers"):
-    sys.path.insert(0, os.path.join(_CORE_DIR, _sub))
-sys.path.insert(0, _CORE_DIR)
+try:
+    from core.governance import ephemeral_apply, plan_gate, toolpath
+    from core.architecture import team_resolver
+    from core.providers.base import get_provider
+    from core.reporting.optimize_analyzer import EXTERNAL_SCANNERS
+except ImportError:
+    _CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for _sub in ("generation", "architecture", "governance", "cost", "reporting", "providers"):
+        sys.path.insert(0, os.path.join(_CORE_DIR, _sub))
+    sys.path.insert(0, _CORE_DIR)
 
-import ephemeral_apply  # noqa: E402
-import team_resolver  # noqa: E402
-import plan_gate  # noqa: E402
-import toolpath  # noqa: E402
-from providers.base import get_provider  # noqa: E402
-from optimize_analyzer import EXTERNAL_SCANNERS  # noqa: E402
+    import ephemeral_apply  # noqa: E402
+    import team_resolver  # noqa: E402
+    import plan_gate  # noqa: E402
+    import toolpath  # noqa: E402
+    from providers.base import get_provider  # noqa: E402
+    from optimize_analyzer import EXTERNAL_SCANNERS  # noqa: E402
 
 
 def _port_open(host, port, timeout=0.4):

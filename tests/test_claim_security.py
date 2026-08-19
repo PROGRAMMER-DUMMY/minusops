@@ -30,10 +30,10 @@ _TS = "2026-07-27T00:00:00Z"
 @pytest.mark.parametrize("evil", [
     "../escaped",
     "../../etc/passwd",
-    "..\..\windows",
+    r"..\..\windows",
     "aws_s3_bucket/../../x",
     "/absolute/path",
-    "C:\windows\system32",
+    r"C:\windows\system32",
     "aws_s3_bucket\x00.txt",
 ])
 def test_a_malicious_resource_type_cannot_escape_the_corpus(evil):

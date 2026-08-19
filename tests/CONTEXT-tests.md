@@ -24,9 +24,11 @@ This document provides exhaustive context for all test files, test suites, and t
 - [`tests/test_gate_concurrency.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_gate_concurrency.py): Tests locking mechanisms and concurrent execution handling in plan gates.
 - [`tests/test_gate_e2e.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_gate_e2e.py): End-to-end integration tests for the full deploy gate workflow (verify -> plan -> approve -> apply).
 - [`tests/test_plan_gate.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_plan_gate.py): Exhaustive unit tests for `core/governance/plan_gate.py` plan-hash generation and MFA enforcement.
-- [`tests/test_rego_gate.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_rego_gate.py): Tests OPA Rego policy evaluation against Terraform plan JSON outputs.
+- [`tests/test_pr_reviewer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_pr_reviewer.py): Tests the GitHub Actions PR reviewer action and sticky comment renderer (`.github/actions/pr-reviewer`), asserting plan generation, security checks, and BCM pricing comment rendering on pull requests.
+- [`tests/test_rego_gate.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_rego_gate.py): Tests OPA Rego policy evaluation against Terraform plan JSON outputs and mandatory OPA presence in production mode.
 - [`tests/test_rule_stages.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_rule_stages.py): Tests parsing and enforcement of static analysis rule stages defined in `policy/rule_stages.json`.
 - [`tests/test_source_guard.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_source_guard.py): Tests detection of manual source file modifications against baseline hashes.
+- [`tests/test_team_isolation.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_team_isolation.py): Tests multi-team state key partitioning (`teams/<team_id>/<workload_id>/`), team-scoped deploy role assertions, and path traversal rejection (`..`).
 
 ---
 
@@ -57,15 +59,17 @@ This document provides exhaustive context for all test files, test suites, and t
 - [`tests/test_storage_medallion_module.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_storage_medallion_module.py): Unit tests for medallion storage (Bronze/Silver/Gold S3) module synthesis.
 - [`tests/test_synthesizer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_synthesizer.py): Exhaustive tests for HCL code synthesis engine (`core/generation/synthesizer.py`).
 - [`tests/test_tf_validate.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_tf_validate.py): Tests execution of native `terraform validate` commands.
+- [`tests/test_warehouse_streaming_modules.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_warehouse_streaming_modules.py): Tests module synthesis, schema validation, and IAM trust policies for `warehouse-snowflake-aws`, `streaming-msk-kafka`, and `compute-databricks-delta`.
 - [`tests/test_workflow.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_workflow.py): Tests execution flow of the generation workflow orchestrator.
 
 ---
 
 ## 4. Cost, FinOps & Reporting Tests
 
-- [`tests/test_bcm_pricing_calculator.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_bcm_pricing_calculator.py): Tests integration with AWS BCM Pricing Calculator payload generation and estimation execution.
+- [`tests/test_bcm_pricing_calculator.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_bcm_pricing_calculator.py): Tests integration with AWS BCM Pricing Calculator payload generation and heuristic usage auto-derivation.
 - [`tests/test_budget_calculator.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_budget_calculator.py): Unit tests for cost budget estimation utilities.
 - [`tests/test_finops_agent.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_finops_agent.py): Tests live cost queries, anomaly detection, and correlation routines.
+- [`tests/test_finops_doctor_policy.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_finops_doctor_policy.py): Tests cross-cutting FinOps rules, BCM quantity derivations, and doctor container recovery policies.
 - [`tests/test_optimize_analyzer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_optimize_analyzer.py): Tests HCL static scanning rules for security, cost, and observability.
 - [`tests/test_plan_inspector.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_plan_inspector.py): Tests plan diffing and resource inspection capabilities.
 - [`tests/test_plan_reader.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_plan_reader.py): Tests parsing Terraform execution plans into structured JSON objects.
