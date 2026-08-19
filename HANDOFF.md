@@ -17,27 +17,26 @@ This handoff ledger records the current state of the workspace, recent architect
 
 ## 📍 Current State & Recent Milestones
 
-### 0. Enterprise Next-Gen Upgrade — Branch `feat/minusops-enterprise-nextgen-v2` (2026-08-18)
+### 0. Enterprise Next-Gen Upgrade — Branch `feat/minusops-enterprise-nextgen-v2` (2026-08-19)
 
-All 9 steps from Section 21 of [`2026-08-17_minusterraformrunaudit.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/2026-08-17_minusterraformrunaudit.md) are **implemented, tested, and verified**.
+All 21 engineering tickets from the **MinusOps Enterprise v2.0 Roadmap (`MINUS-140` – `MINUS-160`)** are **implemented, tested, and verified**.
 
-* **Authoritative Progress Ledger:** [`docs/PROGRESS.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/docs/PROGRESS.md) Section 7.
-* **Fast Test Suite:** **633 passed**, 82 skipped across **72 test files** (100% pass rate).
-* **Module Catalog:** Expanded from **16 to 21 production-grade Terraform modules** (all validated against AWS provider schema v6.60.0).
+* **Authoritative Progress Ledger:** [`docs/PROGRESS.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/docs/PROGRESS.md) Section 8.
+* **Fast Test Suite:** **770 passed**, 85 skipped across **76 test files** (100% pass rate).
+* **Module Catalog:** **24 production-grade Terraform modules** (added Snowflake, MSK, Databricks Delta, MWAA, Iceberg maintenance).
+* **Working Tree:** 100% clean after test runs.
 
-#### Step-by-Step Delivery Ledger:
+#### Enterprise v2.0 Sprints 1–4 Delivery Ledger:
 
-| Step | Delivered Scope & Capabilities | Primary Files |
-| :--- | :--- | :--- |
-| **1** | Cross-platform `minusctl doctor [--json]`; TerraShark `FM-01..05` failure modes; 4-part ADR contract (`validation`, `rollback`, `assumptions`, `tradeoffs`). | [`core/reporting/doctor.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/doctor.py), [`core/architecture/architecture_decision.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/architecture_decision.py) |
-| **2** | Glue IAM multi-bucket S3 & KMS grants (no `*`); auto-wired `--source_path`/`--target_path`/`--source_format`; TFLint integration; `moved {}` generation in `address_churn.py`. | [`modules/compute-glue-etl/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-glue-etl/main.tf), [`core/governance/address_churn.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/governance/address_churn.py) |
-| **3** | Parameterized `force_destroy = var.environment == "dev"`; run-hash-suffixed KMS aliases; S3 backend with native `use_lockfile = true`. | [`modules/storage-medallion-s3/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/storage-medallion-s3/main.tf), [`core/generation/synthesizer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/synthesizer.py) |
-| **4** | Generated source baseline synchronization (`source_guard.write_baseline(label="synthesized")`). | [`core/governance/source_guard.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/governance/source_guard.py) |
-| **5** | Athena `aws_glue_catalog_database`; Step Functions EventBridge schedule trigger; `src/dbt/` scaffolding with `profiles.yml`; `transform_engine: "dbt"` serverless mode. | [`modules/query-athena/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/query-athena/main.tf), [`modules/orchestrator-stepfunctions/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-stepfunctions/main.tf) |
-| **6** | Multi-environment promotion matrix (`envs/{dev,staging,prod}.tfvars`); SIEM CloudTrail S3 Data Events into Object-Locked audit bucket; per-zone S3 CRR; mandatory FinOps tags. | [`core/generation/synthesizer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/synthesizer.py), [`modules/storage-medallion-s3/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/storage-medallion-s3/main.tf) |
-| **7** | 7-Pillar `grill-me` interrogation (ingestion as Q1); 3-tier alert routing SNS topics; S3 quarantine bucket; layer-agnostic workspace scaffolding (`src/{compute,sql,quality,orchestration}`); 4 ingestion modules (`ingestion-dms`, `ingestion-appflow`, `ingestion-sftp`, `ingestion-webhook`). | [`.agents/skills/grill-me/SKILL.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/.agents/skills/grill-me/SKILL.md), [`modules/ingestion-dms/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-dms/) |
-| **8** | TB-scale compute tiers (`compute_tier()`); `compute-emr-ec2-spot` (3-fleet Graviton Spot); 5-gate Stage Reflector (`core/governance/reflector.py`); context-aware `--based-on` inheritance. | [`modules/compute-emr-ec2-spot/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-emr-ec2-spot/), [`core/governance/reflector.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/governance/reflector.py) |
-| **9** | `minusctl seed` (dry-run plan default, Athena smoke test); `minusctl adopt` (brownfield adoption); GitHub Action PR reviewer (`.github/actions/pr-reviewer/action.yml`). | [`core/reporting/seed.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/seed.py), [`core/reporting/adopt.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/adopt.py) |
+| Sprint | Tickets | Delivered Scope & Capabilities | Primary Files |
+| :--- | :--- | :--- | :--- |
+| **Sprint 1** | `MINUS-140`, `156`, `143`, `144`, `145` | Pytest corpus diversion (clean tree); Day-0 Doctor skill; composite GitHub Action PR Reviewer with sticky SVG/BCM comments; OIDC merge-gate plan hash re-verification. | [`tests/conftest.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/conftest.py), [`.agents/skills/doctor/SKILL.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/.agents/skills/doctor/SKILL.md), [`.github/actions/pr-reviewer/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/.github/actions/pr-reviewer/) |
+| **Sprint 2** | `MINUS-141`, `142`, `147`, `153` | Multi-team S3 remote state (`teams/<team_id>/<workload_id>/`); team derived from backend key (not user flags); discrete WORM S3 audit logger; sanitized team directory (`[a-z0-9-]{1,63}`). | [`core/architecture/team_resolver.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/team_resolver.py), [`core/governance/plan_gate.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/governance/plan_gate.py), [`core/governance/audit_logger.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/governance/audit_logger.py) |
+| **Sprint 3** | `MINUS-148`, `149`, `150`, `151`, `152` | Snowflake on AWS (2-sided handshake defense); Databricks Unity Catalog external locations & Delta Sharing; private MWAA Airflow; AWS MSK Kafka (IAM SASL); Iceberg table maintenance Lambda. | [`modules/warehouse-snowflake-aws/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/warehouse-snowflake-aws/), [`modules/compute-databricks-delta/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-databricks-delta/), [`modules/streaming-msk-kafka/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/streaming-msk-kafka/) |
+| **Sprint 4** | `MINUS-146`, `154`, `155`, `157`, `158`, `159`, `160` | Dynamic BCM quantity derivation from requirements (15-min micro-batch cost impact); `minusctl doctor --fix` container auto-recovery; fail-closed production OPA gate; fuzzy run typo recovery with attached description tips; pre-requisite stage interception; 3-part actionable error formatting. | [`core/cost/bcm_pricing_calculator.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/cost/bcm_pricing_calculator.py), [`core/reporting/cli_diagnostics.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/cli_diagnostics.py), [`core/reporting/minusctl.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/minusctl.py) |
+
+#### Governance State Note:
+* **Plan `5cad83d9` Approval Revocation:** Approval record for `5cad83d9` was revoked and purged from disk following MINUS-146 discovery that 15-minute micro-batching requires ~$1,478/mo. The deploy gate now fails closed and requires a fresh plan/BCM/approval cycle before application.
 
 #### Deliberately Scoped Decisions:
 * **MINUS-126 & MINUS-127:** Scoped out third-party cloud provider bloat per `core/providers/base.py` AWS-only architecture. Cross-cloud ingestion uses **AWS IAM OIDC Workload Identity** (STS role assumption by GCP/Azure identities writing directly to S3).

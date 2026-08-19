@@ -522,3 +522,40 @@ because failures are exactly the runs that keep their directories. The real fix 
 enable Windows developer mode so Terraform symlinks the plugin cache instead of copying;
 run the slow suite in CI on a larger disk (the workflow already does this); or shard it.
 Until then, run it in batches of <= 6 and clear `.pytest_tmp_slow` between them.
+
+---
+
+## 8. Enterprise v2.0 Delivery Ledger (MINUS-140..160) — 2026-08-19
+
+All 21 engineering tickets from the **MinusOps Enterprise v2.0 Roadmap (`MINUS-140` – `MINUS-160`)** have been implemented, tested, and verified on `feat/minusops-enterprise-nextgen-v2`.
+
+* **Fast Test Suite:** **770 passed**, 85 skipped across **76 test files** (100% pass rate).
+* **Module Catalog:** **24 production-grade Terraform modules** (added Snowflake, MSK, Databricks Delta, MWAA, and Iceberg table maintenance).
+* **Working Tree:** 100% clean after test runs.
+
+### Sprints Summary:
+
+1. **Sprint 1 (Hardening & GitOps — MINUS-140, 156, 143, 144, 145):**
+   - Corpus diversion to `tmp_path_factory` in pytest fixtures, permanently eliminating git churn.
+   - Day-0 Doctor skill manifest (`.agents/skills/doctor/SKILL.md`) with version floors (`terraform >= 1.5`, `aws cli >= 2`).
+   - Composite GitHub Action PR Reviewer (`.github/actions/pr-reviewer/action.yml`) posting sticky comments with click-to-code `architecture.svg`, BCM monthly cost difference tables, and SHA-256 plan hashes.
+   - OIDC production merge gate in `deploy.yml` asserting current plan hash matches the PR-reviewed digest.
+
+2. **Sprint 2 (Multi-Team State Isolation & Role Binding — MINUS-141, 142, 147, 153):**
+   - Multi-team S3 remote state generation targeting `s3://<bucket>/teams/<team_id>/<workload_id>/terraform.tfstate` with `use_lockfile = true`.
+   - Team identity derived strictly from generated backend state key (`_backend_team()`), preventing user flag spoofing.
+   - Discrete WORM S3 audit logger emitting one immutable object per event keyed by timestamp + entry hash under S3 Object Lock.
+   - Central team directory resolver (`core/architecture/team_resolver.py`) with strict team ID sanitization (`_TEAM_ID_RE = ^[a-z0-9][a-z0-9-]{0,62}$`).
+
+3. **Sprint 3 (Warehouse & Streaming Catalog Expansion — MINUS-148, 149, 150, 151, 152):**
+   - `modules/warehouse-snowflake-aws`: 2-sided handshake defense starting with root-only trust until `external_id` and Snowflake IAM ARN attach.
+   - `modules/compute-databricks-delta`: Unity Catalog external locations over Gold S3 and Delta Sharing grants.
+   - `modules/orchestrator-mwaa`: Managed Airflow in private VPC with KMS CMK and log streaming.
+   - `modules/streaming-msk-kafka`: Managed Kafka with multi-AZ broker distribution and mandatory IAM SASL auth.
+   - `modules/query-athena/iceberg_maintenance.tf`: EventBridge-scheduled Lambda executing `OPTIMIZE` and `VACUUM` with 1-day snapshot retention floor.
+
+4. **Sprint 4 (FinOps Heuristics, Container Auto-Recovery & Agent Diagnostics — MINUS-146, 154, 155, 157, 158, 159, 160):**
+   - `auto_populate_usage()` in `bcm_pricing_calculator.py` deriving quantities dynamically from schedule and retention, exposing that a 15-minute micro-batch costs ~$1,478/mo (revoking outdated $430 approval on `5cad83d9`).
+   - `minusctl doctor --fix` container auto-recovery with 20s timeout and isolated environment handling.
+   - Fail-closed production OPA presence enforcement in `plan_gate.py verify`.
+   - `core/reporting/cli_diagnostics.py`: Fuzzy typo run matching with dynamic attached description tips (`get_run_description_tip()`), ANSI escape sequence sanitization, pre-requisite stage interception, and 3-part actionable error formatting (`WHAT FAILED` / `WHY IT FAILED` / `ACTION REQUIRED`).
