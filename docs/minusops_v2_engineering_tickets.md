@@ -171,3 +171,12 @@
 * **Priority:** P1 (High) | **Component:** `core/reporting/minusctl.py`
 * **Problem:** General failures leave the agent guessing what to do next.
 * **Fix:** Standardize all CLI error outputs to the **3-Part Actionable Diagnostics Structure** (WHAT FAILED, WHY IT FAILED, ACTION REQUIRED).
+
+---
+
+## As-Built Implementation Notes & Architectural Deviations
+
+* **MINUS-155 (Policy Gate Promotion):** Enforced mandatory OPA presence in production mode while respecting the per-rule `rule_stages.json` registry (rather than an unreviewed bulk promotion of all shadow rules).
+* **MINUS-156 (Doctor Setup):** Maintained the Python floor at `>= 3.10` to align with `pyproject.toml` runtime compatibility.
+* **MINUS-158 (Stage Interception):** Because `minusctl` is non-mutating by contract, pre-requisite stage interception checks for plan and apply execution live in `core/reporting/cli_diagnostics.py` and hook into `plan_gate.py`, resolving approvals from `.agents/logs/plan_gate/<dirkey>/approvals/<hash>.json`.
+
