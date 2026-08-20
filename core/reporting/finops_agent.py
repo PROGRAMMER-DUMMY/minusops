@@ -186,18 +186,78 @@ def cmd_notify_jira(approval_mode):
     return True
 
 
+def cmd_export_excel(output_target):
+    from excel_finops_generator import (
+        generate_executive_project_summary_excel,
+        generate_pipeline_detailed_ledger_excel,
+        generate_both_enterprise_reports
+    )
+    
+    if os.path.isdir(output_target) or not output_target.endswith(".xlsx"):
+        p1, p2 = generate_both_enterprise_reports(output_target)
+        print(f"[FINOPS EXPORT] Generated dual enterprise workbooks in {output_target}")
+        return True
+    
+    if "project" in output_target.lower():
+        # Default project records
+        project_records = [
+            {
+                "domain": "Domain-Analytics",
+                "project_repo": "payer-reconciliation-engine",
+                "active_pipelines": 3,
+                "last_month_usd": 1410.00,
+                "current_month_usd": 2136.00,
+                "cost_center": "CC-4092",
+                "owner": "sarah.t@company.com",
+                "root_cause_summary": "Glue ETL scaled with +45GB/day surge + S3 Bronze retention lag",
+                "action_plan": "Enforce max 4-worker cap and 30-day Glacier lifecycle policy"
+            },
+            {
+                "domain": "Domain-Regulatory",
+                "project_repo": "claims-audit-pipeline",
+                "active_pipelines": 2,
+                "last_month_usd": 665.00,
+                "current_month_usd": 663.00,
+                "cost_center": "CC-8810",
+                "owner": "elena.r@company.com",
+                "root_cause_summary": "Stable execution; S3 Deep Archive transitions offset minor compute growth (-0.3%)",
+                "action_plan": "Optimized; maintain current archiving lifecycle rules"
+            },
+            {
+                "domain": "Domain-CoreOps",
+                "project_repo": "enterprise-vpc-fabric",
+                "active_pipelines": 1,
+                "last_month_usd": 269.00,
+                "current_month_usd": 269.00,
+                "cost_center": "CC-1001",
+                "owner": "david.k@company.com",
+                "root_cause_summary": "Base idle network standing cost (S3 Gateway endpoint eliminates data transfer fee)",
+                "action_plan": "Maintain S3 Gateway VPC endpoints"
+            }
+        ]
+        generate_executive_project_summary_excel(output_target, project_records)
+    else:
+        out_dir = os.path.dirname(os.path.abspath(output_target)) or os.getcwd()
+        generate_both_enterprise_reports(out_dir)
+    return True
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FinOps Agent (live AWS spend and anomalies)")
     parser.add_argument("--cost", action="store_true", help="Spend breakdown + month-over-month")
     parser.add_argument("--anomalies", action="store_true", help="List active cost anomalies")
     parser.add_argument("--correlate", action="store_true", help="Root-cause anomalies (AWS only)")
+    parser.add_argument("--export-excel", type=str, metavar="DIR_OR_PATH",
+                        help="Export dual enterprise Excel workbooks: Executive Project Summary & Pipeline Detailed Ledger")
     parser.add_argument("--notify-slack", action="store_true", help="Send latest anomaly summary to Slack")
     parser.add_argument("--notify-jira", action="store_true", help="Prepare a Jira ticket for the latest anomaly")
     parser.add_argument("--approval-mode", default="gatekeeper",
                         choices=["gatekeeper", "auto-approve"], help="Approval mode for side effects")
     args = parser.parse_args()
 
-    if args.notify_slack:
+    if args.export_excel:
+        ok = cmd_export_excel(args.export_excel)
+    elif args.notify_slack:
         ok = cmd_notify_slack(args.approval_mode)
     elif args.notify_jira:
         ok = cmd_notify_jira(args.approval_mode)

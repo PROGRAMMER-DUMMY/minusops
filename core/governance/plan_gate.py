@@ -1202,6 +1202,13 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
         print("[gate] WARNING: no active cloud session. Authenticate before apply "
               "(`aws sso login`, or assume the MFA-gated deploy role).")
 
+    destroy = pending.get("destroy", False)
+    if mode == "auto-approve" and destroy:
+        print("[gate] REFUSING auto-approve — teardowns and destroy plans cannot be auto-approved by any agent or harness.", file=sys.stderr)
+        print("[gate] Teardowns require interactive human review. Run `approve` interactively with --mode gatekeeper.", file=sys.stderr)
+        _audit("approve", "REJECTED", reason="destroy_auto_approve_forbidden", dir=dir_, destroy=True)
+        return False
+
     if mode == "gatekeeper":
         ans = _timed_input(f"Approve this exact plan? [y/N] ({CONFIRM_TIMEOUT}s): ", CONFIRM_TIMEOUT)
         if ans is None or ans.lower() not in ("y", "yes"):
@@ -1217,6 +1224,7 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
         "cloud": get_provider().name,
         "approved_by": getpass.getuser(),
         "approver": approver,
+        "approval_mode": mode,
         # 2026-07-07, Phase 1 item 2: set ONLY when approver came from a real AWS-STS
         # identity, not the env-var fallback -- lets apply-time distinguish "verify this
         # matches" from "nothing to verify," instead of comparing two fallback strings
@@ -1329,9 +1337,9 @@ def _reject_if_destructive_and_auto_approve(dir_, mode, classification, destroy)
     "gatekeeper" already puts a human in the loop (the y/N prompt at approve time) -- that IS
     the staged/guarded path this routes to, so a gatekeeper-mode apply is never blocked here
     regardless of what the plan contains; only the credential-free autonomous path is."""
-    if mode != "auto-approve" or classification["autonomous_eligible"]:
+    if mode != "auto-approve" or (classification.get("autonomous_eligible", False) and not destroy):
         return False
-    print("[gate] REFUSING auto-approve apply — this plan is not autonomous-eligible:", file=sys.stderr)
+    print("[gate] REFUSING auto-approve apply — this plan is not autonomous-eligible or is a destroy plan:", file=sys.stderr)
     _print_classification(classification)
     print("[gate] Re-run with --mode gatekeeper for human review. There is no bypass flag "
           "for this check.", file=sys.stderr)
@@ -1440,16 +1448,17 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
     if _reject_if_apply_identity_mismatches_approver(dir_, approval, policy_mode, destroy=destroy):
         return False  # approval kept; apply as the identity that actually approved this
 
-    if _reject_if_destructive_and_auto_approve(dir_, mode, classification, destroy):
+    effective_mode = "auto-approve" if (mode == "auto-approve" or approval.get("approval_mode") == "auto-approve") else "gatekeeper"
+    if _reject_if_destructive_and_auto_approve(dir_, effective_mode, classification, destroy):
         return False  # approval kept; re-run apply with --mode gatekeeper for human review
 
     # Computed from the approved plan JSON, not re-read from the cloud -- same "decided once
     # at plan, enforced at apply" shape the other checks use.
     if _reject_if_reverts_out_of_band_and_auto_approve(
-            dir_, mode, approval.get("cloud_drift") or {}, destroy):
+            dir_, effective_mode, approval.get("cloud_drift") or {}, destroy):
         return False  # approval kept; re-run apply with --mode gatekeeper for human review
 
-    if _reject_if_g9_not_clean_and_auto_approve(dir_, mode, approval.get("g9_result"), destroy):
+    if _reject_if_g9_not_clean_and_auto_approve(dir_, effective_mode, approval.get("g9_result"), destroy):
         return False  # approval kept; re-run apply with --mode gatekeeper for human review
 
     print(f"[gate] applying approved plan (hash {current[:16]}...) as {account} ...")

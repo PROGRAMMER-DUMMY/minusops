@@ -65,3 +65,74 @@ def test_stateful_deletes_are_named_in_the_classification():
     result = g5.classify(_DESTROY_PLAN)
     blob = repr(result)
     assert "aws_s3_bucket" in blob
+
+
+def test_stage_approve_refuses_auto_approve_for_destroy_plan(tmp_path, monkeypatch, capsys):
+    """stage_approve must refuse --mode auto-approve when destroy=True."""
+    import json
+    import os
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    monkeypatch.setattr(plan_gate, "LOG_DIR", str(log_dir))
+    monkeypatch.setattr(plan_gate, "_source_status_for_hash", lambda _h: {"status": "CURRENT", "stale": False, "reason": ""})
+    monkeypatch.setattr(plan_gate, "_credential_posture", lambda: {"connected": True, "type": "temporary"})
+    monkeypatch.setattr(plan_gate, "_plan_hash", lambda d: ("abc123hash", None))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "alice")
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "alice")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "open", "ok"))
+
+    # Write pending plan with destroy=True
+    pending_record = {
+        "plan_hash": "abc123hash",
+        "canonical_dir": plan_gate._canonical_dir(str(tmp_path)),
+        "destroy": True,
+    }
+    pending_file = plan_gate._pending_path(str(tmp_path))
+    os.makedirs(os.path.dirname(pending_file), exist_ok=True)
+    with open(pending_file, "w", encoding="utf-8") as f:
+        json.dump(pending_record, f)
+
+    approved = plan_gate.stage_approve(str(tmp_path), mode="auto-approve", policy_mode="dev")
+    assert approved is False
+    err = capsys.readouterr().err
+    assert "REFUSING auto-approve" in err
+    assert "Teardowns require interactive human review" in err
+
+
+def test_stage_apply_refuses_auto_approved_destroy_record(tmp_path, monkeypatch, capsys):
+    """stage_apply must refuse even if an approval record with approval_mode=auto-approve exists for a destroy plan."""
+    import json
+    import os
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    monkeypatch.setattr(plan_gate, "LOG_DIR", str(log_dir))
+    monkeypatch.setattr(plan_gate, "_source_status_for_hash", lambda _h: {"status": "CURRENT", "stale": False, "reason": ""})
+    monkeypatch.setattr(plan_gate, "_credential_posture", lambda: {"connected": True, "type": "temporary"})
+    monkeypatch.setattr(plan_gate, "_plan_hash", lambda d: ("abc123hash", None))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_classify_plan", lambda d: g5.classify(_DESTROY_PLAN))
+    monkeypatch.setattr(plan_gate.audit_chain, "verify", lambda p: (True, []))
+
+    # Plant an approval record that had approval_mode="auto-approve"
+    approved_record = {
+        "plan_hash": "abc123hash",
+        "dir": str(tmp_path),
+        "canonical_dir": plan_gate._canonical_dir(str(tmp_path)),
+        "identity": "123456789012",
+        "approved_by": "alice",
+        "approver": "alice",
+        "approval_mode": "auto-approve",
+        "destroy": True,
+    }
+    approved_file = plan_gate._approved_path(str(tmp_path), "abc123hash")
+    os.makedirs(os.path.dirname(approved_file), exist_ok=True)
+    with open(approved_file, "w", encoding="utf-8") as f:
+        json.dump(approved_record, f)
+
+    # Calling stage_apply even with default mode="gatekeeper" must catch the approval_mode and refuse
+    applied = plan_gate.stage_apply(str(tmp_path), mode="gatekeeper", policy_mode="dev")
+    assert applied is False
+    err = capsys.readouterr().err
+    assert "REFUSING auto-approve apply" in err
+
