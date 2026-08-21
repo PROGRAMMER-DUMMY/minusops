@@ -8,6 +8,11 @@ the *adaptability* of research-driven synthesis and the *reliability* of vetted 
 hand-authoring monolithic blueprints up front.
 
 Stored at .minus/patterns.json (next to approvers.json) so a team can commit and share it.
+
+Depends on: core/generation/modules.py (as module_registry)
+Shells out to: nothing
+Used by: nothing in core/ or app/ — CLI entrypoint (`python core/generation/patterns.py`)
+    plus tests/test_patterns.py
 """
 import datetime
 import json

@@ -4,6 +4,11 @@ Governed blueprint registry.
 Blueprints are the product contract between short user intent and generated
 Terraform. The resolver may recommend a blueprint, but creation and deployment
 still go through explicit generation, verification, plan, approval, and apply.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing
+Used by: core/generation/demo.py, core/generation/intent_resolver.py,
+    tests/test_intent_resolver.py, tests/test_intent_assertions.py
 """
 
 from copy import deepcopy

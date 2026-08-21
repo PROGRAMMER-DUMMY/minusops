@@ -4,6 +4,11 @@ Enterprise intent resolver.
 Turns short user requests into safe, reviewable product decisions. It does not
 generate Terraform and never deploys. Its job is to map intent to approved
 blueprints and identify the minimum inputs needed before generation.
+
+Depends on: core/generation/blueprints.py, core/providers/base.py (both imported
+    relative-first, falling back to flat imports for the sys.path-injected CLI layout)
+Shells out to: nothing
+Used by: core/generation/workflow.py, tests/test_intent_resolver.py, tests/test_create_intent.py
 """
 
 import argparse

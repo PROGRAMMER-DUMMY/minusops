@@ -1,13 +1,17 @@
-"""
-knowledge_delegation.py -- the agent-delegation contract for the semantic path: packages a
-needs_review resolve() result into a structured hand-off for the driving agent, and records the
-agent's verdict back as a new claim (Task 2). No local model anywhere in this path -- the driving
-agent does the adjudication; this module only packages the question and records the answer.
+"""Agent-delegation contract for the semantic path: package a needs_review, record the verdict.
 
-Materiality (whether a new observation is worth recording at all) is deliberately NOT decided
-here -- that is the driving agent's job, checking resolve()'s current winner before ever calling
-record_delegation_verdict. Materiality must never live in resolve() or any stdlib-only core
-module (ray's Q2 reconciliation).
+Turns a `needs_review` resolve() result into a structured hand-off for the driving agent, then
+records that agent's verdict back as a new claim. There is no local model anywhere in this path:
+the driving agent adjudicates, this module only packages the question and stores the answer.
+
+Materiality -- whether a new observation is worth recording at all -- is deliberately NOT decided
+here. That is the driving agent's job, checking resolve()'s current winner before it ever calls
+record_delegation_verdict. Materiality must never migrate into resolve() or any stdlib-only core
+module.
+
+Depends on: core/generation/knowledge_store.py
+Shells out to: nothing
+Used by: nothing in core/ or app/ — tests/test_knowledge_delegation.py, tests/test_knowledge_jsonl.py
 """
 import datetime
 
@@ -18,9 +22,10 @@ def build_delegation_request(conn, resource_type, attribute):
     result = knowledge_store.resolve(conn, resource_type, attribute)
     if result["status"] != "needs_review":
         return None
-    # claims is asserted non-empty by its own dedicated test
-    # (test_build_delegation_request_claims_list_is_never_empty) rather than left as an inference
-    # from resolve()'s len(claims) <= 1 early return living in a different file.
+    # No empty-list guard here on purpose: resolve() cannot return needs_review with fewer than
+    # two claims. That invariant lives in another file, so
+    # test_build_delegation_request_claims_list_is_never_empty pins it rather than leaving it
+    # as an inference.
     ordered = sorted(
         result["claims"], key=lambda c: knowledge_store._parse_ts(c["observed_at"]), reverse=True)
     return {
@@ -46,35 +51,29 @@ def record_delegation_verdict(conn, resource_type, attribute, *, claim_text, val
     source_type and method are fixed by this function (not caller-supplied): "agent_delegated"
     and "semantic".
 
-    This is the external boundary of the two-clock model -- an arbitrary driving agent supplies
-    valid_from/observed_at. Both are validated: each must parse via knowledge_store._parse_ts
-    (rejects garbage/wrong-type input) AND must be timezone-AWARE (rejects a well-formed ISO
-    string with no timezone designator, e.g. "2026-07-10T00:00:00") -- every other timestamp in
-    this store is aware (schema/web claims always emit "Z" or "+00:00"; _parse_ts's own docstring
-    is about format, not awareness), and a naive value that slips past validation here does not
-    fail at insert time: it gets stored, and the NEXT resolve() call on this resource_type/
-    attribute crashes with "TypeError: can't compare offset-naive and offset-aware datetimes"
-    inside its max()-by-observed_at call, permanently bricking that attribute until the row is
-    manually invalidated (found by the final whole-step review, 2026-07-20 -- the exact same
-    hazard class _parse_ts exists to prevent for FORMAT, reintroduced for AWARENESS at precisely
-    the new external-input boundary this step added). This check runs immediately after parsing,
-    before the valid_from > observed_at comparison below -- a naive valid_from was previously
-    able to raise a raw TypeError out of that comparison, escaping this function's own documented
-    ValueError contract entirely. valid_from must not be AFTER observed_at (a fact can't be
-    observed before it became true). observed_at defaults to now (always aware, via
-    datetime.now(timezone.utc)); valid_from has no default (same no-default precedent as
-    invalidate_claim's valid_until).
+    This is the external boundary of the two-clock model: an arbitrary driving agent supplies
+    valid_from/observed_at. Both must parse via knowledge_store._parse_ts (rejecting garbage and
+    wrong types) AND be timezone-AWARE. The awareness check is not redundant with parsing. A
+    well-formed but naive ISO string such as "2026-07-10T00:00:00" inserts fine, and then the
+    NEXT resolve() on that resource_type/attribute dies inside its max()-by-observed_at with
+    "TypeError: can't compare offset-naive and offset-aware datetimes", bricking the attribute
+    until the row is manually invalidated. Every other timestamp in this store is aware
+    (schema/web claims always emit "Z" or "+00:00"); _parse_ts guards format, not awareness.
+    The awareness check must stay immediately after parsing and before the valid_from >
+    observed_at comparison below -- a naive valid_from reaching that comparison raises a raw
+    TypeError, escaping this function's documented ValueError contract. valid_from must not be
+    AFTER observed_at (a fact cannot be observed before it became true). observed_at defaults to
+    now, always aware via datetime.now(timezone.utc); valid_from has no default, matching
+    invalidate_claim's valid_until.
 
-    adjudicated_ids is the second external-input boundary surface: required (no default), must
-    be non-empty, free of duplicates, and every id must reference a currently-active claim for
-    this exact resource_type/attribute -- a stale, fabricated, or duplicated id would make the
-    coverage test in resolve() (Task 3) meaningless, silently. All validation runs BEFORE any
-    write, AND the verdict claim insert and its claim_adjudications rows share a single
-    transaction (rolled back on any failure) -- "no partial claim row on rejection" does not
-    depend on this function's own validation having anticipated every possible failure mode
-    (ray's round-3 review, 2026-07-19: insert_claim's own internal commit() used to make the
-    verdict row permanent before the claim_adjudications write could fail on it, e.g. via a
-    duplicate id slipping past a set()-based check)."""
+    adjudicated_ids is the second external-input boundary: required, non-empty, duplicate-free,
+    and every id must reference a currently-active claim for this exact resource_type/attribute.
+    A stale, fabricated, or duplicated id would silently void resolve()'s coverage test. All
+    validation runs BEFORE any write, and the verdict claim insert shares one transaction with
+    its claim_adjudications rows (rolled back together on any failure), so "no partial claim row
+    on rejection" does not rest on this function's validation having anticipated every failure
+    mode -- insert_claim's own commit() would otherwise make the verdict row permanent before a
+    claim_adjudications write could fail on it."""
     observed_at = observed_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
     try:
         parsed_valid_from = knowledge_store._parse_ts(valid_from)

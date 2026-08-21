@@ -1,11 +1,27 @@
 """
 Architecture synthesizer — compose vetted modules into a governed Terraform workspace.
 
-This is the code half of the architect path: given requirements, it selects matching modules
-from the registry (core/generation/modules.py), creates a run workspace, and writes a composed Terraform
-root that wires the obvious shared inputs and flags the rest for review. The output is a
-*scaffold the architect refines and the deploy gate validates* — never an apply-without-review
+This is the code half of the architect path: given requirements, it selects matching modules from
+the registry (core/generation/modules.py), creates a run workspace, and writes a composed
+Terraform root that wires the obvious shared inputs and flags the rest for review. The output is
+a *scaffold the architect refines and the deploy gate validates* — never an apply-without-review
 shortcut. It replaces the single hardcoded blueprint with requirement-driven composition.
+
+This module writes Terraform and project files; it never runs plan or apply. Several imports here
+are deliberately lazy (schema_lint, schema_watch, knowledge_store) to break real import cycles —
+see the notes at each call site before hoisting one to module level.
+
+Depends on: core/architecture/architecture_decision.py (as archdec),
+    core/architecture/requirements.py (as reqgate), core/generation/modules.py
+    (as module_registry), core/governance/audit_chain.py, core/governance/source_guard.py,
+    core/architecture/team_resolver.py, core/reporting/runs.py; lazily,
+    core/generation/schema_lint.py, core/generation/schema_watch.py,
+    core/generation/knowledge_store.py
+Shells out to: terraform (`terraform fmt`, `terraform validate`, and — transitively through
+    schema_lint/schema_watch — `terraform init` + `terraform providers schema -json`, which
+    reach the Terraform Registry)
+Used by: core/generation/schema_watch.py, core/reporting/reporter.py (lazily), and a wide slice
+    of tests/
 """
 import hashlib
 import os
@@ -59,19 +75,18 @@ def _audit_allow_incomplete_bypass(requirements_text, spec, decision, run):
 
 def write_authoring_record(run, resource_type, justification, schema_block, grounding_examples,
                             raw_output, verdict, detail="", driving_agent=""):
-    """Phase 7 Item 5 (docs/phase7_item5_authoring_scope.md section 1): the record of one
-    authoring attempt -- the context supplied (schema + grounding), the content returned, and the
-    gate verdict on it -- written so a specific authoring decision is reconstructable after the
-    fact even though a different attempt might not reproduce the same bytes. `verdict` is
-    `"authored"` (passed every check) or `"blocked"` (section 4's fail-closed table fired);
-    `detail` names which check, when blocked. `driving_agent` is a free-text, caller-supplied
-    label for whatever was driving the session when this content was authored (e.g.
-    `"claude-code"`, `"codex"`, `"human"`) -- recorded for provenance, never validated or
-    required to match a known set: this project doesn't verify WHO or WHAT produced the content
-    (it can't, and shouldn't try -- see the field's own note below), only that a real context was
-    supplied and a real gate verdict was reached. No retries happen at this layer or above it
-    (decided in scope, not left to whoever calls this): a blocked attempt is a hard stop, and
-    this function's whole job is making sure that stop is not a silent one.
+    """Record one authoring attempt (docs/phase7_item5_authoring_scope.md section 1).
+
+    Captures the context supplied (schema + grounding), the content returned, and the gate verdict
+    on it, so a specific authoring decision stays reconstructable even though a repeat attempt
+    would not reproduce the same bytes. `verdict` is `"authored"` (passed every check) or
+    `"blocked"` (section 4's fail-closed table fired); `detail` names which check, when blocked.
+
+    `driving_agent` is free-text and caller-supplied (`"claude-code"`, `"codex"`, `"human"`),
+    recorded for provenance and deliberately never validated against a known set: this project
+    does not verify WHO or WHAT produced the content, only that a real context was supplied and a
+    real gate verdict was reached. No retries happen at this layer or above it -- a blocked
+    attempt is a hard stop, and this function exists to make sure that stop is not silent.
 
     Deliberately agent-neutral: nothing in this record's shape assumes an API response object
     (no token-usage field, no request/header/credential field of any kind) -- `raw_output` is
@@ -81,13 +96,11 @@ def write_authoring_record(run, resource_type, justification, schema_block, grou
     bytes is not a property this function checks or can check.
 
     Bulk artifacts (`schema_block`, `grounding_examples`, `raw_output`) are written as real files
-    under the run's own workspace, NOT inlined into the hash-chained audit log itself -- measured,
-    not assumed: a single type's live schema can run ~9KB, grounding examples several more on top
-    (docs/phase7_item5_authoring_scope.md section 1's own measurements). This matches this
-    project's own established pattern for bulky artifacts (`source_guard.py`'s baseline
-    manifests, `requirements.json`/`architecture_decision.json` themselves) -- the audit chain
-    entry carries small, hash-verified pointers; the real content lives in real files a reviewer
-    can open directly."""
+    under the run's workspace, NOT inlined into the hash-chained audit log: a single type's live
+    schema runs around 9KB and grounding examples add several more, which would bloat the chain.
+    Same pattern the project already uses for bulky artifacts (`source_guard.py`'s baseline
+    manifests, `requirements.json`/`architecture_decision.json`) -- the audit chain entry carries
+    small, hash-verified pointers and the content lives in files a reviewer can open."""
     authoring_dir = os.path.join(run["root"], "authoring")
     os.makedirs(authoring_dir, exist_ok=True)
 
@@ -125,18 +138,16 @@ def write_authoring_record(run, resource_type, justification, schema_block, grou
         return rec
 
 
-# Phase 7 Item 5 (docs/phase7_item5_authoring_scope.md section 1, revised): the authoring
-# mechanism is NOT an API call this project makes on its own. MinusOps is operated THROUGH an
-# agentic CLI tool (Claude Code, Codex, agy, etc.) -- that driving agent already has full
-# authoring capability; it does not need MinusOps to embed its own separate LLM client,
-# credentials, or model choice. What it DOES need is the same real, live context a human author
-# would want: the declared type's actual provider schema and real grounding examples from this
-# codebase's own reviewed modules. `assemble_authoring_context()` is exactly that surface -- a
-# thin, callable (and CLI-exposed, see `main()`'s `author-context` subcommand) function that
-# returns this context as plain JSON, so whatever agent is driving the session reads it, writes
-# the HCL itself, and hands it back through the SAME `authored_content` interface every other
-# caller of synthesize() already uses. Nothing about that interface changes -- this only answers
-# "where does an authoring agent get the schema+grounding it needs," not "who authors."
+# The authoring mechanism is deliberately NOT an API call this project makes on its own
+# (docs/phase7_item5_authoring_scope.md section 1). MinusOps is operated THROUGH an agentic CLI
+# tool (Claude Code, Codex, agy, etc.); that driving agent already has full authoring capability
+# and does not need MinusOps to embed its own LLM client, credentials, or model choice. Do not
+# add one. What the driving agent DOES need is the same live context a human author would want:
+# the declared type's actual provider schema and real grounding examples from this codebase's own
+# reviewed modules. `assemble_authoring_context()` is exactly that surface -- a thin, callable
+# (and CLI-exposed via `main()`'s `author-context` subcommand) function returning that context as
+# plain JSON, so the driving agent reads it, writes the HCL, and hands it back through the SAME
+# `authored_content` interface every other caller of synthesize() uses.
 def _claims_db_path():
     return os.path.join(module_registry.output_root(), "knowledge", "claims.db")
 
@@ -200,12 +211,12 @@ def _grounding_claims(resource_type):
         conn.close()
 
 
-# Wording that would turn a mapping claim into a PRICE. Decision #19: agents may contribute
-# tf_type -> serviceCode mappings (checkable against AWS's own service list, and a wrong one
-# surfaces as a BCM error rather than a wrong number), but never a rate and never a
-# free-ness assertion. Both of those ARE cost claims, and a wrong one silently under-reports
-# a bill -- the exact failure FinOps tooling exists to prevent. "BCM prices forecasts, Cost
-# Explorer gives actuals, MinusOps never fabricates a number" stays literally true.
+# Wording that would turn a mapping claim into a PRICE. Agents may contribute tf_type ->
+# serviceCode mappings (checkable against AWS's own service list, and a wrong one surfaces as a
+# BCM error rather than a wrong number), but never a rate and never a free-ness assertion. Both
+# of those ARE cost claims, and a wrong one silently under-reports a bill -- the exact failure
+# FinOps tooling exists to prevent. "BCM prices forecasts, Cost Explorer gives actuals, MinusOps
+# never fabricates a number" has to stay literally true.
 _PRICE_MARKERS = ("$", "usd", "per gb", "per hour", "per month", "/gb", "/hr",
                   "is free", "no charge", "costs nothing", "zero cost", "free tier",
                   "costs 0", "0 usd")
@@ -316,9 +327,9 @@ def remember_claim(*, claim_text, source_url, valid_from, resource_type=None, at
             confidence=confidence, valid_from=valid_from,
             observed_at=observed_at or datetime.datetime.now(datetime.timezone.utc).isoformat(),
         )
-        # Decision #8: JSONL is the source of truth, claims.db is a gitignored cache. Writing
-        # only SQLite would make every recorded claim invisible to the team and lost the
-        # moment anyone rebuilt their cache.
+        # JSONL is the source of truth; claims.db is a gitignored cache. Writing only SQLite
+        # would make every recorded claim invisible to the team, and lose it the moment anyone
+        # rebuilt their cache.
         knowledge_store.export_jsonl(conn, _claims_corpus_dir())
         return claim_id
     finally:
@@ -473,7 +484,7 @@ def write_dbt_project(project_dir, name_prefix):
     return written
 
 
-# MINUS-118. A pipeline is not only HCL: the PySpark, the SQL, the expectation suites, and
+# A pipeline is not only HCL: the PySpark, the SQL, the expectation suites, and
 # the workflow definition are the parts an operator actually edits, and without a stated home
 # they land wherever the first person guessed. Each directory gets a README explaining what
 # belongs there rather than an empty folder, because an empty folder communicates nothing and
@@ -532,7 +543,7 @@ def write_project_scaffold(project_dir):
     return written
 
 
-# MINUS-135. Company standards are settled once and then re-asked on every new pipeline:
+# Company standards are settled once and then re-asked on every new pipeline:
 # which region, whose cost centre, which classification, which alert topics, which orchestrator
 # the team already knows. `--based-on <run-id>` reads them off an existing run so the interview
 # covers only what is genuinely new.
@@ -577,7 +588,7 @@ def inherit_from_run(run_root):
             sources[key] = "terraform/terraform.tfvars"
 
     # envs/prod.tfvars carries the settled cost centre and classification; dev's are blank by
-    # design (Step 6), so prod is the authoritative source for those.
+    # design, so prod is the authoritative source for those.
     prod_path = os.path.join(run_root, "terraform", "envs", "prod.tfvars")
     for key, value in _parse_tfvars(prod_path).items():
         if key in INHERITABLE_TFVARS and value and value != "REVIEW_REQUIRED":
@@ -662,10 +673,9 @@ def _module_args(module_id, present_ids, monthly_budget_usd=0, glue_execution_cl
     has_networking = "networking-vpc" in present_ids
     _GOV = "module.governance_observability"
     if has_networking and module_id == "orchestrator-mwaa":
-        # Closes a real gap: orchestrator-mwaa has never had a reusable networking module to
-        # attach to (runs/manual-mwaa-network-scratch/ was hand-built specifically to work
-        # around this, deliberately outside the governed catalog). With both modules present,
-        # this now wires end-to-end with no `# REVIEW:` comment for either input.
+        # orchestrator-mwaa needs a VPC it can attach to; runs/manual-mwaa-network-scratch/ is a
+        # hand-built throwaway that exists because there was no governed networking module.
+        # With both modules present this wires end-to-end, leaving no `# REVIEW:` on either input.
         args["subnet_ids"] = f"{_NETWORKING}.private_subnet_ids"
         args["security_group_ids"] = f"[{_NETWORKING}.default_security_group_id]"
     if has_networking and module_id == "databricks-workspace":
@@ -675,7 +685,7 @@ def _module_args(module_id, present_ids, monthly_budget_usd=0, glue_execution_cl
         args["subnet_ids"] = f"{_NETWORKING}.private_subnet_ids"
         args["security_group_ids"] = f"[{_NETWORKING}.default_security_group_id]"
     if has_storage and module_id == "governance-observability":
-        # MINUS-131: pre-wire the audit scope so enabling the trail is a one-line tfvars
+        # Pre-wire the audit scope so enabling the trail is a one-line tfvars
         # change, not a wiring exercise. enable_siem_trail stays false by default -- S3 data
         # events are billed per event and turning them on silently is a cost surprise.
         args["siem_data_bucket_arns"] = (
@@ -686,50 +696,48 @@ def _module_args(module_id, present_ids, monthly_budget_usd=0, glue_execution_cl
         # envs/prod.tfvars can set a ceiling without editing main.tf.
         args["monthly_budget_usd"] = "var.monthly_budget_usd"
     if module_id == "governance-observability" and monthly_budget_usd:
-        # Wire the operator's actual stated budget constraint (requirements.json) into the
-        # guardrail this module provisions -- previously this was always the module's own
-        # unwired default, disconnected from anything the operator said (audit finding
-        # 2026-07-04). Only set when a real number was parsed; otherwise stays a REVIEW item.
+        # Wire the operator's stated budget constraint (requirements.json) into the guardrail
+        # this module provisions. Falling back to the module's own default silently disconnects
+        # the guardrail from what the operator actually said. Only set when a real number was
+        # parsed; otherwise it stays a REVIEW item.
         args["monthly_budget_usd"] = f"{monthly_budget_usd:g}"
     if module_id in ("storage-medallion-s3", "dq-great-expectations", "query-athena"):
-        # Folded into bucket names so two runs sharing a name_prefix don't collide
-        # (2026-07-04 audit finding: account_id alone doesn't differentiate our own runs;
-        # 2026-07-06: the same fix extended to dq-great-expectations/query-athena, which an
-        # exhaustive read found had the identical unsuffixed bucket pattern left unfixed).
+        # Folded into bucket names so two runs sharing a name_prefix don't collide: account_id
+        # alone does not differentiate two of our own runs in the same account. Applies to
+        # dq-great-expectations and query-athena as well -- they carry the same bucket pattern.
         args["run_id"] = "var.run_id"
     if module_id == "storage-medallion-s3":
         # Ephemeral dev runs must be destroyable: without this a non-empty bucket fails
         # `terraform destroy` with BucketNotEmpty and strands the whole stack. Expressed as
         # the environment test rather than a literal so promoting the same Terraform to
-        # staging/prod flips it to false without an edit (MINUS-101).
+        # staging/prod flips it to false without an edit.
         args["force_destroy"] = 'var.environment == "dev"'
-        # Per-environment (MINUS-114): dev archives sooner than prod. Root variable rather
+        # Per-environment: dev archives sooner than prod. Root variable rather
         # than a literal so promotion is a var-file change, not a main.tf edit.
         args["retention_days"] = "var.retention_days"
     if has_storage and module_id == "compute-glue-etl":
         args["script_s3_bucket"] = f'{_STORAGE}.bucket_names["bronze"]'
-        # MINUS-108: the job's role needs S3 write on the medallion zones and data-key use
+        # The job's role needs S3 write on the medallion zones and data-key use
         # on the lake CMK, or it 403s on its first write to silver.
         args["data_buckets"] = f"values({_STORAGE}.bucket_names)"
         args["kms_key_arn"] = f"{_STORAGE}.kms_key_arn"
-        # MINUS-109: scripts/etl.py raises SystemExit without these, so the starter job is
+        # scripts/etl.py raises SystemExit without these, so the starter job is
         # dead on arrival unless the paths are wired at synthesis time. bronze -> silver
         # matches the starter job the line below creates.
         args["source_bucket"] = f'{_STORAGE}.bucket_names["bronze"]'
         args["target_bucket"] = f'{_STORAGE}.bucket_names["silver"]'
         # Stated, not inferred. Bronze is the raw landing zone (JSON by default) and Silver is
-        # columnar; etl.py used to guess from the path's trailing slash and read Bronze as
-        # Parquet. Emitted explicitly so the medallion intent is visible in the generated HCL
-        # and an operator landing CSV/Parquet in Bronze knows exactly which line to change.
+        # columnar. Left unstated, etl.py guesses from the path's trailing slash and reads Bronze
+        # as Parquet. Emitting it explicitly keeps the medallion intent visible in the generated
+        # HCL, so an operator landing CSV/Parquet in Bronze knows which line to change.
         args["source_format"] = '"json"'
         args["target_format"] = '"parquet"'
-        # MINUS-114/130: worker sizing is per-environment, so it comes from a root variable
-        # set by envs/<env>.tfvars rather than being frozen into main.tf. This also clears the
-        # two REVIEW items the composed stack used to carry for every run.
+        # Worker sizing is per-environment, so it comes from a root variable set by
+        # envs/<env>.tfvars rather than being frozen into main.tf.
         args["worker_type"] = "var.glue_worker_type"
         args["number_of_workers"] = "var.glue_number_of_workers"
         if glue_execution_class:
-            # MINUS-128: FLEX only when the stated SLA tolerates an unpredictable start.
+            # FLEX only when the stated SLA tolerates an unpredictable start.
             args["execution_class"] = f'"{glue_execution_class}"'
         # A default starter job so the pipeline is complete-by-construction (a real Glue
         # job + uploaded starter script). The operator extends/renames it before production.
@@ -742,7 +750,7 @@ def _module_args(module_id, present_ids, monthly_budget_usd=0, glue_execution_cl
             args["enable_alarms"] = "true"
     if has_storage and module_id == "query-athena":
         args["results_kms_key_arn"] = f"{_STORAGE}.kms_key_arn"
-        # MINUS-110: point the catalog database at the curated zone.
+        # Point the catalog database at the curated zone.
         args["gold_bucket"] = f'{_STORAGE}.bucket_names["gold"]'
     if has_storage and module_id == "dq-great-expectations":
         args["target_buckets"] = f"values({_STORAGE}.bucket_names)"
@@ -761,9 +769,8 @@ def _module_args(module_id, present_ids, monthly_budget_usd=0, glue_execution_cl
         args["table_bucket"] = f'{_STORAGE}.bucket_names["gold"]'
     if has_storage and module_id == "ingest-firehose":
         args["destination_bucket_arn"] = f'"arn:aws:s3:::${{{_STORAGE}.bucket_names["bronze"]}}"'
-    # Ingestion connectors (MINUS-123..127) all land in Bronze and all need the lake CMK --
-    # without the key grant the write 403s on an SSE-KMS bucket, the same failure MINUS-108
-    # fixed for Glue.
+    # Ingestion connectors all land in Bronze and all need the lake CMK -- without the key grant
+    # the write 403s on an SSE-KMS bucket, the same failure the Glue job role hits.
     if has_storage and module_id in ("ingestion-dms", "ingestion-sftp", "ingestion-appflow"):
         args["target_bucket"] = f'{_STORAGE}.bucket_names["bronze"]'
         if module_id != "ingestion-appflow":
@@ -773,7 +780,7 @@ def _module_args(module_id, present_ids, monthly_budget_usd=0, glue_execution_cl
     if has_networking and module_id == "ingestion-dms":
         args["subnet_ids"] = f"{_NETWORKING}.private_subnet_ids"
         args["vpc_security_group_ids"] = f"[{_NETWORKING}.default_security_group_id]"
-    # MINUS-117: quality failures route to Tier 2 and land in the quarantine zone.
+    # Quality failures route to Tier 2 and land in the quarantine zone.
     if has_gov and module_id == "dq-great-expectations":
         args["alert_topic_arn"] = f"{_GOV}.data_quality_topic_arn"
     if has_storage and module_id == "dq-great-expectations":
@@ -997,7 +1004,7 @@ _BACKEND_TEMPLATE = '''terraform {
 '''
 
 
-# MINUS-114 / MINUS-130. One Terraform root, three var-files. What legitimately differs
+# One Terraform root, three var-files. What legitimately differs
 # between environments is exactly this table -- and nothing here changes resource SHAPE, only
 # size, retention, and destroyability, so a prod plan is the same graph as the dev plan that
 # was already reviewed.
@@ -1082,7 +1089,7 @@ def write_env_tfvars(out_dir, name_prefix, owner="", run_id="", monthly_budget_u
 
 
 def _render_backend(state_backend, name_prefix, run_id):
-    """S3 remote state block, or "" when no state bucket was supplied (MINUS-104).
+    """S3 remote state block, or "" when no state bucket was supplied.
 
     Opt-in on purpose: a `backend "s3"` block makes `terraform init` fail outright until the
     state bucket exists, so emitting one by default would break every local and test run for
@@ -1093,13 +1100,13 @@ def _render_backend(state_backend, name_prefix, run_id):
     developer.hashicorp.com/terraform/language/backend/s3), so generating a table today would
     ship a removal deadline into every operator's stack.
 
-    The key is directory-bound (MINUS-134): `<name_prefix>/<run_id>/terraform.tfstate`. Two
+    The key is directory-bound: `<name_prefix>/<run_id>/terraform.tfstate`. Two
     pipelines sharing one state bucket cannot collide on a key or block each other's lock,
     which is TerraShark FM-03 (blast radius: shared state across environments).
 
-    With a team (MINUS-141) the key becomes `teams/<team_id>/<workload_id>/terraform.tfstate`.
+    With a team the key becomes `teams/<team_id>/<workload_id>/terraform.tfstate`.
     That is a stronger isolation than the default: the team segment is also what the deploy
-    role is scoped to (MINUS-142), so a role that may write one team's prefix cannot reach
+    role is scoped to, so a role that may write one team's prefix cannot reach
     another's even when both squads share a state bucket. `team_resolver.state_key` validates
     both segments -- they are operator-supplied and a `..` in either escapes the prefix.
 
@@ -1188,11 +1195,9 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
     chosen = [module_registry.get_module(i) for i in module_ids]
     chosen = [m for m in chosen if m]
     if not chosen and not authored_resources:
-        # Real, pre-existing gap fixed here: this check predates authored_resources (docs/
-        # phase6_step1_authoring_scope.md) and was never updated for it -- a composition can be
-        # entirely authored content with zero catalog picks (the Step 5 regression harness is
-        # exactly this case), which is not "nothing valid to compose," only "nothing FROM THE
-        # CATALOG to compose."
+        # The `authored_resources` half of this test matters: a composition can be entirely
+        # authored content (docs/phase6_step1_authoring_scope.md) with zero catalog picks, which
+        # is not "nothing valid to compose", only "nothing FROM THE CATALOG to compose".
         raise ValueError("no valid modules or authored resources selected")
     present_ids = {m["id"] for m in chosen}
 
@@ -1217,13 +1222,12 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
     _w("main.tf", _render_main(chosen, present_ids, monthly_budget_usd=monthly_budget_usd,
                                glue_execution_class=glue_execution_class))
 
-    # MINUS-138. TF_PLUGIN_CACHE_DIR alone does NOT make init offline: with no lock file entry
-    # for a provider, Terraform still contacts the registry for the official checksums and
-    # downloads the whole ~855 MB package to verify them, ignoring the cache. Measured on this
-    # repo: no lock file, init never finished in 15 minutes; with one, 8.3 seconds.
-    # The lock file is a real Terraform artifact meant to be committed, so seeding it is not a
-    # workaround -- it is the thing that was missing. A provider it does not name still
-    # resolves from the registry, so this degrades rather than breaks.
+    # TF_PLUGIN_CACHE_DIR alone does NOT make init offline: with no lock file entry for a
+    # provider, Terraform still contacts the registry for the official checksums and downloads
+    # the whole ~855 MB package to verify them, ignoring the cache. Measured on this repo: no
+    # lock file, init never finished in 15 minutes; with one, 8.3 seconds. The lock file is a
+    # real Terraform artifact meant to be committed, so seeding it is not a workaround. A
+    # provider it does not name still resolves from the registry, so this degrades, never breaks.
     _lock = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))), ".agents", "terraform.lock.hcl")
     if os.path.exists(_lock):
@@ -1247,7 +1251,7 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
     # Authored (novel) resources. Two forms (docs/phase7_item1_module_unit_scope.md):
     #   - "flat" (docs/phase6_step1_authoring_scope.md section 2 item 1): a standalone resource
     #     with no input contract of its own gets its own file at the composition root, sharing
-    #     the root's variables/locals directly -- unchanged since Step 1.
+    #     the root's variables/locals directly.
     #   - "module": a unit that declares its own variable/output/locals needs a real module
     #     boundary (Terraform's own scoping, not one this project invents) so `path.module`
     #     resolves against ITS directory and its variables don't collide with the root's --
@@ -1636,13 +1640,12 @@ def _validate_novel_resources(decision, authored_content, verify_type_exists=Tru
 
     Returns the list of authored_resources dicts `compose()`/`_write_manifest()` expect.
     """
-    # Imported lazily, not at module level, to avoid a real circular import (found running
-    # tests/test_schema_watch.py standalone, pre-existing since Step 1, not introduced here):
-    # schema_watch.py imports synthesizer; schema_lint.py imports FROM schema_watch
-    # (_fetch_schema et al); a module-level `import schema_lint` here completes the cycle in
-    # the one order that breaks (schema_watch imported first, before schema_lint has fully
-    # initialized). module_provenance.py already uses this exact same lazy-import fix for the
-    # identical reason -- see its own `pin` CLI handler.
+    # Imported lazily, not at module level, to avoid a real circular import: schema_watch.py
+    # imports synthesizer, and schema_lint.py imports FROM schema_watch (_fetch_schema et al),
+    # so a module-level `import schema_lint` here completes the cycle in the order that breaks
+    # (schema_watch imported first, before schema_lint has fully initialized -- reproducible by
+    # running tests/test_schema_watch.py standalone). module_provenance.py's `pin` CLI handler
+    # uses the same lazy-import fix for the same reason.
     import schema_lint
     novel_resources = (decision or {}).get("novel_resources") or []
     authored_content = authored_content or {}
@@ -1667,9 +1670,9 @@ def _validate_novel_resources(decision, authored_content, verify_type_exists=Tru
             content = raw
             assets = {}
             module_args = {}
-        # Cheapest, fully-offline check first (unchanged position): empty content is empty
-        # regardless of whether the declared type is even real, and every prior caller of this
-        # path (several tests) relies on this needing no terraform/network access.
+        # Cheapest, fully-offline check first, and it must stay first: empty content is empty
+        # regardless of whether the declared type is even real, and callers of this path rely on
+        # reaching this verdict with no terraform or network access.
         if not list(schema_lint.iter_hcl_blocks(content)):
             raise AuthoredContentRejected(
                 f"authored content for novel resource '{resource_type}' declares no "
@@ -1677,10 +1680,10 @@ def _validate_novel_resources(decision, authored_content, verify_type_exists=Tru
                 resource_type=resource_type, reason="empty_content",
             )
         # Both checks below are scoped to the flat form only (see each function's own
-        # docstring) -- a module-shaped unit's key isn't necessarily a literal type string (the
-        # real Step 5 harness keys one by module_id), so neither applies there. Schema-exists
-        # runs before the type-match check: a type that doesn't exist at all makes "does the
-        # content match the declared type" a moot question.
+        # docstring) -- a module-shaped unit's key is not necessarily a literal type string (the
+        # regression harness keys one by module_id), so neither applies there. Schema-exists runs
+        # before the type-match check: a type that doesn't exist at all makes "does the content
+        # match the declared type" a moot question.
         if not is_module_unit:
             if verify_type_exists and not _resource_type_exists_live(resource_type):
                 raise AuthoredContentRejected(
@@ -1778,21 +1781,20 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     decision_module_ids = (decision or {}).get("selected_modules")
     if not allow_incomplete and explicit_ids and set(explicit_ids) != set(decision_module_ids or []):
         raise ValueError("--module overrides must match architecture_decision.json selected_modules")
-    # None (key absent) -> no override, infer by keyword (unchanged). An explicit [] -- checked
-    # by identity, not truthiness, same fix as select_modules() itself -- means "architect
-    # decided: zero catalog modules" (docs/phase7_generation_engine_plan.md item 2: the real
-    # public synthesize() entry point previously had no way to reach a catalog-free composition
-    # without bypassing select_modules() the way the Step 5 regression harness had to). Respected
-    # exactly, including skipping the governance-observability auto-add an INFERRED composition
-    # still gets -- an explicit decision that names nothing shouldn't have something silently
-    # added back in.
+    # None (key absent) -> no override, infer by keyword. An explicit [] means "the architect
+    # decided: zero catalog modules" (docs/phase7_generation_engine_plan.md item 2), which is how
+    # a catalog-free composition is reached through the public entry point. The distinction is
+    # checked by identity, NOT truthiness -- same as select_modules() itself -- because `[]` and
+    # `None` must not collapse. Respected exactly, including skipping the
+    # governance-observability auto-add an INFERRED composition still gets: an explicit decision
+    # that names nothing must not have something silently added back in.
     explicit_selection = decision_module_ids if decision_module_ids is not None else explicit_ids
     if explicit_selection is not None:
         chosen = select_modules(requirements_text, explicit_ids=explicit_selection,
                                 with_governance=bool(explicit_selection))
     else:
         chosen = select_modules(requirements_text)
-    # MINUS-120. `transform_engine: "dbt"` on the decision record means the transformations
+    # `transform_engine: "dbt"` on the decision record means the transformations
     # are SQL run by Athena, so a Glue Spark cluster is paid-for compute that nothing starts.
     # Dropped here rather than asking the operator to also remember to deselect it -- and it
     # is dropped even when explicitly selected, because keeping both is the contradiction the
@@ -1817,10 +1819,9 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     authored_resources = _validate_novel_resources(
         decision, authored_content, verify_type_exists=verify_novel_resource_types)
     if not chosen and not authored_resources:
-        # Predates authored_resources, same fix compose()'s own identical guard already got in
-        # Step 1: a composition can be entirely authored content with zero catalog picks (an
-        # explicit selected_modules: [] plus novel_resources), which is not "nothing matched,"
-        # only "nothing FROM THE CATALOG."
+        # Mirrors compose()'s identical guard: a composition can be entirely authored content
+        # with zero catalog picks (an explicit selected_modules: [] plus novel_resources), which
+        # is not "nothing matched", only "nothing FROM THE CATALOG".
         raise ValueError("no modules matched the requirements; refine the request or pass --module")
     run = target_run or runs.new_run(blueprint="synthesized", request=requirements_text, cloud=cloud)
     if allow_incomplete:
@@ -1833,7 +1834,7 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     prefix = name_prefix or f"{module_registry._WORD.findall(owner.lower())[0] if owner else 'app'}-dev"
     daily_gb, volume_source = parse_daily_gb(spec)
     budget_usd, budget_source = parse_budget_usd(spec)
-    # MINUS-128: volume picks the engine, the SLA decides whether Glue may run on discounted
+    # Volume picks the engine, the SLA decides whether Glue may run on discounted
     # spare capacity. Recorded on the result so readiness can show WHY, not just what.
     tier = module_registry.compute_tier(
         daily_gb, ((spec or {}).get("non_functional") or {}).get("latency", ""))
@@ -1843,7 +1844,7 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
                      monthly_budget_usd=budget_usd, budget_source=budget_source,
                      authored_resources=authored_resources, state_backend=state_backend,
                      glue_execution_class=tier["execution_class"])
-    # MINUS-119: analysts writing SQL should not hand-configure a profile. Scaffolded
+    # Analysts writing SQL should not hand-configure a profile. Scaffolded
     # whenever Athena is present, not only in dbt-only mode -- dbt on top of a Glue pipeline
     # is a normal shape, and an unused src/dbt/ costs nothing.
     if any(m["id"] == "query-athena" for m in chosen):

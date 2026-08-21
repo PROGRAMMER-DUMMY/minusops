@@ -1,14 +1,20 @@
-"""
-knowledge_degradation.py -- the bi-temporal degradation check: re-fetches a resource type's live
-schema and reconciles it against what the store currently believes, generalizing schema_watch.py's
-drift pattern into the knowledge layer's own claims/resolve() model instead of schema_watch's
-separate snapshot-diff files.
+"""Bi-temporal degradation check: re-fetch a resource type's live schema, reconcile it with the store.
 
-Always inserts, never dedups by content hash -- a re-check that finds nothing changed still
-inserts a fresh claim and invalidates the old one, bumping observed_at. This is load-bearing for
-resolve()'s freshness clause, not just "evidence has value": without it, schema claims go
+This is schema_watch.py's drift pattern expressed in the knowledge layer's own claims/resolve()
+model, rather than in schema_watch's separate snapshot-diff files.
+
+Always inserts, never dedups by content hash. A re-check that finds nothing changed still inserts
+a fresh claim and invalidates the old one, bumping observed_at. That is load-bearing for
+resolve()'s freshness clause, not merely "evidence has value": without it, schema claims go
 permanently stale relative to live-fetched non-schema claims, and every future conflict trivially
-looks "web/agent_delegated is newer" -- the exact noise-queue asymmetry ray's Q2 review named.
+resolves to "web/agent_delegated is newer".
+
+Depends on: core/generation/knowledge_diff.py, core/generation/knowledge_store.py,
+    core/generation/modules.py
+Shells out to: terraform (transitively, via knowledge_diff -> schema_watch._fetch_schema)
+Used by: nothing in core/ or app/ — CLI entrypoint
+    (`python core/generation/knowledge_degradation.py check <provider> <resource_type>`) plus
+    tests/test_knowledge_degradation.py and tests/test_knowledge_delegation.py
 """
 import datetime
 import json
@@ -27,15 +33,13 @@ def _default_db_path():
 def check_and_refresh(conn, provider, resource_type, kind="resource"):
     fresh_claims = knowledge_diff.schema_claims_for_type(provider, resource_type, kind=kind)
     fresh_attributes = {c["attribute"] for c in fresh_claims}
-    # Grouped, then reduced via _parse_ts()'s max() -- NOT a plain {attr: claim} dict
-    # comprehension. A dict comprehension keeps whichever row SQLite happens to return LAST for
-    # a given attribute (unspecified order), which is only ever safe if at most one active schema
-    # claim can exist per attribute. That is NOT guaranteed: a DB used before this step existed
-    # (Step 2's own tests/proof runs never invalidated anything) can already hold more than one.
-    # resolve() itself already handles this correctly via its own max()-by-observed_at (Step 2,
-    # test_resolve_uses_the_truly_newest_among_multiple_schema_claims) -- this mirrors that same
-    # discipline here so this function's OWN bookkeeping (which row is "old," what invalidated_by
-    # points at) can't silently reference the wrong duplicate.
+    # Group, then reduce by newest observed_at -- NOT a plain {attr: claim} dict comprehension.
+    # A comprehension keeps whichever row SQLite happens to return LAST for an attribute
+    # (unspecified order), which is only safe if at most one active schema claim can exist per
+    # attribute. That is NOT guaranteed: a DB written before this check existed can already hold
+    # several. resolve() handles the same situation with its own max()-by-observed_at; mirroring
+    # it here keeps this function's bookkeeping (which row is "old", what invalidated_by points
+    # at) from silently referencing the wrong duplicate.
     _by_attr = {}
     for c in knowledge_store._active_schema_claims_for_resource(conn, resource_type):
         existing = _by_attr.get(c["attribute"])
@@ -49,12 +53,11 @@ def check_and_refresh(conn, provider, resource_type, kind="resource"):
         new_id = knowledge_store.insert_claim(conn, **claim)
         inserted.append(new_id)
         if old is not None:
-            # valid_until = the NEW claim's valid_from, NOT its observed_at (ray's review,
-            # 2026-07-19) -- valid_until must track the same axis valid_from does (the fact's own
-            # timeline), not when this check happened to notice the change. Only appears
-            # interchangeable today because knowledge_diff.py's schema claims currently set
-            # valid_from == observed_at (a disclosed Step 2 placeholder); this is correct
-            # regardless of whether that placeholder is ever resolved.
+            # valid_until = the NEW claim's valid_from, NOT its observed_at. valid_until must
+            # track the same axis valid_from does (the fact's own timeline), not when this check
+            # happened to notice the change. The two only look interchangeable because
+            # knowledge_diff.py's schema claims currently set valid_from == observed_at (a
+            # placeholder); this stays correct whether or not that placeholder is ever resolved.
             knowledge_store.invalidate_claim(
                 conn, old["id"], valid_until=claim["valid_from"], invalidated_by=new_id)
             invalidated.append(old["id"])
@@ -62,24 +65,21 @@ def check_and_refresh(conn, provider, resource_type, kind="resource"):
     removed_attributes = []
     skipped_removed_attribute_check = False
     if not fresh_claims:
-        # Type-not-found guard (ray's review, 2026-07-19): schema_claims_for_type() returns []
-        # both when the resource type genuinely doesn't exist in the live schema (a typo, or the
-        # wrong `kind` -- aws_s3_bucket is a real name under BOTH "resource" and "data") and when
-        # it exists with zero attributes. Collapsing these would mark EVERY previously-tracked
-        # attribute "removed" on an ordinary caller mistake, not a real removal -- a confident
-        # wrong verdict, same family as resolve()'s three. Do NOT touch schema_claims_for_type()'s
-        # own already-locked (three review rounds) contract to disambiguate the two cases;
-        # instead, skip the removed-attribute pass entirely and say so in the summary rather than
-        # silently trusting emptiness as confirmed removal. Only True when there was something at
-        # stake (previously-active claims this function declined to touch); an empty fetch for a
-        # type that was never tracked has nothing to silently get wrong.
+        # Type-not-found guard. schema_claims_for_type() returns [] both when the resource type
+        # genuinely doesn't exist in the live schema (a typo, or the wrong `kind` -- aws_s3_bucket
+        # is a real name under BOTH "resource" and "data") and when it exists with zero
+        # attributes. Collapsing the two would mark EVERY previously-tracked attribute "removed"
+        # on an ordinary caller mistake -- a confident wrong verdict. Do NOT change
+        # schema_claims_for_type()'s contract to disambiguate them; instead skip the
+        # removed-attribute pass and say so in the summary, rather than trusting emptiness as
+        # confirmed removal. Only True when something was at stake (previously-active claims this
+        # function declined to touch); an empty fetch for a never-tracked type gets nothing wrong.
         skipped_removed_attribute_check = bool(previously_active_by_attr)
     else:
         # An attribute with a previously-active schema claim absent from the fresh fetch would
         # otherwise stay "active" forever, asserting something about an attribute that no longer
-        # exists -- a silent-stale-answer bug in the same family as resolve()'s three
-        # (implementation-level review, 2026-07-19). Gives resolve() a real current belief instead
-        # of a silent absence, which the store has no other way to represent.
+        # exists -- a silent-stale-answer bug. Recording an explicit "removed" claim gives
+        # resolve() a real current belief instead of an absence, which the store cannot represent.
         removed_provider_version = fresh_claims[0]["provider_version"]
         removed_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
         for attr, old in previously_active_by_attr.items():
@@ -119,7 +119,7 @@ def main(argv=None):
     conn.close()
     print(json.dumps(summary, indent=2))
     if summary.get("skipped_removed_attribute_check"):
-        # Loud, not just a summary field nobody reads (ray's review, 2026-07-19). A mistyped
+        # Loud on stderr plus a non-zero exit, not just a summary field nobody reads: a mistyped
         # resource_type or --kind must not quietly no-op and report success.
         print(
             f"[knowledge_degradation] WARNING: no live schema found for "

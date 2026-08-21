@@ -1,14 +1,10 @@
-"""
-schema_watch.py — CI provider schema-diff watch (docs/project_plan.md Phase E addendum,
-"self-updating knowledge" tooling, scoped down from a larger enterprise-expansion proposal to
-exactly this: pure detection/reporting, no new provisioning surface).
+"""CI provider schema-diff watch (docs/project_plan.md Phase E addendum).
 
-While MinusOps is stopped waiting on external unblocks (a real account for the live create+
-destroy test, a second tenant for Phase 3, Autoresearch's BAA), the AWS and Databricks provider
-surface keeps moving underneath the already-pinned modules. This fetches the real, live
-`terraform providers schema -json` for each tracked provider, reduces it to just the
-resource/data-source types MinusOps' modules actually reference (parsed straight out of
-modules/*/main.tf, not guessed), and diffs it against the last committed snapshot:
+Scoped deliberately to pure detection and reporting, with no new provisioning surface. The AWS
+and Databricks provider surfaces keep moving underneath already-pinned modules, so this fetches
+the live `terraform providers schema -json` for each tracked provider, reduces it to just the
+resource/data-source types MinusOps' modules actually reference (parsed out of modules/*/main.tf,
+not guessed), and diffs it against the last committed snapshot:
 
   - a used type disappears from the live schema         -> finding: removed
   - a used type's schema `version` integer changes       -> finding: schema_version_bump
@@ -18,14 +14,22 @@ modules/*/main.tf, not guessed), and diffs it against the last committed snapsho
 
 Every fact this reports comes from a real `terraform init` + `terraform providers schema -json`
 run against the exact version constraints already live in synthesizer.py -- nothing here is
-guessed or carried over from any external planning document.
+guessed or carried over from a planning document.
 
 `run_provider()` writes recent-changes/<provider>/schema-snapshot.json (replaced each run) and,
 once a prior snapshot exists to diff against, recent-changes/<provider>/<timestamp>.json (the
 diff report), then appends one summary record into the shared .agents/logs/audit.jsonl chain
-via audit_logger.log_audit_event -- same "one continuous chain" invariant audit_chain.py already
-establishes elsewhere in this codebase. This is a detector and reporter only: it never touches
-plan_gate.py's apply path, never blocks a deploy, and never provisions anything.
+via audit_logger.log_audit_event -- the same "one continuous chain" invariant audit_chain.py
+establishes elsewhere. This is a detector and reporter only: it never touches plan_gate.py's
+apply path, never blocks a deploy, and never provisions anything.
+
+Depends on: core/generation/modules.py (as module_registry), core/generation/synthesizer.py
+    (for the provider version constraints), core/governance/audit_logger.py,
+    core/reporting/toolpath.py
+Shells out to: terraform (`terraform init`, `terraform providers schema -json`), which reaches
+    the Terraform Registry over the network
+Used by: core/generation/knowledge_diff.py, core/generation/schema_lint.py,
+    core/generation/synthesizer.py (lazily), tests/test_schema_watch.py
 """
 import argparse
 import datetime
@@ -106,10 +110,11 @@ def _fetch_schema(provider, workdir):
     if terraform is None:
         raise RuntimeError("terraform CLI not found on PATH")
 
-    # timeout=120: real fetches measured this session at 30-80s; a hang here (network stall,
-    # a wedged provider-plugin download) must fail loud with subprocess.TimeoutExpired rather
-    # than block a caller indefinitely -- observed directly: a stuck run here silently blocked
-    # a dependent process for 50+ minutes with no live terraform process to show for it.
+    # timeout=120: real fetches measure 30-80s, so the margin is deliberate but finite. A hang
+    # here (network stall, a wedged provider-plugin download) must fail loud with
+    # subprocess.TimeoutExpired rather than block a caller indefinitely -- without the timeout a
+    # stuck run has blocked a dependent process for the better part of an hour, with no live
+    # terraform process left to show for it.
     init = subprocess.run([terraform, f"-chdir={workdir}", "init", "-input=false"],
                            capture_output=True, text=True, timeout=120)
     if init.returncode != 0:
@@ -137,13 +142,13 @@ def _fetch_schema(provider, workdir):
 
 
 def get_type_schema(provider, type_name, kind="resource"):
-    """Phase 7 Item 4 (docs/phase7_generation_engine_plan.md): live provider schema for exactly
-    one resource/data type. Composes `_fetch_schema()`'s real `terraform providers schema -json`
-    fetch with a plain dict lookup by type -- `_reduce()` (below) is deliberately NOT part of
-    this: it strips a type down to `{kind, version, deprecated_attributes}` for schema_watch's
-    own drift-comparison purpose, throwing away exactly the attribute/nested-block detail this
-    function exists to expose. Composing with it here would return a confidently-wrong "schema
-    query" that's actually a drift summary. `_fetch_schema()` itself is unchanged.
+    """Live provider schema for exactly one resource/data type.
+
+    Composes `_fetch_schema()`'s real `terraform providers schema -json` fetch with a plain dict
+    lookup by type. `_reduce()` (below) is deliberately NOT part of this: it strips a type down to
+    `{kind, version, deprecated_attributes}` for schema_watch's own drift comparison, throwing
+    away exactly the attribute/nested-block detail this function exists to expose. Composing with
+    it here would return a confidently-wrong "schema query" that is really a drift summary.
 
     provider: "aws" | "databricks" (`_PROVIDER_SOURCE`'s existing keys).
     type_name: e.g. "aws_dynamodb_table".
@@ -155,25 +160,26 @@ def get_type_schema(provider, type_name, kind="resource"):
     COST, undocumented anywhere else so don't assume this is cheap: every call does a full
     `terraform init` + `terraform providers schema -json` -- seconds and a network round trip,
     per call, not cached. A naive loop calling this once per candidate type is N full fetches.
-    Left deliberately uncached here: a project whose whole premise is "schemas drift and stale
-    assumptions break you" should not get a live-schema cache as a silent convenience default --
-    if a caller (e.g. a future Item 5 authoring step checking several types per unit) needs to
-    avoid refetching, it must cache at ITS OWN layer, knowingly, not rely on one hidden in here.
+    Left deliberately uncached: a project whose whole premise is "schemas drift and stale
+    assumptions break you" should not get a live-schema cache as a silent convenience default. A
+    caller checking several types per unit of work must cache at ITS OWN layer, knowingly, rather
+    than rely on one hidden in here.
     """
     with tempfile.TemporaryDirectory() as workdir:
         schema, _resolved_version = _fetch_schema(provider, workdir)
     table = schema.get("resource_schemas" if kind == "resource" else "data_source_schemas", {})
     entry = table.get(type_name)
-    # Real provider schema JSON wraps each type as {"version": N, "block": {...}} -- confirmed
-    # live, not assumed (the same shape _reduce() below unwraps via entry.get("block")). The
-    # actual attributes/block_types detail this function exists to expose lives one level down.
+    # Real provider schema JSON wraps each type as {"version": N, "block": {...}} -- the same
+    # shape _reduce() below unwraps via entry.get("block"). The attributes/block_types detail
+    # this function exists to expose lives one level down, hence the .get("block").
     return entry.get("block") if entry is not None else None
 
 
 def _deprecated_attrs(block, prefix=""):
-    """Recursively walk attributes + nested block_types for anything marked deprecated --
-    verified live against real `terraform providers schema -json` output (attribute-level
-    `deprecated`/`deprecation_message`, not a resource-level flag)."""
+    """Recursively walk attributes + nested block_types for anything marked deprecated.
+
+    Terraform marks deprecation per attribute (`deprecated`/`deprecation_message`), never with a
+    resource-level flag, so the recursion is required -- a top-level scan misses nested blocks."""
     found = []
     for name, attr in (block.get("attributes") or {}).items():
         if attr.get("deprecated"):

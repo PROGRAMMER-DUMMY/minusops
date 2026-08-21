@@ -1,13 +1,15 @@
-"""
-knowledge_diff.py -- the structural-diff path: live provider schema -> a set of deterministic
-'schema' claims, ready to insert into knowledge_store. Reuses schema_watch._fetch_schema()
-(core/generation/schema_watch.py:90-132) directly rather than schema_watch.get_type_schema()
-(schema_watch.py:135-166): get_type_schema() discards the resolved provider version it gets back
-from _fetch_schema() (it unpacks `schema, _resolved_version = _fetch_schema(...)` and throws the
-version away), but knowledge_store's claims schema requires provider_version to be populated.
-Calling _fetch_schema() here means duplicating get_type_schema()'s three-line type-table lookup,
-but it is still the same single fetch mechanism -- no second fetch path, schema_watch.py itself
-untouched.
+"""Structural-diff path: live provider schema -> deterministic 'schema' claims for knowledge_store.
+
+Calls `schema_watch._fetch_schema()` directly rather than the tidier
+`schema_watch.get_type_schema()`, on purpose: get_type_schema() throws away the resolved provider
+version (`schema, _resolved_version = _fetch_schema(...)`), and knowledge_store's claims schema
+requires provider_version to be populated. The cost is duplicating get_type_schema()'s three-line
+type-table lookup below; the gain is one fetch mechanism, not two, with schema_watch.py untouched.
+
+Depends on: core/generation/schema_watch.py
+Shells out to: terraform (transitively, via schema_watch._fetch_schema -> `terraform init` +
+    `terraform providers schema -json`)
+Used by: core/generation/knowledge_degradation.py, tests/test_knowledge_diff.py
 """
 import datetime
 import tempfile

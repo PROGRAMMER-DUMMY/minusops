@@ -4,6 +4,12 @@ Explicit architecture accelerators.
 These are not automatic recommendations. They are reviewable starting points an operator can
 choose after requirements gathering, then edit before synthesis. The deploy gate still decides
 whether the resulting Terraform can proceed.
+
+Depends on: core/architecture/architecture_decision.py (as archdec),
+    core/architecture/requirements.py (as reqgate), core/reporting/runs.py,
+    core/architecture/architecture_model.py (lazily, inside lakehouse_decision)
+Shells out to: nothing
+Used by: core/reporting/minusctl.py, app/dashboard_app.py, tests/test_accelerators.py
 """
 import argparse
 import datetime

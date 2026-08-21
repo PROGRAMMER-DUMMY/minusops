@@ -1,14 +1,11 @@
-"""
-schema_lint.py — G2, the pre-write schema linter (docs/g2_scope.md).
+"""G2, the pre-write schema linter (docs/g2_scope.md).
 
-Gates `module_provenance.py`'s `pin` CLI action: before a maintainer's hand-edited (or
-MCP-assisted) module HCL is accepted as a new pinned version, this checks the module's actual
-resource/data-source type and attribute references against the REAL, LIVE provider schema
-(`terraform providers schema -json`) -- not a cached snapshot, not a prior baseline. This is
-what would have caught the exact class of break that motivated the generation-time-authoring
-pivot: `data.aws_region.name` deprecated in favor of `.region` on the AWS provider (verified
-live against the real, currently-resolving provider: 6.54.0 carries `name: deprecated=true`,
-`region` does not -- this repo's own modules already use the post-break `.region` form).
+Checks a module's actual resource/data-source type and attribute references against the REAL,
+LIVE provider schema (`terraform providers schema -json`) -- not a cached snapshot, not a prior
+baseline. It catches the class of break that motivated the generation-time-authoring pivot:
+`data.aws_region.name` is deprecated in favor of `.region` on the AWS provider (AWS provider
+6.54.0 carries `name: deprecated=true` and no such flag on `region`; this repo's modules already
+use the post-break `.region` form).
 
 Unlike schema_watch.py (a DIFF engine: old snapshot vs. new, no-ops without a prior snapshot),
 this is a single-point validity check against live-schema-now, on every single lint call, with
@@ -25,6 +22,14 @@ line -- HCL attribute-reference extraction, unknown/deprecated/type-mismatch cla
 the blocking verdict -- is net-new; schema_watch.py has no equivalent (it only ever diffs a
 resource's schema `version` int and deprecated-attribute *names* between two snapshots, never
 looks at what a module's own HCL actually sets or reads).
+
+Depends on: core/generation/modules.py (as module_registry), core/generation/module_provenance.py,
+    core/generation/schema_watch.py (_fetch_schema, _PROVIDER_PREFIX, _PROVIDER_SOURCE)
+Shells out to: terraform (`terraform init`, `terraform providers schema -json`) on every gate
+    call, reaching the Terraform Registry over the network
+Used by: core/generation/module_provenance.py (lazily, breaking the cycle),
+    core/generation/synthesizer.py (lazily), tests/test_schema_lint.py,
+    tests/test_teardown_regression_harness.py
 """
 import hashlib
 import json
@@ -81,9 +86,8 @@ def _scan_body(body, prefix=""):
 
     A `dynamic "name" { ... }` block's actual emitted attributes depend on evaluating its
     for_each expression -- not resolvable statically, so it is never descended into and is
-    always reported as unparseable rather than silently skipped (skipping would be exactly the
-    fail-open shape Probe A found and closed in G5: "couldn't parse -> treated as nothing to
-    check" is not the same as "confirmed nothing to check")."""
+    always reported as unparseable rather than silently skipped. Skipping would be a fail-open:
+    "couldn't parse, so treat it as nothing to check" is not "confirmed nothing to check"."""
     set_attrs = set()
     unparseable = []
     lines = body.splitlines()
@@ -97,12 +101,11 @@ def _scan_body(body, prefix=""):
             block_start_offset = sum(len(l) + 1 for l in lines[:i]) + line.index("{")
             end = _matching_brace(body, block_start_offset + 1)
             # +1: body[:end].count("\n") gives the line index the closing "}" lands ON, not the
-            # next unprocessed line -- for a block that opens AND closes on the same physical
-            # line (an inline empty block, e.g. `filter {}`), that's this very line's own
-            # index, which would re-enter this branch on the identical line forever. Confirmed
-            # by reproducing it directly: dogfooding modules/dq-great-expectations/main.tf's
-            # `filter {}` (an aws_s3_bucket_lifecycle_configuration rule with no filter
-            # criteria, valid real Terraform) hung indefinitely before this fix.
+            # next unprocessed line. For a block that opens AND closes on the same physical line
+            # (an inline empty block, e.g. `filter {}`), that is this very line's own index, and
+            # dropping the +1 re-enters this branch on the identical line forever. Not
+            # hypothetical: modules/dq-great-expectations/main.tf has a real `filter {}` on an
+            # aws_s3_bucket_lifecycle_configuration rule, and it hangs this loop outright.
             i = body[:end].count("\n") + 1
             continue
         block_m = _TOP_LEVEL_BLOCK.match(line)
@@ -204,11 +207,10 @@ def _infer_literal_shape(value_text):
 def _extract_assigned_values(body, prefix=""):
     """Parallel to _scan_body but keeps the raw RHS text per attribute, for the type-mismatch
     check. Recurses into nested blocks with the same dotted-prefix convention _scan_body and
-    _reduce_full/_walk_attributes both use (`versioning.enabled`, not bare `enabled`) -- an
-    earlier version of this function only skipped a nested block's header line without
-    descending, so a nested attribute's value got attributed to whatever *other*, unrelated
-    top-level attribute happened to share its bare name, which could type-check it against the
-    wrong schema entry entirely."""
+    _reduce_full/_walk_attributes both use (`versioning.enabled`, not bare `enabled`). Skipping a
+    nested block's header line without descending is not equivalent: the nested attribute's value
+    then gets attributed to whatever *other*, unrelated top-level attribute happens to share its
+    bare name, and gets type-checked against the wrong schema entry."""
     values = {}
     lines = body.splitlines()
     i = 0
@@ -261,10 +263,9 @@ def _object_fields(type_repr):
     "string", ...}]]`, not a block_types entry at all, even though the real HCL syntax for it
     is still the traditional repeatable `route { cidr_block = ... }` block (valid Terraform
     sugar for populating a collection-of-objects attribute). Returns the field dict, or None if
-    `type_repr` isn't (or doesn't wrap) an object shape -- verified live: an earlier version of
-    this function only ever looked at block_types, missing `route`/`ingress`/`egress` and
-    similar NestedType-encoded fields entirely, producing false-positive unknown_attribute
-    findings against real, valid, already-pinned modules/networking-vpc/main.tf HCL."""
+    `type_repr` isn't (or doesn't wrap) an object shape. Looking only at block_types misses
+    `route`/`ingress`/`egress` and every other NestedType-encoded field, which false-positives as
+    unknown_attribute against real, valid modules/networking-vpc/main.tf HCL."""
     if isinstance(type_repr, list) and len(type_repr) == 2:
         head, inner = type_repr
         if head == "object" and isinstance(inner, dict):
@@ -279,8 +280,8 @@ def _walk_attributes(block, prefix=""):
     schema_watch._deprecated_attrs' own recursion -- real schemas nest more than one level,
     e.g. aws_iam_policy_document's statement.principals.type, or aws_s3_bucket_server_side_
     encryption_configuration's rule.apply_server_side_encryption_by_default.sse_algorithm;
-    stopping at one level, as an earlier version of this function did, produced false-positive
-    unknown_attribute findings against real, valid, already-pinned module HCL). Also descends
+    stopping at one level false-positives as unknown_attribute against real, valid, already-
+    pinned module HCL). Also descends
     into object-shaped attributes (NestedType encoding, see _object_fields) the same way --
     two different real schema shapes for the same underlying idea (a nested, named group of
     fields), both must resolve to the same dotted-attribute-path lookup regardless of which
@@ -292,9 +293,9 @@ def _walk_attributes(block, prefix=""):
     a real, narrower scope than the block_types path, disclosed here rather than silently
     assumed equivalent (same disclosed limitation for both flags, not just deprecated).
 
-    `required` is captured verbatim from the live schema's own `required: true` flag (verified
-    live against a real fetch: present only on genuinely required attributes, e.g.
-    aws_dynamodb_table.name; absent -- never `false` -- otherwise). Enforcement (gate_content()
+    `required` is captured verbatim from the live schema's own `required: true` flag, which the
+    provider emits only on genuinely required attributes (e.g. aws_dynamodb_table.name) and
+    OMITS otherwise -- it is never present as `false`. Enforcement (gate_content()
     checking a required attribute was actually set) is deliberately scoped to top-level
     attributes only -- see gate_content()'s own comment for why nested required attributes are
     a named, disclosed boundary, not silently extended to."""
@@ -396,11 +397,11 @@ def gate_module(module_id):
 
 
 def gate_content(content, source_label):
-    """The real G2 linting entry point (docs/phase6_step1_authoring_scope.md section 2):
-    everything `gate_module()` used to do inline, from HCL-block extraction through the final
-    verdict, taking raw HCL text directly rather than reading it off disk first -- so
-    generation-time-authored content (not yet written to any `modules/` directory) gets the
-    exact same schema-content check a pinned module gets, with zero new lint logic. Returns:
+    """The real G2 linting entry point (docs/phase6_step1_authoring_scope.md section 2).
+
+    Takes raw HCL text rather than reading it off disk, so generation-time-authored content not
+    yet written to any `modules/` directory gets the exact same schema check a pinned module
+    gets, through the same code path. Returns:
 
         {"blocking": bool, "findings": [...], "warnings": [...], "schema_hash": str}
 

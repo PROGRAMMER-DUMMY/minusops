@@ -1,10 +1,19 @@
-"""
-knowledge_store.py -- bi-temporal SQLite store for the knowledge-layer spine.
+"""Bi-temporal SQLite store for the knowledge-layer spine.
 
 Claims coexist; nothing is ever overwritten. valid_from (when a fact became true in the real
 world), observed_at (when a source was actually fetched/read), and ingested_at (when the row
 was written here) are three DISTINCT timestamps -- collapsing any two of them breaks either the
 bi-temporal model or the freshness clause resolve() depends on (see resolve()'s own docstring).
+
+resolve() has a history of silent-wrong-answer bugs, all of the same shape: a comparison that
+looks equivalent to the one it replaced but is not. Treat every change to it as high-risk, and
+make a new test fail before the fix, not after.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing
+Used by: core/generation/knowledge_degradation.py, core/generation/knowledge_delegation.py,
+    core/generation/synthesizer.py (lazily), and the tests/test_knowledge_*.py and
+    tests/test_claim*.py suites
 """
 import datetime
 import hashlib
@@ -113,10 +122,9 @@ def _active_claims(conn, resource_type, attribute=None):
         # attribute -- insert_claim() genuinely supports attribute=None for claims about the
         # resource type as a whole (e.g. "this resource type is deprecated entirely"), and
         # that is the only sensible meaning of resolve(conn, resource_type) with no attribute.
-        # Omitting the attribute filter here previously pooled claims from unrelated attributes
-        # into one comparison, letting resolve() return a confident, silently wrong verdict --
-        # exactly the failure category the freshness clause exists to prevent (implementation-
-        # level review, 2026-07-18).
+        # Omitting the attribute filter here pools claims from unrelated attributes into one
+        # comparison, letting resolve() return a confident, silently wrong verdict -- exactly the
+        # failure category the freshness clause exists to prevent.
         rows = conn.execute(
             "SELECT * FROM claims WHERE resource_type = ? AND attribute IS NULL AND valid_until IS NULL",
             (resource_type,),
@@ -148,9 +156,9 @@ def invalidate_claim(conn, claim_id, *, valid_until, invalidated_by=None, invali
     by however large the gap between the real change and the recheck is) and invalidated_at is
     write-time audit time (defaults to now, same pattern as insert_claim()'s own ingested_at).
     valid_until has NO default specifically so a caller can never accidentally use wall-clock time
-    for both (the exact wrong-clock shape that produced resolve()'s bug #1; using observed_at here
-    instead of valid_from would have been a second, subtler instance of the same family -- ray's
-    review, 2026-07-19)."""
+    for both -- the wrong-clock shape behind resolve()'s silent-wrong-answer bugs. Passing the
+    superseding claim's observed_at here instead of its valid_from is the same mistake, one axis
+    over."""
     invalidated_at = invalidated_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
     conn.execute(
         "UPDATE claims SET valid_until = ?, invalidated_at = ?, invalidated_by = ? WHERE id = ?",
@@ -164,7 +172,7 @@ def _parse_ts(ts):
     objects. Raw string '>' is NOT safe here: datetime.now(tz).isoformat() emits '+00:00' while
     hand-written/external timestamps often use 'Z' -- for the identical instant these two strings
     are not equal and don't even sort correctly ('+' < 'Z'), which silently corrupts the one
-    comparison resolve()'s freshness clause depends on (ray's review, 2026-07-18).
+    comparison resolve()'s freshness clause depends on.
 
     FORMAT only -- a well-formed ISO string with no timezone designator parses cleanly here but
     produces a naive datetime. Awareness is a separate check: see _require_aware."""
@@ -175,9 +183,8 @@ def _require_aware(parsed, label):
     """Reject a naive datetime that already parsed cleanly via _parse_ts. A well-formed ISO
     string with no timezone designator (e.g. "2026-07-10T00:00:00") is fine by FORMAT but
     produces a naive datetime, and comparing that against the aware timestamps everywhere else
-    in this store raises TypeError deep inside resolve() (bug #9, final whole-step review,
-    2026-07-20). Call this on every timestamp entering the store from outside its own control,
-    after _parse_ts, before it's used in any comparison."""
+    in this store raises TypeError deep inside resolve(). Call this on every timestamp entering
+    the store from outside its own control, after _parse_ts, before any comparison uses it."""
     if parsed.tzinfo is None:
         raise ValueError(
             f"{label} must be timezone-aware -- every other timestamp in this store is aware, "
@@ -215,7 +222,7 @@ def resolve(conn, resource_type, attribute=None):
     Any non-schema source_type is treated uniformly (not just "web") -- an "agent_delegated"
     claim does not silently skip the freshness clause just because it isn't literally "web".
 
-    SCOPED AUTHORITY (Step 4): a delegated verdict (source_type="agent_delegated") becomes the
+    SCOPED AUTHORITY: a delegated verdict (source_type="agent_delegated") becomes the
     resolved winner via a dedicated early-return, BEFORE the schema/non-schema comparison below,
     when it is the UNIQUE newest-observed active claim AND the other currently-active claims are
     a subset-or-equal of what it adjudicated (recorded via record_delegation_verdict's
@@ -249,13 +256,12 @@ def resolve(conn, resource_type, attribute=None):
     schema_claims = [c for c in claims if c["source_type"] == "schema"]
     non_schema_claims = [c for c in claims if c["source_type"] != "schema"]
     if schema_claims and non_schema_claims:
-        # Bug #8 fix (ray's round-3 review, 2026-07-19): each side's "newest" used to be picked
-        # via max(..., key=parse_ts), a SINGLE row -- on a tie, max() returns whichever row is
-        # first in unspecified SQL row order. Now every claim tied for newest on EITHER side is
-        # collected into a cohort, and agreement requires ALL of them (not one arbitrarily-picked
-        # row per side) to share one identical normalized text. A single disagreeing claim inside
-        # a tied cohort now correctly falls through to the freshness comparison instead of being
-        # silently outvoted by whichever claim the row-order pick happened to favor.
+        # Cohorts, not max(..., key=parse_ts). Picking each side's "newest" as a SINGLE row means
+        # that on a tie, max() returns whichever row came first in unspecified SQL row order.
+        # Collecting every claim tied for newest on EITHER side and requiring ALL of them to share
+        # one identical normalized text keeps a single disagreeing claim inside a tied cohort
+        # falling through to the freshness comparison, instead of being silently outvoted by
+        # whichever claim the row-order pick happened to favor.
         newest_schema_ts = max(_parse_ts(c["observed_at"]) for c in schema_claims)
         newest_schema_claims = [c for c in schema_claims
                                  if _parse_ts(c["observed_at"]) == newest_schema_ts]

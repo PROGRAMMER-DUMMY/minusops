@@ -4,6 +4,11 @@ No-cloud demo generator.
 Creates a fresh run workspace, generates Terraform from the governed data
 pipeline blueprint, synthesizes a Terraform-like plan JSON, and renders reports.
 It never runs Terraform and never calls AWS.
+
+Depends on: core/generation/blueprints.py, core/generation/terraform_generator.py,
+    core/reporting/reporter.py, core/reporting/runs.py
+Shells out to: nothing
+Used by: core/reporting/minusctl.py, tests/test_demo.py
 """
 import argparse
 import json

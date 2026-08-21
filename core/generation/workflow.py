@@ -5,6 +5,11 @@ This is the safe entrypoint for agent-driven creation:
   request -> requirements record -> architecture decision -> governed Terraform generation
 
 It never runs terraform and never calls cloud APIs.
+
+Depends on: core/generation/intent_resolver.py, core/architecture/requirements.py (as reqgate),
+    core/reporting/runs.py
+Shells out to: nothing
+Used by: core/reporting/minusctl.py, tests/test_workflow.py, tests/test_minusctl.py
 """
 import argparse
 import json
