@@ -74,17 +74,33 @@ Still outstanding and **not** blocked by a decision: FR-06 (the boundary must ac
 
 ---
 
-## 5. Phase 2 relocation — why `.claude/agents/`
+## 5. Phase 2 — subagent manifests live in `.agents/subagents/`
 
-The plan specified `.agents/subagents/*.json`. That location is inert:
+The plan specified `.agents/subagents/`. An interim version placed them in `.claude/agents/`
+because that path is auto-discovered by Claude Code, whereas nothing loads `.agents/`
+programmatically. That optimised for one runtime at the cost of the product's own positioning.
 
-- Claude Code discovers subagents from `.claude/agents/*.md` (Markdown with YAML frontmatter). It never scans `.agents/`.
-- Nothing in this repo loads `.agents/` programmatically. Two tests read a `SKILL.md` as text to assert content; that is all. Skills there activate because `AGENTS.md` instructs the driving agent to read them — a prompt convention, not runtime discovery.
-- JSON is not the manifest format any CLI uses.
+`.agents/subagents/` is now canonical and the `.claude/` copy is deleted. Locked decision #1
+says an external agentic CLI drives MinusOps, and #4 says this ships as a tool others adopt --
+shipping Claude-Code-specific config as the only integration path contradicts both. A customer
+driving MinusOps with another CLI gets nothing from `.claude/`.
 
-Manifests are now transport-focused and encode the constraints that matter: never echo a webhook URL, never report `ok: True, sent: False` as delivered, a denied approval is a denial and is not retried, and `outlook-agent` may not state a cost figure it did not read from the generated workbook.
+The tradeoff, stated rather than glossed: these are no longer auto-dispatched. They activate
+the way `.agents/skills/` does, by an explicit instruction in `AGENTS.md` telling the driving
+agent to read them. Both `AGENTS.md` and `.agents/AGENTS.md` now carry that rule; without it
+the directory would be inert, which was the original objection to the location.
 
-**Known design debt:** the four manifests still bake routing policy into agent identity (`slack-agent` "handles P1 incidents"). Routing is a customer decision captured by `grill-me` pillar 7 — *who is paged for crashes, who for data quality, who for spend* — and `team_resolver.py` already resolves `slack_channel`, `teams_webhook_secret`, and `team_dl` per team from `configs/teams.yaml`. The three-tier taxonomy already exists in `governance-observability`'s SNS topics. The manifests should be transport-only with the tier→team→channel join in config. Not yet done.
+Manifests are transport-focused and encode the constraints that matter: never echo a webhook
+URL, never report `ok: True, sent: False` as delivered, a denied approval is a denial and is
+not retried, and `outlook-agent` may not state a cost figure it did not read from the
+generated workbook.
+
+**Known design debt:** the four still bake routing policy into agent identity (`slack-agent`
+"handles P1 incidents"). Routing is captured by `grill-me` pillar 7 -- who is paged for
+crashes, who for data quality, who for spend -- and `team_resolver.py` already resolves
+`slack_channel`, `teams_webhook_secret` and `team_dl` per team. The three-tier taxonomy exists
+in `governance-observability`'s SNS topics. The manifests should be transport-only with the
+tier/team/channel join in config. Not yet done.
 
 ---
 

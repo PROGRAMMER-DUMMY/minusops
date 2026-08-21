@@ -21,7 +21,26 @@ This document provides exhaustive context for all rules, guides, and skill manif
 
 ---
 
-## 3. Runtime & Artifact Directories (`.agents/`)
+## 3. Transport Subagent Manifests (`.agents/subagents/`)
+
+Four single-purpose manifests, each dispatching one message through `core/integrations/` and
+stopping. They are transport-only: they know how to reach a channel, not which events belong
+there. Routing is a customer decision captured by `grill-me` pillar 7 and resolved per team by
+`core/architecture/team_resolver.py`.
+
+- `slack-agent.md`: P1 pipeline incidents and plan-approval cards (interactive cards require a plan hash).
+- `teams-agent.md`: data-quality failures and quarantine alerts, as Adaptive Cards.
+- `outlook-agent.md`: executive FinOps email with the generated workbooks attached. May not state a cost figure it did not read from the artifact.
+- `confluence-agent.md`: living architecture pages. Publishes generated markdown; never composes its own.
+
+Canonical location. These are read by whichever agent runtime drives MinusOps, per the
+activation rule in `AGENTS.md` -- the same prompt-level convention `.agents/skills/` uses.
+A Claude-Code-specific copy under `.claude/agents/` was removed: two byte-identical copies
+drift, and the one nothing loads is the one nobody notices going stale.
+
+---
+
+## 4. Runtime & Artifact Directories (`.agents/`)
 
 - [`.agents/logs/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/.agents/logs): Directory storing tamper-evident audit logs (`audit.jsonl`), locks, health check reports, budget estimates, and per-directory plan-gate artifacts (`plan_gate/`).
 - [`.agents/reports/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/.agents/reports): Directory reserved for generated deployment and governance reports.

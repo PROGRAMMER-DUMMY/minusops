@@ -7,7 +7,7 @@ Every directory in this repository maintains a dedicated, file-by-file **`CONTEX
 
 ---
 
-## 🌲 Master Context Tree
+## Master Context Tree
 
 ```
 MinusOps (Workspace Root)
@@ -64,7 +64,7 @@ MinusOps (Workspace Root)
 
 ---
 
-## 🛠️ Operating Guide: How to Maintain & Refer to Context Files
+## Operating Guide: How to Maintain & Refer to Context Files
 
 ### 1. How to Refer to Context Files
 * **Before making changes**: Prior to modifying any code in a directory, read the corresponding `CONTEXT-[folder].md` file to understand all dependencies, failure modes, and safety invariants.
@@ -90,6 +90,6 @@ MinusOps (Workspace Root)
 
 ---
 
-## 🔗 Project Connections
+## Project Connections
 * **Current Status & Handoff**: See [`HANDOFF.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/HANDOFF.md) for live progress, active architecture decisions, and current execution milestones.
 * **Operating Rules**: See [`.agents/AGENTS.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/.agents/AGENTS.md) for non-negotiable workspace safety constraints.

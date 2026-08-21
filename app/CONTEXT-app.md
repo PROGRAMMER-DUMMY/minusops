@@ -18,7 +18,7 @@ The application reads configuration from environment variables and local project
 - **`DASH_HOST`**: Interface host binding (default: `127.0.0.1`). If set to a non-loopback host (e.g. `0.0.0.0`), token authentication is enforced.
 - **`MINUS_DASH_TOKEN`** / **`DASH_TOKEN`**: Shared bearer/cookie/query token required for non-local binds to enforce access control.
 - **`MINUS_DASH_DEFAULT_TAB`**: Default active UI tab upon initial load (`overview`, `control`, `optimization`, `reports`, or `readiness`; default: `overview`).
-- **`MINUS_CLOUD`**: Selects the active cloud provider via [`core/providers/base.py`](../core/providers/base.py) (default `aws`). Ambient cloud CLI credentials (e.g. `aws configure`) supply live account identity and Cost Explorer data.
+- **Cloud Provider Resolution**: Accesses AWS identity, Cost Explorer, and pricing catalogs via [`core/providers/base.py`](../core/providers/base.py) (`AWSProvider`), utilizing ambient credentials (`aws configure`, IAM roles, or SSO).
 
 #### 3. Outputs & HTTP Endpoints
 `dashboard_app.py` exposes the following HTTP endpoints via its underlying Flask server (`app.server`):

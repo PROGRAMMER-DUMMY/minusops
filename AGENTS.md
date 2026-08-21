@@ -28,6 +28,19 @@ Read these skill files when their trigger applies:
 - [`.agents/skills/grill-me/SKILL.md`](./.agents/skills/grill-me/SKILL.md) — **the mandatory front door for any build/create request**: gather full functional + non-functional requirements (one question at a time) before generating; also when the user asks to be grilled or to resolve a decision tree.
 - [`.agents/skills/architect/SKILL.md`](./.agents/skills/architect/SKILL.md) — after requirements are gathered: research current services/reference architectures, choose the best-fit, compose vetted modules (`core/generation/modules.py` + `core/generation/synthesizer.py`), and govern through the deploy gate. The path for any scenario the demo blueprint doesn't fit.
 
+Read these subagent manifests when a notification must be sent. Each dispatches exactly one
+message through `core/integrations/` and stops:
+
+- [`.agents/subagents/slack-agent.md`](./.agents/subagents/slack-agent.md) - P1 pipeline incidents and plan-approval cards.
+- [`.agents/subagents/teams-agent.md`](./.agents/subagents/teams-agent.md) - data-quality failures and quarantine alerts.
+- [`.agents/subagents/outlook-agent.md`](./.agents/subagents/outlook-agent.md) - executive FinOps email with the generated `.xlsx` attached.
+- [`.agents/subagents/confluence-agent.md`](./.agents/subagents/confluence-agent.md) - living architecture documentation pages.
+
+Three rules bind all four. Never accept, echo, or log a webhook URL or token: they are bearer
+credentials and the hook resolves them itself. A denied approval is a denial, not a failure,
+and is never retried. And `ok` is not `sent` - an unconfigured channel returns
+`{"ok": true, "sent": false}`, so reporting delivery on `ok` alone is a false green.
+
 If your agent runtime has explicit skill auto-discovery, these files may load automatically. If not, manually read the matching `SKILL.md` before taking action.
 
 ---
