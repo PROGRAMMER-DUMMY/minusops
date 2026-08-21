@@ -68,6 +68,9 @@ Documentation = "https://github.com/your-org/minusops/blob/main/AGENTS.md"
 packages = [
     "core", "core.providers",
     "core.generation", "core.architecture", "core.governance", "core.cost", "core.reporting",
+    # Not optional: finops_agent imports the Slack and Jira hooks at module scope, so a wheel
+    # without core.integrations fails on import, not on first notify.
+    "core.integrations",
 ]
 
 [tool.setuptools.package-data]

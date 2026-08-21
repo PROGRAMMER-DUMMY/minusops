@@ -10,20 +10,46 @@ Read / analysis path (safe, read-only):
 
 Action path (side effects — routed through the approval gate):
   --notify-slack / --notify-jira   with  --approval-mode {gatekeeper, auto-approve}
+
+Export path:
+  --export-excel  writes .xlsx workbooks locally; reaches no cloud and needs no approval
+
+The action path never mutates cloud infrastructure: the side effects are an outbound Slack
+webhook POST and a Jira payload written to disk (Jira is prepared, not submitted, until
+JIRA_BASE_URL / JIRA_TOKEN are wired).
+
+Neither send is implemented here. Both live in core/integrations/, which owns the transport
+and the approval gate; this module owns only the FinOps wording and the operator-facing exit
+codes. Approval still happens before any send — it moved into base_hook.gated(), it did not go
+away.
+
+Depends on: core/providers/base.py, core/integrations/slack_hook.py,
+    core/integrations/jira_hook.py (both of which reach core/governance/approval.py for the
+    gate), core/providers/aws.py (imported inside `cmd_correlate` — CloudTrail lookup is
+    AWS-specific and must not be a hard import on other clouds),
+    core/reporting/excel_finops_generator.py (imported lazily inside `cmd_export_excel`, so
+    the Excel writer is not loaded on the cost/anomaly path)
+Shells out to: AWS read-only through the provider abstraction — Cost Explorer / Cost
+    Anomaly Detection, resource tags, and `cloudtrail lookup-events`. Never a cloud CLI
+    directly, and never a mutating API. Also POSTs to SLACK_WEBHOOK_URL when notifying.
+Used by: nothing in-repo imports it for its behaviour; run directly
+    (`python core/reporting/finops_agent.py --cost`). tests/test_finops_agent.py imports it.
 """
 import os
 import sys
-import json
 import argparse
 import datetime
-import urllib.request
 
 _CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _sub in ("generation", "architecture", "governance", "cost", "reporting", "providers"):
+for _sub in ("generation", "architecture", "governance", "cost", "reporting", "providers",
+             "integrations"):
     sys.path.insert(0, os.path.join(_CORE_DIR, _sub))
 sys.path.insert(0, _CORE_DIR)
-from approval import request_approval          # noqa: E402
-from providers.base import get_provider        # noqa: E402
+from providers.base import get_provider                 # noqa: E402
+# Flat imports, matching the shim above: the hooks import `base_hook` flat too, and mixing in
+# `integrations.base_hook` would load a second copy of the module holding the approval gate.
+from slack_hook import send_slack_notification          # noqa: E402
+from jira_hook import create_change_ticket              # noqa: E402
 
 LOG_DIR = os.path.join(os.getcwd(), ".agents", "logs")
 
@@ -144,23 +170,18 @@ def cmd_notify_slack(approval_mode):
     if not summary:
         print(f"[SLACK] Nothing to send: {err}")
         return True
-    if not request_approval("send-slack-alert", summary["text"], approval_mode):
+    res = send_slack_notification({"text": summary["text"]}, approval_mode=approval_mode)
+    if res.get("reason") == "not_authorized":
         print("[SLACK] Not authorised - nothing sent.")
         return False
-    webhook = os.environ.get("SLACK_WEBHOOK_URL")
-    if not webhook:
+    if res.get("reason") == "not_configured":
         print("[SLACK] Approved, but SLACK_WEBHOOK_URL is not set - payload prepared, not sent.")
         return True
-    try:
-        req = urllib.request.Request(
-            webhook, data=json.dumps({"text": summary["text"]}).encode("utf-8"),
-            headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10)
+    if res.get("ok"):
         print("[SLACK] Alert delivered to the configured webhook.")
         return True
-    except Exception as e:
-        print(f"[SLACK] Send failed: {e}", file=sys.stderr)
-        return False
+    print(f"[SLACK] Send failed: {res.get('error')}", file=sys.stderr)
+    return False
 
 
 def cmd_notify_jira(approval_mode):
@@ -168,25 +189,34 @@ def cmd_notify_jira(approval_mode):
     if not summary:
         print(f"[JIRA] Nothing to file: {err}")
         return True
-    if not request_approval("create-jira-ticket", summary["text"], approval_mode):
+    # out_dir is passed explicitly rather than left to the hook's own default so this
+    # module's LOG_DIR stays the single place the FinOps ticket path writes to.
+    res = create_change_ticket(
+        project_key=os.environ.get("JIRA_PROJECT_KEY", "FINOPS"),
+        summary=f"[FinOps] Cost anomaly in {summary['service']} on {summary['date']}",
+        description=summary["text"],
+        out_dir=LOG_DIR,
+        filename=f"jira_ticket_{summary['anomaly_id']}.json",
+        approval_mode=approval_mode,
+        details=summary["text"],
+    )
+    if res.get("reason") == "not_authorized":
         print("[JIRA] Not authorised - no ticket prepared.")
         return False
-    os.makedirs(LOG_DIR, exist_ok=True)
-    ticket = {
-        "project_key": os.environ.get("JIRA_PROJECT_KEY", "FINOPS"),
-        "summary": f"[FinOps] Cost anomaly in {summary['service']} on {summary['date']}",
-        "description": summary["text"],
-        "priority": "High",
-    }
-    path = os.path.join(LOG_DIR, f"jira_ticket_{summary['anomaly_id']}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(ticket, f, indent=2)
-    print(f"[JIRA] Payload prepared at {path}. "
-          "Wire JIRA_BASE_URL / JIRA_TOKEN to submit automatically.")
-    return True
+    if res.get("reason") == "not_configured":
+        print(f"[JIRA] Payload prepared at {res['path']}. "
+              "Wire JIRA_BASE_URL / JIRA_TOKEN to submit automatically.")
+        return True
+    if res.get("ok"):
+        print(f"[JIRA] Ticket {res.get('issue_key')} created.")
+        return True
+    print(f"[JIRA] Ticket creation failed: {res.get('error')}", file=sys.stderr)
+    return False
 
 
 def cmd_export_excel(output_target):
+    # Lazy import: the Excel writer is only needed on this path, and the cost/anomaly
+    # commands must not pay for it.
     from excel_finops_generator import (
         generate_executive_project_summary_excel,
         generate_pipeline_detailed_ledger_excel,
@@ -199,7 +229,10 @@ def cmd_export_excel(output_target):
         return True
     
     if "project" in output_target.lower():
-        # Default project records
+        # ILLUSTRATIVE SAMPLE ROWS -- these dollar figures are made up, for demonstrating the
+        # workbook layout only. They are not Cost Explorer actuals and not BCM forecasts, and
+        # must never be presented as either. Wire this to provider.cost_by_service() before
+        # anyone treats the exported file as a real bill.
         project_records = [
             {
                 "domain": "Domain-Analytics",

@@ -10,6 +10,7 @@ import os
 
 import pytest
 
+import base_hook
 import finops_agent
 
 
@@ -116,9 +117,9 @@ def test_notify_slack_denied_returns_false_and_sends_nothing(monkeypatch, capsys
     provider = FakeProvider(anomalies_result=(
         [{"id": "a1", "date": "2026-06-15", "service": "Amazon EC2", "impact": 10.0}], None))
     monkeypatch.setattr(finops_agent, "get_provider", lambda: provider)
-    monkeypatch.setattr(finops_agent, "request_approval", lambda *a, **k: False)
+    monkeypatch.setattr(base_hook, "request_approval", lambda *a, **k: False)
     called = []
-    monkeypatch.setattr(finops_agent.urllib.request, "urlopen", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(base_hook.urllib.request, "urlopen", lambda *a, **k: called.append(1))
     assert finops_agent.cmd_notify_slack("gatekeeper") is False
     assert "Not authorised" in capsys.readouterr().out
     assert called == []  # never even attempted to send
@@ -128,7 +129,7 @@ def test_notify_slack_approved_without_webhook_prepares_but_does_not_send(monkey
     provider = FakeProvider(anomalies_result=(
         [{"id": "a1", "date": "2026-06-15", "service": "Amazon EC2", "impact": 10.0}], None))
     monkeypatch.setattr(finops_agent, "get_provider", lambda: provider)
-    monkeypatch.setattr(finops_agent, "request_approval", lambda *a, **k: True)
+    monkeypatch.setattr(base_hook, "request_approval", lambda *a, **k: True)
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     assert finops_agent.cmd_notify_slack("auto-approve") is True
     assert "not sent" in capsys.readouterr().out
@@ -138,7 +139,7 @@ def test_notify_jira_writes_real_ticket_payload(monkeypatch, tmp_path):
     provider = FakeProvider(anomalies_result=(
         [{"id": "a1", "date": "2026-06-15", "service": "Amazon EC2", "impact": 10.0}], None))
     monkeypatch.setattr(finops_agent, "get_provider", lambda: provider)
-    monkeypatch.setattr(finops_agent, "request_approval", lambda *a, **k: True)
+    monkeypatch.setattr(base_hook, "request_approval", lambda *a, **k: True)
     monkeypatch.setattr(finops_agent, "LOG_DIR", str(tmp_path))
 
     assert finops_agent.cmd_notify_jira("auto-approve") is True
@@ -153,7 +154,7 @@ def test_notify_jira_denied_writes_no_file(monkeypatch, tmp_path):
     provider = FakeProvider(anomalies_result=(
         [{"id": "a1", "date": "2026-06-15", "service": "Amazon EC2", "impact": 10.0}], None))
     monkeypatch.setattr(finops_agent, "get_provider", lambda: provider)
-    monkeypatch.setattr(finops_agent, "request_approval", lambda *a, **k: False)
+    monkeypatch.setattr(base_hook, "request_approval", lambda *a, **k: False)
     monkeypatch.setattr(finops_agent, "LOG_DIR", str(tmp_path))
 
     assert finops_agent.cmd_notify_jira("gatekeeper") is False

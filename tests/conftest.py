@@ -7,7 +7,8 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE = os.path.join(ROOT, "core")
 APP = os.path.join(ROOT, "app")
-CORE_SUBPACKAGES = ("generation", "architecture", "governance", "cost", "reporting", "providers")
+CORE_SUBPACKAGES = ("generation", "architecture", "governance", "cost", "reporting",
+                    "providers", "integrations")
 for path in (CORE, APP, *(os.path.join(CORE, sub) for sub in CORE_SUBPACKAGES)):
     if path not in sys.path:
         sys.path.insert(0, path)
