@@ -1,9 +1,9 @@
 """
-End-to-end pipeline proof: seed Bronze, run the job, query Gold (MINUS-113).
+End-to-end pipeline proof: seed Bronze, run the job, query Gold.
 
 A deployed stack that has never carried a byte is not a working pipeline, it is 30 resources
-that plan cleanly. The 2026-08-17 run provisioned everything, reported 100/100 readiness, and
-nobody noticed the Glue job crashed on its first argument -- because nothing ever ran it.
+that plan cleanly. A stack can provision completely, report full readiness, and still have a
+Glue job that crashes on its first argument, because nothing ever ran it.
 
 **This is the one part of `minusctl` that mutates AWS.** Everything else in that CLI is
 local-only by contract, so the default here is `plan`: it prints the exact commands and
@@ -11,14 +11,22 @@ changes nothing. `--execute` performs them, and every mutating step passes throu
 `approval.py` first (gatekeeper by default, fail-closed without a TTY) and lands in the audit
 log. That keeps AGENTS.md rule 1 intact rather than carving an exception into it.
 
-The three steps are the three things that were separately broken, in the order they break:
+The three steps are three independent failure modes, in the order they break:
 
   1. upload   -- Bronze is empty, so nothing downstream can be true
-  2. run job  -- the job exits on missing arguments (MINUS-109) or 403s on write (MINUS-108)
-  3. query    -- Athena has no catalog database or no rows (MINUS-110)
+  2. run job  -- the job exits on missing arguments, or 403s when it writes
+  3. query    -- Athena has no catalog database, or the table has no rows
 
 Step 3 failing after 1 and 2 pass is a real finding, not a flaky test: it means the transform
 ran and produced nothing queryable.
+
+Depends on: core/governance/approval.py, core/reporting/toolpath.py
+Shells out to: `terraform output -json` (read-only), and the `aws` CLI in **mutating**
+    ways under `--execute`: `s3 cp` (writes an object), `glue start-job-run` (starts a
+    billable job), `athena start-query-execution` (runs a query). Polling calls
+    (`glue get-job-run`, `athena get-query-execution|get-query-results`) are read-only.
+    Without `--execute` nothing is sent to AWS except `terraform output`.
+Used by: core/reporting/minusctl.py (`minusctl seed`), tests/test_seed_adopt.py
 """
 import argparse
 import json
@@ -144,8 +152,9 @@ def _run_job(job_name):
         state = run.get("JobRunState", "UNKNOWN")
         if state in ("SUCCEEDED", "FAILED", "TIMEOUT", "STOPPED"):
             if state != "SUCCEEDED":
-                # The error message is the finding. SystemExit means the paths were never
-                # wired (MINUS-109); AccessDenied means the role cannot write (MINUS-108).
+                # The error message IS the finding, so it is surfaced verbatim: SystemExit
+                # means the job's paths were never wired; AccessDenied means its role
+                # cannot write where it was told to.
                 raise SeedError(f"Glue job {job_name} finished {state}: "
                                 + (run.get("ErrorMessage") or "(no error message)"))
             return {"step": "run_job", "ok": True, "detail": f"{job_name} run {run_id} SUCCEEDED"}

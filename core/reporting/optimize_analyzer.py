@@ -4,21 +4,27 @@ HCL security / cost / observability scanner — the gate's policy layer.
 Per-resource analysis: rules that concern a specific resource (e.g. "every S3
 bucket needs a public-access-block") are evaluated against each resource block, so
 a directory with four buckets and one public-access-block correctly flags the three
-unprotected buckets — the previous whole-file substring approach missed that.
+unprotected buckets. Whole-file substring matching cannot see that and reports clean.
 
 Optionally merges findings from external policy engines (checkov / trivy) when
 present on PATH. Native SEC-* findings always block; external findings are
 advisory in dev mode and blocking in production policy mode.
 
-G7 (tracked in HANDOFF.md's gate taxonomy): tfsec is retired in favor of Trivy's `config`
-subcommand -- tfsec itself was archived upstream in favor of Trivy, which absorbed its
-Terraform misconfiguration ruleset (aquasecurity/tfsec README: "tfsec is joining Trivy").
-Running an archived scanner would mean this repo's own external-policy layer silently stops
-receiving new checks/CVE-style rule updates -- the same "verifier that quietly stops verifying"
-shape this session has repeatedly found and fixed elsewhere, just for a scanner instead of a
-gate. Trivy's real JSON output shape (`Results[].Misconfigurations[]`) was verified live against
-one of this repo's own real modules, not assumed from documentation, before writing the parser
-below.
+tfsec is deliberately NOT supported: it was archived upstream in favour of Trivy, which
+absorbed its Terraform misconfiguration ruleset (aquasecurity/tfsec README: "tfsec is
+joining Trivy"). Wiring an archived scanner back in would leave the external-policy layer
+looking active while it silently stops receiving new rules. The parser below matches Trivy's
+real `Results[].Misconfigurations[]` shape, verified against actual output rather than docs.
+
+Depends on: core/reporting/toolpath.py, imported lazily inside `run_external_scanners`
+    so the native scan stays import-free and usable on its own
+Shells out to: `checkov -d ... -o json`, `trivy config -f json ...`, `tflint --format json`
+    — all read-only static analysis of local files, and only when found on PATH. No cloud
+    CLI, no network calls of its own, no `terraform`.
+Used by: core/governance/plan_gate.py, core/governance/reflector.py,
+    core/reporting/adopt.py, core/reporting/doctor.py (EXTERNAL_SCANNERS),
+    core/reporting/reporter.py (lazy), app/dashboard_app.py,
+    tests/test_optimize_analyzer.py
 """
 import os
 import re
@@ -105,7 +111,7 @@ def scan_hcl_files(source_dir):
     blocks = resource_blocks(clean)
     findings = []
 
-    # ---- Per-resource rules (this is the fix for whole-file false negatives) ----
+    # ---- Per-resource rules (whole-file matching gives false negatives here) ----
     for rtype, name, body in blocks:
         addr = f"aws_s3_bucket.{name}"
         if rtype == "aws_s3_bucket":
@@ -266,12 +272,10 @@ def run_external_scanners(source_dir, required=False):
     trivy = toolpath.find_tool("trivy")
     if trivy:
         try:
-            # `trivy config` exits non-zero whenever it finds real misconfigurations (confirmed
-            # live -- exit 32 against a real module with genuine findings, valid JSON on stdout
-            # regardless) -- this is Trivy's normal "findings present" signal, not a run
-            # failure, so returncode is deliberately not checked here; only a genuinely
-            # unparseable/absent stdout (subprocess raising, or malformed JSON) counts as
-            # _scanner_error below.
+            # `trivy config` exits non-zero (e.g. 32) whenever it finds real misconfigurations,
+            # while still writing valid JSON to stdout. That is its normal "findings present"
+            # signal, not a run failure, so returncode is deliberately not checked; only
+            # absent or unparseable stdout counts as a _scanner_error.
             res = subprocess.run([trivy, "config", "-f", "json", source_dir],
                                  capture_output=True, text=True, timeout=120)
             data = json.loads(res.stdout or "{}")
@@ -288,7 +292,7 @@ def run_external_scanners(source_dir, required=False):
             findings.append(_scanner_error("trivy", msg, required))
             print(f"[OPTIMIZER] {msg}", file=sys.stderr)
 
-    # TFLint (MINUS-137) is a LINTER, not a policy engine: it catches provider-level
+    # TFLint is a LINTER, not a policy engine: it catches provider-level
     # correctness -- invalid instance types, deprecated arguments, unused declarations --
     # that a compliance scanner does not look for. That is why it is always advisory and
     # deliberately does NOT satisfy the production-mode requirement below; swapping checkov

@@ -1,5 +1,5 @@
 """
-Brownfield adoption: bring an existing Terraform directory under governance (MINUS-106).
+Brownfield adoption: bring an existing Terraform directory under governance.
 
 Enterprises do not start from an empty directory. They have Terraform that predates any of
 this, applied by hand, and the question is not "generate me a stack" but "what is in here, and
@@ -19,6 +19,12 @@ point; doing it automatically during a look-around would silently bless whatever
 including the wildcard IAM policy the scan is about to report.
 
 Nothing here touches AWS, runs Terraform, or modifies a single `.tf` file.
+
+Depends on: core/reporting/optimize_analyzer.py (scan + SKIP_DIRS + strip_comments),
+    core/governance/source_guard.py (baseline anchoring)
+Shells out to: nothing — no cloud CLI, no `terraform`, no network. It calls
+    optimize_analyzer's native scan only, never `run_external_scanners`.
+Used by: core/reporting/minusctl.py (`minusctl adopt`), tests/test_seed_adopt.py
 """
 import argparse
 import json

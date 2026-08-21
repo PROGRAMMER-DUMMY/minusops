@@ -1,6 +1,5 @@
 """
-Agent-first CLI diagnostics: fuzzy run resolution, stage interception, actionable errors
-(MINUS-157..160).
+Agent-first CLI diagnostics: fuzzy run resolution, stage interception, actionable errors.
 
 The reader of these messages is usually an agent, not a person scrolling a terminal. An agent
 cannot infer "run the previous step" from `FileNotFoundError: requirements.json` -- it needs
@@ -10,6 +9,13 @@ failed, why, and the literal command to run next.
 Kept out of `minusctl.py` on purpose. The lifecycle spans two entry points -- minusctl owns
 create/next/readiness, plan_gate owns plan/approve/apply -- and a prerequisite check that
 lives in only one of them can only intercept half the mistakes.
+
+Depends on: core/reporting/runs.py; core/governance/plan_gate.py, imported lazily inside
+    `missing_plan_prerequisite` so importing this module never drags in the gate
+Shells out to: nothing — no cloud CLI, no `terraform`, no network. It only reads the
+    run workspace and plan_gate's on-disk records.
+Used by: core/reporting/minusctl.py, core/governance/plan_gate.py,
+    tests/test_cli_diagnostics.py
 """
 import difflib
 import json
@@ -33,7 +39,7 @@ _MAX_SUGGESTIONS = 3
 _MAX_RECENT = 5
 
 
-# --- MINUS-160: the error shape ------------------------------------------------------------
+# --- error shape ---------------------------------------------------------------------------
 
 def format_agent_error(title, reason, fix_command, context=None):
     """Three-part failure: what failed, why, and the exact next command.
@@ -60,7 +66,7 @@ def fail(title, reason, fix_command, context=None, stream=None):
     return 2
 
 
-# --- MINUS-157: fuzzy run resolution -------------------------------------------------------
+# --- fuzzy run resolution ------------------------------------------------------------------
 
 def _stage_of(run):
     """Coarse lifecycle stage, from artifacts on disk rather than a recorded status field.
@@ -210,7 +216,7 @@ def resolve_run_or_fail(run_id=None, command="next"):
     return None, fail(f"Run workspace {run_id!r} not found.", reason, fix)
 
 
-# --- MINUS-158: prerequisite interception --------------------------------------------------
+# --- prerequisite interception -------------------------------------------------------------
 
 # (artifact relative to the run root, step number, human name, the command that produces it).
 # Ordered: the FIRST missing one is reported, because telling someone their approval is
@@ -305,7 +311,7 @@ def missing_plan_prerequisite(tf_dir):
     return None
 
 
-# --- MINUS-159: help text ------------------------------------------------------------------
+# --- help text -----------------------------------------------------------------------------
 
 def epilog(examples, requires=(), produces=(), next_step=""):
     """Subcommand epilog: what it needs, what it leaves behind, what to run next.

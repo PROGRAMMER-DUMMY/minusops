@@ -4,6 +4,14 @@ Plan Explorer for generated Terraform reports.
 Reads artifacts/reports/<plan-hash>/ or runs/<run-id>/reports/<plan-hash>/ manifest.json, plan.json, source_hashes.json,
 and optional source_snapshot/ files. Provides human-readable inspection commands
 for services, resources, IAM roles, file ownership, source drift, and diffs.
+
+Read-only over report bundles that already exist: it never re-plans, and never reaches the
+cloud. Everything it reports is derived from files a previous `reporter.py` run wrote.
+
+Depends on: core/cost/pricing_catalog.py (service names and file hints)
+Shells out to: nothing — no `terraform`, no cloud CLI, no network
+Used by: core/governance/plan_gate.py, core/reporting/minusctl.py,
+    core/reporting/reporter.py, app/dashboard_app.py, tests/test_plan_inspector.py
 """
 import argparse
 import difflib
@@ -35,10 +43,10 @@ SECRET_NAMES = {"backend.hcl"}
 def is_secret_prone(path):
     return Path(path).suffix in SECRET_SUFFIXES or Path(path).name in SECRET_NAMES
 
-# Service/file-hint naming now comes from core/cost/pricing_data/{aws_resource_map,free_resources}.json
-# via pricing_catalog — this used to be a second, independent copy of the same lookup table that
-# lives in bcm_pricing_calculator.py, and both copies missed the same resource types (MWAA,
-# Kinesis, SNS). One reviewed file now backs both consumers.
+# Service/file-hint naming comes from core/cost/pricing_data/{aws_resource_map,free_resources}.json
+# via pricing_catalog. Do not re-add a local lookup table: the duplicate that used to live here
+# and the one in bcm_pricing_calculator.py drifted apart and both missed the same resource types
+# (MWAA, Kinesis, SNS). One reviewed data file backs both consumers.
 
 
 def _rel(path):

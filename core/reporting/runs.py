@@ -1,8 +1,17 @@
 """
-Run workspace manager.
+Run workspace manager: creates and locates `runs/<run-id>/` workspaces.
 
-Generated Terraform and reports should live under runs/<run-id>/ instead of
-source-controlled template directories.
+Generated Terraform and reports live under `runs/<run-id>/` rather than in
+source-controlled template directories, so a run is disposable and two runs never
+overwrite each other. `RUNS_DIR` is resolved from the process CWD at import time, so
+everything here is relative to wherever the CLI was invoked.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing
+Used by: core/reporting/minusctl.py, core/reporting/cli_diagnostics.py,
+    core/generation/accelerators.py, core/generation/demo.py,
+    core/generation/synthesizer.py, core/generation/workflow.py,
+    app/dashboard_app.py, tests/test_runs.py and other test modules
 """
 import argparse
 import datetime

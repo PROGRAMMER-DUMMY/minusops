@@ -15,6 +15,23 @@ The plan-hash is the version key: one plan -> one immutable report folder. git v
 .tf; the plan-hash versions the report (manifest records the git commit linking them).
 
 Usage:  python core/reporting/reporter.py --dir path/to/terraform   (any Terraform dir with a tfplan)
+
+Reporting only: it reads an existing `tfplan` and never plans, applies, or destroys. The one
+way it reaches AWS is pricing — BCM payloads are always prepared locally, and when
+credentials allow, a free and deletable BCM pricing estimate object is created (approval
+stays on APPLY, not on pricing). No cost number is ever invented offline; an unpriced service
+is reported as unpriced rather than as $0.
+
+Depends on: core/reporting/plan_inspector.py, core/cost/bcm_pricing_calculator.py,
+    core/providers/base.py; and lazily, inside the functions that need them,
+    core/generation/modules.py, core/architecture/architecture_model.py,
+    core/reporting/optimize_analyzer.py, core/governance/verification_coverage.py
+Shells out to: `terraform show -json` (read-only) to materialize plan.json, and a headless
+    Chrome/Edge via the DevTools protocol to print the HTML reports to PDF. Reaches AWS
+    read-only plus BCM pricing-estimate creation, through bcm_pricing_calculator.
+Used by: core/governance/plan_gate.py (lazy), core/cost/bcm_pricing_calculator.py (lazy),
+    core/generation/demo.py, app/dashboard_app.py, tests/test_reporter.py,
+    tests/test_pdf_outline.py and other test modules
 """
 import os
 import sys
@@ -1152,7 +1169,8 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
                      + _df_embed_icon(c["type"], re.sub(r"\W", "", c["address"]), x - 24, band_y + 28, 48, MUTED_C, icons_dir)
                      + f'<text x="{x}" y="{band_y + 94}" text-anchor="middle" style="font:600 12px Inter,sans-serif;fill:{TEXT_C}">{esc(_fit_text(lab, 18))}</text></g>')
 
-    # Edge-semantics legend — each dashed style means ONE thing (they were overloaded).
+    # Edge-semantics legend. Each dashed style must mean exactly ONE thing; reusing a style
+    # for a second meaning makes every edge in the diagram ambiguous.
     ly = total_h - 18
     lt = f"font:500 11px Inter,sans-serif;fill:{MUTED_C}"
     P.append(
@@ -1697,8 +1715,8 @@ def _etag_drift_note(plan):
     """SSE-KMS bucket + aws_s3_object.etag = filemd5(...) is a known, harmless false-positive:
     S3 computes a different ETag for KMS-encrypted objects than the local filemd5() value, so
     Terraform shows a perpetual 'update' on etag alone even when the uploaded file hasn't
-    changed (confirmed via direct content diff during the 2026-07-04 sandbox test -- not real
-    drift). Flagged only when etag is the SOLE real difference: keys that are merely 'known
+    changed (confirmed by direct content diff -- not real drift). Flagged only when etag is
+    the SOLE real difference: keys that are merely 'known
     after apply' (e.g. version_id, a side effect of the same etag-triggered re-upload when the
     bucket has versioning enabled) are excluded from the comparison, not counted as extra
     drift -- without that exclusion this would never fire against a real plan."""
@@ -1731,11 +1749,12 @@ def _etag_drift_note(plan):
 
 
 def _architecture_sentence(manifest):
-    """Audit finding 2026-07-04: this used to be a static sentence describing the full
-    canonical lakehouse (S3 + Glue + Step Functions + Athena + ...) regardless of what was
-    actually composed. Build it from the real manifest instead -- if the manifest or its
-    module list is unavailable, say so plainly rather than falling back to a description
-    that might describe infrastructure that doesn't exist in THIS plan."""
+    """One sentence describing what THIS plan composes, built from the real manifest.
+
+    Never fall back to a canned description of the full canonical lakehouse (S3 + Glue +
+    Step Functions + Athena + ...): it reads as authoritative while describing
+    infrastructure that may not exist in this plan. When the manifest or its module list is
+    unavailable, say so plainly instead."""
     module_ids = (manifest or {}).get("modules") or []
     if not module_ids:
         return ("Composed module list unavailable for this report -- see Section 6 "
@@ -2597,12 +2616,11 @@ def _generate_report_bundle(dir_, data, template=None):
     except Exception:
         region = "us-east-1"
 
-    # 2026-07-06, Item 6 finding 2: a destroy plan's resource_changes are all actions=["delete"]
-    # -- every resource in it already has real cost evidence from when it was CREATED. Pricing
-    # them again here would derive a "creating this costs $X/mo" BCM estimate for infrastructure
-    # that's being torn down, which is backwards, not just unhelpful. Detect that shape from the
-    # same counts summarize() already computed and skip BCM entirely rather than publish a
-    # forecast for the wrong direction.
+    # A destroy plan's resource_changes are all actions=["delete"], and every resource in it
+    # already has real cost evidence from when it was CREATED. Pricing them again would derive
+    # a "creating this costs $X/mo" BCM estimate for infrastructure being torn down -- a
+    # forecast pointing the wrong direction. Detect that shape from the counts summarize()
+    # already computed and skip BCM entirely.
     is_destroy_plan = counts["delete"] > 0 and counts["create"] == 0 and counts["update"] == 0
 
     # BCM pricing: payloads are always prepared; the estimate itself is created
@@ -2669,8 +2687,9 @@ def _generate_report_bundle(dir_, data, template=None):
     with open(os.path.join(out, "cost.json"), "w", encoding="utf-8") as f:
         json.dump(cost, f, indent=2)
     source_hashes = plan_inspector.write_source_snapshot(dir_, out)
-    # One HTML per report: report.html is both the UI-served document and the print
-    # source for plan.pdf. (It used to be written twice, byte-identical, as plan.html too.)
+    # One HTML per report: report.html is both the UI-served document and the print source
+    # for plan.pdf. Deliberately not also written as plan.html -- that was a byte-identical
+    # second copy with nothing reading it.
     html_path = os.path.join(out, "report.html")
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(htmldoc)

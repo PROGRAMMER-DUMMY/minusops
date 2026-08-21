@@ -15,6 +15,21 @@ Every check reports one of three statuses:
 Discovery goes through `toolpath.find_tool` (which refreshes PATH from the Windows
 registry first), and the credential probe goes through the provider abstraction rather
 than shelling out to `aws` directly, per AGENTS.md §1.
+
+`doctor --fix` is the one part that changes anything, and only the LocalStack emulator:
+it starts a container, never restarts Docker itself, and returns the env var to set
+rather than setting it.
+
+Depends on: core/reporting/toolpath.py, core/reporting/optimize_analyzer.py
+    (EXTERNAL_SCANNERS), core/governance/plan_gate.py, core/governance/ephemeral_apply.py,
+    core/architecture/team_resolver.py, core/providers/base.py. Imported by package path
+    first, falling back to the flat sys.path bootstrap every other module here uses.
+Shells out to: `terraform version`, `aws --version`, `opa version`, `tflint --version`
+    (version probes only); `docker info|ps|start|run` under `--fix`; opens a TCP socket to
+    the LocalStack endpoint. AWS itself is reached read-only, via the provider's
+    `credential_posture()` (an `sts get-caller-identity`); nothing here mutates cloud state.
+Used by: core/reporting/minusctl.py (`minusctl doctor`), tests/test_doctor.py,
+    tests/test_finops_doctor_policy.py
 """
 import argparse
 import importlib.util
@@ -109,7 +124,7 @@ def _cli_check(name, tool, version_args, required, fix, min_version=None):
 
 
 def _lockfile_check():
-    """The seeded dependency lock file (MINUS-138). Without it every fresh run workspace
+    """The seeded dependency lock file. Without it every fresh run workspace
     re-downloads ~855 MB per provider instead of using the shared plugin cache, because with
     no lock entry Terraform must reach the registry for official checksums."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -178,7 +193,7 @@ def _scanner_check():
 
 
 def _teams_check():
-    """Team directory (MINUS-153). Absent is `ok`, not a warning: the directory is opt-in and
+    """Team directory. Absent is `ok`, not a warning: the directory is opt-in and
     a machine without one generates exactly as it did before. Reporting it as a problem would
     make every clean environment look degraded."""
     path = team_resolver.config_path()
@@ -240,12 +255,11 @@ def _emulator_check():
                   "skipped", f"Start one: {start}")
 
 
-# MINUS-154. Docker's CLI can hang indefinitely when the daemon is wedged -- observed on this
-# project 2026-08-18, where every Docker Desktop process was alive, the named pipe existed, the
-# WSL distro was Running, and `docker version` never returned. Every docker call here therefore
-# carries a hard timeout, and a timeout is reported as "unresponsive", never as "not installed":
-# they need completely different fixes and conflating them sends people to reinstall a working
-# Docker.
+# Docker's CLI hangs indefinitely when the daemon is wedged: every Docker Desktop process
+# alive, the named pipe present, the WSL distro Running, and `docker version` never returning.
+# So every docker call here carries a hard timeout, and a timeout is reported as
+# "unresponsive", never as "not installed" -- they need completely different fixes, and
+# conflating them sends people to reinstall a working Docker.
 _DOCKER_TIMEOUT_SECONDS = 20
 _LOCALSTACK_START_TIMEOUT_SECONDS = 90
 
@@ -319,10 +333,9 @@ def fix(checks):
     emulator = next((c for c in checks if c["name"] == "g9 emulator"), None)
     if emulator and emulator["status"] != "ok":
         outcome = start_local_emulator()
-        # The env var to set is RETURNED, not applied here. A diagnostic function that mutates
-        # process environment leaks into everything that runs after it -- caught directly:
-        # setting it inside fix() changed plan_gate's behaviour in three unrelated tests that
-        # happened to run later in the same session.
+        # The env var to set is RETURNED, not applied here. A diagnostic that mutates process
+        # environment leaks into everything that runs afterwards: setting it inside fix()
+        # silently changed plan_gate's behaviour for every later caller in the same process.
         results.append({"check": "g9 emulator",
                         "env": {plan_gate.G9_EMULATOR_ENV: "localstack"} if outcome["ok"] else {},
                         **outcome})

@@ -11,7 +11,20 @@ Generates TWO distinct Microsoft Excel (.xlsx) workbooks tailored for different 
    - Granular breakdown for every pipeline and cloud service component (Glue, S3, Athena, SFN, VPC).
    - Deep-dive root causes, resource metrics, and specific technical remediation steps.
 
-Built entirely using Python's standard library (zipfile + XML) without third-party dependencies.
+Built entirely using Python's standard library (zipfile + XML) without third-party
+dependencies. The .xlsx parts are assembled by hand, so `_build_styles_xml`'s index list and
+the numeric style ids used in the row builders must stay in step — changing one without the
+other silently produces a workbook that opens with the wrong formats, not an error.
+
+Callers supply the rows. `generate_both_enterprise_reports` is the exception: it carries
+hardcoded SAMPLE records so the module is runnable on its own. Those dollar figures are
+illustrative, not Cost Explorer actuals and not BCM forecasts.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing — no cloud CLI, no network. Writes .xlsx files locally.
+Used by: core/reporting/finops_agent.py (`--export-excel`, imported lazily inside
+    `cmd_export_excel`); also runnable directly, which writes both workbooks into
+    artifacts/reports/
 """
 
 import os
@@ -345,10 +358,14 @@ def generate_pipeline_detailed_ledger_excel(output_path, pipeline_records):
 def generate_both_enterprise_reports(reports_dir):
     """
     Helper to generate both standardized enterprise Excel workbooks into reports_dir.
+
+    The records below are ILLUSTRATIVE SAMPLES demonstrating the layout, not live cost data.
+    Replace them with provider-sourced figures before treating an exported workbook as a
+    statement of actual spend.
     """
     os.makedirs(reports_dir, exist_ok=True)
 
-    # 1. Project-level Rollup Records (1 row per project)
+    # 1. Project-level rollup records (1 row per project) -- sample data, see the docstring.
     project_records = [
         {
             "domain": "Domain-Analytics",
@@ -385,7 +402,7 @@ def generate_both_enterprise_reports(reports_dir):
         }
     ]
 
-    # 2. Granular Pipeline Records (Detailed breakdown by service)
+    # 2. Granular pipeline records (breakdown by service) -- sample data, see the docstring.
     pipeline_records = [
         {
             "domain": "Domain-Analytics",

@@ -4,12 +4,25 @@ Operator-facing CLI for MinusOps.
 This is a thin safe wrapper around the repo tools. Commands either create local run files,
 inspect local artifacts, or print the next safe command to run.
 
-ONE EXCEPTION, added with MINUS-113: `minusctl seed --execute` uploads a fixture, starts a
-Glue job, and runs an Athena query. It is the only command here that reaches AWS, it is
-opt-in (without `--execute` it prints the commands and changes nothing), and every side
-effect passes through `approval.py` first -- gatekeeper by default, fail-closed without a
-TTY, audited either way. `minusctl adopt` writes only `.minus/` inside the directory it is
-pointed at, and only with `--anchor`.
+ONE EXCEPTION: `minusctl seed --execute` uploads a fixture, starts a Glue job, and runs an
+Athena query. It is the only command here that mutates AWS, it is opt-in (without
+`--execute` it prints the commands and changes nothing), and every side effect passes
+through `approval.py` first -- gatekeeper by default, fail-closed without a TTY, audited
+either way. `minusctl doctor` reads AWS credentials (read-only) and can start a local
+LocalStack container with `--fix`. `minusctl adopt` writes only `.minus/` inside the
+directory it is pointed at, and only with `--anchor`.
+
+Depends on: core/architecture/{architecture_decision,architecture_model,requirements}.py,
+    core/generation/{accelerators,demo,workflow}.py, core/governance/{audit_chain,
+    rule_stages,source_guard,tf_validate}.py, core/reporting/{adopt,cli_diagnostics,doctor,
+    plan_inspector,runs,seed}.py, plus core/reporting/toolpath.py, core/governance/
+    approval.py and core/providers/base.py imported lazily inside the subcommands that
+    need them
+Shells out to: nothing directly. External processes are reached only through the modules
+    above -- `terraform` via tf_validate/seed, the `aws` CLI via seed (mutating, only with
+    `--execute`) and doctor (read-only), `docker` via `doctor --fix`.
+Used by: app/dashboard_app.py, tests/test_minusctl.py, tests/test_doctor.py,
+    tests/test_cli_diagnostics.py
 """
 import argparse
 import json
@@ -49,7 +62,8 @@ def _json_or_text(data, as_json, text):
 def _latest_run_or_exit():
     run = runs.latest_run()
     if not run:
-        # MINUS-157/160: `no run workspaces found` told an agent nothing it could act on.
+        # A bare `no run workspaces found` tells an agent nothing it can act on, so the
+        # three-part agent error is used even here.
         raise SystemExit(cli_diagnostics.format_agent_error(
             "No run workspaces exist yet.",
             "Nothing has been created in runs/ on this machine.",
@@ -58,11 +72,11 @@ def _latest_run_or_exit():
 
 
 def _run_by_id_or_latest(run_id=None, command="next"):
-    """Resolve a run id, or exit with a suggestion (MINUS-157).
+    """Resolve a run id, or exit with a suggestion.
 
-    Still SystemExit rather than a return code: every call site here treats an unresolvable
-    run as fatal, and threading an error code through them all would change a dozen callers
-    to fix a message. What changed is the MESSAGE -- a bare `run not found: <typo>` gives an
+    SystemExit rather than a return code: every call site here treats an unresolvable run as
+    fatal, so threading an error code through them all would rewrite a dozen callers to fix a
+    message. The message is the part that matters -- a bare `run not found: <typo>` gives an
     agent nothing to do next.
     """
     # `runs/<id>` is what our own error output shows and what an operator copies from a
@@ -101,7 +115,7 @@ def _run_by_id_or_latest(run_id=None, command="next"):
         f"Run workspace {run_id!r} not found.", reason, fix, context))
 
 
-# MINUS-158. up_to = the last lifecycle step this subcommand genuinely depends on.
+# up_to = the last lifecycle step this subcommand genuinely depends on.
 # `decision` deliberately needs only step 1: it is the command that WRITES step 2.
 _STAGE_REQUIREMENTS = {
     "validate": 3, "conformance": 3, "readiness": 3, "package": 3, "prove": 3,
@@ -469,11 +483,11 @@ def _readiness(run):
     latest = _latest_report_details(reports)
     latest_path = Path(latest["path"]) if latest.get("path") else None
     conformance = _conformance_for_run(run, reports)
-    # The workspace must contain REAL Terraform content — layout-agnostic (module
-    # composition and flat blueprints are both legitimate), but an agent once passed the
-    # old presence-only check with one-line comment stubs, so: (a) the root files must
-    # collectively declare infrastructure + provider + variables, and (b) no root .tf
-    # file may be a contentless stub (comments/blanks only).
+    # The workspace must contain REAL Terraform content. Layout-agnostic (module composition
+    # and flat blueprints are both legitimate), but a presence-only check passes on one-line
+    # comment stubs, so: (a) the root files must collectively declare infrastructure +
+    # provider + variables, and (b) no root .tf file may be a contentless stub
+    # (comments/blanks only).
     import re as _re
     _BLOCK_RE = _re.compile(r'^\s*(resource|module|data|variable|output|provider|locals|terraform)\b', _re.M)
 
@@ -870,7 +884,7 @@ def _prove(run):
 
 
 def _rich(parser, examples, requires=(), produces=(), next_step=""):
-    """Attach a copy-pasteable epilog to a subcommand parser (MINUS-159)."""
+    """Attach a copy-pasteable epilog to a subcommand parser."""
     parser.epilog = cli_diagnostics.epilog(examples, requires, produces, next_step)
     parser.formatter_class = argparse.RawDescriptionHelpFormatter
     return parser
@@ -1136,9 +1150,9 @@ def main(argv=None):
         tf_dir = _terraform_dir(args)
         if args.action in {"baseline", "refresh"}:
             if args.action == "refresh":
-                # Re-baselining blesses manual edits to GENERATED code — that must be an
-                # explicit, attributable act, not a rubber stamp (an agent once stamped
-                # its own edits six times unchallenged).
+                # Re-baselining blesses manual edits to GENERATED code. That must be an
+                # explicit, attributable act: without the acknowledgment an agent can stamp
+                # its own edits repeatedly, unchallenged.
                 if not args.ack_manual_edits:
                     print("guard refresh re-baselines manual edits to generated Terraform. "
                           "State why: --ack-manual-edits \"<who reviewed the diff and why the "
