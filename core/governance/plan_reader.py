@@ -39,6 +39,13 @@ regression to change post-close); a shadow/advisory reader (like G6's) treats it
 managed to check." This module does not force those two policies to converge -- it exposes the
 raw fact (`resource_changes` present vs. absent vs. wrong-typed) and a `treat_absent_as_error`
 flag so each caller keeps its own already-proven policy.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing -- it parses `terraform show -json` output, it never runs terraform
+Used by: core/architecture/architecture_model.py, core/architecture/intent_assertions.py,
+    core/governance/address_churn.py, core/governance/cloud_drift.py,
+    core/governance/destructive_change_gate.py, core/governance/ephemeral_apply.py,
+    core/governance/verification_coverage.py
 """
 
 

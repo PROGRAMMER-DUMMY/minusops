@@ -22,6 +22,12 @@ Usage as a library:
 Usage from the CLI (for testing / scripting):
     python approval.py --action send-slack --details "..." --mode gatekeeper
     # exit code 0 = approved, 1 = denied
+
+Depends on: audit_chain, authz
+Shells out to: nothing
+Used by: core/cost/bcm_pricing_calculator.py, core/integrations/base_hook.py (the single
+    gate for every outbound integration hook, and therefore for finops_agent's notify path),
+    core/reporting/seed.py, core/reporting/minusctl.py (lazy import)
 """
 import os
 import sys

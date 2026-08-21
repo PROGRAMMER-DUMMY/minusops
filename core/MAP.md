@@ -12,6 +12,7 @@ core/
   governance/    verify -> plan -> approve -> apply, plus the audit trail
   cost/          AWS BCM is the only source of a reportable number
   reporting/     turns a plan into something a human can read and run
+  integrations/  approval-gated outbound hooks (Slack, Teams, SMTP, Confluence, Jira)
   providers/     one CloudProvider interface per cloud (aws implemented; azure/gcp scaffolds)
 ```
 
@@ -91,11 +92,14 @@ generation/  --> architecture/, governance/, cost/(none), reporting/
 architecture/ --> generation/ (modules.py only)
 governance/  --> reporting/ (plan_inspector, toolpath, reporter — lazy), cost/ (coverage_audit — lazy), providers/
 cost/        --> governance/ (approval), reporting/ (toolpath, reporter — lazy), providers/
-reporting/   --> cost/ (bcm_pricing_calculator, pricing_catalog), governance/ (approval, and via
+reporting/   --> integrations/ (finops_agent's notify path), cost/ (bcm_pricing_calculator,
+                  pricing_catalog), governance/ (approval, and via
                   minusctl.py: audit_chain, source_guard, tf_validate), architecture/ (via
                   minusctl.py: architecture_decision, requirements; via reporter.py lazy:
                   architecture_model), generation/ (via minusctl.py: accelerators, demo,
                   workflow; via reporter.py lazy: modules), providers/
+integrations/ --> governance/ (approval — the gate every hook sends through), providers/
+                  (aws.run_aws, lazy, only for a Secrets Manager ARN)
 providers/   --> reporting/ (toolpath, lazy), cost/ (pricing_catalog, lazy)
 ```
 
@@ -137,6 +141,11 @@ This puts every subpackage directory directly on `sys.path`, so `import toolpath
 `from providers.base import get_provider` still resolves because `core/` itself (the parent of
 `providers/`) is on the path too. `tests/conftest.py` and `app/dashboard_app.py` do the same
 thing once, centrally, for every test/dashboard import.
+
+`integrations/` is appended to that tuple by the two files that import a hook flat
+(`reporting/finops_agent.py` and `tests/conftest.py`). Import the hooks flat, not as
+`integrations.slack_hook`: the hooks import `base_hook` flat, and the package form would load a
+second copy of the module that owns the approval gate.
 
 **If you add a new file with a bare cross-subpackage import, copy this block in** (see
 `plan_gate.py` or `bcm_pricing_calculator.py` for a live example). A file whose only local

@@ -1,5 +1,5 @@
 """
-Team directory resolver (MINUS-153).
+Team directory resolver.
 
 `--owner` used to be a free-text string that landed in a tag and nowhere else. Once state keys
 and deploy roles are scoped per team, that string starts deciding where state lives and which
@@ -17,6 +17,14 @@ What the id reaches, and why it is validated:
 Both are security boundaries. An id containing `/` or `..` would walk out of its own state
 prefix, and one containing a wildcard would widen the role pattern it is substituted into, so
 the charset is enforced here rather than trusted from a config file or a CLI flag.
+
+Depends on: nothing in-repo (stdlib only). PyYAML is an OPTIONAL lazy import inside
+    load_directory() -- its absence means "not configured", never an error. Reads
+    configs/teams.yaml, or $MINUS_TEAMS_CONFIG when set.
+Shells out to: nothing. Role matching is string work against an ARN the caller already has; no
+    STS or IAM call is made here.
+Used by: core/generation/synthesizer.py, core/governance/plan_gate.py, core/reporting/doctor.py,
+    tests/test_team_isolation.py
 """
 import os
 import re
@@ -108,7 +116,7 @@ def resolve(team_id, path=None):
 
 
 def state_key(team_id, workload_id):
-    """`teams/<team_id>/<workload_id>/terraform.tfstate` (MINUS-141).
+    """`teams/<team_id>/<workload_id>/terraform.tfstate`.
 
     Both segments are validated, not just the team: a workload id is equally operator-supplied
     and lands in the same key, so a traversal there escapes the team prefix just as effectively.

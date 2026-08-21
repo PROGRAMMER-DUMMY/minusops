@@ -28,6 +28,8 @@ MinusOps (Workspace Root)
 │   │   └── CONTEXT-cost.md                 # BCM Pricing Calculator, catalog resolution & pricing audits
 │   ├── reporting/
 │   │   └── CONTEXT-reporting.md            # minusctl CLI, reporter, optimize_analyzer & finops_agent
+│   ├── integrations/
+│   │   └── CONTEXT-integrations.md         # Approval-gated outbound hooks: Slack, Teams, SMTP, Confluence, Jira
 │   └── providers/
 │       └── CONTEXT-providers.md            # CloudProvider contract, AWS implementation & cloud scaffolds
 │
@@ -50,7 +52,7 @@ MinusOps (Workspace Root)
 │   └── CONTEXT-examples.md                 # IAM trust policies & BCM usage profile examples
 │
 ├── tests/                                  # AUTOMATED TEST SUITE
-│   └── CONTEXT-tests.md                    # 76 pytest modules categorized by domain
+│   └── CONTEXT-tests.md                    # pytest suite, categorized by domain
 │
 ├── .github/                                # CI / PR AUTOMATION
 │   ├── actions/pr-reviewer/action.yml      # Composite PR reviewer (plan + scan + cost comment)

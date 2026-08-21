@@ -12,6 +12,12 @@ evidence: a reviewer can prove the trail has not been altered since it was writt
 
 All MinusOps components (plan_gate, approval, audit_logger) append through here so
 there is a single, continuous chain across the whole control plane.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing
+Used by: core/governance/approval.py, core/governance/audit_logger.py,
+    core/governance/ephemeral_apply.py, core/governance/plan_gate.py,
+    core/generation/synthesizer.py, core/reporting/minusctl.py
 """
 import argparse
 import errno
@@ -58,59 +64,44 @@ def last_hash(path):
         return GENESIS
 
 
-# REAL BUG FIXED (2026-07-12), root-caused and reproduced live before changing anything (see
-# docs/audit_chain_lock_fix_scope.md): the prior design created the lock sidecar via
-# `os.open(path, O_CREAT|O_EXCL)` and deleted it in __exit__ via `os.remove()`. On Windows, a
-# concurrent acquire attempt racing that delete can get `PermissionError(13, 'Permission
-# denied')` from the CREATE call instead of either succeeding or raising `FileExistsError` --
-# NTFS's delete-then-recreate semantics for the same path have no equivalent to POSIX's atomic
-# unlink-while-open. Confirmed directly: 852/4800 cycles in a tight repro, and the real
-# 8-thread/15-append test failed 2/8 consecutive local runs with this exact signature, matching
-# real CI failures byte-for-byte. The old retry loop only caught FileExistsError, so this
-# PermissionError propagated straight out of append() as a hard, unhandled exception.
+# LOCK DESIGN -- three constraints, each of which caused a real failure when violated.
 #
-# FIX: remove the delete-recreate cycle entirely rather than widen what's caught. The lock
-# sidecar is now created once and NEVER deleted; acquire/release toggle an OS-native advisory
-# region lock on that persistent, reopened-each-time file (`fcntl.flock` on POSIX, `msvcrt.
-# locking` on Windows) instead of the file's mere existence. There is no longer a delete window
-# for Windows to race against, so there is nothing to catch a wrong error from.
+# 1. The lock sidecar is created once and NEVER deleted. Locking by file EXISTENCE
+#    (`os.open(O_CREAT|O_EXCL)` on acquire, `os.remove()` on release) is broken on Windows: an
+#    acquire racing the delete gets `PermissionError(13)` from the CREATE call instead of
+#    `FileExistsError`, because NTFS has no equivalent to POSIX's atomic unlink-while-open.
+#    Mutual exclusion comes from an OS-native advisory REGION lock on the persistent,
+#    reopened-each-time file (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows). Do not
+#    reintroduce a delete-on-release: there would again be a window for Windows to race.
 #
-# This does NOT broadly catch PermissionError (that would trade a fail-loud crash for a
-# fail-open hang on a genuine, non-transient permission denial -- strictly worse for a
-# tamper-evidence lock). Three outcomes are kept structurally distinct:
-#   1. Can't even open the lock file (bad directory, real ACL denial) -- raises immediately,
-#      outside the retry loop, never caught here.
-#   2. The region is held by another writer right now -- the ONLY retried case, matched by a
-#      narrow, single-cause signal per platform: `BlockingIOError` from `fcntl.flock(...,
-#      LOCK_NB)` (POSIX's own contention signal, verified against its documented semantics),
-#      or `OSError` with `errno == EACCES` specifically from `msvcrt.locking(..., LK_NBLCK)`
-#      (confirmed empirically on real Windows -- this is that call's own specific, documented
-#      "already locked" signal, not a generic permission error; verified directly that a
-#      DIFFERENT OSError would NOT be swallowed by this narrow check).
-#   3. Anything else -- re-raised immediately, never retried.
+# 2. Do NOT broadly catch PermissionError. That trades a fail-loud crash for a fail-open hang
+#    on a genuine, non-transient denial -- strictly worse for a tamper-evidence lock. Three
+#    outcomes stay structurally distinct:
+#      a. Cannot open the lock file at all (bad directory, real ACL denial) -- raises
+#         immediately, outside the retry loop, never caught here.
+#      b. The region is held by another writer right now -- the ONLY retried case, matched by
+#         a narrow, single-cause signal per platform: `BlockingIOError` from `fcntl.flock(...,
+#         LOCK_NB)`, or `OSError` with `errno == EACCES` specifically from
+#         `msvcrt.locking(..., LK_NBLCK)`. Each is that call's own documented "already locked"
+#         signal; a different OSError must not be swallowed by the check.
+#      c. Anything else -- re-raised immediately, never retried.
 #
-# Belt-and-suspenders intra-process threading.Lock, not assumed unnecessary: this session's own
-# dev environment is Windows-only, so `fcntl.flock`'s open-file-description semantics across
-# threads within one process (each opening its own fd) could not be empirically verified here
-# the way `msvcrt.locking`'s thread behavior was (confirmed directly: 12 threads x 200
-# non-atomic increments through msvcrt.locking, zero races). Rather than assume flock() behaves
-# the same way on a platform this session cannot test, intra-process mutual exclusion is
-# guaranteed independently via a real threading.Lock per resolved lock path, so correctness
-# never depends on that unverified assumption holding on POSIX.
+# 3. The intra-process threading.Lock is not redundant with the OS lock. `fcntl.flock`'s
+#    open-file-description semantics across threads in one process (each opening its own fd)
+#    were never verified on POSIX here, so intra-process exclusion is guaranteed independently
+#    by a real threading.Lock per resolved lock path rather than assumed from flock().
 #
-# Crashed-writer behavior CHANGES for the better: OS-level advisory locks are released by the
-# kernel the moment the holding process's file descriptors are torn down -- including a crash or
-# kill, not just a clean exit (confirmed directly: killing a real subprocess mid-lock, a fresh
-# acquire attempt afterward succeeds immediately, no manual `.lock` file cleanup needed). The
-# old "remove the .lock file manually if a prior writer crashed" instruction no longer applies.
+# A crashed writer needs no cleanup: the kernel releases an advisory lock when the holder's
+# file descriptors are torn down, crash or kill included. Never add a "delete the stale .lock
+# file by hand" instruction -- there is no stale state to delete.
 
 _thread_locks_guard = threading.Lock()
 _thread_locks = {}
 
 
 def _thread_lock_for(path):
-    """One threading.Lock per resolved lock path, process-wide -- see the module-level note
-    above on why this is not assumed redundant with the OS-level lock."""
+    """One threading.Lock per resolved lock path, process-wide -- see constraint 3 in the
+    LOCK DESIGN note above on why this is not redundant with the OS-level lock."""
     with _thread_locks_guard:
         lock = _thread_locks.get(path)
         if lock is None:
@@ -121,14 +112,14 @@ def _thread_lock_for(path):
 
 class _Contended(Exception):
     """Internal sentinel: the lock region is held by someone else right now. Always retried
-    until the deadline -- never confused with a genuine failure to acquire (see module note)."""
+    until the deadline -- never confused with a genuine failure to acquire (LOCK DESIGN 2)."""
 
 
 class _AppendLock:
     """Cross-platform mutual-exclusion lock for append(): a threading.Lock for intra-process
     safety, plus an OS-native advisory region lock (fcntl.flock / msvcrt.locking) on a
-    persistent, never-deleted sidecar file for inter-process safety. See the module-level
-    comment above `_thread_locks_guard` for the full rationale and the bug this replaced."""
+    persistent, never-deleted sidecar file for inter-process safety. See the LOCK DESIGN note
+    above `_thread_locks_guard` for the three constraints this shape has to satisfy."""
 
     def __init__(self, path):
         self._lock_path = path + _LOCK_SUFFIX
@@ -147,11 +138,9 @@ class _AppendLock:
             self._file = open(self._lock_path, "a+b")
             if os.name == "nt":
                 # msvcrt.locking locks a byte range starting at the current file position and
-                # needs a byte to exist there -- direct testing on this session's Windows
-                # machine showed CRT auto-extension already makes this work on a genuinely
-                # empty file, but this write is kept as a defensive guarantee across Windows/
-                # Python versions this session could not test, not because it was proven
-                # necessary here.
+                # needs a byte to exist there. CRT auto-extension covers the empty-file case on
+                # the Windows/Python versions tested; this write is a defensive guarantee for
+                # the ones that were not, so do not remove it as dead code.
                 self._file.seek(0, os.SEEK_END)
                 if self._file.tell() == 0:
                     self._file.write(b"\0")

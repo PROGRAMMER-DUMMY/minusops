@@ -21,6 +21,10 @@ partial reverts and fire on unrelated edits in the same resource.
 Never raises. A malformed drift entry is counted and reported, never allowed to take down a
 plan -- the gate failing closed on its own advisory reader would be worse than the blind spot
 it replaces.
+
+Depends on: plan_reader
+Shells out to: nothing
+Used by: core/governance/plan_gate.py
 """
 import plan_reader
 

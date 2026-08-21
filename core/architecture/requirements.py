@@ -11,42 +11,43 @@ Required functional fields: goal, system_class, at least one functional capabili
 Required non-functional axes (value or "deferred: <reason>"): latency, scale, availability,
 retention, security, budget.
 
-Phase 7 Item 3 decision (docs/phase7_generation_engine_plan.md, 2026-07-15): branch (b),
-symbolic/audit-only, WITH a named carve-out -- not a blanket "this schema is decorative." Field-
-by-field verification (every downstream reader grepped, not assumed) found the schema does three
-real jobs, only one of which is "feeds a generator":
+**Most of this schema is deliberately audit-only, and that is not a bug to fix.** A
+field-by-field check of every downstream reader found the record does three jobs, only one of
+which is "feeds a generator":
 
-  1. Forces the grill-me interview to actually happen -- validate()'s fail-closed gate means
+  1. It forces the grill-me interview to happen at all -- validate() is fail-closed, so
      generation cannot proceed on a vague, ungathered request.
-  2. Is audit evidence that a human answered the NFR questions on the record -- including, via
-     is_deferred()/MAX_FREE_NFR_DEFERRALS, that deferring an axis was a stated decision, not an
-     omission. A field doing THIS job is load-bearing for human review while staying inert to
-     machines, and that is not a defect -- deferral_signoff is the clearest case (exists so a
-     human is on record accepting deferred axes; its job is done the moment it's written, nothing
-     downstream should ever need to read it back). Same reasoning applies to `stakeholders`.
-  3. Supplies exactly two real generation inputs today: `non_functional.budget` (parse_budget_usd,
-     wires governance-observability's guardrail) and `data_pipeline.data_volume` (parse_daily_gb,
-     the S3 usage estimate + daily_data_gb module wiring). Both were wireable with a plain regex
-     because both are bounded, numeric answers -- no text-understanding required.
+  2. It is audit evidence that a human answered the NFR questions on the record -- including,
+     via is_deferred()/MAX_FREE_NFR_DEFERRALS, that deferring an axis was a stated decision
+     rather than an omission. Such a field is load-bearing for human review while staying inert
+     to machines. `deferral_signoff` is the clearest case: it exists so a human is on record
+     accepting deferred axes, its job is finished the moment it is written, and nothing
+     downstream should ever read it back. `stakeholders` is the same.
+  3. It supplies exactly two generation inputs today: `non_functional.budget` (parse_budget_usd,
+     wiring the governance-observability guardrail) and `data_pipeline.data_volume`
+     (parse_daily_gb, the S3 usage estimate + daily_data_gb module wiring). Both are wireable
+     with a plain regex because both are bounded, numeric answers.
 
-Why not branch (a) (wire the rest of the schema into generation) now: every field left inert
-either needs real text-understanding (`goal`, `functional`, `constraints` -- free text, no
-structured signal extractable without NLP) or is a plausible-but-unbuilt BOUNDED signal. Building
-several bounded extractors plus accepting NLP work now would mean designing intake for a
-generator that doesn't exist and whose input contract isn't known yet -- and the free-text fields
-need exactly the text-understanding item 5's authoring mechanism itself IS, so wiring them ahead
-of it would build a redundant mini-NLP layer item 5 would then subsume. Wrong order, not wrong
-idea.
+So: a field with no reader is not automatically dead weight here, and deleting one because
+nothing imports it removes audit evidence. `goal`, `functional` and `constraints` are free text
+with no structured signal extractable without real text-understanding, and are treated as
+permanently symbolic.
 
-The named carve-out -- NOT declared permanently symbolic, unlike goal/functional/constraints --
-is `non_functional.retention`/`security`/`availability`/`latency` and
-`data_pipeline.orchestration`/`catalog`/`consumption`: each is an ENUMERABLE answer already asked
-and recorded (Airflow vs. Step Functions; schema-registry-glue vs. none; Athena vs. Redshift
-Serverless; lifecycle/KMS/multi-AZ toggles), currently collected and never used. Real signal
-already being gathered, deliberately left unwired pending a generator that actually needs a
-module-choice/config input -- not a gap to fix now, and not dead weight to remove. When Item 5
-asks "what drives module choice or resource configuration beyond the catalog's own defaults,"
-this is the pre-analyzed, ready candidate list to start from.
+Separately carved out -- collected, currently unread, and NOT permanently symbolic --
+are `non_functional.retention`/`security`/`availability`/`latency` and
+`data_pipeline.orchestration`/`catalog`/`consumption`. Each is an ENUMERABLE answer already
+being asked and recorded (Airflow vs. Step Functions; schema-registry-glue vs. none; Athena vs.
+Redshift Serverless; lifecycle/KMS/multi-AZ toggles). They are real signal held back on purpose
+until a generator exists that needs a module-choice or config input -- the candidate list to
+start from, not a gap to close now.
+
+Depends on: nothing (stdlib only -- datetime/json/os/re)
+Shells out to: nothing. Pure validation and parsing over a local JSON record.
+Used by: core/architecture/intent_assertions.py, core/cost/bcm_pricing_calculator.py,
+    core/generation/accelerators.py, core/generation/synthesizer.py,
+    core/generation/workflow.py, core/governance/plan_gate.py, core/governance/reflector.py,
+    core/reporting/minusctl.py, app/dashboard_app.py, tests/test_requirements.py,
+    tests/test_synthesizer.py
 """
 import datetime
 import json
@@ -107,10 +108,10 @@ _DEFERRAL_RE = re.compile(r"^deferred\s*:\s*(.+)$", re.I)
 # Bare filler reasons that technically match "deferred: <text>" but carry no real content.
 _LAZY_DEFERRAL_REASONS = {"tbd", "n/a", "na", "unknown", "later", "todo", "pending", "review"}
 MIN_DEFERRAL_REASON_LEN = 10
-# Audit finding 2026-07-03: an agent could satisfy the whole NFR gate by writing bare
-# "deferred" x6 with no reason at all. Beyond this many deferred axes, an explicit
-# deferral_signoff is required -- deferring a couple of axes is normal; deferring almost
-# everything needs a human to say so out loud.
+# Without this ceiling an agent satisfies the whole NFR gate by writing bare "deferred" six
+# times with no reason at all. Beyond this many deferred axes an explicit deferral_signoff is
+# required -- deferring a couple of axes is normal; deferring almost everything needs a human
+# to say so out loud.
 MAX_FREE_NFR_DEFERRALS = 2
 
 
@@ -217,9 +218,9 @@ _BUDGET_RE = re.compile(r"\$\s?(\d+(?:,\d{3})*(?:\.\d+)?)")
 def parse_budget_usd(data):
     """Best-effort monthly budget ceiling (USD) from the non_functional.budget answer.
 
-    Audit finding 2026-07-04: this field was captured as audit evidence and never actually
-    used anywhere -- the generated aws_budgets_budget guardrail used its own module default
-    instead. This is the missing link.
+    This is the link between the stated budget and the generated aws_budgets_budget guardrail;
+    without it the guardrail falls back to its module default and the answer the operator gave
+    never reaches the infrastructure.
 
     Unlike parse_daily_gb's upper bound (conservative-HIGH for a cost forecast), a budget
     GUARDRAIL should err the other way: if the text mentions more than one dollar figure,

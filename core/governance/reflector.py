@@ -1,10 +1,10 @@
 """
-Stage Reflector -- an independent second look at a run, at each stage boundary (MINUS-129).
+Stage Reflector -- an independent second look at a run, at each stage boundary.
 
 The failure this exists for: the agent that composed a stack is the worst possible auditor of
 it. It already believes its own wiring is right, so it reports success against its own
-intentions rather than against the files on disk. The 2026-08-17 run passed every self-check
-it ran and still shipped a Glue job that could not write to Silver.
+intentions rather than against the files on disk. A run can pass every self-check it makes and
+still ship a Glue job with no permission to write to Silver.
 
 So every gate here **re-derives from artifacts**, never from a claim:
 
@@ -19,6 +19,13 @@ no plan yet, no BCM evidence yet -- reports `unknown`, which is NOT a pass. Conf
 checked and it is fine" with "I could not check" is how a circuit breaker becomes decoration.
 
 Read-only. Runs no cloud calls, mutates nothing, and never edits the run it inspects.
+
+Depends on: modules (as module_registry), optimize_analyzer, requirements (as reqgate),
+    plan_gate (lazy import inside gate_plan_hash, to avoid pulling the whole gate stack in)
+Shells out to: nothing
+Used by: nothing in core/ imports it -- it is invoked as a CLI (`python core/governance/
+    reflector.py --run-root ...`), its JSON is rendered by .github/actions/pr-reviewer/
+    comment.py (which also imports _estimate_total from here), and tests/test_reflector.py
 """
 import json
 import os
@@ -102,7 +109,7 @@ def gate_scope(run_root, tf_dir):
     present = {m for m in ("compute-glue-etl", "compute-emr-serverless", "compute-emr-ec2-spot")
                if m.replace("-", "_") in labels}
     if not present:
-        # dbt-only (MINUS-120) is a legitimate no-compute-module composition.
+        # A dbt-only stack is a legitimate no-compute-module composition.
         return _result(GATES[0], UNKNOWN,
                        "no catalog compute module in main.tf -- expected for a dbt-only "
                        "composition, unexpected otherwise",
@@ -121,9 +128,9 @@ def gate_scope(run_root, tf_dir):
 
 # --- G2: cross-module wiring -------------------------------------------------------------
 
-# Inputs whose absence is a runtime failure rather than a style problem, per module. Each was
-# an actual production break: the Glue role could not write to Silver (MINUS-108), the job
-# exited on missing paths (MINUS-109), Athena had no database (MINUS-110).
+# Inputs whose absence is a runtime failure rather than a style problem, per module. Each
+# entry corresponds to a real break: a Glue role with no write access to Silver, a job that
+# exits on missing paths, Athena with no database. Removing one re-opens that failure.
 _REQUIRED_WIRING = {
     "compute_glue_etl": ("data_buckets", "kms_key_arn", "source_bucket", "target_bucket"),
     "query_athena": ("gold_bucket",),

@@ -1,9 +1,11 @@
 """
 pricing_catalog.py — the single source of truth for "what AWS service prices a Terraform
-resource type", replacing three formerly-independent hand-maintained tables that all shared
-the same blind spots (bcm_pricing_calculator._SERVICE_CODE, plan_inspector.SERVICE_PREFIXES,
-plan_inspector.FILE_HINTS — none of them knew about aws_mwaa_environment, aws_kinesis_stream,
-or aws_sns_topic, because each list was written independently).
+resource type".
+
+It replaced three independently hand-maintained tables that all shared the same blind spots
+(MWAA, Kinesis and SNS were absent from every one of them, because nobody updates three lists
+at once). Do not add a fourth: a caller needing a service code asks here, and a missing
+resource type is fixed in the data files, not in a local dict.
 
 Two tiers of data:
   core/cost/pricing_data/aws_resource_map.json  — resource-type prefix -> serviceCode (+ display
@@ -14,9 +16,24 @@ Two tiers of data:
 Optional, read-only AWS Price List catalog lookups (list_service_codes / lookup_dimensions)
 help a human resolve resource types that aren't in either file yet — they never invent a
 serviceCode, usageType, or price; they only surface what AWS's own catalog says exists, for a
-reviewer to fold into aws_resource_map.json. These calls are read-only (no cost, no resources
-created), so — like identity()/cost_by_service()/anomalies() in providers/aws.py — they are NOT
-routed through approval.py; only AWS-side WRITES (bcm_pricing_calculator.run) are gated.
+reviewer to fold into aws_resource_map.json. Because they create nothing, they are — like
+identity()/cost_by_service()/anomalies() in providers/aws.py — NOT routed through approval.py;
+only AWS-side WRITES (bcm_pricing_calculator.run) are gated.
+
+Depends on: core/reporting/toolpath.py (aws CLI discovery). Reads
+    core/cost/pricing_data/aws_resource_map.json and free_resources.json; writes the lookup
+    cache under .agents/cache/.
+Shells out to: the `aws` CLI, Price List Query API only —
+    `aws pricing describe-services` (list_service_codes) and
+    `aws pricing get-attribute-values` (lookup_dimensions). Both are catalog reads that create
+    nothing and are ungated; unlike the Cost Explorer calls reached from
+    bcm_pricing_calculator.fetch_actuals, they are not billed per request. Results are cached
+    to .agents/cache/ so a repeated lookup makes no call at all. Every other function in this
+    file is pure and offline.
+Used by: core/cost/bcm_pricing_calculator.py, core/providers/aws.py (lazy),
+    core/reporting/plan_inspector.py, core/reporting/reporter.py (lazy),
+    tests/test_pricing_catalog.py. Note core/cost/coverage_audit.py deliberately does NOT
+    import this — it reaches the same data through providers.base so it stays cloud-neutral.
 """
 import json
 import os

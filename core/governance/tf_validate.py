@@ -5,6 +5,10 @@ Offline Terraform configuration validation — a non-mutating, credential-free c
 and reference errors in the generated config. The system runs it automatically after synthesis
 so a composed plan is proven well-formed *before* it ever reaches the deploy gate (which then
 does the credentialed, still-read-only `plan`). This is the cheapest place to catch a bad plan.
+
+Depends on: toolpath (imported via the core/ sys.path shim below)
+Shells out to: terraform -- `init -backend=false -input=false`, then `validate -json`
+Used by: core/reporting/minusctl.py, core/generation/synthesizer.py (lazy import)
 """
 import json
 import os

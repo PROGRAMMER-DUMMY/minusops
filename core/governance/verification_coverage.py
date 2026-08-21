@@ -18,6 +18,10 @@ reason). It never blocks and never verifies anything itself -- it only reports r
 `coverage_ratio` counts ONLY rule_covered types. Claims must never inflate it, or coverage
 appears to grow when only memory did -- and coverage is the metric that says whether the
 agent-authored-rules loop is actually running.
+
+Depends on: plan_reader
+Shells out to: nothing
+Used by: core/reporting/reporter.py (lazy import)
 """
 import plan_reader
 

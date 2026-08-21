@@ -18,6 +18,21 @@ Optional environment overrides:
     DASH_PORT=8060   # use a different port if 8050 is taken
     DASH_HOST=0.0.0.0  # expose on the LAN only with MINUS_DASH_TOKEN set
     MINUS_DASH_TOKEN=...  # optional bearer/query-token auth; required for non-local binds
+
+This process binds a network port, so it is the one component in the repo with an inbound
+attack surface. Two rules hold it closed, and both are enforced in code, not in docs:
+`__main__` refuses to start when DASH_HOST is not a loopback address unless
+MINUS_DASH_TOKEN is set, and a `before_request` hook rejects every request that does not
+present that token (Bearer header, `?token=`, or the cookie it sets) once one is
+configured — `DASH_TOKEN` is accepted as an alias. With no token set the server is reachable only from localhost. Loosening
+either check exposes live AWS account and cost data to the LAN.
+
+Depends on: providers.base, plan_inspector, reporter, runs, minusctl, requirements,
+    architecture_decision, accelerators — all imported flat via the core/ sys.path shim
+    set up below, not as `core.*`
+Shells out to: nothing directly; AWS is reached only through providers.base.get_provider(),
+    and minusctl/plan_inspector run the CLIs on its behalf
+Used by: tests/test_dashboard.py; otherwise a leaf, run as a script
 """
 import os
 import sys
@@ -1425,6 +1440,14 @@ def _valid_dashboard_token(value):
 
 
 def _request_authorized():
+    """Authorize a request against MINUS_DASH_TOKEN (Bearer header, ?token=, or cookie).
+
+    Returning True when no token is configured is deliberate, not a missing check: the
+    only way to reach that branch is a loopback bind, because `__main__` refuses to start
+    on a non-loopback host with no token set. Making this fail closed instead would break
+    the ordinary `python app/dashboard_app.py` case; the guard that matters lives at bind
+    time. Compare with hmac.compare_digest, never `==`.
+    """
     token = _dashboard_token()
     if not token:
         return True

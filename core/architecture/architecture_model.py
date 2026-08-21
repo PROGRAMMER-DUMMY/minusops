@@ -17,6 +17,13 @@ Design rules (deliberate):
 Grounding (see docs / memory `aws-reference-architectures-for-design`):
   * Reference architecture — https://aws.amazon.com/blogs/big-data/aws-serverless-data-analytics-pipeline-reference-architecture/
   * Well-Architected Data Analytics Lens — https://docs.aws.amazon.com/wellarchitected/latest/analytics-lens/
+
+Depends on: core/governance/plan_reader.py (fail-soft plan access)
+Shells out to: nothing. Every score is derived from a plan.json already on disk — no AWS call,
+    no pricing, no model inference.
+Used by: core/reporting/minusctl.py, core/reporting/reporter.py (lazy),
+    core/generation/accelerators.py (lazy), tests/test_architecture_model.py,
+    tests/test_reporter.py
 """
 import json
 import os
@@ -122,11 +129,10 @@ def _instance_key(address):
 def extract_resources(plan):
     """Flatten a `terraform show -json` plan into classified resource dicts (managed only).
 
-    plan_reader.py (G4 consolidation, docs/phase4_scope.md) supplies the fail-soft read: a
-    malformed/absent `resource_changes` or a non-dict entry no longer crashes this advisory,
-    reporting-only path (the previous `(plan or {}).get(...)` silently defaulted on absence but
-    would raise on a non-dict entry -- a real, if minor, robustness gap this consolidation
-    fixes, not just a refactor)."""
+    plan_reader.py supplies the fail-soft read on purpose: this is an advisory, reporting-only
+    path, so a malformed or absent `resource_changes`, or a non-dict entry inside it, must not
+    crash it. A plain `(plan or {}).get(...)` is not equivalent -- it defaults on absence but
+    still raises on a non-dict entry."""
     raw_resource_changes, _error = plan_reader.read_resource_changes(plan, treat_absent_as_error=False)
     resource_changes = raw_resource_changes or []
     managed, _malformed = plan_reader.managed_only(resource_changes)

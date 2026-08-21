@@ -1,5 +1,17 @@
-# Windows Environment Doctor Script for Terraform & AWS CLI
-# Run this script using: powershell -ExecutionPolicy Bypass -File .\doctor.ps1
+# Windows-only environment diagnostics: Terraform CLI, AWS CLI, AWS credentials, Python.
+# Run with: powershell -ExecutionPolicy Bypass -File .\doctor.ps1
+#
+# SUPERSEDED AND FROZEN. `minusctl doctor` (core/reporting/doctor.py) is the real doctor:
+# it runs on Windows, macOS, Linux, and in CI containers, and additionally checks OPA, the
+# external policy scanners, the Python packages, and credential posture. This script cannot
+# run anywhere but Windows PowerShell, which is why it was replaced. It is kept only for
+# operators with the muscle-memory shortcut; add new checks to doctor.py, not here.
+#
+# Depends on: nothing in this repo
+# Shells out to: terraform, aws (`--version`, `sts get-caller-identity`), python; reads
+#   only, changes nothing
+# Used by: humans, from a terminal. No code path invokes it — docs/operations_runbook.md
+#   and README.md list it as the Windows option.
 
 $ErrorActionPreference = "Stop"
 

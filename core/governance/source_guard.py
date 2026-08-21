@@ -3,6 +3,11 @@ Source baseline guard for generated Terraform workspaces.
 
 This tool records and compares local source files only. It does not run
 Terraform, cloud CLIs, git commands, or any network operation.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing
+Used by: core/generation/synthesizer.py, core/generation/terraform_generator.py,
+    core/reporting/adopt.py, core/reporting/minusctl.py
 """
 import argparse
 import difflib

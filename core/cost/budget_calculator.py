@@ -1,11 +1,20 @@
 """
 Cost guidance — reportable totals come only from the AWS BCM Pricing Calculator API.
 
-This module deliberately does NOT compute, estimate, or hardcode cost totals, and it
-does not invent SKU prices. Reportable enterprise cost evidence is produced solely by
-core/cost/bcm_pricing_calculator.py against the AWS BCM Pricing Calculator API (gated,
-review-required). This responder exists so the dispatcher's BUDGET intent returns honest
-guidance and the required commands — never a fabricated number.
+This module deliberately does NOT compute, estimate, or hardcode cost totals, and it does not
+invent SKU prices. That absence is the feature: the dispatcher's BUDGET intent has to answer
+something, and the honest answer is a pointer plus the exact commands, not a number this
+process made up. Reportable enterprise cost evidence is produced solely by
+core/cost/bcm_pricing_calculator.py against the AWS BCM Pricing Calculator API. Anyone
+"finishing" this file by adding a rate table or an arithmetic estimate has reintroduced the
+fabricated total it exists to refuse.
+
+Depends on: nothing (stdlib only — argparse/json/os/sys). BCM_COMMANDS names
+    core/cost/bcm_pricing_calculator.py as text; it is never imported or invoked.
+Shells out to: nothing. It prints aws-CLI-backed commands for an operator to run; it runs none
+    of them, so this module makes no AWS call and costs nothing.
+Used by: tests/test_budget_calculator.py. No in-repo module imports it — it is reached as a CLI
+    for the dispatcher's BUDGET intent, and writes .agents/logs/budget_estimation.json.
 """
 import argparse
 import json

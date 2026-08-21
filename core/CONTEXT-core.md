@@ -30,5 +30,8 @@ Each subpackage in `core/` maintains its own dedicated, exhaustive context docum
 5. 📊 **Reporting & CLI**: [`core/reporting/CONTEXT-reporting.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/CONTEXT-reporting.md)  
    *Exhaustive breakdown of: `minusctl` CLI, report builder, plan inspector, static HCL scanner (`optimize_analyzer`), FinOps agent, health probes, run manager, environment doctor, brownfield adopt, pipeline seed, agent-facing CLI diagnostics, and the FinOps Excel generator.*
 
-6. ☁️ **Provider Abstraction**: [`core/providers/CONTEXT-providers.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/CONTEXT-providers.md)  
+6. 🔌 **Outbound Integrations**: [`core/integrations/CONTEXT-integrations.md`](./integrations/CONTEXT-integrations.md)  
+   *Exhaustive breakdown of: the stdlib-only, approval-gated hooks for Slack, Microsoft Teams, executive email over SMTP, Confluence page publishing, and Jira change tickets, plus the shared `base_hook` transport, secret resolution, and result-dict contract.*
+
+7. ☁️ **Provider Abstraction**: [`core/providers/CONTEXT-providers.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/CONTEXT-providers.md)  
    *Exhaustive breakdown of: `get_provider()` factory and the `AWSProvider` implementation (STS identity, credential posture, Cost Explorer, pricing catalog). **AWS-only** -- the `azure.py`/`gcp.py` scaffolds and the one-implementation `CloudProvider` ABC were deleted when multi-cloud left scope; `get_provider("azure")` raises `ValueError`.*

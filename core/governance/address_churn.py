@@ -19,6 +19,10 @@ real deletions), and a genuinely different bucket would be mistaken for a move.
 Blocking is scoped to stateful types only. Renaming an IAM role recreates it -- disruptive,
 but nothing is lost -- so that is advisory. A gate that blocks on the harmless case trains
 operators to bypass it.
+
+Depends on: plan_reader, destructive_change_gate (STATEFUL_RESOURCE_TYPES)
+Shells out to: nothing -- it reads .tf text and already-parsed plan JSON
+Used by: core/governance/plan_gate.py
 """
 import os
 import re

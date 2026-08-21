@@ -8,12 +8,16 @@ whether the evaluation itself succeeded (fail-closed on every degradation case i
 doc's table) and, if so, the findings Rego produced. plan_gate.py's stage_plan() logs this
 alongside the existing regex-based scan and computes symmetric divergence -- it does NOT
 retire the regex path or let Rego's findings block anything. That only happens after the
-16-module parity proof is reviewed and Phase 3 is explicitly closed, same as G2/G5.
+cross-module parity proof is reviewed and Phase 3 is explicitly closed, same as G2/G5.
 
 Pure function, mirroring destructive_change_gate.classify()'s exact shape: takes an already-
 parsed plan JSON dict (the same one plan_gate.py's _plan_json() already fetches for the G5
 classifier -- no second `terraform show -json` subprocess call), returns a verdict dict. This
 module does the actual `opa eval` invocation itself; it never talks to Terraform.
+
+Depends on: toolpath (imported via the core/ sys.path shim below)
+Shells out to: opa (`opa eval`); terraform (`show -json`) only in evaluate_dir()'s CLI path
+Used by: core/governance/plan_gate.py
 """
 import json
 import os

@@ -8,8 +8,17 @@ architect writes can be grounded in its real Terraform Registry schema, every se
 against Well-Architected, and every price pulled from the live index. Records are cached so the
 same lookup isn't re-fetched repeatedly.
 
-This module constructs URLs and records; it does not fetch (the agent fetches via WebFetch). That
-keeps it deterministic and unit-testable.
+This module constructs URLs and records; it does not fetch (the agent fetches via WebFetch). The
+absent HTTP client is the design, not an unfinished piece: no network means deterministic,
+unit-testable output, and it keeps the "which sources are authoritative" decision separate from
+the fetching.
+
+Depends on: nothing (stdlib only -- datetime/json/os/re). Caches records under
+    artifacts/research/.
+Shells out to: nothing. It builds URL strings; it never opens a connection, so nothing here
+    reaches AWS or the network.
+Used by: tests/test_discovery.py. No in-repo module imports it -- it is used from the CLI and
+    by the architect path directly.
 """
 import datetime
 import json

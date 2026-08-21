@@ -8,10 +8,38 @@ safe preparation from gated execution:
   prepare -> writes reviewable JSON payloads, no AWS calls
   run     -> requires approval.py, creates the BCM estimate, adds usage, reads result
 
+Nothing here produces a price. This file derives usage AMOUNTS (GB-months, DPU-hours,
+shard-hours) from the plan and stated assumptions, submits them, and lets AWS do the pricing —
+which is why every unknown is left as a REVIEW_REQUIRED placeholder rather than filled with a
+plausible default. A fabricated amount is indistinguishable from a real one once it reaches
+the report; an unresolved one is visible.
+
 Usage:
   python core/cost/bcm_pricing_calculator.py prepare --report-dir artifacts/reports/<hash> --account-id 123456789012
   python core/cost/bcm_pricing_calculator.py prepare --report-dir artifacts/reports/<hash> --usage-profile pricing-profile.json
   python core/cost/bcm_pricing_calculator.py run --report-dir artifacts/reports/<hash> --mode gatekeeper
+
+Depends on: core/governance/approval.py (request_approval), core/cost/pricing_catalog.py,
+    core/architecture/requirements.py (as reqgate — parse_daily_gb, FILENAME),
+    core/reporting/toolpath.py; lazily core/reporting/reporter.py (refresh_cost, best-effort)
+    and core/providers/base.py (fetch_actuals only). Reads <report-dir>/plan.json and
+    manifest.json, writes the bcm-*.json family beside them.
+Shells out to: the `aws` CLI, and this is the file in core/cost/ that spends money and mutates
+    AWS state. `sts get-caller-identity` (account discovery, read-only).
+    `bcm-pricing-calculator create-workload-estimate`,
+    `batch-create-workload-estimate-usage`, `get-workload-estimate`,
+    `list-workload-estimate-usage` — the run() path; these CREATE a persistent BCM object in
+    the account. scale_curve() additionally calls `delete-workload-estimate`, since each curve
+    point is a throwaway estimate. run_bill_scenario() calls `create-bill-scenario`,
+    `batch-create-bill-scenario-usage-modification`,
+    `batch-create-bill-scenario-commitment-modification`, `create-bill-estimate`,
+    `list-bill-estimate-line-items`, `list-bill-estimate-commitments`. fetch_actuals() reaches
+    AWS Cost Explorer through providers/aws.py (`aws ce get-cost-and-usage`) — Cost Explorer
+    is BILLED PER REQUEST, so it is not a free read despite being read-only, and it is the
+    only per-request charge this file can incur.
+Used by: core/cost/coverage_audit.py (pure helpers only), core/reporting/reporter.py,
+    app/dashboard_app.py (lazy), tests/test_bcm_pricing_calculator.py,
+    tests/test_finops_doctor_policy.py
 """
 import argparse
 import datetime
@@ -144,12 +172,12 @@ def _assumption_doc(plan, usage_profile=None):
     }
 
 
-# MINUS-146. DEFAULT_ASSUMPTIONS are the values used when nobody said otherwise, and they are
-# STATIC -- glue_runs_per_day is 24 whether the pipeline is a nightly batch or a 15-minute
-# micro-batch. Requirements usually DO say, in prose, and reading them turns a fixed guess into
-# a stated one. Measured on runs/20260818-085523: the requirements say "15-minute micro-batch"
-# and "Bronze retained 90 days", against defaults of hourly and 30 days -- a 4x understatement
-# on Glue and 3x on S3 in an estimate that had already passed the budget gate.
+# DEFAULT_ASSUMPTIONS are the values used when nobody said otherwise, and they are STATIC --
+# glue_runs_per_day is 24 whether the pipeline is a nightly batch or a 15-minute micro-batch.
+# Requirements usually DO say, in prose, and reading them turns a fixed guess into a stated
+# one. On a real run, requirements saying "15-minute micro-batch" and "Bronze retained 90 days"
+# against defaults of hourly and 30 days meant a 4x understatement on Glue and 3x on S3 -- in
+# an estimate that had already passed the budget gate.
 #
 # Every override records the phrase it came from. A derived assumption nobody can trace is
 # worse than a default everybody knows is a default.
@@ -183,11 +211,11 @@ def _raw_zone_retention_days(text):
     """Days of RAW data retained -- the driver for S3 volume.
 
     Deliberately NOT the longest period stated. Requirements normally name several ("Bronze
-    90 days, Gold 3 years"), and taking the maximum assumes every byte is kept for the
-    longest one: on runs/20260818-085523 that turned 100 GB/day into 109,500 GB-Mo, a 36x
-    overstatement. Raw volume dominates the bill, so the period stated alongside bronze/raw
-    wins, and the SHORTEST stated period is the fallback -- understating storage is a
-    recoverable surprise, overstating it by 36x makes the whole forecast unusable.
+    90 days, Gold 3 years"), and taking the maximum assumes every byte is kept for the longest
+    one: on a real run that turned 100 GB/day into 109,500 GB-Mo, a 36x overstatement. Raw
+    volume dominates the bill, so the period stated alongside bronze/raw wins, and the SHORTEST
+    stated period is the fallback -- understating storage is a recoverable surprise,
+    overstating it by 36x makes the whole forecast unusable.
     """
     text = text or ""
     for match in _RETENTION_RE.finditer(text):
@@ -272,10 +300,11 @@ def _bcm_group(region):
     return cleaned.strip("-") or "tf"
 
 
-# Service identifiers now come from core/cost/pricing_data/aws_resource_map.json via
-# pricing_catalog.resolve_resource_type() — this replaces the old static _SERVICE_CODE list,
-# which was one of three independent, hand-maintained tables that all shared the same blind
-# spots (MWAA/Kinesis/SNS were absent from every one of them).
+# Service identifiers come from core/cost/pricing_data/aws_resource_map.json via
+# pricing_catalog.resolve_resource_type(). There is deliberately no local _SERVICE_CODE table
+# here: the previous one was a third hand-maintained copy, and all three shared the same blind
+# spots (MWAA/Kinesis/SNS were missing from every one). A new resource type is added to the
+# JSON, not to this file.
 
 # Named, documented, OVERRIDABLE usage assumptions (NOT prices). Recorded in the report so a
 # reviewer sees exactly what usage was assumed; override with --assume key=value.

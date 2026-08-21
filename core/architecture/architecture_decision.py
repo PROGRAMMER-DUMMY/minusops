@@ -4,6 +4,19 @@ Architecture decision gate.
 Requirements say what must be built. This record says why a particular architecture and module
 set was selected after research. Production synthesis is bound to this file so keyword matching
 cannot silently become a recommendation engine.
+
+validate() is fail-closed and every required list must be non-empty, `validation` and
+`rollback` included: a design that cannot state how it will be checked, or how it is undone
+when it fails, is a hope rather than a decision, and both are the fields under time pressure
+that someone will want to make optional.
+
+Depends on: core/generation/modules.py (module_registry.list_modules, to reject unknown module
+    ids in add_modules). Reads and writes architecture_decision.json.
+Shells out to: nothing. Local JSON record-keeping and validation only.
+Used by: core/generation/synthesizer.py, core/generation/accelerators.py,
+    core/governance/plan_gate.py, core/reporting/minusctl.py, app/dashboard_app.py,
+    tests/test_architecture_decision.py, tests/test_synthesizer.py,
+    tests/test_teardown_regression_harness.py
 """
 import datetime
 import json
@@ -97,13 +110,11 @@ def validate(data):
         if not _answered(data.get(field, "")):
             missing.append(field)
     # A decision must select SOMETHING -- catalog modules, novel (authored) resources, or both.
-    # Previously this required selected_modules alone, unconditionally, which made a real,
-    # legitimate decision -- "zero catalog modules, entirely covered by authored content" --
-    # impossible to record at all (docs/phase7_generation_engine_plan.md item 2: synthesize()'s
-    # own zero-catalog path was fixed to allow this, but this gate, one level up, still refused
-    # to accept the decision record before synthesize() ever got to run). novel_resources' own
-    # per-entry completeness is checked separately below; this only asks "is there at least one
-    # entry to check."
+    # Do NOT tighten this back to requiring selected_modules unconditionally: "zero catalog
+    # modules, entirely covered by authored content" is a legitimate decision that synthesize()
+    # supports, and requiring a module id here refuses the record before synthesize() ever runs.
+    # novel_resources' per-entry completeness is checked separately below; this only asks
+    # whether there is at least one entry to check.
     has_selected_modules = _nonempty_list(data.get("selected_modules"))
     novel_resources_present = isinstance(data.get("novel_resources"), list) and len(data.get("novel_resources")) > 0
     if not has_selected_modules and not novel_resources_present:
@@ -125,12 +136,11 @@ def validate(data):
         missing.append(
             "failure_modes has unknown ids " + json.dumps(unknown)
             + " (valid: " + ", ".join(sorted(FAILURE_MODES)) + ")")
-    # novel_resources (docs/phase6_step1_authoring_scope.md section 1) is additive and OPTIONAL
-    # at the record level -- a decision with no novel resources needs no entries here at all.
-    # But once present, every entry is held to the same completeness bar _valid_alternative
-    # already enforces above: an incomplete entry (missing justification, or no
-    # alternatives_considered answered) fails validation exactly like an incomplete
-    # `alternatives` entry does, rather than silently passing through as a lesser-checked field.
+    # novel_resources (docs/phase6_step1_authoring_scope.md section 1) is OPTIONAL at the record
+    # level -- a decision with no novel resources needs no entries here at all. But once
+    # present, every entry meets the same bar _valid_alternative enforces above: an entry
+    # missing its justification or its alternatives_considered fails validation exactly like an
+    # incomplete `alternatives` entry, rather than passing through as a lesser-checked field.
     novel_resources = data.get("novel_resources") or []
     if not isinstance(novel_resources, list):
         missing.append("novel_resources (must be a list)")

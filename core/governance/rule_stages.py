@@ -1,10 +1,10 @@
 """
 rule_stages.py -- which policy rules have teeth, and who gave them teeth.
 
-`policy/g6/rules.rego` covers 13 rule IDs. AWS exposes over a thousand resource types, so
-hand-writing rules does not scale to what an agent can generate, and `verification_coverage`
-now reports that gap honestly rather than hiding it. Agents proposing rules is how coverage
-grows.
+`policy/g6/rules.rego` covers a handful of rule IDs; AWS exposes over a thousand resource
+types, so hand-writing rules does not scale to what an agent can generate, and
+`verification_coverage` reports that gap honestly rather than hiding it. Agents proposing
+rules is how coverage grows.
 
 The failure mode to design against is NOT a generated rule that is too strict -- that is
 noisy and gets noticed immediately. It is a generated rule that SILENTLY PERMITS: one that
@@ -29,6 +29,10 @@ reported either way; only their teeth are withheld.
 
 This never weakens the gate: warn-only rules still appear in reports and in
 verification_coverage. Promotion only ever ADDS blocking power.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing
+Used by: core/governance/plan_gate.py, core/reporting/minusctl.py
 """
 import datetime
 import json

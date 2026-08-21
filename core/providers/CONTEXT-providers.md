@@ -29,12 +29,12 @@ MinusOps operates on an AWS-focused cloud provider architecture. Historical mult
 
 ## File Details
 
-### 1. [`base.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/base.py)
+### 1. [`base.py`](./base.py)
 
 - **Exact Purpose**: Defines the provider entry point (`get_provider()`), active cloud identifier (`active_cloud()`), and documents the canonical return schemas relied upon by the FinOps agent, dashboard, and deploy gates.
 - **Key Functions / Classes**:
-  - [`active_cloud()`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/base.py#L27): Returns `"aws"`. Hardcoded label function used across deployment reports and audit manifests.
-  - [`get_provider(name=None)`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/base.py#L33): Factory function returning an instance of `AWSProvider`. Validates that `name` (if passed) is `"aws"` (case-insensitive); raises `ValueError` otherwise.
+  - [`active_cloud()`](./base.py): Returns `"aws"`. Hardcoded label function used across deployment reports and audit manifests.
+  - [`get_provider(name=None)`](./base.py): Factory function returning an instance of `AWSProvider`. Validates that `name` (if passed) is `"aws"` (case-insensitive); raises `ValueError` otherwise.
 - **Inputs & Outputs**:
   - *Inputs*: Provider name string (optional, must be `"aws"` or `None`).
   - *Outputs*: Instance of `AWSProvider` (from `core.providers.aws`).
@@ -44,22 +44,22 @@ MinusOps operates on an AWS-focused cloud provider architecture. Historical mult
 
 ---
 
-### 2. [`aws.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py)
+### 2. [`aws.py`](./aws.py)
 
 - **Exact Purpose**: AWS provider implementation interacting with AWS services via the local AWS CLI (`aws`) credential chain and the offline `pricing_catalog` engine. Handles STS identity verification, credential posture classification, Cost Explorer data, Cost Anomaly Detection, resource tagging lookups, and pre-deploy pricing resolution.
 - **Key Functions / Classes**:
-  - [`classify_credentials(arn, access_key_id=None)`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L12): Classifies active session security posture as `"temporary"` (ASIA key prefix / assumed-role / federated), `"long_term"` (AKIA key prefix / IAM user), `"root"` (account root), or `"unknown"`.
-  - [`run_aws(args, timeout=20)`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L38): Subprocess helper running `aws` CLI commands in list form (no shell). Captures output and parses JSON responses safely.
-  - [`AWSProvider`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L63): Primary provider class implementing:
-    - [`identity()`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L67): Returns `(account_id, connected_bool)` via `sts get-caller-identity`.
-    - [`credential_posture()`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L73): Returns dict with `connected`, `arn`, `account`, `type` (`"temporary"`, `"long_term"`, `"root"`, `"unknown"`).
-    - [`cost_by_service(months_back=6)`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L86): Queries Cost Explorer (`ce get-cost-and-usage`) for unblended monthly spend grouped by service.
-    - [`anomalies(days_back=60)`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L109): Queries Cost Explorer (`ce get-anomalies`) for detected cost anomalies.
-    - [`owner(resource_hint)`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L130): Resolves owner/team tags via `resourcegroupstaggingapi get-resources`.
-    - [`list_billable_services()`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L147): Wraps `pricing_catalog.list_service_codes()`.
-    - [`resolve_resource_type(tf_type)`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L152): Wraps `pricing_catalog.resolve_resource_type(tf_type)`.
-    - [`lookup_usage_dimensions(service, filters=None)`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L156): Wraps `pricing_catalog.lookup_dimensions()`.
-    - [`confirmed_free(tf_type)`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/aws.py#L161): Wraps `pricing_catalog.confirmed_free()`.
+  - [`classify_credentials(arn, access_key_id=None)`](./aws.py): Classifies active session security posture as `"temporary"` (ASIA key prefix / assumed-role / federated), `"long_term"` (AKIA key prefix / IAM user), `"root"` (account root), or `"unknown"`.
+  - [`run_aws(args, timeout=20)`](./aws.py): Subprocess helper running `aws` CLI commands in list form (no shell). Captures output and parses JSON responses safely.
+  - [`AWSProvider`](./aws.py): Primary provider class implementing:
+    - [`identity()`](./aws.py): Returns `(account_id, connected_bool)` via `sts get-caller-identity`.
+    - [`credential_posture()`](./aws.py): Returns dict with `connected`, `arn`, `account`, `type` (`"temporary"`, `"long_term"`, `"root"`, `"unknown"`).
+    - [`cost_by_service(months_back=6)`](./aws.py): Queries Cost Explorer (`ce get-cost-and-usage`) for unblended monthly spend grouped by service.
+    - [`anomalies(days_back=60)`](./aws.py): Queries Cost Explorer (`ce get-anomalies`) for detected cost anomalies.
+    - [`owner(resource_hint)`](./aws.py): Resolves owner/team tags via `resourcegroupstaggingapi get-resources`.
+    - [`list_billable_services()`](./aws.py): Wraps `pricing_catalog.list_service_codes()`.
+    - [`resolve_resource_type(tf_type)`](./aws.py): Wraps `pricing_catalog.resolve_resource_type(tf_type)`.
+    - [`lookup_usage_dimensions(service, filters=None)`](./aws.py): Wraps `pricing_catalog.lookup_dimensions()`.
+    - [`confirmed_free(tf_type)`](./aws.py): Wraps `pricing_catalog.confirmed_free()`.
 - **Inputs & Outputs**:
   - *Inputs*: Service parameters, time ranges, resource hints, Terraform resource types.
   - *Outputs*: Structured dictionaries and tuples representing identity, credential security posture, monthly cost breakdowns, anomaly lists, owner tags, and pricing metadata.
@@ -71,7 +71,7 @@ MinusOps operates on an AWS-focused cloud provider architecture. Historical mult
 
 ---
 
-### 3. [`__init__.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/providers/__init__.py)
+### 3. [`__init__.py`](./__init__.py)
 
 - **Exact Purpose**: Exposes `get_provider` and `active_cloud` at the package root level (`core.providers`).
 - **Key Functions / Classes**:

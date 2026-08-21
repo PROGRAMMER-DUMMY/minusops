@@ -1,3 +1,14 @@
+"""Write one audit event to the local hash chain, then ship it to optional remote sinks.
+
+The local chain is tamper-EVIDENT, not tamper-PROOF: anyone with the workstation can delete
+audit.jsonl outright, and a chain that no longer exists proves nothing. Shipping each event
+to a second, append-only destination (S3 or CloudWatch Logs) is what makes deletion
+detectable rather than silent. Both sinks are opt-in via env var and OFF by default.
+
+Depends on: audit_chain, toolpath (both imported via the core/ sys.path shim below)
+Shells out to: aws CLI — `s3 cp`, `logs create-log-stream`, `logs put-log-events`
+Used by: core/generation/schema_watch.py, tests/test_team_isolation.py
+"""
 import os
 import sys
 import datetime
@@ -13,14 +24,8 @@ sys.path.insert(0, _CORE_DIR)
 import audit_chain  # noqa: E402
 import toolpath  # noqa: E402
 
-# MINUS-147. The local hash chain is tamper-EVIDENT, not tamper-PROOF: anyone with the
-# workstation can delete audit.jsonl outright, and a chain that no longer exists proves
-# nothing. Shipping each event to a second, append-only destination is what makes deletion
-# detectable rather than silent.
-#
-# Both destinations are opt-in and OFF by default. A shipper that runs unasked would make
-# every local test and offline run try to reach AWS, and a failed ship must never stop an
-# event reaching the local chain -- so remote failure is reported and returned, never raised.
+# Unset means "no remote sink". Enabling one unasked would make every local test and
+# offline run try to reach AWS.
 S3_BUCKET_ENV = "MINUS_AUDIT_S3_BUCKET"
 S3_PREFIX_ENV = "MINUS_AUDIT_S3_PREFIX"
 CW_GROUP_ENV = "MINUS_AUDIT_CW_GROUP"
