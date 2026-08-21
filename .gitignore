@@ -50,9 +50,27 @@ pt_*.log
 .terraform/
 .terraform.lock.hcl
 tfplan
-# Credentials / one-shot tokens (must never be committed)
+# Credentials / one-shot tokens / environment variables (must never be committed)
 *.token
 .minus_tf/
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+
+# Local Terraform variable files (must never be committed; use .example files)
+*.tfvars
+*.auto.tfvars
+*.tfvars.json
+!*.example.tfvars
+!envs/*.tfvars
+
+# OS and editor clutter
+.DS_Store
+Thumbs.db
+.vscode/
 
 # Client-specific backend config (never commit)
 backend.hcl
