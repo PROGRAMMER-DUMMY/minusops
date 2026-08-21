@@ -5,8 +5,8 @@
 | **Date** | 2026-08-21 |
 | **Branch** | `feat/minusops-enterprise-nextgen-v2` |
 | **Source documents** | [`new_prd_for_architect.md`](./new_prd_for_architect.md), [`implementation_plan_for_architect.md`](./implementation_plan_for_architect.md), [`minusops_friction.md`](../minusops_friction.md) |
-| **Full suite** | exit 0 across 79 test files |
-| **Working tree** | **Uncommitted.** 81 modified, 7 untracked. No commit boundary between four unrelated bodies of work. |
+| **Full suite** | exit 0 across 81 test files |
+| **Working tree** | Clean. 10 commits pushed to `origin/feat/minusops-enterprise-nextgen-v2`. |
 
 All three source documents have been read in full.
 
@@ -19,8 +19,8 @@ All three source documents have been read in full.
 | **1 — Integration tool hooks** | **Done** | [`core/integrations/`](../core/integrations/) — `base_hook`, `slack_hook`, `teams_hook`, `outlook_hook`, `confluence_hook`, `jira_hook`. [`tests/test_integrations.py`](../tests/test_integrations.py) passes. |
 | **2 — Subagent manifests** | **Done, relocated** | [`.claude/agents/`](../.claude/agents/) — `slack-agent`, `teams-agent`, `outlook-agent`, `confluence-agent`. See §5 for why not `.agents/subagents/*.json`. |
 | **3 — Metadata control table + dynamic DAG config** | **Done** | [`modules/metadata-control-table/`](../modules/metadata-control-table/) + `scripts/fetch_pipeline_config.py`. Registry now carries 25 modules. |
-| **4 — CI/CD workflow generator** | **Not started** | Blocked on Decision 2 (see §4). |
-| **5 — Regression + audit verification** | **Not started** | Depends on Phase 4 output. |
+| **4 — CI/CD workflow generator** | **Done** | [`core/generation/cicd.py`](../core/generation/cicd.py) — 4-lane pre-merge, reusable feed factory, matrix discovery, Jenkins parity. [`tests/test_cicd.py`](../tests/test_cicd.py), 16 tests. |
+| **5 — Regression + audit verification** | **Done** | Full suite exit 0 across 81 test files; context drift check clean. |
 
 ### Deviations from the plan text, and why
 
@@ -42,7 +42,7 @@ All three source documents have been read in full.
 | **FR-05** | Cryptographic plan binding | **Already implemented** — `plan_gate` SHA-256 over `resource_changes` + `output_changes` |
 | **FR-06** | Privilege escalation prevention | **Not done.** Requires the §13 boundary deployed in AWS. The §13 JSON is defective as written — see §6. |
 | **FR-07** | Two-person rule | **Already implemented** — `plan_gate._enforce_production_approval` |
-| **FR-08** | FinOps circuit breakers | **Partial.** Athena `bytes_scanned_cutoff` ✅, Glacier lifecycle ✅, Glue worker count is a variable (configurable, not a hard cap) ⚠️, **`aws_glue_job` has no `timeout` argument** ❌ — the 120-minute execution cap does not exist. |
+| **FR-08** | FinOps circuit breakers | **Done.** Athena `bytes_scanned_cutoff` ✅, Glacier lifecycle ✅, and `aws_glue_job` now sets `timeout = var.timeout_minutes` (default 120, validated against AWS's 2880 ceiling) ✅. Previously absent, so AWS applied its 48-hour default. Pinned by [`tests/test_finops_circuit_breakers.py`](../tests/test_finops_circuit_breakers.py) and mutation-checked. |
 | **FR-09** | Runtime dependency pinning | **Not done, and contradicts §6.6.** See §6. |
 
 **Six of nine already existed before this work began.** The PRD documents them as requirements without marking them as shipped, which makes the remaining scope look larger than it is.
@@ -68,12 +68,9 @@ Eight defects fixed, notably: it mandated line-number anchors (which a docstring
 
 ## 4. Blocked on Matt's decision
 
-PRD §16 lists five open decisions. Two are load-bearing:
+**Resolved in PRD Revision 2.** All five decisions are signed off in §16. Decision 1 became grandfathered adoption (`--policy-mode brownfield` requires only `TeamId` + `ManagedBy`); Decision 2 became a 2-tier boundary separating the agent runner role from workload execution roles, which removes the circular dependency that blocked Iceberg compaction deletes.
 
-- **Decision 2 (credential strategy / permissions boundary)** blocks FR-06 and Phase 4. The CI/CD generator cannot emit OIDC role policies before the boundary shape is settled.
-- **Decision 1 (hard-blocking 6-key tagging gate)** blocks SEC-06.
-
-Decisions 3, 4, and 5 do not block current work.
+Still outstanding and **not** blocked by a decision: FR-06 (the boundary must actually be deployed in AWS) and FR-09 (dynamic dependency verification).
 
 ---
 
@@ -93,7 +90,14 @@ Manifests are now transport-focused and encode the constraints that matter: neve
 
 ## 6. Defects found in the PRD
 
-Ranked by severity. The first three are correctness issues, not preferences.
+Ranked by severity when first raised. **PRD Revision 2 resolved 6.1, 6.2, 6.3 and 6.5**, and cut the
+unsourced scope in 6.7. They are kept here as the record of what changed and why, not as open items.
+
+One defect was raised after Revision 2 and is **resolved**: §12 initially redefined FM-01..FM-05 with
+data-execution failure modes, colliding with `architecture_decision.FAILURE_MODES`, which is enforced
+by `validate()` and asserted by tests. An ADR authored from that draft would have been recorded under
+the wrong meaning. §12 now matches the canonical in-code taxonomy, with the data-specific modes moved
+to their own subsection.
 
 **6.1 — §8.1 and §8.3 contradict each other.** Object Lock in COMPLIANCE mode means no identity, including root, can delete an object for the full retention window. §8.3 promises GDPR/CCPA right-to-be-forgotten via row-level deletes. These cannot both hold. The standard resolution is pseudonymization at ingest so the WORM copy carries no direct identifier, with the identity map in an erasable store. This also contradicts the repo's own recorded decision: `governance-observability` chose GOVERNANCE mode because "COMPLIANCE cannot be shortened or removed by anyone including root for the full window, which has stranded more teams than it has caught."
 
