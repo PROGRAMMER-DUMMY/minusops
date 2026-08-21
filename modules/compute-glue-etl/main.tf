@@ -79,6 +79,23 @@ variable "number_of_workers" {
   default = 2
 }
 
+variable "timeout_minutes" {
+  type    = number
+  default = 120
+
+  # FinOps circuit breaker (PRD s11). Without an explicit timeout AWS Glue defaults to
+  # 2880 minutes (48 hours), so a Spark job stuck in a shuffle loop bills DPU-seconds for
+  # two days before anyone notices. 120 minutes bounds the worst case to roughly the cost
+  # of one bad run rather than one bad weekend.
+  #
+  # This is a ceiling, not a target: a job legitimately exceeding it is under-provisioned
+  # or reading too much per run, and raising the number is the wrong first response.
+  validation {
+    condition     = var.timeout_minutes > 0 && var.timeout_minutes <= 2880
+    error_message = "timeout_minutes must be between 1 and 2880 (AWS Glue's own ceiling)."
+  }
+}
+
 variable "alarm_sns_topic_arn" {
   type        = string
   default     = ""
@@ -170,6 +187,7 @@ resource "aws_glue_job" "this" {
   execution_class   = var.execution_class
   worker_type       = var.worker_type
   number_of_workers = var.number_of_workers
+  timeout           = var.timeout_minutes
   tags              = var.tags
 
   command {
