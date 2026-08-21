@@ -1046,6 +1046,12 @@ _KNOWN_REAL_FINDINGS = {
         # Action == "*" extension.
         ("SEC-02", "aws_iam_role_policy.cross_account_role"),
     },
+    "warehouse-snowflake-aws": {
+        # SEC-05 fires on standalone plan when snowflake_external_id / snowflake_iam_user_arn are empty
+        # before the 2-pass Snowflake handshake is completed.
+        ("SEC-05", "aws_iam_role.snowflake"),
+        ("SEC-05", "data.aws_iam_policy_document.assume"),
+    },
 }
 
 

@@ -14,7 +14,7 @@ variable "tags" {
 
 variable "create_dag_bucket" {
   type        = bool
-  default     = false
+  default     = true
   description = "Create a dedicated, versioned DAG bucket instead of taking one. MWAA REQUIRES versioning on the source bucket -- it resolves DAG updates by object version -- so a bucket supplied from elsewhere without it fails at environment creation with a message that does not say so."
 }
 
