@@ -87,8 +87,9 @@ def reflector_section(result):
             f"{counts.get('unknown', 0)} unknown)")
     rows = ["", "| Gate | Status | Detail |", "| :--- | :--- | :--- |"]
     for gate in result.get("gates") or []:
+        detail = str(gate.get("detail", "")).replace("|", "\\|")
         rows.append(f"| `{gate.get('gate')}` | {_BADGE.get(gate.get('status'), '?')} "
-                    f"| {str(gate.get('detail', '')).replace('|', '\\|')} |")
+                    f"| {detail} |")
     if counts.get("unknown"):
         rows += ["", "> `unknown` is not a pass -- those gates could not run."]
     return [head] + rows
