@@ -103,7 +103,7 @@ Ranked by severity. The first three are correctness issues, not preferences.
 - `s3:PutBucket*` includes `PutBucketPolicy`, permitting public or cross-account grants, which undermines SEC-01.
 - `Allow AttachRolePolicy` with `Deny DetachRolePolicy` means a bad attach can never be remediated.
 - No `aws:RequestedRegion` or resource-prefix conditions.
-- Hardcoded account ID `450374452930` in a template.
+- A hardcoded, real AWS account ID in a template document (redacted here; see PRD Rev 1 s13).
 
 **6.3 — §9.1's RPO is unachievable from §9.2's design.** Plain S3 CRR is asynchronous with no lag SLA. `< 15 min` requires S3 Replication Time Control, a separately-priced feature that must be explicitly enabled. `RTO < 2h` against a "Cold Standby" with no running compute requires the DR region to be pre-provisioned, which is not cold.
 
