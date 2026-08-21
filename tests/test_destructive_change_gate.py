@@ -349,21 +349,45 @@ def test_fail_closed_sweep_does_not_break_a_genuine_create_only_plan():
 
 def test_novel_stateful_type_now_stages_the_gap_this_fix_closes():
     """The specific case that was manually verified, live, against the unmodified classifier
-    before AUTO_SHIP_ELIGIBLE_TYPES existed: aws_dynamodb_table -- not in STATEFUL_RESOURCE_TYPES,
-    not in IAM_RESOURCE_TYPES (this repo's catalog has never declared it, confirmed by grep
-    across modules/*/main.tf, docs/g5_autonomy_boundary_scope.md proof-bar item 4) -- used to
-    classify autonomous_eligible=True. Must now stage, tagged distinctly from a known-dangerous
-    finding."""
-    assert "aws_dynamodb_table" not in gate.STATEFUL_RESOURCE_TYPES
-    assert "aws_dynamodb_table" not in gate.IAM_RESOURCE_TYPES
-    assert "aws_dynamodb_table" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    before AUTO_SHIP_ELIGIBLE_TYPES existed: a genuinely novel stateful type -- not in
+    STATEFUL_RESOURCE_TYPES, not in IAM_RESOURCE_TYPES, never declared anywhere in this repo's
+    real catalog -- used to classify autonomous_eligible=True. Must now stage, tagged distinctly
+    from a known-dangerous finding.
+
+    Fixture changed 2026-08-21 (same pattern as the aws_secretsmanager_secret swap below):
+    this used aws_dynamodb_table, which stopped being a novel type when
+    modules/metadata-control-table started declaring one (metadata control table module,
+    PRD 6.8.5) -- it is now a reviewed member of STATEFUL_RESOURCE_TYPES (see
+    test_dynamodb_table_is_reviewed_stateful_not_unreviewed below). That is the fail-closed
+    design doing its job, not a regression. aws_documentdb_cluster replaces it, confirmed absent
+    from modules/, core/, and tests/ by the same grep."""
+    assert "aws_documentdb_cluster" not in gate.STATEFUL_RESOURCE_TYPES
+    assert "aws_documentdb_cluster" not in gate.IAM_RESOURCE_TYPES
+    assert "aws_documentdb_cluster" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
     plan = {"resource_changes": [
-        {"address": "aws_dynamodb_table.sessions", "mode": "managed", "type": "aws_dynamodb_table",
-         "change": {"actions": ["create"]}},
+        {"address": "aws_documentdb_cluster.sessions", "mode": "managed",
+         "type": "aws_documentdb_cluster", "change": {"actions": ["create"]}},
     ]}
     result = gate.classify(plan)
     assert result["autonomous_eligible"] is False
     assert result["findings"][0]["reason"] == "unreviewed_resource_type"
+
+
+def test_dynamodb_table_is_reviewed_stateful_not_unreviewed():
+    """modules/metadata-control-table declares aws_dynamodb_table (fallback pipeline control
+    table), which forced the review docs/g5_autonomy_boundary_scope.md and the test above both
+    anticipated: growing the catalog is supposed to move a type out of 'nobody has looked at
+    this yet' and into an explicit, reasoned disposition -- here, stateful (it holds live
+    pipeline-config rows every DAG queries at parse time)."""
+    assert "aws_dynamodb_table" in gate.STATEFUL_RESOURCE_TYPES
+    assert "aws_dynamodb_table" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    plan = {"resource_changes": [
+        {"address": "aws_dynamodb_table.control", "mode": "managed",
+         "type": "aws_dynamodb_table", "change": {"actions": ["create"]}},
+    ]}
+    result = gate.classify(plan)
+    assert result["autonomous_eligible"] is False
+    assert result["findings"][0]["reason"] == "stateful_resource_type"
 
 
 def test_a_second_genuinely_novel_type_also_stages_not_just_the_one_hardcoded_example():

@@ -1,7 +1,7 @@
 # CONTEXT-modules.md — Reusable Building Block Modules Context
 
 ## Overview
-`modules/` contains **24 vetted, cloud-native Terraform modules** used by [`core/generation/synthesizer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/synthesizer.py) and registered in [`core/generation/modules.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/modules.py) to construct production-ready data pipelines and cloud infrastructure in **MinusOps**.
+`modules/` contains vetted, cloud-native Terraform modules used by [`core/generation/synthesizer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/synthesizer.py) and registered in [`core/generation/modules.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/modules.py) to construct production-ready data pipelines and cloud infrastructure in **MinusOps**.
 
 ---
 
@@ -23,6 +23,7 @@
 | [`ingestion-dms`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-dms/main.tf) | Ingestion | Database CDC (RDS / on-premise) into Bronze via AWS DMS, credentials by Secrets Manager reference | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-dms/main.tf) |
 | [`ingestion-sftp`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-sftp/main.tf) | Ingestion | Partner file drops via AWS Transfer Family, one chrooted role per user | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-sftp/main.tf) |
 | [`ingestion-webhook`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-webhook/main.tf) | Ingestion | HTTPS event receiver: API Gateway to SQS with a DLQ, no Lambda in the path | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-webhook/main.tf) |
+| [`metadata-control-table`](./metadata-control-table/main.tf) | Orchestration | Fallback DynamoDB pipeline control table for dynamic DAG parameters; primary path reads an existing enterprise table via a column mapping | [`main.tf`](./metadata-control-table/main.tf), [`scripts/fetch_pipeline_config.py`](./metadata-control-table/scripts/fetch_pipeline_config.py) |
 | [`networking-vpc`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/main.tf) | Networking | Multi-AZ customer VPC with NAT Gateways, default SG & VPC Endpoints | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/main.tf), [`PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/PROVENANCE.json) |
 | [`orchestrator-mwaa`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-mwaa/main.tf) | Orchestration | Managed Workflows for Apache Airflow (MWAA) environment in private VPC with KMS & log streams | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-mwaa/main.tf) |
 | [`orchestrator-stepfunctions`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-stepfunctions/main.tf) | Orchestration | AWS Step Functions state machine workflow orchestrator | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-stepfunctions/main.tf) |
@@ -506,6 +507,28 @@ All four were validated against the **installed provider schema** (`terraform pr
   - `database_name`: Name of created Glue Catalog Database.
   - `table_name`: Name of created Glue Catalog Table.
   - `table_location`: S3 location of Iceberg table (`s3://${var.table_bucket}/iceberg/${var.table_name}`).
+
+---
+
+### 17. `metadata-control-table` (Phase 3, PRD 6.8.4/6.8.5)
+- **Files**:
+  - [`modules/metadata-control-table/main.tf`](./metadata-control-table/main.tf)
+  - [`modules/metadata-control-table/scripts/fetch_pipeline_config.py`](./metadata-control-table/scripts/fetch_pipeline_config.py)
+- **Architectural Role**: dynamic Airflow/Step Function parameters (schedule, cluster size, worker count, timeout, status) read from a table at DAG-parse / pre-execution time instead of hardcoded in Python. **PRIMARY path is reading an EXISTING enterprise control table** -- any name, any column names -- through `fetch_pipeline_config.py`'s caller-supplied column mapping; that script never touches Terraform. This module is the **FALLBACK**: a DynamoDB table to provision only for a greenfield project with none yet. Nothing in `core/generation/modules.py`'s `_ENUMERABLE_FIELD_MODULES`/`derive_module_ids()` auto-selects it -- `match_modules()` can surface it, but composing it into a stack is an explicit choice, matching "opt-in, not the default." The corrected design deliberately diverges from the PRD's literal wording (a single MinusOps-owned schema named `tbl_pipeline_control_config`): an enterprise running metadata-driven pipelines already has this table under its own naming convention, and a rigid MinusOps schema would collide with it rather than integrate.
+- **Provisioned Resources**:
+  - `aws_dynamodb_table.control`: on-demand (`PAY_PER_REQUEST` default) table with `server_side_encryption` always enabled (optional customer CMK), `point_in_time_recovery` on by default, and a name suffixed `${name_prefix}-pipeline-control-${substr(md5(run_id), 0, 8)}` when `table_name` is left blank -- same run-hash collision guard `storage-medallion-s3`'s KMS alias uses, so two runs sharing a `name_prefix` don't collide. No GSIs (ponytail: add one only once a real access pattern beyond the primary key needs it).
+- **Inputs**:
+  - `name_prefix` (string, required), `tags` (map(string), default `{}`).
+  - `run_id` (string, default `""`): folds into the default table name; ignored once `table_name` is set.
+  - `table_name` (string, default `""`): explicit override to match an existing naming convention.
+  - `partition_key_name` / `partition_key_type` (default `"feed_id"` / `"S"`) and `sort_key_name` / `sort_key_type` (default `""` / `"S"`, sort key omitted when blank): key attribute **names**, not just values, are inputs -- even the fallback table can be created under a company's own convention.
+  - `billing_mode` (`"PAY_PER_REQUEST"` default or `"PROVISIONED"`, validated), `read_capacity` / `write_capacity` (used only when `PROVISIONED`).
+  - `kms_key_arn` (string, default `""`): optional CMK; empty still encrypts under DynamoDB's AWS-owned default key.
+  - `point_in_time_recovery` (bool, default `true`).
+- **Outputs**: `table_name`, `table_arn`.
+- **No IAM resource of any kind is provisioned here.** Readers (Airflow workers, Step Functions pre-execution steps) use their own existing execution role; this module never takes a credential as a variable, and any identity/access mapping a caller later adds to a control-table row must be an IAM role ARN or an Identity Center group id -- never a static access key. Asserted directly against the HCL (no `aws_iam_*` resource, no `Resource = "*"`) and the script (no credential parameter) by `tests/test_metadata_control_table.py`.
+- **Runtime helper (`scripts/fetch_pipeline_config.py`)**: standalone stdlib-only script -- no `core/` imports, since it runs inside the customer's Airflow/Lambda environment, not this repo's control plane. Shells to the `aws` CLI (`aws dynamodb get-item`), the same technique `core/providers/aws.py` uses, rather than boto3. `parse_control_row(raw_item, column_map)` is the pure, unit-tested column-mapping indirection: `column_map` is `{normalized_key: caller's_own_column_name}`, so two enterprises' tables with completely different column names both resolve to the same normalized keys MinusOps' generated DAGs read. A mapped column absent from a row resolves to `None`, never a `KeyError` -- one stale/mid-migration column must not crash DAG parsing for every pipeline sharing the table. `fetch_control_row(table_name, key, column_map, region=None)` wraps that parser around the actual `get-item` call and returns `(row_or_None, error_string)`.
+- **G5 disposition**: `aws_dynamodb_table` is reviewed into `core/governance/destructive_change_gate.py`'s `STATEFUL_RESOURCE_TYPES` -- it holds live pipeline-config rows every DAG queries at parse time, so a replace/recreate silently blanks every pipeline's schedule and cluster sizing. See that file's inline comment and `tests/test_destructive_change_gate.py::test_dynamodb_table_is_reviewed_stateful_not_unreviewed`.
 
 ---
 

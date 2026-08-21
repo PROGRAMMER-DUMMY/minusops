@@ -10,6 +10,18 @@ forking a giant recipe.
 
 The composed Terraform still goes through the normal deploy gate (validate + SEC scan + plan-hash
 approval + BCM cost); these modules are starting blocks, not an apply-without-review shortcut.
+
+Everything this module returns is ADVISORY. match_modules(), compute_tier(), and
+derive_module_ids() all produce recommendations for a human to review into
+architecture_decision.json; nothing here selects or applies anything on its own.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing
+Used by: core/generation/synthesizer.py, core/generation/schema_lint.py,
+    core/generation/schema_watch.py, core/generation/module_provenance.py,
+    core/generation/patterns.py, core/generation/knowledge_degradation.py,
+    core/architecture/architecture_decision.py, core/cost/coverage_audit.py,
+    core/governance/reflector.py, core/reporting/reporter.py (lazily), and a wide slice of tests/
 """
 import os
 import re
@@ -146,7 +158,7 @@ MODULES = [
                    "spot_timeout_minutes", "idle_timeout_seconds"],
         "provides": ["cluster_id", "instance_role_arn"],
     },
-    # --- Sprint 3 warehouse & streaming expansion (MINUS-148..152) ---
+    # --- Warehouse & streaming ---
     {
         "id": "warehouse-snowflake-aws", "category": "analytics",
         "title": "Snowflake external stage integration (AWS side)",
@@ -274,8 +286,8 @@ MODULES = [
                    "siem_kms_key_arn", "siem_retention_days"],
         "provides": ["budget_name", "alerts_topic_arn"],
     },
-    # --- Upstream ingestion (MINUS-123..127). The 2026-08-17 run created empty landing
-    # buckets because nothing in the catalog answered "where does the data come from".
+    # --- Upstream ingestion. Do not drop these: without a catalog entry answering "where does
+    # the data come from", synthesis composes a stack whose landing buckets stay empty.
     {
         "id": "ingestion-dms", "category": "ingestion",
         "title": "Database CDC ingestion (AWS DMS)",
@@ -321,6 +333,25 @@ MODULES = [
                    "throttling_rate_limit"],
         "provides": ["webhook_url", "queue_url", "queue_arn", "hmac_secret_arn"],
     },
+    # --- Metadata-driven orchestration. FALLBACK only: the primary path
+    # (scripts/fetch_pipeline_config.py) reads an EXISTING enterprise control table via a
+    # caller-supplied column mapping and never touches Terraform at all. This module is only
+    # for a greenfield project with no control table yet -- match_modules() surfacing it is not
+    # the same as the synthesizer auto-wiring it; nothing in this catalog composes it in by
+    # default.
+    {
+        "id": "metadata-control-table", "category": "orchestration",
+        "title": "Pipeline metadata control table (DynamoDB) for dynamic DAG parameters",
+        "satisfies": ["metadata control table", "pipeline control table", "control table",
+                      "dynamic dag configuration", "dynamic airflow parameters",
+                      "pipeline metadata store", "dag parameter store",
+                      "cluster config lookup table"],
+        "services": ["Amazon DynamoDB"],
+        "inputs": ["name_prefix", "tags", "run_id", "table_name", "partition_key_name",
+                   "partition_key_type", "sort_key_name", "sort_key_type", "billing_mode",
+                   "read_capacity", "write_capacity", "kms_key_arn", "point_in_time_recovery"],
+        "provides": ["table_name", "table_arn"],
+    },
 ]
 
 REQUIRED_FIELDS = ("id", "category", "title", "satisfies", "services", "inputs", "provides")
@@ -344,11 +375,11 @@ def categories():
 
 # Tokens that appear in so many modules' `satisfies` phrases that a single-token hit on them
 # carries no signal. "data" is the worst offender -- it is inside "change data capture",
-# "data quality", "data lake", "data contracts", so a weak-overlap hit on it made every
-# module look partly relevant to every data-pipeline request. Discovered when adding the
-# ingestion modules silently pulled `ingestion-dms` into an Airflow-lakehouse match and broke
-# pattern reuse (test_patterns.py). WHOLE-PHRASE matches are unaffected: "change data capture"
-# appearing verbatim is still the strong 3-point signal it always was.
+# "data quality", "data lake", "data contracts", so a weak-overlap hit on it makes every
+# module look partly relevant to every data-pipeline request -- concretely, it pulls
+# `ingestion-dms` into an Airflow-lakehouse match and breaks pattern reuse (test_patterns.py).
+# WHOLE-PHRASE matches are unaffected: "change data capture" appearing verbatim is still the
+# strong 3-point signal.
 _WEAK_STOPWORDS = frozenset({
     "data", "aws", "amazon", "managed", "the", "and", "for", "with", "from", "into", "our",
 })
@@ -393,9 +424,9 @@ def match_modules(requirements, min_score=1):
 
 def retrieve_grounding_examples(requirements, top_n=3, min_score=1):
     """Repurposes `match_modules()`'s scoring toward retrieval-for-grounding (docs/
-    phase6_scope.md section 2.1, docs/phase6_step5_teardown_scope.md section 3) -- additive, not
-    a rewrite: the scorer itself is untouched and still used exactly as-is by every existing
-    caller (`synthesizer.select_modules()`, `patterns.py`) for final catalog-pick selection.
+    phase6_scope.md section 2.1) -- additive, not a rewrite: the scorer itself is untouched and
+    still used as-is by `synthesizer.select_modules()` and `patterns.py` for final catalog-pick
+    selection.
 
     This is a DIFFERENT consumer of the same ranking: given a requirement, return the top-N
     ranked modules as real, human-reviewed reference examples -- their actual `main.tf` content,
@@ -407,9 +438,9 @@ def retrieve_grounding_examples(requirements, top_n=3, min_score=1):
 
     Returns a list of {id, title, services, score, matched, content} dicts, best-first. `content`
     is the module's real, current `main.tf` text -- read fresh every call, never cached, so a
-    grounding example is never staler than the catalog itself (the same "re-verify live, don't
-    trust from history" principle this session's `module_provenance.py` retirement established
-    for content review applies here too, for content RETRIEVAL)."""
+    grounding example is never staler than the catalog itself. Same "re-verify live, don't trust
+    history" principle module_provenance.py applies to content review, applied to content
+    RETRIEVAL."""
     ranked = match_modules(requirements, min_score=min_score)
     examples = []
     for m in ranked[:top_n]:
@@ -426,12 +457,12 @@ def retrieve_grounding_examples(requirements, top_n=3, min_score=1):
     return examples
 
 
-# Phase 7 Item 3 (docs/phase7_generation_engine_plan.md), scoped to requirements.py's own named
-# carve-out (see that module's docstring): non_functional.latency and data_pipeline.consumption/
-# orchestration/catalog are enumerable answers grill-me already gathers and nothing downstream
-# reads today. Deliberately NOT storage/compute/data-quality (sources, storage_zones, transforms,
-# data_quality) -- those need real text understanding beyond a closed enumerable answer and stay
-# on match_modules()'s free-text path.
+# Scoped to requirements.py's own named carve-out (see that module's docstring):
+# non_functional.latency and data_pipeline.consumption/orchestration/catalog are enumerable
+# answers grill-me already gathers and nothing downstream reads. Deliberately NOT
+# storage/compute/data-quality (sources, storage_zones, transforms, data_quality) -- those need
+# real text understanding beyond a closed enumerable answer, so they stay on match_modules()'s
+# free-text path.
 _ENUMERABLE_FIELD_MODULES = {
     "consumption": ["query-athena", "consumption-redshift-serverless"],
     "orchestration": ["orchestrator-mwaa", "orchestrator-stepfunctions"],
@@ -467,8 +498,8 @@ def _match_score(text, module_id):
     return score
 
 
-# MINUS-128. Volume decides the engine; the SLA decides whether it can run on discounted
-# capacity. Thresholds are the crossover points where the cheaper option stops being cheaper:
+# Volume decides the engine; the SLA decides whether it can run on discounted capacity. The
+# thresholds are the crossover points where the cheaper option stops being cheaper:
 #
 #   < 1 TB/day   Glue. Per-DPU-second billing with no cluster to idle. Below this, EMR's
 #                startup and idle time costs more than Glue's premium.
@@ -550,18 +581,16 @@ def derive_module_ids(requirements_data):
     and Firehose together), so both are included independently whenever they match -- no
     tie-break there.
 
-    Known disclosed limitation (latency path only): some of speed-layer-kinesis's `satisfies`
-    phrases are bare generic single words ("events", "streaming") -- a batch-cadence answer that
-    happens to mention one of those words in a non-streaming sense (e.g. "process events in
-    hourly batches") can still trigger a false-positive streaming recommendation. This is the
-    same class of weak-single-token-match issue the enumerable-field tie-break above was built
-    to avoid, but is not fixed on the latency path in this pass: the two streaming modules'
-    complementary (non-exclusive) semantics mean a specificity threshold that fixes this would
-    also risk dropping ingest-firehose's own legitimate weaker single-phrase matches (e.g. "near
-    real-time ingest" scoring only 1) for genuinely-streaming answers. Recommendations here are
-    advisory only -- exactly like every other pick this function returns -- so a human reviewing
-    before it reaches architecture_decision.json is the actual safety net for this residual gap,
-    not a claim that the latency path is airtight."""
+    Known limitation on the latency path: some of speed-layer-kinesis's `satisfies` phrases are
+    bare generic single words ("events", "streaming"), so a batch-cadence answer mentioning one
+    of them in a non-streaming sense ("process events in hourly batches") can false-positive into
+    a streaming recommendation. This is the weak-single-token-match problem the enumerable-field
+    tie-break above avoids, deliberately left unfixed here: the two streaming modules are
+    complementary rather than exclusive, so a specificity threshold that fixed it would also drop
+    ingest-firehose's legitimate weaker single-phrase matches ("near real-time ingest", scoring
+    only 1) for genuinely streaming answers. These picks are advisory, so human review before
+    architecture_decision.json is the safety net -- not a claim that the latency path is
+    airtight."""
     data_pipeline = (requirements_data or {}).get("data_pipeline") or {}
     non_functional = (requirements_data or {}).get("non_functional") or {}
     picks = []
