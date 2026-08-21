@@ -1,0 +1,546 @@
+"""
+CI/CD pipeline synthesis: 4-lane pre-merge validation, and the reusable feed factory.
+
+Emits the CI/CD half of a governed pipeline the same way `synthesizer.py` emits the
+Terraform half -- into a run workspace, for a human to review before it reaches a repo.
+Two engines are supported because enterprises do not all get to choose: GitHub Actions with
+OIDC federation, and declarative Jenkins for shops with private-VPC runners behind a
+firewall. Both drive the *same* `plan_gate.py` commands, so the governance path does not
+fork per CI engine -- only the wrapper does.
+
+Three properties are deliberate and should survive edits:
+
+1. `pull_request`, never `pull_request_target`. The latter runs with the base repo's
+   secrets against the fork's code, handing any fork author a write-capable OIDC role.
+   Fork PRs get the static lanes and no plan; that is the correct trade.
+2. No static credentials in either engine. GitHub assumes a role via OIDC; Jenkins uses the
+   agent's ambient instance profile / IRSA. A generated pipeline that asks for an
+   `AWS_SECRET_ACCESS_KEY` teaches the operator to store one.
+3. Onboarding a feed is one YAML file. `feeds/*.yaml` is discovered into a matrix, so
+   adding a vendor never means writing another workflow -- which is how CI directories
+   become forty near-identical files that drift apart.
+
+Templates use `__TOKEN__` placeholders rather than str.format or string.Template, because
+GitHub Actions expressions are themselves `${{ ... }}` and would collide with both.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing
+Used by: nothing yet -- CLI entry point; wire into `minusctl` when the engine choice is
+    captured by the requirements gate
+"""
+import argparse
+import os
+import sys
+
+GITHUB = "github"
+JENKINS = "jenkins"
+ENGINES = (GITHUB, JENKINS)
+
+DEFAULT_TF_DIR = "terraform"
+DEFAULT_REGION = "us-east-1"
+
+
+# --- 4-lane pre-merge validation ------------------------------------------------------
+
+_PR_WORKFLOW = '''name: "Pre-merge validation (4 lanes)"
+
+# Four independent lanes converge on one merge gate. They run in parallel because a
+# reviewer who waits eleven minutes for lane 4 to reveal a lint error stops reading lanes
+# 1-3 carefully.
+#
+# `pull_request`, NOT `pull_request_target`: pull_request_target runs with this repo's
+# secrets against the fork's code, which would hand any fork author the OIDC role below.
+# Fork PRs therefore get lanes 1, 2 and 4 plus the static half of lane 3, and no plan.
+
+on:
+  pull_request:
+    paths:
+      - "__TF_DIR__/**"
+      - "src/**"
+      - "feeds/**"
+      - "contracts/**"
+      - ".github/workflows/pre-merge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write        # OIDC only; no static keys anywhere in this file
+  pull-requests: write
+
+# One validation per PR. Two concurrent plans on one directory race for the plan-gate's
+# pending record and the loser's approval is silently voided by the winner.
+concurrency:
+  group: premerge-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lane1-migration:
+    name: "Lane 1 - DDL/DML migration dry-run"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Compile models without executing them
+        run: |
+          if [ -f src/dbt/dbt_project.yml ]; then
+            pip install --quiet dbt-core dbt-athena-community
+            dbt compile --project-dir src/dbt --target staging
+          else
+            echo "No dbt project; nothing to dry-run."
+          fi
+
+  lane2-contracts:
+    name: "Lane 2 - Data contracts"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Validate schema contracts
+        run: |
+          if [ -d tests/contracts ]; then
+            pip install --quiet pytest
+            pytest tests/contracts -q
+          else
+            echo "No contract tests present."
+          fi
+
+  lane3-terraform:
+    name: "Lane 3 - Terraform plan + AST security scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Reuses the existing composite action rather than re-implementing plan+scan+cost.
+      # Two copies of the review logic drift, and the copy in the newer file wins by
+      # accident rather than by decision.
+      - uses: ./.github/actions/pr-reviewer
+        with:
+          tf_dir: "__TF_DIR__"
+          aws_region: "__REGION__"
+          role_to_assume: ${{ vars.MINUSOPS_PLAN_ROLE_ARN }}
+
+  lane4-unit:
+    name: "Lane 4 - PySpark / DAG unit tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --quiet pytest
+      - name: Unit tests
+        run: |
+          if [ -d tests/unit ]; then pytest tests/unit -q; else echo "No unit tests."; fi
+
+  merge-gate:
+    name: "Merge gate"
+    runs-on: ubuntu-latest
+    needs: [lane1-migration, lane2-contracts, lane3-terraform, lane4-unit]
+    # `needs` already fails this job if any lane fails. The explicit check exists for the
+    # skipped case: a lane that never ran is not a lane that passed.
+    steps:
+      - name: Assert every lane succeeded
+        run: |
+          for result in "${{ needs.lane1-migration.result }}" \\
+                        "${{ needs.lane2-contracts.result }}" \\
+                        "${{ needs.lane3-terraform.result }}" \\
+                        "${{ needs.lane4-unit.result }}"; do
+            if [ "$result" != "success" ]; then
+              echo "::error::Lane result '$result' is not success - blocking merge."
+              exit 1
+            fi
+          done
+          echo "All four lanes passed."
+'''
+
+
+# --- Feed factory ---------------------------------------------------------------------
+
+_FEED_FACTORY = '''name: "Feed factory (reusable)"
+
+# One reusable workflow for every vendor feed. Onboarding a feed is a YAML file in feeds/,
+# never another copy of this file -- forty near-identical workflows drift apart and the
+# difference is only discovered during an incident.
+
+on:
+  workflow_call:
+    inputs:
+      feed_file:
+        description: "Path to the feed config, e.g. feeds/payer_feed_01.yaml"
+        required: true
+        type: string
+      environment:
+        description: "dev | staging | prod"
+        required: false
+        default: "dev"
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  feed:
+    name: "${{ inputs.feed_file }}"
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Read feed config
+        id: feed
+        run: python core/generation/cicd.py read-feed --file "${{ inputs.feed_file }}" --github-output
+
+      # Region and role come from repository variables, never from the feed file. A feed
+      # config is edited by whoever onboards a vendor; a role ARN in it is an escalation
+      # path disguised as configuration.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.MINUSOPS_PLAN_ROLE_ARN }}
+          aws-region: __REGION__
+
+      - name: Verify and plan through the deploy gate
+        run: |
+          python core/governance/plan_gate.py verify --dir "${{ steps.feed.outputs.tf_dir }}"
+          python core/governance/plan_gate.py plan   --dir "${{ steps.feed.outputs.tf_dir }}"
+
+      # No apply here on purpose. Applying belongs behind the environment protection rule
+      # and the two-person check in plan_gate, not inside a per-feed loop that a matrix
+      # can fan out across every vendor at once.
+'''
+
+
+_FEED_DISPATCH = '''name: "Feeds"
+
+# Discovers feeds/*.yaml and fans the reusable factory across them. Adding a vendor means
+# adding one YAML file and nothing else.
+
+on:
+  pull_request:
+    paths: ["feeds/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      feeds: ${{ steps.list.outputs.feeds }}
+      any: ${{ steps.list.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: python core/generation/cicd.py list-feeds --github-output
+
+  feed:
+    needs: discover
+    if: needs.discover.outputs.any == 'true'
+    strategy:
+      fail-fast: false        # one bad vendor config must not hide the others
+      matrix:
+        feed_file: ${{ fromJson(needs.discover.outputs.feeds) }}
+    uses: ./.github/workflows/feed-factory.yml
+    with:
+      feed_file: ${{ matrix.feed_file }}
+    secrets: inherit
+'''
+
+
+_FEED_EXAMPLE = '''# Onboarding a vendor feed: copy this file, change the values, open a PR.
+# No workflow file is needed -- feeds-dispatch.yml discovers this automatically.
+#
+# Deliberately absent: any role ARN, secret, or account id. Those come from repository
+# variables so that editing a feed config can never widen access.
+
+feed_id: "__FEED_ID__"
+domain: "domain-analytics"
+source_s3_prefix: "inbound/payers/vendor_a/"
+schedule_cron: "0 8 * * ? *"          # daily 08:00 UTC
+schema_contract: "contracts/payers/v1_schema.json"
+compute_engine: "glue-spark-4.0"
+max_worker_capacity: 4
+timeout_minutes: 120                   # FinOps circuit breaker; see PRD s11
+cost_center: "CC-0000"
+owner_role: "payer-reconciliation-lead"   # role alias, never a personal email
+tf_dir: "__TF_DIR__"
+'''
+
+
+# --- Jenkins --------------------------------------------------------------------------
+
+_JENKINSFILE = """// Declarative Jenkins pipeline for MinusOps-governed infrastructure.
+//
+// Runs the SAME plan_gate.py commands as the GitHub Actions path. The governance logic
+// lives in Python, not in the CI engine, so switching engines cannot quietly change what
+// is enforced.
+//
+// Credentials: the agent's IAM instance profile (EC2) or IRSA (EKS) supplies ambient STS
+// credentials. No withCredentials block, no static keys -- plan_gate rejects long-term
+// AKIA keys in production anyway, so storing them would only produce a late failure.
+
+pipeline {
+    agent { label '__AGENT_LABEL__' }
+
+    options {
+        timestamps()
+        timeout(time: 2, unit: 'HOURS')
+        disableConcurrentBuilds()   // two plans on one dir race for the pending record
+    }
+
+    environment {
+        AWS_REGION = '__REGION__'
+        TF_DIR     = '__TF_DIR__'
+    }
+
+    stages {
+        stage('Pre-merge validation (4 lanes)') {
+            parallel {
+                stage('Lane 1 - Migration dry-run') {
+                    steps {
+                        sh '''
+                          if [ -f src/dbt/dbt_project.yml ]; then
+                            dbt compile --project-dir src/dbt --target staging
+                          else
+                            echo "No dbt project; nothing to dry-run."
+                          fi
+                        '''
+                    }
+                }
+                stage('Lane 2 - Data contracts') {
+                    steps {
+                        sh 'if [ -d tests/contracts ]; then pytest tests/contracts -q; else echo "none"; fi'
+                    }
+                }
+                stage('Lane 3 - Terraform plan + AST scan') {
+                    steps {
+                        sh 'python core/governance/plan_gate.py verify --dir "$TF_DIR"'
+                        sh 'python core/governance/plan_gate.py plan   --dir "$TF_DIR"'
+                    }
+                }
+                stage('Lane 4 - Unit tests') {
+                    steps {
+                        sh 'if [ -d tests/unit ]; then pytest tests/unit -q; else echo "none"; fi'
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to dev') {
+            when { branch 'develop' }
+            steps {
+                sh 'python core/governance/plan_gate.py run --dir "$TF_DIR" --mode gatekeeper --policy-mode dev'
+            }
+        }
+
+        stage('Staging gate - business sign-off') {
+            when { branch 'staging' }
+            input {
+                message 'Approve deployment to staging?'
+                submitter '__STAGING_APPROVERS__'
+            }
+            steps {
+                sh 'python core/governance/plan_gate.py run --dir "$TF_DIR" --mode gatekeeper --policy-mode production'
+            }
+        }
+
+        stage('Production gate - two-person rule') {
+            when { branch 'main' }
+            // Jenkins `submitter` records who clicked, but it is NOT the two-person check.
+            // plan_gate re-verifies planner != approver against STS caller identity, which
+            // a CI button cannot forge. Removing this input would not weaken that; removing
+            // --policy-mode production would.
+            input {
+                message 'Authorize production release?'
+                submitter '__PROD_APPROVERS__'
+            }
+            steps {
+                sh 'python core/governance/plan_gate.py run --dir "$TF_DIR" --mode gatekeeper --policy-mode production'
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: '.agents/logs/audit.jsonl', allowEmptyArchive: true
+        }
+    }
+}
+"""
+
+
+# --- Rendering ------------------------------------------------------------------------
+
+def _fill(template, **tokens):
+    for key, value in tokens.items():
+        template = template.replace("__%s__" % key.upper(), str(value))
+    return template
+
+
+def render_pr_workflow(tf_dir=DEFAULT_TF_DIR, region=DEFAULT_REGION):
+    """The 4-lane pre-merge workflow."""
+    return _fill(_PR_WORKFLOW, tf_dir=tf_dir, region=region)
+
+
+def render_feed_factory(region=DEFAULT_REGION):
+    """The reusable `workflow_call` template every feed shares."""
+    return _fill(_FEED_FACTORY, region=region)
+
+
+def render_feed_dispatch():
+    """Matrix dispatcher that discovers feeds/*.yaml."""
+    return _FEED_DISPATCH
+
+
+def render_feed_example(feed_id="payer-reconciliation-01", tf_dir=DEFAULT_TF_DIR):
+    return _fill(_FEED_EXAMPLE, feed_id=feed_id, tf_dir=tf_dir)
+
+
+def render_jenkinsfile(tf_dir=DEFAULT_TF_DIR, region=DEFAULT_REGION,
+                       agent_label="aws-data-engineer-runner",
+                       staging_approvers="bi-analysts,domain-leads",
+                       prod_approvers="platform-lead,secops-approvers"):
+    return _fill(_JENKINSFILE, tf_dir=tf_dir, region=region, agent_label=agent_label,
+                 staging_approvers=staging_approvers, prod_approvers=prod_approvers)
+
+
+# --- Feed config parsing --------------------------------------------------------------
+
+# A deliberately small reader rather than a YAML dependency. Feed configs are flat
+# `key: value` pairs by design (see the example), and PyYAML is optional in this project --
+# team_resolver already degrades gracefully without it. If a feed ever needs nesting, that
+# is the signal to require PyYAML, not to grow this parser.
+def parse_feed(text):
+    """Flat `key: value` YAML subset -> dict. Ignores comments and blank lines."""
+    config = {}
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip() if not raw.strip().startswith("#") else ""
+        if not line or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        value = value.strip().strip('"').strip("'")
+        if value:
+            config[key.strip()] = value
+    return config
+
+
+def load_feed(path):
+    with open(path, encoding="utf-8") as handle:
+        return parse_feed(handle.read())
+
+
+def list_feed_files(root="feeds"):
+    """Sorted feed configs. Sorted so a matrix is stable between runs -- an unstable job
+    order makes two identical commits produce differently-named checks."""
+    if not os.path.isdir(root):
+        return []
+    return sorted(os.path.join(root, name) for name in os.listdir(root)
+                  if name.endswith((".yaml", ".yml")))
+
+
+# --- Writing --------------------------------------------------------------------------
+
+def write_cicd(out_dir, engine=GITHUB, tf_dir=DEFAULT_TF_DIR, region=DEFAULT_REGION,
+               feed_id="payer-reconciliation-01"):
+    """Write the CI/CD scaffold under `out_dir`. Returns the paths actually written.
+
+    Never overwrites. A workflow an operator has edited is reviewed configuration, and
+    re-synthesising a run must not silently discard it -- the same rule
+    `synthesizer.write_project_scaffold` follows.
+    """
+    if engine not in ENGINES:
+        raise ValueError("engine must be one of %s, got %r" % (ENGINES, engine))
+
+    if engine == GITHUB:
+        planned = {
+            os.path.join(".github", "workflows", "pre-merge.yml"):
+                render_pr_workflow(tf_dir, region),
+            os.path.join(".github", "workflows", "feed-factory.yml"):
+                render_feed_factory(region),
+            os.path.join(".github", "workflows", "feeds-dispatch.yml"):
+                render_feed_dispatch(),
+            os.path.join("feeds", "%s.yaml" % feed_id): render_feed_example(feed_id, tf_dir),
+        }
+    else:
+        planned = {"Jenkinsfile": render_jenkinsfile(tf_dir, region)}
+
+    written = []
+    for relative, content in sorted(planned.items()):
+        target = os.path.join(out_dir, relative)
+        if os.path.exists(target):
+            continue
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        written.append(target)
+    return written
+
+
+# --- CLI ------------------------------------------------------------------------------
+
+def _emit_github_output(pairs):
+    """Append key=value lines to $GITHUB_OUTPUT, or print them when running locally."""
+    target = os.environ.get("GITHUB_OUTPUT")
+    lines = ["%s=%s" % (key, value) for key, value in pairs.items()]
+    if target:
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+    else:
+        print("\n".join(lines))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Synthesize CI/CD pipelines.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    gen = sub.add_parser("generate", help="write the CI/CD scaffold")
+    gen.add_argument("--out-dir", default=".")
+    gen.add_argument("--engine", choices=ENGINES, default=GITHUB)
+    gen.add_argument("--tf-dir", default=DEFAULT_TF_DIR)
+    gen.add_argument("--region", default=DEFAULT_REGION)
+    gen.add_argument("--feed-id", default="payer-reconciliation-01")
+
+    read = sub.add_parser("read-feed", help="parse one feed config")
+    read.add_argument("--file", required=True)
+    read.add_argument("--github-output", action="store_true")
+
+    listing = sub.add_parser("list-feeds", help="list feed configs as a JSON matrix")
+    listing.add_argument("--root", default="feeds")
+    listing.add_argument("--github-output", action="store_true")
+
+    args = parser.parse_args(argv)
+
+    if args.command == "generate":
+        written = write_cicd(args.out_dir, args.engine, args.tf_dir, args.region, args.feed_id)
+        if not written:
+            print("nothing written: every target already exists (never overwritten)")
+        for path in written:
+            print("wrote %s" % path)
+        return 0
+
+    if args.command == "read-feed":
+        config = load_feed(args.file)
+        config.setdefault("tf_dir", DEFAULT_TF_DIR)
+        if args.github_output:
+            _emit_github_output(config)
+        else:
+            for key, value in sorted(config.items()):
+                print("%s=%s" % (key, value))
+        return 0
+
+    import json
+    files = list_feed_files(args.root)
+    if args.github_output:
+        _emit_github_output({"feeds": json.dumps(files),
+                             "any": "true" if files else "false"})
+    else:
+        print(json.dumps(files))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
