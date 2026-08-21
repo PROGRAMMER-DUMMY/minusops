@@ -1123,7 +1123,10 @@ def _render_backend(state_backend, name_prefix, run_id):
     team_id = state_backend.get("team_id")
     if team_id:
         workload_id = state_backend.get("workload_id") or name_prefix
-        key = team_resolver.state_key(team_id, workload_id)
+        # domain_id defaults to the team when unstated, so an existing single-team caller
+        # still produces a well-formed 3-tier key instead of failing.
+        domain_id = state_backend.get("domain_id") or team_id
+        key = team_resolver.state_key(domain_id, team_id, workload_id)
     else:
         key = f"{name_prefix}/{run_id or 'default'}/terraform.tfstate"
     return (_BACKEND_TEMPLATE

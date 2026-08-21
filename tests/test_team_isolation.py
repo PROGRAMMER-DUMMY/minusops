@@ -64,24 +64,34 @@ def test_malformed_directory_raises_rather_than_looking_empty(tmp_path):
 # --- MINUS-141: state isolation -------------------------------------------------------------
 
 def test_team_state_key_isolates_squads():
-    assert team_resolver.state_key("acme-data", "lakehouse") == \
-        "teams/acme-data/lakehouse/terraform.tfstate"
-    assert team_resolver.state_key("acme-ml", "lakehouse") != \
-        team_resolver.state_key("acme-data", "lakehouse")
+    # Superseded by the 2026-08-21 ruling: the key is now domain/project/workload.
+    assert team_resolver.state_key("analytics", "acme-data", "lakehouse") == \
+        "teams/analytics/acme-data/lakehouse/terraform.tfstate"
+    assert team_resolver.state_key("analytics", "acme-ml", "lakehouse") != \
+        team_resolver.state_key("analytics", "acme-data", "lakehouse")
 
 
 def test_workload_id_is_validated_too():
     """A workload id is equally operator-supplied and lands in the same key, so a traversal
     there escapes the team prefix just as effectively."""
     with pytest.raises(team_resolver.InvalidTeamId):
-        team_resolver.state_key("acme-data", "../other-team")
+        team_resolver.state_key("analytics", "acme-data", "../other-team")
 
 
 def test_backend_uses_the_team_key_and_native_locking():
     rendered = synthesizer._render_backend(
         {"bucket": "b", "region": "us-east-1", "team_id": "acme-data",
          "workload_id": "lakehouse"}, "acme", "run1")
-    assert 'key          = "teams/acme-data/lakehouse/terraform.tfstate"' in rendered
+    # domain_id unstated falls back to the team, so a single-team caller still gets a
+    # well-formed 3-tier key rather than an error.
+    assert 'key          = "teams/acme-data/acme-data/lakehouse/terraform.tfstate"' in rendered
+
+
+def test_backend_uses_an_explicit_domain_when_given():
+    rendered = synthesizer._render_backend(
+        {"bucket": "b", "region": "us-east-1", "domain_id": "analytics",
+         "team_id": "acme-data", "workload_id": "lakehouse"}, "acme", "run1")
+    assert 'key          = "teams/analytics/acme-data/lakehouse/terraform.tfstate"' in rendered
     assert "use_lockfile = true" in rendered
     assert "dynamodb_table" not in rendered
 
@@ -217,3 +227,26 @@ def test_shipped_payload_carries_the_chain_hash(tmp_path, monkeypatch):
 
     local = json.loads(open(tmp_path / "audit.jsonl", encoding="utf-8").readlines()[-1])
     assert json.loads(sent["body"])["entry_hash"] == local["entry_hash"]
+
+
+# --- Ruling 2 (2026-08-21): 3-tier state hierarchy -------------------------------------
+
+def test_state_key_is_a_three_tier_hierarchy():
+    """domain / project / workload. Two squads in different domains may legitimately use the
+    same project name; a two-segment key would collide them onto one state file."""
+    assert team_resolver.state_key("analytics", "acme-data", "lakehouse") ==         "teams/analytics/acme-data/lakehouse/terraform.tfstate"
+
+
+def test_every_state_key_segment_is_validated():
+    """All three are operator-supplied and land in the same S3 prefix, so a traversal in any
+    position escapes the boundary equally well."""
+    for bad in (("..", "p", "w"), ("d", "..", "w"), ("d", "p", "..")):
+        try:
+            team_resolver.state_key(*bad)
+        except team_resolver.InvalidTeamId:
+            continue
+        raise AssertionError(f"traversal accepted in {bad}")
+
+
+def test_domains_partition_identical_project_names():
+    assert team_resolver.state_key("analytics", "recon", "daily") !=         team_resolver.state_key("regulatory", "recon", "daily")

@@ -115,15 +115,26 @@ def resolve(team_id, path=None):
     return record
 
 
-def state_key(team_id, workload_id):
-    """`teams/<team_id>/<workload_id>/terraform.tfstate`.
+def state_key(domain_id, project_id, workload_id):
+    """`teams/<domain_id>/<project_id>/<workload_id>/terraform.tfstate` (ruling, 2026-08-21).
 
-    Both segments are validated, not just the team: a workload id is equally operator-supplied
-    and lands in the same key, so a traversal there escapes the team prefix just as effectively.
+    Three tiers, not two, because two squads in different domains may legitimately name a
+    project the same thing -- `regulatory/recon` and `analytics/recon` are different systems,
+    and a two-segment key would land them on one state file.
+
+    Every segment is validated, not just the first: all three are operator-supplied and land
+    in the same S3 prefix, so a traversal in any position escapes the boundary equally well.
+
+    MIGRATION: keys generated before this ruling have two segments
+    (`teams/<team>/<workload>/`). Terraform does not notice the difference -- it finds an
+    empty key, reports no existing state, and plans to CREATE every resource that is already
+    deployed. Move the object first (`aws s3 mv`, or `terraform init -migrate-state`) and
+    confirm the next plan is a no-op before approving it.
     """
-    team_id = validate_team_id(team_id)
+    domain_id = validate_team_id(domain_id)
+    project_id = validate_team_id(project_id)
     workload_id = validate_team_id(workload_id)
-    return f"teams/{team_id}/{workload_id}/terraform.tfstate"
+    return f"teams/{domain_id}/{project_id}/{workload_id}/terraform.tfstate"
 
 
 def role_matches(arn, pattern):

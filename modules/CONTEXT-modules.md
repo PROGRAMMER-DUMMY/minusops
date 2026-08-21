@@ -532,5 +532,23 @@ All four were validated against the **installed provider schema** (`terraform pr
 
 ---
 
+## Third-Party Providers (ruling, 2026-08-21)
+
+AWS-native modules are the core default. `databricks/databricks` is the one reviewed
+exception and predates the ruling.
+
+**Snowflake stays out of this catalog.** `warehouse-snowflake-aws` is deliberately the
+AWS-side half of the handshake only -- an IAM role, its policy, and the Snowpipe SQS queue.
+It declares no Snowflake provider, which is why it cannot set warehouse properties such as
+`auto_suspend` even though PRD v3 asks for them. Adding the provider would introduce a
+credential path into a catalog whose modules take secret ARNs rather than credentials
+(FM-02), plus another provider version to track.
+
+Snowflake-side resources are authored per-engagement as a registry-composed module through
+the [`architect`](../.agents/skills/architect/SKILL.md) skill. `tests/test_modules.py` fails
+if a new third-party provider appears here without amending its reviewed allowlist.
+
+---
+
 ## Governance & Provenance Tracking
 Every module in `modules/` is validated against security rules in [`core/reporting/optimize_analyzer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/optimize_analyzer.py). Upstream dependencies and provider schema compatibility are tracked via [`PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/databricks-workspace/PROVENANCE.json) files to ensure content hash integrity against infrastructure drift.

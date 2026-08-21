@@ -312,3 +312,66 @@ def test_derive_module_ids_surfaces_both_alternatives_on_a_genuine_tie():
     for p in picks:
         assert "tied with" in p["reason"]
         assert "mutually-exclusive alternatives" in p["reason"]
+
+
+# --- Ruling 1 (2026-08-21): worker class follows the access pattern, not the volume -----
+
+def test_memory_intensive_patterns_mandate_the_larger_worker():
+    """SCD Type 2 merge and wide joins hold both sides in memory. G.1X spills to disk and the
+    job takes hours instead of minutes -- it does not fail, which is why this is a ruling
+    rather than something a test would have caught."""
+    for pattern in ("scd_type_2", "wide_join", "SCD Type 2 merge"):
+        assert modules.worker_class(pattern) == "G.2X", pattern
+
+
+def test_append_only_and_simple_transforms_use_the_smaller_worker():
+    for pattern in ("append_only", "filter_map", "simple filter/map ETL"):
+        assert modules.worker_class(pattern) == "G.1X", pattern
+
+
+def test_an_undeclared_access_pattern_does_not_guess_upward():
+    """Undeclared gets the smaller worker, matching how an undeclared volume already gets the
+    smallest compute tier: silently doubling the DPU rate on no evidence is how a cheap
+    pipeline acquires an expensive bill."""
+    assert modules.worker_class("") == "G.1X"
+    assert modules.worker_class(None) == "G.1X"
+
+
+def test_worker_class_is_meaningless_outside_glue():
+    """compute_tier still selects the ENGINE by volume. Above ~5 TB/day that is EMR on EC2,
+    where Glue worker classes do not exist as a concept -- so the ruling's "regardless of
+    volume" governs the worker within Glue, not the engine choice."""
+    assert modules.worker_class("scd_type_2", module_id="compute-emr-ec2-spot") is None
+    assert modules.worker_class("scd_type_2", module_id="compute-glue-etl") == "G.2X"
+
+
+# --- Ruling 3 (2026-08-21): third-party providers are an allowlist, not a default -------
+
+def test_catalog_third_party_providers_are_an_explicit_allowlist():
+    """Regression lock, not a red-green test: this passes today and exists so it stops
+    passing the moment someone adds a provider.
+
+    Ruling: AWS-native modules are the core default, and Snowflake is authored as an
+    optional registry-composed module through the `architect` skill rather than added here.
+    Databricks predates the ruling and is the one reviewed exception. A new entry means a
+    new credential path, a new provider version to track, and a new blast radius -- it
+    should require amending this list, not slip in with a module.
+    """
+    import glob
+    import os
+    import re
+
+    reviewed = {"databricks/databricks"}
+    root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "modules")
+    found = set()
+    for path in glob.glob(os.path.join(root, "*", "*.tf")):
+        with open(path, encoding="utf-8") as fh:
+            for source in re.findall(r'source\s*=\s*"([a-z0-9-]+/[a-z0-9-]+)"', fh.read()):
+                if not source.startswith("hashicorp/"):
+                    found.add(source)
+
+    assert "snowflake/snowflake" not in found, (
+        "Snowflake belongs in a registry-composed module via the architect skill, "
+        "not in the vetted catalog"
+    )
+    assert found <= reviewed, f"unreviewed third-party providers in the catalog: {found - reviewed}"

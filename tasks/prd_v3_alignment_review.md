@@ -50,7 +50,11 @@ at all.
 
 ---
 
-## 3. Conflicts that need a decision, not code
+## 3. Conflicts that needed a decision — RESOLVED 2026-08-21
+
+All three were ruled on and implemented. Kept below as the record of what was decided and
+why, with the resolution noted under each.
+
 
 ### 3.1 Two sizing authorities that will disagree
 
@@ -62,9 +66,13 @@ At 10 TB/day append-only these give incompatible answers. §3 says `G.1X`; `comp
 EMR on EC2, where Glue worker classes do not exist as a concept. Whichever runs second wins,
 and nothing detects the contradiction.
 
-The two are answering different questions and both are useful. What is missing is the
-precedence rule: volume selects the engine, and the data model then sizes the worker *within*
-Glue and is ignored for EMR. That rule should be written down before either is implemented.
+**RULED:** memory-intensive patterns (SCD Type 2 merge, wide joins) mandate `G.2X`
+regardless of volume; `G.1X` is for append-only and simple filter/map.
+
+**Implemented** as `modules.worker_class(access_pattern, module_id=...)`. `compute_tier()`
+still selects the engine from volume, so "regardless of volume" governs the worker *within*
+Glue -- asking for a worker class on an EMR module returns `None` rather than a
+plausible-looking string, because instance fleets are not worker classes.
 
 ### 3.2 A third state layout has appeared
 
@@ -75,9 +83,16 @@ Glue and is ignored for EMR. That rule should be written down before either is i
 | `synthesizer._render_backend` | `<name_prefix>/<run_id>/terraform.tfstate` |
 | `team_resolver.state_key` | `teams/<team_id>/<workload_id>/terraform.tfstate` |
 
-Four descriptions, three shapes, one system. This has now survived three PRD revisions and is
-drifting further apart rather than converging. FM-03 is the blast-radius control; a mitigation
-that names a path the generator does not emit is documentation, not a control.
+**RULED:** `teams/<domain_id>/<project_id>/<workload_id>/terraform.tfstate`.
+
+**Implemented** in `team_resolver.state_key()`, now three validated segments, with the
+synthesizer defaulting `domain_id` to the team when unstated so single-team callers keep
+working.
+
+**Migration hazard, stated rather than assumed:** keys written before this ruling have two
+segments. Terraform does not error on the change -- it finds an empty key, reports no state,
+and plans to CREATE everything already deployed. Move the object first (`aws s3 mv` or
+`terraform init -migrate-state`) and confirm the next plan is a no-op before approving it.
 
 ### 3.3 Snowflake auto-suspend is in the wrong module
 
@@ -86,11 +101,14 @@ that names a path the generator does not emit is documentation, not a control.
 AWS-side handshake — storage integration role, external ID, Snowpipe queue. It declares no
 Snowflake provider.
 
-`auto_suspend` is a property of a Snowflake **warehouse**, which lives in the `snowflake`
-Terraform provider. Implementing §12 as written means adding a third-party provider to the
-catalog. That is an architectural decision with credential, versioning, and blast-radius
-consequences, not a module tweak — and it sits oddly beside the FM-02 stance that no module
-takes a credential as a variable, since the Snowflake provider needs one.
+**RULED:** AWS-native modules remain the core default; Snowflake is authored as an optional
+registry-composed module through the `architect` skill.
+
+**Implemented** as a regression lock rather than code: `tests/test_modules.py` pins the
+catalog's third-party providers to a reviewed allowlist (`databricks/databricks`, which
+predates the ruling) and fails if `snowflake/snowflake` appears. Verified by planting one and
+watching the test fail. PRD v3 §12's Snowflake `auto_suspend` therefore stays unimplemented
+by decision, not by omission.
 
 ---
 

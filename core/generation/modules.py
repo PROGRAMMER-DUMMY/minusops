@@ -531,6 +531,35 @@ _FLEX_INTOLERANT = ("real-time", "real time", "streaming", "sub-second", "subsec
                     "interactive", "minutes", "near real")
 
 
+# Access patterns that hold both sides of a join in memory. Ruling, 2026-08-21: these
+# mandate G.2X regardless of volume, because the failure is not a crash -- G.1X spills to
+# disk and the job takes hours instead of minutes, which shows up as a slow pipeline and a
+# large bill rather than as an error anyone investigates.
+_MEMORY_INTENSIVE = ("scd_type_2", "scd type 2", "wide_join", "wide join", "merge")
+
+GLUE_WORKER_MODULES = ("compute-glue-etl",)
+
+
+def worker_class(access_pattern, module_id="compute-glue-etl"):
+    """Glue worker class for an access pattern, or None where the concept does not apply.
+
+    `compute_tier()` still selects the ENGINE from volume. Above roughly 5 TB/day that is EMR
+    on EC2, which has instance fleets rather than Glue worker classes -- so the ruling's
+    "regardless of volume" governs the worker *within* Glue, not the engine choice. Asking
+    for a worker class on an EMR module returns None rather than a plausible-looking string.
+
+    An undeclared pattern gets G.1X, matching how an undeclared volume already gets the
+    smallest tier: doubling the DPU rate on no evidence is how a cheap pipeline acquires an
+    expensive bill.
+    """
+    if module_id not in GLUE_WORKER_MODULES:
+        return None
+    text = (access_pattern or "").strip().lower()
+    if any(marker in text for marker in _MEMORY_INTENSIVE):
+        return "G.2X"
+    return "G.1X"
+
+
 def compute_tier(daily_gb, latency_text=""):
     """Recommend a compute module and execution class for a volume and an SLA.
 
