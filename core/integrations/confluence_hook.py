@@ -196,4 +196,5 @@ def publish_confluence_page(space_key, page_title, markdown_content, parent_page
                 res["page_id"] = None
         return res
 
-    return base_hook.gated(action, details or f"{space_key}: {page_title}", approval_mode, _send)
+    return base_hook.gated(action, details or f"{space_key}: {page_title}", approval_mode, _send,
+                           dedup_window=0)   # republishing an edited page is intended, not a storm

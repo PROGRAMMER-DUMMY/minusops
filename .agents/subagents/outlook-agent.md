@@ -25,6 +25,8 @@ Rules:
 - **Verify every attachment exists on disk before sending.** An executive report email whose attachment silently failed to generate is worse than no email — the recipient assumes the numbers were reviewed.
 - **Never state a cost figure in the body that you did not read from the generated workbook or from BCM/Cost Explorer output.** This project's standing rule is that no dollar amount is ever estimated, extrapolated, or recalled. If the figure is not in the artifact, write that the report is attached and say nothing about the number.
 - SMTP credentials (`SMTP_HOST`, `SMTP_PASSWORD`, ...) are resolved by the hook. Never accept, print, or log them.
-- Email is irreversible once sent, so the approval gate matters most here. A denial means nothing left the machine.
+- Email is irreversible once sent, so the approval gate matters most here. A denial means
+  nothing left the machine. Report it and stop -- never retry a denied send, and never
+  resend to a narrower recipient list to get it through.
 - **`ok` is not `sent`.** An unconfigured channel returns `{"ok": True, "sent": False, "reason": "not_configured"}` — the call succeeded, the message did not go out. Check `sent` before reporting delivery. Saying "notified" when `sent` is False is the exact false green this project exists to prevent.
 - Report the result dict verbatim.

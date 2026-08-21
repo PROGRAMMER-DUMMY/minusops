@@ -74,7 +74,12 @@ variable "sink_bucket_kms_key_arn" {
 resource "aws_cloudwatch_log_group" "broker" {
   name              = "/aws/msk/${var.name_prefix}"
   retention_in_days = 30
-  tags              = var.tags
+
+  # Broker logs carry topic and client detail. The default is an AWS-owned key, which cannot
+  # be audited or revoked independently of the account; null falls back to that only when the
+  # module is used standalone with no CMK supplied.
+  kms_key_id = var.kms_key_arn == "" ? null : var.kms_key_arn
+  tags       = var.tags
 }
 
 resource "aws_msk_cluster" "this" {

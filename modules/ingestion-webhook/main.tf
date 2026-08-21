@@ -72,9 +72,16 @@ resource "aws_sqs_queue" "events" {
 
 # The shared secret the sender signs with. Created empty: Terraform generates the container,
 # a human puts the value in. A secret with a Terraform-authored value is a secret in state.
+variable "kms_key_arn" {
+  type        = string
+  default     = ""
+  description = "CMK encrypting the HMAC secret. Empty falls back to the AWS-managed key, which grants access account-wide and cannot be revoked for this secret alone."
+}
+
 resource "aws_secretsmanager_secret" "hmac" {
   name        = "${var.name_prefix}-webhook-hmac"
   description = "Shared secret for verifying inbound webhook signatures. Set the value out of band; do not put it in Terraform."
+  kms_key_id  = var.kms_key_arn == "" ? null : var.kms_key_arn
   tags        = var.tags
 }
 

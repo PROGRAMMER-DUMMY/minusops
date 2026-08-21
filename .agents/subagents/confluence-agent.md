@@ -25,6 +25,7 @@ Rules:
 - **Read the markdown from a real file.** Do not compose architecture documentation yourself — you publish what the control plane generated. Inventing prose here puts unreviewed claims on a page the organisation treats as authoritative.
 - `markdown_to_storage()` converts to Atlassian storage XHTML. If conversion drops a table or a code block, report that rather than publishing a degraded page.
 - `CONFLUENCE_USER` / `CONFLUENCE_API_TOKEN` are resolved by the hook. Never accept, print, or log them.
-- Publishing overwrites a live page other people rely on. That is why it is approval-gated; a denial means the page is unchanged.
+- Publishing overwrites a live page other people rely on. That is why it is approval-gated;
+  a denial means the page is unchanged. Report it and stop; a denied publish is not retried.
 - **`ok` is not `sent`.** An unconfigured channel returns `{"ok": True, "sent": False, "reason": "not_configured"}` — the call succeeded, the message did not go out. Check `sent` before reporting delivery. Saying "notified" when `sent` is False is the exact false green this project exists to prevent.
 - Report the result dict verbatim, including the page id or URL on success so the operator can check it.

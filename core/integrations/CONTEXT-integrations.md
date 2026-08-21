@@ -22,6 +22,16 @@ one copy would leave the other ungated.
 
 ---
 
+## Alert deduplication
+
+`base_hook.gated()` suppresses an identical `(action, details)` pair within `DEDUP_WINDOW_SECONDS` (300). A failing job that alerts fifty times in ten seconds pages once; the failure mode being prevented is not the noise but the muting that follows it.
+
+The check runs **before** the approval gate, so a human is not prompted fifty times. Suppression returns `ok=True, sent=False, reason="deduplicated"` -- a working cooldown is not a broken integration. Only a delivered alert opens a window: a denial or a failed send does not, because suppressing five minutes of alerts on the strength of a message that never arrived is how an outage goes unreported.
+
+`confluence_hook`, `jira_hook` and `outlook_hook` pass `dedup_window=0`. Republishing an edited page, filing a second ticket, or resending a report are intended actions, not storms.
+
+---
+
 ## Result dict contract
 
 Every public hook returns the same shape. Callers branch on `reason` and `sent`, never on the

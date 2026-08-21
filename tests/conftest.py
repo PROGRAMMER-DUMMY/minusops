@@ -67,3 +67,22 @@ def _isolate_claim_corpus(tmp_path_factory, monkeypatch):
         return str(corpus) if resolved == tracked else resolved
 
     monkeypatch.setattr(synthesizer, "_claims_corpus_dir", _guarded)
+
+
+@pytest.fixture(autouse=True)
+def _clear_alert_dedup_window():
+    """Empty base_hook's alert cooldown between tests.
+
+    The window is process-global by design -- one running control plane, one cooldown -- but
+    that makes it shared state across tests, where one test's alert would suppress an
+    identical alert in the next. Isolation belongs here rather than as a reset() helper in
+    production code that exists only for tests.
+    """
+    try:
+        import base_hook
+    except ImportError:
+        yield
+        return
+    base_hook._recent_sends.clear()
+    yield
+    base_hook._recent_sends.clear()

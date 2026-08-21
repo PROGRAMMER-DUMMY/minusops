@@ -241,6 +241,23 @@ output "replication_role_arn" {
   value = local.replication_enabled ? aws_iam_role.replication[0].arn : ""
 }
 
+variable "access_log_bucket" {
+  type        = string
+  default     = ""
+  description = "Existing bucket receiving S3 server access logs. Empty disables logging. Takes an existing bucket rather than creating one: the target must not be a medallion zone (each delivery is an object write, which would generate another log record), and delivery is billed per record."
+}
+
+# Answers "who read the Gold data", which nothing else here covers -- CloudTrail data events
+# are billed per request and are off by default in governance-observability. Opt-in for the
+# same reason as replication: the destination must already exist.
+resource "aws_s3_bucket_logging" "zone" {
+  for_each = var.access_log_bucket == "" ? {} : aws_s3_bucket.zone
+
+  bucket        = each.value.id
+  target_bucket = var.access_log_bucket
+  target_prefix = "s3-access/${var.name_prefix}/${each.key}/"
+}
+
 output "bucket_names" {
   value = { for z, b in aws_s3_bucket.zone : z => b.bucket }
 }

@@ -87,9 +87,15 @@ lake with no inbound path is the one failure that cannot be fixed after the fact
 | **5** | **Data quality** | Which assertions must hold, and **what happens to a row that fails** — is the run aborted, or is the row quarantined and the run continues? Most teams say "abort" and mean "quarantine". | `dq-great-expectations` (+ quarantine zone) |
 | **6** | **Serving layer** | Who reads the output and with what — ad-hoc SQL, a BI tool, a reverse ETL, another pipeline. Concurrency matters more than volume here. | `query-athena` · `consumption-redshift-serverless` |
 | **7** | **Alert routing** | **Three questions, not one.** Who is paged when the pipeline *crashes*; who is told when *data quality* fails; who is told about *spend*. One inbox for all three is why nobody reads the inbox. | `governance-observability` 3-tier routing |
+| **8** | **Logging & observability** | Retention **per log group**, in days. CloudWatch's default is *Never expire*, which is the most common silent FinOps leak in a data platform -- nothing errors, the line item just grows. Ask: 30d dev / 90d prod, or what regulation says otherwise? Then: do logs carry PII (job output routinely does), and does anything need to reach a SIEM? | `governance-observability` (CloudTrail data-event trail) - `storage-medallion-s3.access_log_bucket` (who read Gold) |
+| **9** | **Secrets & key hierarchy** | **Secrets Manager or SSM Parameter Store?** Rotating credentials belong in the former, static config in the latter, and putting config in Secrets Manager is a per-secret monthly charge for nothing. Then: dedicated CMK with rotation, or the AWS-managed key? A shared key cannot be revoked for one workload. Finally, **zero static keys** -- `AKIA` credentials are rejected at the deploy gate in production, so a design that assumes them fails late. `AssumeRole` only. | every ingestion module takes a **secret ARN**, never a credential - `storage-medallion-s3` lake CMK |
+| **10** | **Network topology & endpoints** | Private subnets with a **gateway endpoint for S3**, which is free and keeps lake traffic off the NAT gateway entirely. Without it every byte the pipeline reads from S3 is billed NAT data processing at roughly $0.045/GB *on top of* the hourly NAT charge -- on a TB/day pipeline that is the largest line item nobody predicted. Interface endpoints (PrivateLink) for STS/Kinesis are per-hour, so ask before adding them. | `networking-vpc` (`aws_vpc_endpoint.s3`, `enable_sts_endpoint`, `enable_kinesis_endpoint`) |
 
-Two of these are the ones people skip and then discover in production: **Pillar 4** (a pipeline
-nobody scheduled never runs) and **Pillar 5**'s failure branch (one bad row kills the run).
+Four of these are the ones people skip and then discover in production: **Pillar 4** (a pipeline
+nobody scheduled never runs), **Pillar 5**'s failure branch (one bad row kills the run),
+**Pillar 8**'s retention (logs kept forever, billed forever), and **Pillar 10**'s S3 gateway
+endpoint (every lake read billed as NAT traffic). None of the four fails a plan or raises an
+error -- three of them only ever show up on an invoice.
 Push on both even when the user waves them off.
 
 ## Step 3.5 — Failure-mode pre-flight (FM-01..05)

@@ -129,13 +129,43 @@ def test_sample_fixture_contains_a_row_a_quality_suite_can_catch():
     assert any(r["amount"] == 0.0 for r in rows)
 
 
-def test_grill_me_covers_seven_pillars_and_drops_the_demo_blueprint():
-    """MINUS-116. The stale guidance AGENTS.md flags must not survive as instruction -- the
-    only surviving mention is the explicit prohibition."""
-    skill = open(os.path.join(_ROOT, ".agents", "skills", "grill-me", "SKILL.md"),
-                 encoding="utf-8").read()
+def _grill_me_skill():
+    return open(os.path.join(_ROOT, ".agents", "skills", "grill-me", "SKILL.md"),
+                encoding="utf-8").read()
+
+
+def test_grill_me_covers_every_pillar_and_drops_the_demo_blueprint():
+    """MINUS-116 plus TASK-TDD-2026-002 WP3. The stale guidance AGENTS.md flags must not
+    survive as instruction -- the only surviving mention is the explicit prohibition."""
+    skill = _grill_me_skill()
     for pillar in ("Ingestion source", "Storage & format", "Compute engine", "Orchestration",
-                   "Data quality", "Serving layer", "Alert routing"):
+                   "Data quality", "Serving layer", "Alert routing",
+                   "Logging & observability", "Secrets & key hierarchy",
+                   "Network topology"):
         assert pillar in skill, pillar
     prohibition = [line for line in skill.splitlines() if "aws-data-pipeline-standard" in line]
     assert len(prohibition) == 1 and prohibition[0].lstrip().startswith("> **Do not**")
+
+
+def test_logging_pillar_names_retention_as_a_cost_leak():
+    """"Never expire" is the CloudWatch default and the single most common silent FinOps
+    leak in a data platform. The pillar is worthless if it does not say so."""
+    skill = _grill_me_skill()
+    assert "Never expire" in skill or "never expire" in skill
+    assert "retention" in skill.lower()
+
+
+def test_secrets_pillar_forbids_static_keys():
+    """The deploy gate already rejects long-term AKIA keys in production. Asking the question
+    at design time is what stops someone building a pipeline around them first."""
+    skill = _grill_me_skill()
+    assert "AKIA" in skill
+    assert "AssumeRole" in skill or "assume role" in skill.lower()
+
+
+def test_network_pillar_names_the_nat_charge_endpoints_avoid():
+    """The S3 gateway endpoint is free and removes per-GB NAT processing for lake traffic.
+    Without the number the question sounds like a preference rather than a bill."""
+    skill = _grill_me_skill()
+    assert "gateway endpoint" in skill.lower()
+    assert "0.045" in skill or "NAT" in skill

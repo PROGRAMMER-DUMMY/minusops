@@ -91,4 +91,5 @@ def create_change_ticket(project_key, summary, description, plan_hash=None, prio
         result["ticket"] = ticket
         return result
 
-    return base_hook.gated(action, details or summary, approval_mode, _send)
+    return base_hook.gated(action, details or summary, approval_mode, _send,
+                           dedup_window=0)   # two tickets for one summary is a duplicate to close, not to hide

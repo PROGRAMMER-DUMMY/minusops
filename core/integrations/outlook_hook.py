@@ -99,4 +99,4 @@ def send_executive_email(to_addresses, subject, body_html, attachments=(),
             return {"ok": False, "status": 500, "error": str(e)}
 
     return base_hook.gated(action, details or f"{subject} -> {', '.join(recipients)}",
-                           approval_mode, _send)
+                           approval_mode, _send, dedup_window=0)

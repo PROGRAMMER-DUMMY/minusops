@@ -26,6 +26,9 @@ Used by: core/integrations/slack_hook.py, core/integrations/teams_hook.py,
 """
 import os
 import sys
+import collections
+import hashlib
+import time
 import json
 import base64
 import socket
@@ -134,17 +137,72 @@ def not_configured(what):
             "error": f"{what} is not configured"}
 
 
-def gated(action, details, approval_mode, sender):
+DEDUP_WINDOW_SECONDS = 300
+
+# (timestamp, fingerprint) of alerts actually delivered, oldest first. A deque because the
+# only operations are append-right and expire-left, and both are O(1) -- the window stays
+# bounded by elapsed time rather than by message volume, so a 50-alert burst costs 50 short
+# tuples for five minutes and nothing after.
+_recent_sends = collections.deque()
+
+
+def _now():
+    """Monotonic clock. Wall time can step backwards (NTP correction, DST on some
+    platforms) and a backwards step would silently extend a cooldown."""
+    return time.monotonic()
+
+
+def _fingerprint(action, details):
+    """Identity of an alert. Hashed rather than stored verbatim: `details` can carry a stack
+    trace, and the window has no reason to hold message bodies in memory."""
+    digest = hashlib.sha256()
+    digest.update(action.encode("utf-8"))
+    digest.update(bytes(1))   # NUL separator: "ab"+"c" must not collide with "a"+"bc"
+    digest.update(details.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _seen_recently(fingerprint, window):
+    # Every expired entry is dropped, not just the ones at the front. Popping from the left
+    # until the first live entry assumes the deque is time-ordered; that holds for a
+    # monotonic clock, but one out-of-order entry would then pin everything behind it in
+    # memory and keep a stale fingerprint suppressing real alerts. The scan is O(n) either
+    # way -- n is "alerts delivered in the last five minutes", not total volume.
+    cutoff = _now() - window
+    live = [item for item in _recent_sends if item[0] >= cutoff]
+    _recent_sends.clear()
+    _recent_sends.extend(live)
+    return any(item[1] == fingerprint for item in live)
+
+
+def gated(action, details, approval_mode, sender, dedup_window=DEDUP_WINDOW_SECONDS):
     """
-    Run `sender()` only if `request_approval(action, details, approval_mode)` allows it.
+    Run `sender()` only if the alert is not a recent duplicate AND approval allows it.
 
     `sender` is a zero-argument callable returning a result dict. On denial the callable is
     never invoked and {"ok": False, "status": 403, "sent": False, "reason": "not_authorized"}
     comes back, so a caller can tell "refused" from "failed" without parsing a message.
+
+    Deduplication runs BEFORE the approval gate, deliberately: the point of a cooldown is
+    that a human is not prompted fifty times for one failing job, and a check that ran after
+    the prompt would leave that intact. Suppression returns ok=True with sent=False -- a
+    working cooldown is not a broken integration, and callers already distinguish the two by
+    `sent` rather than `ok`.
+
+    Only a delivered alert opens a window. A denial or a failed send does not, because
+    suppressing the next five minutes on the strength of a message that never arrived is how
+    an outage goes unreported. Pass dedup_window=0 to disable.
     """
+    fingerprint = _fingerprint(action, details)
+    if dedup_window and _seen_recently(fingerprint, dedup_window):
+        return {"ok": True, "status": 0, "sent": False, "reason": "deduplicated",
+                "error": f"identical {action} suppressed within {dedup_window}s"}
+
     if not request_approval(action, details, approval_mode):
         return {"ok": False, "status": 403, "sent": False, "reason": "not_authorized",
                 "error": f"approval denied for {action}"}
     result = sender()
     result.setdefault("sent", bool(result.get("ok")))
+    if result.get("sent"):
+        _recent_sends.append((_now(), fingerprint))
     return result
