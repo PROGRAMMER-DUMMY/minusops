@@ -42,6 +42,9 @@ MinusOps (Workspace Root)
 ├── .agents/                                # AGENT OPERATING SYSTEM
 │   └── CONTEXT-agents.md                   # AGENTS.md rules & 7 decision skills (grill-me, architect, doctor, etc.)
 │
+├── deploy/                                 # MODE 3 CONTROL-PLANE HOSTING
+│   └── CONTEXT-deploy.md                   # Dockerfile usage & EKS manifests (IRSA, ALB)
+│
 ├── docs/                                   # SPECIFICATIONS & MANIFESTS
 │   └── CONTEXT-docs.md                     # IAM manifest, security model, info library & phase scopes
 │

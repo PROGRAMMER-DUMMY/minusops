@@ -1,0 +1,122 @@
+# MinusOps control plane (Mode 3): the Dash console, 24/7, inside the cluster.
+#
+# The image defaults to ENTRYPOINT ["minusctl"] for Mode 2 (CI gate), so Mode 3 overrides
+# command/args below. One image, two modes -- a second image would duplicate the
+# checksum-verified Terraform/OPA install and the two would drift.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minusops-control-plane
+  namespace: minusops
+  labels:
+    app.kubernetes.io/name: minusops
+    app.kubernetes.io/component: control-plane
+spec:
+  # Two replicas for availability during node drains. Note the console is read-mostly; the
+  # deploy gate's own state is file-backed and locked, so two pods planning the same
+  # directory would contend. Scale the console, not concurrent applies.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minusops
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minusops
+        app.kubernetes.io/component: control-plane
+    spec:
+      serviceAccountName: minusops-control-plane
+      automountServiceAccountToken: true      # IRSA needs the projected token
+      securityContext:
+        runAsNonRoot: true
+        # Must equal the UID baked into the image. A mismatch fails at startup with a
+        # permission error that names a path rather than the cause.
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: control-plane
+          # Replace with your registry. Pin a digest in production: a mutable tag means two
+          # replicas can silently run different code after a push.
+          image: <account-id>.dkr.ecr.<region>.amazonaws.com/minusops:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["python"]
+          args: ["app/dashboard_app.py"]
+          ports:
+            - name: http
+              containerPort: 8050
+              protocol: TCP
+          env:
+            - name: DASH_HOST
+              value: "0.0.0.0"           # reachable from the service, not just localhost
+            - name: DASH_PORT
+              value: "8050"
+            # dashboard_app refuses to start on a non-loopback host unless this is set, so
+            # an unauthenticated console cannot be exposed by forgetting a variable.
+            # From a Secret, never a literal: a value here lands in git and in
+            # `kubectl get deployment -o yaml` for anyone with read access.
+            - name: MINUS_DASH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: minusops-dashboard
+                  key: token
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: HOME
+              value: /home/minusops
+            - name: TF_PLUGIN_CACHE_DIR
+              value: /home/minusops/.terraform.d/plugin-cache
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              # No CPU limit on purpose: CFS throttling makes a Terraform plan slower and
+              # less predictable, and the request already guarantees the share. Memory IS
+              # limited, because a runaway plan should be OOM-killed rather than evict its
+              # neighbours.
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            # readOnlyRootFilesystem plus Terraform is a contradiction without these:
+            # `terraform init` writes .terraform/, plans write to disk, and the provider
+            # cache needs a home. Without them the pod starts cleanly and fails on first use.
+            - name: scratch
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/minusops
+      volumes:
+        # emptyDir, not a PVC: everything written here is regenerable, and a persistent
+        # volume would let one pod's stale plan outlive the run that produced it.
+        - name: scratch
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 2Gi

@@ -63,11 +63,26 @@ COPY examples ./examples
 COPY .agents/AGENTS.md ./.agents/AGENTS.md
 COPY .agents/skills ./.agents/skills
 
-RUN pip install --no-cache-dir ".[policy]" && checkov --version
+# Both extras: [policy] for the CI gate (checkov), [dashboard] for the Mode 3 web console.
+# One image serves both modes -- a second Dockerfile would duplicate the checksum-verified
+# binary install above and the two would drift.
+RUN pip install --no-cache-dir ".[policy,dashboard]" && checkov --version
 
 # Non-root: the gate never needs root, and deploy creds come from the ambient chain.
 RUN useradd --create-home --uid 10001 minus
 USER minus
 
+EXPOSE 8050
+
+# Only meaningful for a long-running console (Mode 3 on ECS, or plain `docker run`).
+# Kubernetes ignores this and uses the probes in deploy/k8s/deployment.yaml instead. A
+# one-shot CI run exits well inside --start-period, so it never reports unhealthy.
+# urllib, not curl: curl is removed from the final image above.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3   CMD python -c "import urllib.request,os,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('DASH_PORT','8050')+'/', timeout=4).status < 500 else 1)"
+
+# Mode 2 (CI gate) is the default. Mode 3 overrides the entrypoint:
+#   command: ["python"], args: ["app/dashboard_app.py"]
+# dashboard_app refuses a non-loopback bind without MINUS_DASH_TOKEN, so an unauthenticated
+# console cannot be exposed by forgetting a variable.
 ENTRYPOINT ["minusctl"]
 CMD ["--help"]

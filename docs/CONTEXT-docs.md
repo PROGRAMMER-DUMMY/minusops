@@ -41,6 +41,7 @@ This document provides exhaustive context for all documentation, architecture sp
 
 ## 3. Project Management, Roadmap & Guides
 
+- [`docs/OPERATOR_ONBOARDING_GUIDE.md`](./OPERATOR_ONBOARDING_GUIDE.md): Step-by-step onboarding for the three control-plane modes -- local CLI quickstart, CI/CD OIDC integration, and containerized EKS/ECS hosting -- plus integration wiring and how to read a transport result (`sent`, never `ok`).
 - [`docs/PROGRESS.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/docs/PROGRESS.md): Live progress tracker recording completed features and test suite status.
 - [`docs/project_plan.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/docs/project_plan.md): Comprehensive project implementation plan and component roadmap.
 - [`docs/REMAINING_WORK.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/docs/REMAINING_WORK.md): Remaining task backlog and future feature roadmap.

@@ -1,0 +1,18 @@
+# ClusterIP, never LoadBalancer. The console renders live AWS account identity, spend, and
+# plan contents; the only route in is the internal ALB in ingress.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: minusops-control-plane
+  namespace: minusops
+  labels:
+    app.kubernetes.io/name: minusops
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: minusops
+  ports:
+    - name: http
+      port: 8050
+      targetPort: http
+      protocol: TCP
