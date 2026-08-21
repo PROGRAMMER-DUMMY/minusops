@@ -356,6 +356,41 @@ def conformance(plan, daily_data_gb=None):
     }
 
 
+def latency_floor_violation(target_ms, cross_region=False, multi_az=False):
+    """
+    Check if a declared latency SLA target violates the physical laws of networking and hardware.
+
+    Cross-region fiber RTT is 30-200ms, physically eliminating synchronous sub-100ms commitments.
+    Inter-AZ synchronous replication has a physical floor of 1-4ms.
+    Undeclared (None) targets are not violations.
+    """
+    if target_ms is None:
+        return None
+
+    if cross_region:
+        if target_ms < 100:
+            return {
+                "violation": True,
+                "floor_ms": 30,
+                "reason": (
+                    f"Cross-region fiber RTT is 30-200ms. A {target_ms}ms synchronous "
+                    "commitment violates physical networking floors. Use asynchronous replication."
+                ),
+            }
+    elif multi_az:
+        if target_ms < 1.0:
+            return {
+                "violation": True,
+                "floor_ms": 1.0,
+                "reason": (
+                    f"Inter-AZ synchronous replication has a physical floor of 1-4ms. "
+                    f"A {target_ms}ms target cannot be achieved with Multi-AZ persistence."
+                ),
+            }
+
+    return None
+
+
 def _main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     if not argv:

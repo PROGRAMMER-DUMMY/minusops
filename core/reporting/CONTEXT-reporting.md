@@ -37,13 +37,16 @@ This document provides an exhaustive, architectural, and operational reference f
 
 ### 2. `core/reporting/finops_agent.py`
 - **File Link:** [`core/reporting/finops_agent.py`](./finops_agent.py)
-- **Exact Purpose:** Provides live cloud cost intelligence by interfacing with cloud providers through `providers.base.get_provider()`. Supports spend breakdowns, cost anomaly listing, CloudTrail/tag root-cause correlation, and approval-gated alerts (Slack webhooks or Jira tickets).
+- **Exact Purpose:** Provides live cloud cost intelligence by interfacing with cloud providers through `providers.base.get_provider()`. Supports spend breakdowns, cost anomaly listing, CloudTrail/tag root-cause correlation, approval-gated alerts (Slack webhooks or Jira tickets), and error budget burn calculation.
 - **Key Functions/Classes:**
   - [`cmd_cost()`](./finops_agent.py): Displays spend breakdown by service and month-over-month trends.
   - [`cmd_anomalies()`](./finops_agent.py): Lists active cost anomalies from the active provider.
   - [`cmd_correlate()`](./finops_agent.py): Correlates cost anomalies with CloudTrail mutating events and resource tag owners (AWS only).
-  - [`cmd_notify_slack(approval_mode)`](./finops_agent.py): Delegates to `slack_hook.send_slack_notification()` (action `send-slack-alert`), which gates on approval before posting to `SLACK_WEBHOOK_URL`; maps the hook's result dict to the operator message and exit code.
-  - [`cmd_notify_jira(approval_mode)`](./finops_agent.py): Delegates to `jira_hook.create_change_ticket()` (action `create-jira-ticket`), passing this module's `LOG_DIR` so an unwired Jira still writes `.agents/logs/jira_ticket_<id>.json`. Neither the Slack transport nor the ticket writer lives in this file any more — see [`core/integrations/CONTEXT-integrations.md`](../integrations/CONTEXT-integrations.md).
+  - [`cmd_notify_slack(approval_mode)`](./finops_agent.py): Delegates to `slack_hook.send_slack_notification()` (action `send-slack-alert`), which gates on approval before posting to `SLACK_WEBHOOK_URL`.
+  - [`cmd_notify_jira(approval_mode)`](./finops_agent.py): Delegates to `jira_hook.create_change_ticket()` (action `create-jira-ticket`).
+  - [`error_budget_minutes(slo_percent, days=30)`](./finops_agent.py): Calculates allowable downtime/delay minutes for a given SLO over a rolling time window. Refuses 100% SLOs as invalid.
+  - [`error_budget_burn(slo_percent, consumed_minutes, window_hours=720)`](./finops_agent.py): Calculates error budget burn percentage and returns governance state (`healthy`, `at_risk`, or `feature_freeze`) plus 24h burn rate alerts.
+  - [`consumed_minutes_from_runs(total_runs, failed_runs, run_interval_minutes=60)`](./finops_agent.py): Converts failed batch pipeline runs into consumed downtime minutes.
 - **Inputs/Outputs:**
   - *Inputs:* CLI flags (`--cost`, `--anomalies`, `--correlate`, `--notify-slack`, `--notify-jira`, `--approval-mode`), environment variables (`SLACK_WEBHOOK_URL`, `JIRA_PROJECT_KEY`).
   - *Outputs:* Formatted stdout console reports or written JSON ticket files in `.agents/logs/`.
@@ -173,7 +176,7 @@ This document provides an exhaustive, architectural, and operational reference f
 - **Exact Purpose:** Per-resource HCL static scanner evaluating Terraform configurations for security (`SEC-*`), cost (`COST-*`), observability (`OBS-*`), and data performance (`DATA-*`) vulnerabilities. Optionally invokes external scanners (`checkov`, `trivy config`).
 - **Key Functions/Classes:**
   - [`resource_blocks(content)`](./optimize_analyzer.py) / [`data_blocks(content)`](./optimize_analyzer.py): Robust brace-matching AST-style parsers extracting resource and data blocks from HCL text.
-  - [`scan_hcl_files(source_dir)`](./optimize_analyzer.py): Scans all `.tf` files under `source_dir` against native rules (e.g. S3 Public Access Block `SEC-01`, wildcard IAM `SEC-02`, unencrypted Redshift `SEC-03`, unencrypted MSK `SEC-04`, cross-account External ID `SEC-05`, Glue job bookmarks `DATA-01`, Glue partitioning `DATA-02`, Athena scan cutoff `DATA-03`).
+  - [`scan_hcl_files(source_dir)`](./optimize_analyzer.py): Scans all `.tf` files under `source_dir` against native rules (e.g. S3 Public Access Block `SEC-01`, wildcard IAM `SEC-02`, unencrypted Redshift `SEC-03`, unencrypted MSK `SEC-04`, cross-account External ID `SEC-05`, cross-region data transfer `COST-04`, missing S3 VPC endpoint `COST-05`, Glue job bookmarks `DATA-01`, Glue partitioning `DATA-02`, Athena scan cutoff `DATA-03`).
   - [`run_external_scanners(source_dir, required=False)`](./optimize_analyzer.py): Executes `checkov` and `trivy config` if present on PATH and merges findings.
   - [`blocking_findings(findings, external_blocking=False)`](./optimize_analyzer.py): Filters findings that must block deployment (`SEC-*` native rules, or external findings in production mode).
   - [`generate_report(findings, output_dir)`](./optimize_analyzer.py): Writes `optimization_report.md`.

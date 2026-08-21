@@ -233,6 +233,29 @@ def scan_hcl_files(source_dir):
             "No aws_cloudwatch_metric_alarm is configured to alert on failures or timeouts.",
             "MEDIUM"))
 
+    # COST-04: Cross-region data transfer risk
+    provider_regions = set(re.findall(r'provider\s+"aws"\s*\{[^}]*?region\s*=\s*"([^"]+)"', clean, re.DOTALL))
+    if len(provider_regions) > 1:
+        findings.append(_finding(
+            "COST-04", "Cost", "Cross-Region Data Transfer Risk",
+            f"Multiple distinct AWS regions configured ({', '.join(sorted(provider_regions))}). "
+            "Cross-region data transfer incurs per-GB egress charges ($0.02/GB in each direction).",
+            "MEDIUM"))
+
+    # COST-05: Missing S3 Gateway VPC Endpoint
+    has_vpc = any(t == "aws_vpc" for t, _n, _b in blocks)
+    if has_vpc:
+        has_s3_endpoint = any(
+            t == "aws_vpc_endpoint" and (".s3" in b or "s3" in _n.lower())
+            for t, _n, b in blocks
+        )
+        if not has_s3_endpoint:
+            findings.append(_finding(
+                "COST-05", "Cost", "Missing S3 Gateway VPC Endpoint",
+                "VPC is configured without an S3 Gateway VPC Endpoint. S3 traffic will traverse "
+                "NAT gateways, incurring unnecessary per-GB data processing charges.",
+                "MEDIUM"))
+
     return findings
 
 

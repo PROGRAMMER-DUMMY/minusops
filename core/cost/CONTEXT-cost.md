@@ -53,9 +53,11 @@ This document provides an exhaustive, architectural, and operational reference f
 
 ### 3. `core/cost/budget_calculator.py`
 - **File Link:** [`core/cost/budget_calculator.py`](./budget_calculator.py)
-- **Exact Purpose:** Provides honest cost guidance to intent dispatchers requesting budget calculations. Deliberately refuses to invent prices or compute local totals, outputting instructions for running the BCM Pricing Calculator workflow.
+- **Exact Purpose:** Provides honest cost guidance to intent dispatchers requesting budget calculations. Deliberately refuses to invent prices or compute local totals, outputting instructions for running the BCM Pricing Calculator workflow. Derives unit economics ratios ($/GB, $/run) exclusively from evidenced BCM cost figures with explicit source provenance.
 - **Key Functions/Classes:**
   - [`cost_guidance()`](./budget_calculator.py): Returns a dictionary stating `reportable: False` and listing the exact `bcm_pricing_calculator.py` commands required to obtain reportable enterprise cost evidence.
+  - [`unit_economics(total_usd=None, source=None, gb_processed=None, runs=None)`](./budget_calculator.py): Derives unit economics ratios from an evidenced AWS BCM total. Refuses without an evidenced total and explicit source provenance.
+  - [`unit_economics_curve(points, source=None)`](./budget_calculator.py): Derives unit economics ratios for a multi-point scale curve priced by BCM without extrapolating beyond measured points.
   - [`main(argv=None)`](./budget_calculator.py): Command-line entry point that writes `budget_estimation.json` to `.agents/logs/` and outputs guidance formatted as human text or JSON.
 - **Inputs/Outputs:**
   - *Inputs:* Optional `--log-dir`, `--json`, and legacy sizing arguments (`--service`, `--scale`).

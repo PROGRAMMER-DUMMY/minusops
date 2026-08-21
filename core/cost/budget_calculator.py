@@ -42,6 +42,59 @@ def cost_guidance():
     }
 
 
+def unit_economics(total_usd=None, source=None, gb_processed=None, runs=None):
+    """
+    Derive unit economics ratios from an evidenced AWS BCM total.
+
+    Refuses without an evidenced total and explicit source provenance, preserving
+    the doctrine that MinusOps never fabricates cost figures.
+    """
+    if total_usd is None or not source:
+        return {
+            "reportable": False,
+            "source": source,
+            "cost_per_gb": None,
+            "cost_per_run": None,
+            "note": "Unit economics require evidenced BCM cost totals.",
+            "commands": BCM_COMMANDS,
+        }
+
+    cost_per_gb = None
+    if gb_processed is not None and gb_processed > 0:
+        cost_per_gb = round(total_usd / gb_processed, 4)
+
+    cost_per_run = None
+    if runs is not None and runs > 0:
+        cost_per_run = round(total_usd / runs, 4)
+
+    return {
+        "reportable": True,
+        "source": source,
+        "total_usd": total_usd,
+        "cost_per_gb": cost_per_gb,
+        "cost_per_run": cost_per_run,
+    }
+
+
+def unit_economics_curve(points, source=None):
+    """
+    Derive unit economics ratios for a multi-point scale curve priced by BCM.
+    Never extrapolates beyond measured points.
+    """
+    curve = []
+    for pt in points or []:
+        ratio = unit_economics(
+            total_usd=pt.get("total_usd"),
+            source=source,
+            gb_processed=pt.get("gb_processed"),
+            runs=pt.get("runs"),
+        )
+        ratio["factor"] = pt.get("factor", 1)
+        curve.append(ratio)
+    return curve
+
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Cost guidance (reportable totals require the AWS BCM Pricing Calculator API)")

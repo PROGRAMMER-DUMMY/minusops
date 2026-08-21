@@ -87,6 +87,7 @@ Generation in MinusOps is **requirements-first** and bound to reviewed records (
   * `extract_resources(plan)` ([L122-L149](./architecture_model.py)): Flattens plan JSON using `plan_reader.py` into classified resource dictionaries.
   * `module_dependencies(plan)` ([L169-L186](./architecture_model.py)): Evaluates module input expressions to determine actual wiring dependencies between modules.
   * `volume_tier(daily_gb)` ([L198-L211](./architecture_model.py)): Computes scale tier (`gb` < 1TB, `tb` 1-50TB, `pb` > 50TB).
+  * `latency_floor_violation(target_ms, cross_region=False, multi_az=False)` ([L360-L390](./architecture_model.py)): Validates whether a latency SLA violates physical networking floors (cross-region fiber RTT 30-200ms or inter-AZ sync 1-4ms).
   * `conformance(plan, daily_data_gb=None)` ([L230-L350](./architecture_model.py)): Calculates architectural score (0-100) and status (`READY`, `NEEDS_WORK`, `INCOMPLETE`) based on layer presence, wiring, encryption, monitoring, and volume tier checks.
 * **Inputs / Outputs:**
   * *Inputs:* `terraform show -json` plan dictionary, optional `daily_data_gb`.

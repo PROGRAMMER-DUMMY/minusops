@@ -272,7 +272,54 @@ def cmd_export_excel(output_target):
     else:
         out_dir = os.path.dirname(os.path.abspath(output_target)) or os.getcwd()
         generate_both_enterprise_reports(out_dir)
-    return True
+def error_budget_minutes(slo_percent, days=30):
+    """
+    Calculate allowable downtime/delay minutes for a given SLO over a time window.
+    Refuses 100% SLO as unachievable and mathematically invalid (division by zero).
+    """
+    if slo_percent >= 100.0 or slo_percent <= 0.0:
+        raise ValueError("SLO must be strictly between 0 and 100 percent")
+    total_window_minutes = days * 24 * 60.0
+    allowed_downtime_pct = 100.0 - slo_percent
+    return (allowed_downtime_pct / 100.0) * total_window_minutes
+
+
+def error_budget_burn(slo_percent, consumed_minutes, window_hours=720):
+    """
+    Calculate error budget burn rate and governance state.
+    Triggers burn_alert if >10% of total budget is consumed in a 24-hour window.
+    Enforces feature_freeze when error budget is exhausted (<0 remaining).
+    """
+    total_budget = error_budget_minutes(slo_percent, days=30)
+    remaining = total_budget - consumed_minutes
+    burned_pct = (consumed_minutes / total_budget) * 100.0 if total_budget > 0 else 100.0
+
+    burn_alert = (consumed_minutes / total_budget) > 0.10 if window_hours <= 24 else False
+
+    if remaining < 0:
+        state = "feature_freeze"
+    elif burned_pct > 75.0:
+        state = "at_risk"
+    else:
+        state = "healthy"
+
+    return {
+        "slo_percent": slo_percent,
+        "total_budget_minutes": total_budget,
+        "consumed_minutes": consumed_minutes,
+        "remaining_minutes": remaining,
+        "burned_pct": burned_pct,
+        "state": state,
+        "burn_alert": burn_alert,
+    }
+
+
+def consumed_minutes_from_runs(total_runs, failed_runs, run_interval_minutes=60):
+    """
+    Convert batch pipeline run failures into downtime minutes.
+    consumed = failed_runs * run_interval_minutes.
+    """
+    return float(failed_runs * run_interval_minutes)
 
 
 if __name__ == "__main__":
