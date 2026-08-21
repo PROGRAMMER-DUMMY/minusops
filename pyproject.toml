@@ -43,6 +43,9 @@ dev = [
     "pytest>=8.0,<9",
     "build>=1.2",
     "cyclonedx-bom>=4.0",
+    "pyyaml>=6.0",
+    "dash>=2.14,<3",
+    "plotly>=5.18,<6",
 ]
 
 [project.scripts]
@@ -92,8 +95,18 @@ core = ["py.typed"]
 "modules/compute-glue-etl" = ["modules/compute-glue-etl/main.tf"]
 "modules/compute-glue-etl/scripts" = ["modules/compute-glue-etl/scripts/etl.py"]
 "modules/compute-emr-serverless" = ["modules/compute-emr-serverless/main.tf"]
+"modules/compute-emr-ec2-spot" = ["modules/compute-emr-ec2-spot/main.tf"]
+"modules/compute-databricks-delta" = ["modules/compute-databricks-delta/main.tf"]
 "modules/speed-layer-kinesis" = ["modules/speed-layer-kinesis/main.tf"]
 "modules/ingest-firehose" = ["modules/ingest-firehose/main.tf"]
+"modules/ingestion-appflow" = ["modules/ingestion-appflow/main.tf"]
+"modules/ingestion-dms" = ["modules/ingestion-dms/main.tf"]
+"modules/ingestion-sftp" = ["modules/ingestion-sftp/main.tf"]
+"modules/ingestion-webhook" = ["modules/ingestion-webhook/main.tf"]
+"modules/metadata-control-table" = ["modules/metadata-control-table/main.tf"]
+"modules/metadata-control-table/scripts" = ["modules/metadata-control-table/scripts/fetch_pipeline_config.py"]
+"modules/streaming-msk-kafka" = ["modules/streaming-msk-kafka/main.tf"]
+"modules/warehouse-snowflake-aws" = ["modules/warehouse-snowflake-aws/main.tf"]
 "modules/dq-great-expectations" = ["modules/dq-great-expectations/main.tf"]
 "modules/schema-registry-glue" = ["modules/schema-registry-glue/main.tf"]
 "modules/query-athena" = ["modules/query-athena/main.tf"]

@@ -92,6 +92,12 @@ runs:
       run: |
         set -uo pipefail
         mkdir -p .minus-review
+        if [ ! -d "$TF_DIR" ]; then
+          echo "No target Terraform directory at '$TF_DIR' (repo is engine-only). Skipping infrastructure review." > .minus-review/verify.txt
+          echo "rc=0" >> "$GITHUB_OUTPUT"
+          tail -n 20 .minus-review/verify.txt
+          exit 0
+        fi
         python core/governance/plan_gate.py verify --dir "$TF_DIR" \
           --policy-mode "$POLICY_MODE" > .minus-review/verify.txt 2>&1
         echo "rc=$?" >> "$GITHUB_OUTPUT"
@@ -154,6 +160,10 @@ runs:
         TF_DIR: ${{ inputs.tf_dir }}
       run: |
         set -uo pipefail
+        if [ ! -d "$TF_DIR" ]; then
+          echo "verdict=pass" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         ROOT="${RUN_ROOT:-$(dirname "$TF_DIR")}"
         python core/governance/reflector.py --run-root "$ROOT" --dir "$TF_DIR" --json \
           > .minus-review/reflector.json 2>.minus-review/reflector.err
@@ -176,6 +186,10 @@ runs:
         BUDGET: ${{ inputs.budget_usd }}
       run: |
         set -uo pipefail
+        if [ ! -d "$TF_DIR" ]; then
+          echo "No target Terraform directory found at $TF_DIR -- skipping review." > .minus-review/comment.md
+          exit 0
+        fi
         ROOT="${RUN_ROOT:-$(dirname "$TF_DIR")}"
         SVG="$(ls -t "$ROOT"/reports/*/architecture.svg 2>/dev/null | head -1 || true)"
         python .github/actions/pr-reviewer/comment.py \
