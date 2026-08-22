@@ -56,7 +56,8 @@ def missing_required(blueprint, inputs):
     return missing
 
 
-def resolve_to_run(query, cloud=None, inputs=None, generate=False):
+def resolve_to_run(query, cloud=None, inputs=None, generate=False, name=None,
+                   domain=None, orchestrator=None, owner=None):
     result = intent_resolver.resolve(query, cloud=cloud)
     if result["intent"] == "OPERATION":
         return {
@@ -65,7 +66,10 @@ def resolve_to_run(query, cloud=None, inputs=None, generate=False):
             "error": result["recommendation"],
         }
 
-    run = runs.new_run(blueprint="requirements-first", request=query, cloud=result["cloud"])
+    # name/domain/orchestrator only change the run id and the registry row; absent them
+    # the id keeps its original `<timestamp>-requirements-first` shape (FR-01).
+    run = runs.new_run(blueprint="requirements-first", request=query, cloud=result["cloud"],
+                       name=name, domain=domain, orchestrator=orchestrator, owner=owner)
     requirements_record = reqgate.template()
     requirements_record["goal"] = query
     reqgate.write(run["root"], requirements_record, gathered_by="minusctl")
