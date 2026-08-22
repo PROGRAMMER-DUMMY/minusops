@@ -63,10 +63,10 @@ core/cli/
   }
   ```
 * **Resolution Precedence Hierarchy:** When resolving which run workspace to operate on:
-  1. Explicit `--run <name>` flag provided on the command line.
-  2. Active run stored in `.minus/context.json`.
-  3. Upward directory discovery (if running from within a `runs/<run-id>/` subdirectory).
-  4. Most recently created run (`latest`).
+  1. Explicit `--run <name>` (or `--dir <path>`) flag provided on the command line.
+  2. Upward directory discovery (if invoking from within a `runs/<run-id>/` subdirectory).
+  3. Active run stored in `.minus/context.json` (persisted by `minusctl use <run-id>`).
+  4. **Fail-Closed Refusal:** If none of the above matches, refuse execution with exit code 1 and error: `"Error: No active run set. Run 'minusctl use <run-id>' or pass '--run <run-id>'."` (Never guess or fall back to most-recent run for mutating/governance operations).
 
 ### FR-02: Workspace Listing (`minusctl runs list`)
 * Formats all available runs in a structured tabular output.
