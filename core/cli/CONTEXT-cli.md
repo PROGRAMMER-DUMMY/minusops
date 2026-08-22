@@ -76,6 +76,9 @@ the governance contract — plan-hash binding, the destructive-change classifier
 policy — and a wrapper that reordered, renamed or short-circuited a stage would change what is
 enforced while looking like a usability change. The stage passes through verbatim; the only
 addition is `--dir`, resolved from the active run. With no active run and no flag it refuses.
+Also forwards `--with-telemetry` (PRD v6 FR-07) so drift findings can carry the CloudTrail
+identity and the failure signature that preceded the change; a flag the wrapper drops is a
+flag that does not exist.
 
 ### [`cost.py`](./commands/cost.py)
 Fronts [`bcm_pricing_calculator.py`](../cost/bcm_pricing_calculator.py). `estimate` maps to the

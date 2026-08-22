@@ -231,3 +231,141 @@ def test_aws_telemetry_is_not_attempted_for_unsupported_types():
     """Only Glue and EMR expose a job-run history worth correlating. Calling CloudTrail for
     every drifted S3 bucket would add a round trip per resource for nothing."""
     assert cloud_drift.aws_telemetry("aws_s3_bucket.data", "aws_s3_bucket") is None
+
+
+# --- PRD v6 FR-07 / AC-05: the gate actually asks -------------------------------------
+#
+# The correlation engine above was built caller-injected so an offline plan makes no AWS
+# call. That left it unreachable: nothing passed a lookup, so `minusctl gate plan` could
+# never surface an identity or an error signature. These tests pin the wiring, in both
+# directions -- opt-in when asked, and silent by default.
+
+DECLARED_VS_LIVE = {
+    "resource_drift": [
+        {"address": "aws_glue_job.customer_events", "type": "aws_glue_job",
+         "change": {"actions": ["update"],
+                    "before": {"worker_type": "G.1X", "number_of_workers": 10},
+                    "after": {"worker_type": "G.2X", "number_of_workers": 20}}},
+    ],
+    "resource_changes": [
+        {"address": "aws_glue_job.customer_events", "type": "aws_glue_job",
+         "change": {"actions": ["update"],
+                    "before": {"worker_type": "G.2X", "number_of_workers": 20},
+                    "after": {"worker_type": "G.1X", "number_of_workers": 10}}},
+    ],
+}
+
+
+def test_the_summary_shows_declared_against_live():
+    """A reviewer cannot weigh a revert without both numbers. "reverts an out-of-band
+    change" names the event; G.1X vs G.2X is the decision."""
+    text = cloud_drift.format_result(cloud_drift.classify(DECLARED_VS_LIVE))
+
+    assert "Declared in Git" in text
+    assert "Live in AWS Cloud" in text
+    assert "worker_type = G.1X" in text
+    assert "worker_type = G.2X" in text
+
+
+def test_the_summary_recommends_not_reverting_a_correlated_change():
+    """Someone scaled this up at 3am because it was failing. The default action -- click
+    approve, let the plan put it back -- reproduces the outage."""
+    text = cloud_drift.format_result(
+        cloud_drift.classify(DECLARED_VS_LIVE, telemetry=_telemetry))
+
+    assert "Do not revert" in text
+    assert "minusctl source anchor" in text
+
+
+def test_uncorrelated_drift_gets_no_recommendation():
+    """With no evidence of WHY, "do not revert" is advice we cannot support. The reverted
+    warning still stands on its own."""
+    text = cloud_drift.format_result(cloud_drift.classify(DECLARED_VS_LIVE))
+
+    assert "Do not revert" not in text
+    assert "REVERTS out-of-band change" in text
+
+
+def test_clean_drift_output_is_unchanged():
+    """The no-drift line is what every passing plan prints. Growing it would add noise to
+    the overwhelmingly common case."""
+    assert cloud_drift.format_result(cloud_drift.classify({})) == \
+        "[gate] cloud drift: none detected"
+
+
+def test_the_gate_asks_for_telemetry_only_when_told_to(monkeypatch):
+    """AC-05, both directions. The default must reach no network: an offline plan on a
+    laptop without credentials is the common case, not the exception."""
+    import plan_gate
+
+    seen = []
+    monkeypatch.setattr(plan_gate.cloud_drift, "classify",
+                        lambda plan_json, telemetry=None: seen.append(telemetry) or {
+                            "drift_count": 0, "drifted": [], "reverted": [],
+                            "reverted_count": 0, "reverts_out_of_band_changes": False,
+                            "malformed_count": 0, "telemetry_available": False,
+                            "telemetry_evidence": []})
+
+    plan_gate._drift_for_plan({}, with_telemetry=False)
+    plan_gate._drift_for_plan({}, with_telemetry=True)
+
+    assert seen[0] is None
+    assert seen[1] is plan_gate.cloud_drift.aws_telemetry
+
+
+def test_the_env_var_turns_telemetry_on(monkeypatch):
+    """CI runs the gate non-interactively, where there is no flag to type but there are
+    ambient role credentials."""
+    import plan_gate
+
+    monkeypatch.setenv("MINUS_TELEMETRY", "1")
+    assert plan_gate._telemetry_requested(False) is True
+    monkeypatch.setenv("MINUS_TELEMETRY", "0")
+    assert plan_gate._telemetry_requested(False) is False
+    monkeypatch.delenv("MINUS_TELEMETRY", raising=False)
+    assert plan_gate._telemetry_requested(False) is False
+    assert plan_gate._telemetry_requested(True) is True
+
+
+def test_the_gate_cli_accepts_with_telemetry():
+    """The flag has to exist on `plan_gate.py plan` for `minusctl gate plan
+    --with-telemetry` to have anything to forward to."""
+    import plan_gate
+
+    parser = plan_gate._build_parser()
+    args = parser.parse_args(["plan", "--dir", "x", "--with-telemetry"])
+    assert args.with_telemetry is True
+    assert parser.parse_args(["plan", "--dir", "x"]).with_telemetry is False
+
+
+def test_minusctl_gate_forwards_the_flag(tmp_path):
+    """The wrapper is the surface an operator uses; a flag it drops is a flag that does
+    not exist."""
+    from cli.commands import gate as gate_cmd
+
+    seen = {}
+
+    def _spy(argv):
+        seen["argv"] = argv
+        return 0
+
+    original = gate_cmd._delegate
+    gate_cmd._delegate = _spy
+    try:
+        parser_args = _GateArgs(stage="plan", dir=str(tmp_path), with_telemetry=True)
+        gate_cmd.run(parser_args)
+    finally:
+        gate_cmd._delegate = original
+
+    assert "--with-telemetry" in seen["argv"]
+
+
+class _GateArgs:
+    def __init__(self, **kwargs):
+        self.stage = kwargs.get("stage", "plan")
+        self.dir = kwargs.get("dir")
+        self.run = kwargs.get("run")
+        self.mode = kwargs.get("mode", "gatekeeper")
+        self.policy_mode = kwargs.get("policy_mode")
+        self.destroy = kwargs.get("destroy", False)
+        self.with_telemetry = kwargs.get("with_telemetry", False)

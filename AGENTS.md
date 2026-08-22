@@ -159,7 +159,7 @@ minusctl export --target-repo ../marketing-analytics --dest-dir pipelines/clicks
 | **Independent stage review** | `python core/governance/reflector.py --run-root runs/<id>` (read-only; exit 2 when blocked) | `core/governance/reflector.py` |
 | **Diagnose local env** | `minusctl doctor [--json]` (cross-platform; exit 1 when a check is `error`) | `core/reporting/doctor.py` |
 | **Select the active run** | `minusctl use <run-id>`; `minusctl runs list` marks it `[*]`, `minusctl runs describe` prints its full specification card | `core/cli/context.py` |
-| **Run the deploy gate** | `minusctl gate {verify\|plan\|approve\|apply}` (defaults to the active run; `--destroy` plans a governed teardown) | `core/governance/plan_gate.py` |
+| **Run the deploy gate** | `minusctl gate {verify\|plan\|approve\|apply}` (defaults to the active run; `--destroy` plans a governed teardown; `--with-telemetry` correlates detected drift with CloudTrail identity and Glue failure signatures -- read-only, advisory, off by default) | `core/governance/plan_gate.py` |
 | **Export to a domain repo** | `minusctl export --target-repo <path> --dest-dir pipelines/<name> [--generate-workflow]` (local file copy only; never touches AWS) | `core/reporting/export.py` |
 
 

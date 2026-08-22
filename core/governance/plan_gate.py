@@ -911,7 +911,31 @@ def _check_coverage(dir_, plan_hash_, policy_mode):
     return True
 
 
-def stage_plan(dir_, policy_mode=None, destroy=False):
+TELEMETRY_ENV = "MINUS_TELEMETRY"
+
+
+def _telemetry_requested(with_telemetry=False):
+    """Opt-in only: the flag, or MINUS_TELEMETRY=1 for CI where there is no flag to type but
+    there are ambient role credentials.
+
+    Off is the default because the common case is an offline plan on a laptop with no
+    credentials, and a gate that reaches for CloudTrail there is slower for no answer."""
+    if with_telemetry:
+        return True
+    return os.environ.get(TELEMETRY_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _drift_for_plan(plan_json, with_telemetry=False):
+    """Classify cloud drift, correlating it with CloudTrail/Glue telemetry only on request.
+
+    The lookup is passed in rather than looked up inside cloud_drift so the default path
+    makes no AWS call at all -- see that module on why correlation is advisory and
+    fail-open. A telemetry failure never changes the verdict."""
+    telemetry_fn = cloud_drift.aws_telemetry if _telemetry_requested(with_telemetry) else None
+    return cloud_drift.classify(plan_json or {}, telemetry=telemetry_fn)
+
+
+def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False):
     """destroy=True governs teardown through the exact same hash-bind -> approve -> apply loop
     as create/modify, so teardown is never a raw `terraform destroy` with no plan-hash binding,
     no RBAC, and no audit chain. A destroy plan's resource_changes carry actions=["delete"],
@@ -1003,7 +1027,7 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     # identity can be a real AWS STS call -- doing that twice per plan would be pure waste).
     # Did the CLOUD change outside Terraform, and does this plan undo it? Computed from the
     # same plan JSON, carried to apply like g9_result.
-    drift_result = cloud_drift.classify(plan_json_for_g6 or {})
+    drift_result = _drift_for_plan(plan_json_for_g6, with_telemetry=with_telemetry)
     print(cloud_drift.format_result(drift_result))
 
     # A rename-shaped destroy+create of a STATEFUL resource is data loss wearing an ordinary
@@ -1473,13 +1497,14 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
     return status == "OK"
 
 
-def stage_run(dir_, mode, policy_mode=None, destroy=False):
-    return (stage_verify(dir_, policy_mode) and stage_plan(dir_, policy_mode, destroy=destroy)
+def stage_run(dir_, mode, policy_mode=None, destroy=False, with_telemetry=False):
+    return (stage_verify(dir_, policy_mode)
+            and stage_plan(dir_, policy_mode, destroy=destroy, with_telemetry=with_telemetry)
             and stage_approve(dir_, mode, policy_mode) and stage_apply(dir_, mode, policy_mode))
 
 
 # ---------------------------------------------------------------------------
-def main(argv=None):
+def _build_parser():
     p = argparse.ArgumentParser(description="Plan-bound Terraform deploy gate (uses the CLI credential chain)")
     p.add_argument("stage", choices=["verify", "plan", "approve", "apply", "run"])
     p.add_argument("--dir", required=True, help="Terraform directory to deploy (no default — this is a generic engine)")
@@ -1490,18 +1515,28 @@ def main(argv=None):
     p.add_argument("--destroy", action="store_true",
                    help="plan a teardown (terraform plan -destroy) instead of a create/modify plan; "
                         "approve/apply are unchanged -- same hash-bind, RBAC, and audit chain as any plan")
-    args = p.parse_args(argv)
+    p.add_argument("--with-telemetry", action="store_true",
+                   help="on detected cloud drift, ask CloudTrail who changed the resource and "
+                        "Glue what failed first (read-only, advisory, fail-open). Off by "
+                        f"default; ${TELEMETRY_ENV}=1 also enables it")
+    return p
+
+
+def main(argv=None):
+    args = _build_parser().parse_args(argv)
 
     if args.stage == "verify":
         ok = stage_verify(args.dir, args.policy_mode)
     elif args.stage == "plan":
-        ok = stage_plan(args.dir, args.policy_mode, destroy=args.destroy)
+        ok = stage_plan(args.dir, args.policy_mode, destroy=args.destroy,
+                        with_telemetry=args.with_telemetry)
     elif args.stage == "approve":
         ok = stage_approve(args.dir, args.mode, args.policy_mode)
     elif args.stage == "apply":
         ok = stage_apply(args.dir, args.mode, args.policy_mode)
     else:
-        ok = stage_run(args.dir, args.mode, args.policy_mode, destroy=args.destroy)
+        ok = stage_run(args.dir, args.mode, args.policy_mode, destroy=args.destroy,
+                       with_telemetry=args.with_telemetry)
     return 0 if ok else 1
 
 

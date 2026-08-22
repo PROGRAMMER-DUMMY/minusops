@@ -673,3 +673,52 @@ Built TDD: RED on 21 harness failures, then RED on the CLI package, then GREEN.
   Faker-style generator driven by `requirements.json` was in the PRD's FR-05 prose but is not in
   the v7 task list, and generating data whose shape we guessed would make hop 4 prove the
   generator rather than the pipeline.
+
+---
+
+## 11. PRD-ARCH-2026-006 FR-07 / AC-05 completion -- Telemetry reaches the gate -- 2026-08-22
+
+Source: [`tasks/prd_v6_enterprise_cli_architecture.md`](../tasks/prd_v6_enterprise_cli_architecture.md)
+FR-07 and AC-05, closed on Matt's work order after a self-audit found the gap.
+
+**Suite: 1049 passed, 86 skipped, 342 slow deselected. `pytest` exits 0.**
+
+### The gap
+
+`cloud_drift.aws_telemetry()` shipped in PRD v5 with tests, built caller-injected so an
+offline plan makes no AWS call. Nothing ever passed it. `plan_gate.py` called
+`cloud_drift.classify(plan_json_for_g6 or {})` with no `telemetry=` argument, so `minusctl
+gate plan` could never surface an identity or an error signature. The engine was tested in
+isolation and unreachable in production -- the failure mode where full green coverage says
+nothing about whether a feature works.
+
+### What changed
+
+* `plan_gate._telemetry_requested()` -- `--with-telemetry` or `MINUS_TELEMETRY=1`. Off by
+  default: the common case is an offline plan on a laptop with no credentials.
+* `plan_gate._drift_for_plan()` -- the one place that decides whether to pass a lookup.
+  Threaded through `stage_plan` and `stage_run`.
+* `plan_gate._build_parser()` extracted from `main()`, so a test can inspect the flag
+  without running a stage against Terraform.
+* `core/cli/commands/gate.py` forwards `--with-telemetry`.
+* `cloud_drift.classify()` now carries `declared` and `live` VALUES per drifted row, not
+  just attribute names.
+* `cloud_drift.format_result()` regrouped by resource, rendering the FR-07 shape:
+  `Declared in Git:` / `Live in AWS Cloud:` / `Action:` / `Telemetry Evidence:` /
+  `Recommendation:`.
+
+### Decisions
+
+* **The recommendation needs both signals.** `Do not revert` prints only when there is
+  telemetry evidence AND the plan would undo the change. Without evidence it is advice we
+  cannot support; without a revert there is nothing to not-revert.
+* **Grouped by resource, not by finding type.** The declared value, the live value, who
+  changed it and what failed beforehand are one story; three separate lists made a reviewer
+  reassemble four facts.
+* **The clean case is still one line.** `[gate] cloud drift: none detected` is what every
+  passing plan prints, and growing it would add noise to the overwhelmingly common case.
+* **`declared`/`live` are additive.** The apply-stage consumer
+  (`_reject_if_reverts_out_of_band_and_auto_approve`) reads only
+  `reverts_out_of_band_changes` and `reverted[].attributes`, and does no equality comparison
+  against a recomputed record, so the wider `drifted` rows carried through pending ->
+  approval change nothing there. Verified before the change, not assumed.

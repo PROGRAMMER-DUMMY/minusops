@@ -77,10 +77,15 @@ def classify(plan_json, telemetry=None):
         change = entry.get("change") or {}
         drift_before, drift_after = change.get("before"), change.get("after")
         drifted_attrs = _changed_attributes(drift_before, drift_after)
+        # `before` is what Terraform recorded (what Git declares); `after` is what the API
+        # returned (what is live). Carried as values, not just names, so the summary can show
+        # a reviewer G.1X vs G.2X rather than the word "worker_type".
         row = {
             "address": entry["address"],
             "type": entry.get("type"),
             "drifted_attributes": sorted(drifted_attrs),
+            "declared": {attr: (drift_before or {}).get(attr) for attr in sorted(drifted_attrs)},
+            "live": {attr: (drift_after or {}).get(attr) for attr in sorted(drifted_attrs)},
         }
         drifted.append(row)
 
@@ -189,21 +194,56 @@ def _job_run_errors(aws, address):
             and run.get("ErrorMessage")]
 
 
+RECOMMENDATION = ("Recommendation: Do not revert. Update main.tf to match live attributes "
+                  "and re-anchor baseline with 'minusctl source anchor'.")
+
+
+def _pairs(values):
+    """`attr = value, attr = value` in a stable order."""
+    return ", ".join(f"{attr} = {values[attr]}" for attr in sorted(values))
+
+
 def format_result(result):
-    """One-line-per-finding summary for the gate's stdout."""
+    """Per-resource summary for the gate's stdout (PRD v6 FR-07).
+
+    Grouped by resource rather than by finding type, because the declared value, the live
+    value, who changed it and what failed beforehand are one story about one resource; split
+    across three lists they are four facts a reviewer has to reassemble.
+
+    The clean case is deliberately still one line. It is what every passing plan prints.
+    """
     if not result["drift_count"] and not result["malformed_count"]:
         return "[gate] cloud drift: none detected"
+
+    reverted = {row["address"]: row for row in result["reverted"]}
+    evidence = {row["address"]: row for row in result.get("telemetry_evidence") or []}
+
     lines = [f"[gate] cloud drift: {result['drift_count']} resource(s) changed outside Terraform"]
-    for row in result["reverted"]:
-        lines.append(f"  - REVERTS out-of-band change: {row['address']} "
-                     f"({', '.join(row['attributes'])}) -- this plan undoes a change someone "
-                     f"made directly in the account")
-    for row in result.get("telemetry_evidence") or []:
-        # Advisory only. It explains the change; it does not approve undoing it.
-        if row.get("identity"):
-            lines.append(f"  - correlated: {row['address']} was changed by {row['identity']}")
-        for message in row.get("errors") or []:
-            lines.append(f"    preceded by: {message}")
+    for row in result["drifted"]:
+        address = row["address"]
+        lines.append(f"  - {address} changed outside Terraform")
+        if row.get("declared"):
+            lines.append(f"      Declared in Git:    {_pairs(row['declared'])}")
+        if row.get("live"):
+            lines.append(f"      Live in AWS Cloud:  {_pairs(row['live'])}")
+
+        undone = reverted.get(address)
+        if undone:
+            lines.append(f"      REVERTS out-of-band change: {', '.join(undone['attributes'])}"
+                         " -- this plan undoes a change someone made directly in the account")
+
+        found = evidence.get(address)
+        if found and found.get("identity"):
+            lines.append(f"      Action: changed by {found['identity']}")
+        for message in (found or {}).get("errors") or []:
+            lines.append(f"      Telemetry Evidence: {message}")
+
+        # Only with BOTH: evidence of why, and a plan that would undo it. Without evidence
+        # "do not revert" is advice we cannot support; without a revert there is nothing to
+        # not-revert.
+        if undone and found:
+            lines.append(f"      {RECOMMENDATION}")
+
     if result["malformed_count"]:
         lines.append(f"  - {result['malformed_count']} malformed drift entry(ies) could not be read")
     return "\n".join(lines)

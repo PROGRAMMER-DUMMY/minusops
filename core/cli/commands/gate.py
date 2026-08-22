@@ -32,6 +32,9 @@ def add_parser(sub):
     parser.add_argument("--policy-mode", choices=["dev", "production"])
     parser.add_argument("--destroy", action="store_true",
                         help="plan a teardown; governed exactly like create/modify")
+    parser.add_argument("--with-telemetry", action="store_true",
+                        help="correlate detected drift with CloudTrail identity and Glue "
+                             "failure signatures (read-only, advisory, off by default)")
     return parser
 
 
@@ -55,4 +58,6 @@ def run(args):
         argv += ["--policy-mode", args.policy_mode]
     if args.destroy:
         argv.append("--destroy")
+    if getattr(args, "with_telemetry", False):
+        argv.append("--with-telemetry")
     return _delegate(argv)
