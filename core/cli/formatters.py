@@ -15,7 +15,7 @@ Shells out to: nothing
 Used by: core/cli/commands/runs.py, core/cli/commands/source.py, core/cli/main.py
 """
 EMPTY = "-"
-NOT_PRICED = "not priced"
+NOT_PRICED = "unpriced"
 
 # Everything a terminal is guaranteed to render. Anything above this is an arrow, a box,
 # a dingbat or an emoji.
@@ -52,17 +52,16 @@ def table(headers, rows):
     return "\n".join(lines)
 
 
-def section(title):
-    """A card heading. Uppercased so it is scannable without colour."""
-    title = _ascii_only(title).upper()
-    return f"{title}\n{'-' * len(title)}"
-
-
 def card(title, sections):
-    """A run specification card: `sections` is [(heading, [(label, value), ...]), ...]."""
-    lines = [_ascii_only(title), "=" * len(_ascii_only(title)), ""]
+    """A run specification card: `sections` is [(heading, [(label, value), ...]), ...].
+
+    Headings render as `[Heading]` (PRD v6 FR-03) so a section is scannable in a wall of
+    plain text without colour."""
+    title = _ascii_only(title)
+    rule = "=" * max(len(title), 60)
+    lines = [rule, title, rule, ""]
     for heading, fields in sections:
-        lines.append(section(heading))
+        lines.append(f"[{_ascii_only(heading)}]")
         width = max((len(label) for label, _ in fields), default=0)
         for label, value in fields:
             lines.append(f"  {_ascii_only(label).ljust(width)}  {cell(value)}")

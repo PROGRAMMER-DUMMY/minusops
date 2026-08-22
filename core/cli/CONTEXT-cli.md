@@ -32,6 +32,12 @@ give every file two module objects, and a `monkeypatch` on one would not be seen
 ## [`context.py`](./context.py)
 - **Purpose:** which run is the operator on. `minusctl use <run-id>` records it in
   `.minus/context.json`; `gate`, `cost`, `source`, `prove` and `export` default to it.
+- **Precedence (PRD v6 FR-01, ratified 2026-08-22):** explicit `--run`/`--dir`, then
+  [`discover_run_from_cwd()`](./context.py) (the cwd is inside `runs/<run-id>/`), then the
+  stored context, then **refusal**. Discovery outranks the stored context because where you
+  ARE is a stronger statement of intent than what you last selected. There is no fifth step:
+  "most recently created" was struck from the draft, because a prototype somebody else
+  generated five minutes ago is not a safe default for `gate apply`.
 - **This file decides which infrastructure a later `gate apply` touches**, so every failure is
   loud:
   - A corrupt context file raises [`ContextError`](./context.py). Falling back to "the newest
@@ -48,7 +54,7 @@ give every file two module objects, and a `monkeypatch` on one would not be seen
 - **ASCII only**, enforced by `_ascii_only` rather than by convention (NFR-01). No emoji and no
   box-drawing either: these outputs are pasted into tickets and CI logs, and a terminal that
   cannot render `U+2502` turns a table into noise.
-- **`None` renders as `-`, never as `0`.** [`money()`](./formatters.py) returns `not priced`
+- **`None` renders as `-`, never as `0`.** [`money()`](./formatters.py) returns `unpriced`
   for an absent estimate. `$0.00` would be the one number on the card an executive remembers,
   and it would be wrong. Same doctrine as [`budget_calculator.py`](../cost/budget_calculator.py).
 
@@ -65,10 +71,32 @@ Selects the active run. Refuses an id that does not resolve, rather than storing
 later, far from the typo that caused it.
 
 ### [`runs.py`](./commands/runs.py)
-`list` renders the table with `[*]` on the active run. `describe` renders the specification card
-— Metadata, Architecture, FinOps, Resource endpoints, Artifact paths — reading what the run has
-actually produced rather than restating the request. A broken context does not stop `list`:
-that is exactly where an operator goes to fix it.
+`list` renders the FR-02 table — Active, Run Name, Domain, Engine, Orchestrator, Cost/Mo,
+Status — with `[*]` on the active run and `[ ]` elsewhere so the marker reads as a column
+rather than a rendering bug. Filters on `--domain`, `--tier`, `--orchestrator`; an undeclared
+field never matches a filter on it, because silence is not a wildcard and an unclassified run
+in a `--tier prod` listing is how one ends up treated as production. "no runs match that
+filter" and "there are no runs yet" are distinct messages: at the end of a filtered command
+they are very different statements to read.
+
+`describe` renders the FR-03 card — `[Metadata]`, `[Architecture Attributes]`,
+`[FinOps & Resource Endpoints]`, `[Artifact Paths]` — pulling each fact from its canonical
+source. [`ARCHITECTURE_FIELDS`](./commands/runs.py) maps each PRD label to the keys that may
+hold it, because the PRD names attributes (`table_format`, `serving_layer`) that no schema
+declares under those exact names. Source order matters: the decision record and requirements
+win, and `run.json` trails — its `compute_engine` is the short label the list table shows
+("Glue 4.0"), not the architecture statement the decision carries, and reading it first would
+let the summary outrank the decision it summarises. Nothing is inferred from a module list:
+"we generated compute-glue-etl" is not the same claim as "the compute engine is Glue 4.0 with
+10 G.1X workers".
+
+[`_spend()`](./commands/runs.py) is shared by both views. Two views of one run disagreeing
+about cost is worse than neither showing it — the reader believes whichever they saw last.
+Artifact paths render workspace-relative and are annotated `(missing)` when the file is not
+there; a path printed for a file that does not exist sends the reader to an empty directory
+and makes them doubt the tool rather than the run.
+
+A broken context does not stop `list`: that is exactly where an operator goes to fix it.
 
 ### [`gate.py`](./commands/gate.py)
 Fronts [`plan_gate.py`](../governance/plan_gate.py). **Deliberately thin.** The gate's stages are
@@ -77,8 +105,15 @@ policy — and a wrapper that reordered, renamed or short-circuited a stage woul
 enforced while looking like a usability change. The stage passes through verbatim; the only
 addition is `--dir`, resolved from the active run. With no active run and no flag it refuses.
 Also forwards `--with-telemetry` (PRD v6 FR-07) so drift findings can carry the CloudTrail
-identity and the failure signature that preceded the change; a flag the wrapper drops is a
-flag that does not exist.
+identity and the failure signature that preceded the change, and `--role-arn`, which asserts
+the active session is a given deploy role; a flag the wrapper drops is a flag that does not
+exist.
+
+`gate status` is the one action handled **here** rather than delegated
+([`_status`](./commands/gate.py)). It is a read of state the gate already recorded, not a
+sixth stage -- forwarding it would hand `plan_gate` a stage it does not implement -- and it
+never invokes Terraform, so it stays instant and credential-free. Nobody runs a status
+command that takes ten seconds.
 
 ### [`cost.py`](./commands/cost.py)
 Fronts [`bcm_pricing_calculator.py`](../cost/bcm_pricing_calculator.py). `estimate` maps to the

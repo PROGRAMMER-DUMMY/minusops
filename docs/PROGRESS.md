@@ -722,3 +722,81 @@ nothing about whether a feature works.
   `reverts_out_of_band_changes` and `reverted[].attributes`, and does no equality comparison
   against a recomputed record, so the wider `drifted` rows carried through pending ->
   approval change nothing there. Verified before the change, not assumed.
+
+---
+
+## 12. PRD v6 FR-01..FR-04 completion -- the FR bodies, not just the ACs -- 2026-08-22
+
+Source: [`tasks/prd_v6_enterprise_cli_architecture.md`](../tasks/prd_v6_enterprise_cli_architecture.md),
+closed on Matt's work order after a self-audit found that v6's acceptance criteria all passed
+while several FR bodies specified more than their ACs tested.
+
+**Suite: 1090 passed, 86 skipped, 342 slow deselected. `pytest` exits 0.**
+
+### Delivered
+
+| Task | What landed |
+| :--- | :--- |
+| A | `context.json` carries `updated_at`; `discover_run_from_cwd()` resolves a run from the directory you are standing in |
+| B | `runs list` filters (`--domain`, `--tier`, `--orchestrator`) and the FR-02 columns (Active, Run Name, Domain, Engine, Orchestrator, Cost/Mo, Status) with `[*]`/`[ ]` markers |
+| C | The FR-03 card: `[Metadata]`, `[Architecture Attributes]`, `[FinOps & Resource Endpoints]`, `[Artifact Paths]`, each fact from its canonical source |
+| D.1 | `minusctl gate status` -- recorded verdicts, read from disk, no Terraform invocation |
+| D.2 | `--role-arn` as a verified assertion. **`--mfa-arn` deliberately not built** -- see below |
+
+### The ratified precedence
+
+Explicit flag -> upward discovery -> stored context -> **refusal**. Discovery now outranks the
+stored context (it did not before): where you ARE is a stronger statement of intent than what
+you last selected, and standing in one run while a command silently operates on another is a
+surprise worth removing. There is no "most recent run" step; Matt struck it from the draft on
+the grounds that a prototype somebody generated five minutes ago is not a safe default for
+`gate apply`.
+
+### Why there is no `--mfa-arn`
+
+The work order asked for `--mfa-arn` and `--role-arn` to be forwarded to `plan_gate.py`, which
+accepted neither.
+
+`--role-arn` is implementable and is built: `stage_approve` already reads the ambient session's
+ARN (that is how `_reject_if_wrong_team_role` works), so asserting "this approval must be made
+under role X" is a real, fail-closed check against something the gate can see. It verifies; it
+never assumes a role and never handles credentials.
+
+`--mfa-arn` is not. `sts get-caller-identity` returns Account, Arn and UserId and carries no MFA
+claim, so nothing client-side can verify one. MFA is enforced by the deploy role's trust policy
+(`aws:MultiFactorAuthPresent`) at AssumeRole time, upstream of this process -- which is the
+credential model stated in `plan_gate.py`'s own docstring. A flag accepted and never checked
+would put an unverified assertion into an audit record, which is worse than no flag. A test
+pins its absence so a future well-meaning change has to argue with it.
+
+### Two defects a smoke test caught that the tests had not
+
+* **`runs list` and `runs describe` disagreed about cost.** The list read
+  `estimated_monthly_cost` off the registry; the card read `bcm/estimated_monthly_spend.json`.
+  One run rendered `unpriced` in the table and `$248.50` on its card. Both now go through
+  `_spend()`. Two views of one run disagreeing is worse than neither showing it -- the reader
+  believes whichever they saw last.
+* **Artifact paths rendered absolute**, which on Windows is 120 characters that wrap in every
+  terminal. Now workspace-relative, matching the FR-03 example.
+
+Both were found by running the command and reading the output, not by the suite. Worth
+remembering: 22 passing tests said nothing about whether the two views agreed with each other.
+
+### Smaller decisions
+
+* **`gate status` is CLI-side, not a sixth stage.** Forwarding it would hand `plan_gate` a
+  stage it does not implement. It reads recorded state and never re-hashes the plan: doing so
+  shells out to `terraform show` on every call, and nobody runs a status command that takes ten
+  seconds. An approval bound to a *different* hash reports as not approved -- softening that in
+  the one place an operator looks before `apply` would undo the hash binding.
+* **Architecture-attribute source order.** The decision record and requirements win; `run.json`
+  trails. Its `compute_engine` is the short label the list table shows ("Glue 4.0"), not the
+  architecture statement the decision carries, and reading it first let the summary outrank the
+  decision it summarises. Caught by a failing test, not by review.
+* **`unpriced`, not `not priced`.** Matt's spec names the string; `formatters.NOT_PRICED`
+  follows it.
+* **An undeclared field never matches a filter.** A run with no `tier` is excluded from
+  `--tier prod` rather than included as a wildcard -- that is how an unclassified run ends up
+  treated as production.
+* **`formatters.section()` deleted.** The bracketed FR-03 headings replaced it and nothing else
+  called it.

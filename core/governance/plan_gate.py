@@ -1163,7 +1163,120 @@ def _warn_if_over_budget(dir_, plan_hash_):
         pass
 
 
-def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
+def _reject_if_not_asserted_role(posture, role_arn):
+    """Refuse to approve unless the ambient session IS the role the operator asserted.
+
+    `--role-arn` states which role this approval is being made under. It is an ASSERTION the
+    gate verifies, never a role the gate assumes: this process handles no credentials, and
+    minting a session here would put secrets in a tool whose whole contract is that it has
+    none. Same shape as _reject_if_wrong_team_role, which verifies the same posture against
+    the state key.
+
+    There is deliberately no `--mfa-arn` companion. `sts get-caller-identity` returns
+    Account, Arn and UserId -- no MFA claim -- so the gate cannot verify one. MFA is enforced
+    by the deploy role's trust policy (`aws:MultiFactorAuthPresent`) at AssumeRole time,
+    upstream of anything this process can see. A flag accepted and never checked would be an
+    unverified assertion sitting in an audit record, which is worse than no flag at all.
+
+    Fails closed on an unreadable identity: if we cannot tell whose session this is, we
+    cannot tell it is the asserted role.
+    """
+    if not role_arn:
+        return False
+    arn = (posture or {}).get("arn")
+    if not arn:
+        print("[gate] refusing approve: --role-arn was asserted but the active session "
+              "identity could not be read. Run `aws sts get-caller-identity` to check your "
+              "credentials.", file=sys.stderr)
+        return True
+    if team_resolver.role_matches(arn, role_arn):
+        return False
+    print(f"[gate] refusing approve: --role-arn asserted {role_arn}, but this session is "
+          f"{arn}. Assume the right role, or drop the assertion.", file=sys.stderr)
+    return True
+
+
+def gate_status(dir_):
+    """Recorded gate state for a directory, read from disk only (PRD v6 FR-04).
+
+    Deliberately does NOT re-hash the plan. Doing so shells out to `terraform show` on every
+    call, which needs an initialised directory and turns a status check into a slow,
+    credential-shaped operation -- and nobody runs a status command that takes ten seconds.
+    What this reports is what the gate RECORDED: the pending plan hash, whether an approval
+    exists bound to that exact hash, and the verdicts carried alongside it.
+
+    An approval for a different hash is not an approval. That is the whole point of the hash
+    binding, and reporting it as approved here would undo it in the one place an operator
+    looks before running apply.
+    """
+    state = _state_dir(dir_)
+    pending = {}
+    pending_path = _pending_path(dir_)
+    if os.path.exists(pending_path):
+        try:
+            pending = json.load(open(pending_path, encoding="utf-8")) or {}
+        except Exception:
+            pending = {}
+
+    plan_hash = pending.get("plan_hash")
+    approval = {}
+    if plan_hash and os.path.exists(_approved_path(dir_, plan_hash)):
+        try:
+            approval = json.load(open(_approved_path(dir_, plan_hash), encoding="utf-8")) or {}
+        except Exception:
+            approval = {}
+
+    drift = pending.get("cloud_drift") or {}
+    g9 = pending.get("g9_result") or {}
+    churn = pending.get("address_churn") or {}
+    return {
+        "dir": dir_,
+        "state_dir": state,
+        "planned": bool(plan_hash),
+        "plan_hash": plan_hash,
+        "planned_at": pending.get("planned_at") or pending.get("created_at"),
+        "approved": bool(approval),
+        "approver": approval.get("approver"),
+        "approved_at": approval.get("approved_at"),
+        "approval_mode": approval.get("approval_mode"),
+        "drift_count": drift.get("drift_count"),
+        "reverts_out_of_band_changes": bool(drift.get("reverts_out_of_band_changes")),
+        "telemetry_available": bool(drift.get("telemetry_available")),
+        "g9": g9.get("reason") or g9.get("detail"),
+        "address_churn_blocked": bool(churn.get("blocked")),
+        "next": _status_next(bool(plan_hash), bool(approval)),
+    }
+
+
+def _status_next(planned, approved):
+    if not planned:
+        return "minusctl gate verify, then minusctl gate plan"
+    if not approved:
+        return "minusctl gate approve"
+    return "minusctl gate apply"
+
+
+def format_status(status):
+    """ASCII only (NFR-01). Two columns, because this is read at a glance before an apply."""
+    rows = [
+        ("directory", status["dir"]),
+        ("planned", "yes" if status["planned"] else "no"),
+        ("plan hash", (status["plan_hash"] or "-")[:16] + ("..." if status["plan_hash"] else "")),
+        ("approved", "yes" if status["approved"] else "no"),
+        ("approver", status["approver"] or "-"),
+        ("approved at", status["approved_at"] or "-"),
+        ("cloud drift", "-" if status["drift_count"] is None else str(status["drift_count"])),
+        ("reverts out-of-band", "YES" if status["reverts_out_of_band_changes"] else "no"),
+        ("G9", status["g9"] or "-"),
+        ("next", status["next"]),
+    ]
+    width = max(len(label) for label, _ in rows)
+    lines = ["== gate status =="]
+    lines.extend(f"  {label.ljust(width)}  {value}" for label, value in rows)
+    return "\n".join(lines)
+
+
+def stage_approve(dir_, mode="gatekeeper", policy_mode=None, role_arn=None):
     policy_mode = _policy_mode(policy_mode)
     print("== approve ==")
     h, herr = _plan_hash(dir_)
@@ -1175,7 +1288,15 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
     # Before recording any approval, prove this session may write this team's state. Placed
     # here rather than at apply so an unauthorised operator never produces an approval record
     # at all -- an approval that exists is one somebody can later act on.
-    if _reject_if_wrong_team_role(dir_, _credential_posture(), mode):
+    posture = _credential_posture()
+    if _reject_if_wrong_team_role(dir_, posture, mode):
+        return False
+    # Checked here, alongside the team-role check and for the same reason: an approval that
+    # exists is one somebody can later act on, so an unauthorised session must never produce
+    # one.
+    if _reject_if_not_asserted_role(posture, role_arn):
+        _audit("approve", "REJECTED", reason="asserted_role_mismatch", dir=dir_,
+               asserted_role=role_arn)
         return False
 
     pending = {}
@@ -1497,10 +1618,12 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
     return status == "OK"
 
 
-def stage_run(dir_, mode, policy_mode=None, destroy=False, with_telemetry=False):
+def stage_run(dir_, mode, policy_mode=None, destroy=False, with_telemetry=False,
+              role_arn=None):
     return (stage_verify(dir_, policy_mode)
             and stage_plan(dir_, policy_mode, destroy=destroy, with_telemetry=with_telemetry)
-            and stage_approve(dir_, mode, policy_mode) and stage_apply(dir_, mode, policy_mode))
+            and stage_approve(dir_, mode, policy_mode, role_arn=role_arn)
+            and stage_apply(dir_, mode, policy_mode))
 
 
 # ---------------------------------------------------------------------------
@@ -1515,6 +1638,12 @@ def _build_parser():
     p.add_argument("--destroy", action="store_true",
                    help="plan a teardown (terraform plan -destroy) instead of a create/modify plan; "
                         "approve/apply are unchanged -- same hash-bind, RBAC, and audit chain as any plan")
+    p.add_argument("--role-arn", default=None,
+                   help="assert the active session is this deploy role; approve refuses if "
+                        "it is not. An assertion the gate VERIFIES -- it never assumes a "
+                        "role and never handles credentials. (No --mfa-arn: an MFA claim is "
+                        "not visible to sts get-caller-identity, so the gate cannot check "
+                        "one; MFA is enforced by the role's trust policy at AssumeRole.)")
     p.add_argument("--with-telemetry", action="store_true",
                    help="on detected cloud drift, ask CloudTrail who changed the resource and "
                         "Glue what failed first (read-only, advisory, fail-open). Off by "
@@ -1531,12 +1660,12 @@ def main(argv=None):
         ok = stage_plan(args.dir, args.policy_mode, destroy=args.destroy,
                         with_telemetry=args.with_telemetry)
     elif args.stage == "approve":
-        ok = stage_approve(args.dir, args.mode, args.policy_mode)
+        ok = stage_approve(args.dir, args.mode, args.policy_mode, role_arn=args.role_arn)
     elif args.stage == "apply":
         ok = stage_apply(args.dir, args.mode, args.policy_mode)
     else:
         ok = stage_run(args.dir, args.mode, args.policy_mode, destroy=args.destroy,
-                       with_telemetry=args.with_telemetry)
+                       with_telemetry=args.with_telemetry, role_arn=args.role_arn)
     return 0 if ok else 1
 
 

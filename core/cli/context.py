@@ -16,6 +16,19 @@ touches, so every failure mode here is loud on purpose:
   * A run id containing a path separator or `..` is refused before it is stored, because it
     is read back off disk later and joined into a path.
 
+PRECEDENCE (PRD v6 FR-01, as ratified 2026-08-22):
+
+    1. an explicit --run / --dir flag
+    2. upward discovery -- the cwd is inside runs/<run-id>/
+    3. the stored context
+    4. refusal
+
+Discovery outranks the stored context because where you ARE is a stronger statement of
+intent than what you last selected: standing in one run while a command silently operates on
+another is a surprise worth removing. There is deliberately no fifth step. "Most recently
+created" was in the original draft and was struck -- a prototype somebody else generated five
+minutes ago is not a safe default for `gate apply`.
+
 Writes go through a temp file plus `os.replace` (NFR-04): a half-written context.json is
 unparseable, and "delete the file" is not an obvious recovery to anyone who did not write it.
 
@@ -23,6 +36,7 @@ Depends on: core/reporting/runs.py (for resolution), stdlib only otherwise
 Shells out to: nothing
 Used by: core/cli/main.py, every module under core/cli/commands/
 """
+import datetime
 import json
 import os
 import re
@@ -82,6 +96,9 @@ def set_active_run(run_id):
 
     document = dict(read())
     document["active_run"] = record["run_id"]
+    # A stale selection is the dangerous one; without this there is no way to notice the
+    # active run was chosen three weeks ago.
+    document["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _atomic_write(context_path(), json.dumps(document, indent=2) + "\n")
     return record
 
@@ -113,8 +130,28 @@ def active_run():
     return record
 
 
+def discover_run_from_cwd(start=None):
+    """The run id of the workspace the cwd sits inside, or None.
+
+    Walks up from the cwd looking for a directory whose parent is named `runs` and which
+    holds a `run.json`. Both conditions matter: a scratch directory somebody made under
+    runs/ is not a workspace, and resolving it would point a command at nothing.
+    """
+    current = os.path.abspath(start or os.getcwd())
+    while True:
+        parent = os.path.dirname(current)
+        if (os.path.basename(parent) == "runs"
+                and os.path.exists(os.path.join(current, "run.json"))):
+            return os.path.basename(current)
+        if parent == current:
+            return None
+        current = parent
+
+
 def resolve_run(run_id=None):
-    """Explicit id wins, then the active run. Never falls through to "the newest one"."""
+    """Explicit id, then upward discovery, then the stored context, then refuse.
+
+    See the module docstring on why there is no "most recent run" fallback."""
     if run_id and run_id != "latest":
         record = runs.get_run(run_id)
         if not record:
@@ -122,11 +159,18 @@ def resolve_run(run_id=None):
         return record
     if run_id == "latest":
         return runs.latest_run()
+
+    discovered = discover_run_from_cwd()
+    if discovered:
+        record = runs.get_run(discovered)
+        if record:
+            return record
+
     record = active_run()
     if not record:
         raise ContextError(
-            "no run selected and none given. Run `minusctl use <run-id>` first, or pass "
-            "--run <run-id>.")
+            "no run selected and none given. Run `minusctl use <run-id>` first, pass "
+            "--run <run-id>, or cd into the run's directory.")
     return record
 
 

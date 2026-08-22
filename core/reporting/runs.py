@@ -43,7 +43,7 @@ INDEX_MD = "INDEX.md"
 # Registry fields carried straight off run.json. Anything absent stays None rather than
 # being defaulted -- see the module docstring on the cost column.
 _INDEX_FIELDS = ("owner", "domain", "orchestrator", "compute_engine", "storage_zones",
-                 "governance_status", "estimated_monthly_cost", "target_repo")
+                 "governance_status", "estimated_monthly_cost", "target_repo", "tier")
 
 
 def _slug(value):
@@ -61,7 +61,8 @@ def _semantic_id(name, domain, orchestrator, stamp):
 
 
 def new_run(blueprint="manual", request="", cloud="aws", name=None, domain=None,
-            orchestrator=None, owner=None, target_repo=None):
+            orchestrator=None, owner=None, target_repo=None, tier=None,
+            compute_engine=None, governance_status=None):
     now = datetime.datetime.now(datetime.timezone.utc)
     if name:
         run_id = _semantic_id(name, domain, orchestrator, now.strftime("%Y%m%d_%H%M%S"))
@@ -82,6 +83,11 @@ def new_run(blueprint="manual", request="", cloud="aws", name=None, domain=None,
         "orchestrator": orchestrator,
         "owner": owner,
         "target_repo": target_repo,
+        # Declared, never inferred. `tier` absent means unclassified, and a `--tier prod`
+        # filter must exclude it rather than treat the silence as a wildcard.
+        "tier": tier,
+        "compute_engine": compute_engine,
+        "governance_status": governance_status,
         "created_at": now.isoformat(),
     }
     for key in ("terraform_dir", "reports_dir", "bcm_dir"):

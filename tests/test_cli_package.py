@@ -138,8 +138,10 @@ def test_runs_describe_renders_every_section_of_the_spec_card(workspace):
     code, output = _capture(["runs", "describe", run["run_id"]])
 
     assert code == 0
-    for section in ("METADATA", "ARCHITECTURE", "FINOPS", "RESOURCE ENDPOINTS",
-                    "ARTIFACT PATHS"):
+    # PRD v6 FR-03 merges FinOps and Resource Endpoints into one section; the card renders
+    # the four bracketed headings its example shows.
+    for section in ("[Metadata]", "[Architecture Attributes]",
+                    "[FinOps & Resource Endpoints]", "[Artifact Paths]"):
         assert section in output
 
 
@@ -160,7 +162,7 @@ def test_describe_reports_an_unpriced_run_as_unpriced(workspace):
     _, output = _capture(["runs", "describe", run["run_id"]])
 
     assert "$0.00" not in output
-    assert "not priced" in output.lower()
+    assert "unpriced" in output.lower()
 
 
 # --- FR-03: commands default to the active run ----------------------------------------
