@@ -20,6 +20,8 @@ MinusOps (Workspace Root)
 │   ├── CONTEXT-core.md                     # Core package index & subpackage mapping
 │   ├── governance/
 │   │   └── CONTEXT-governance.md           # Plan gates, approvals, audit chains, drift & source guards
+│   ├── cli/
+│   │   └── CONTEXT-cli.md                   # minusctl front door: context switching, spec cards, gate/cost/source
 │   ├── generation/
 │   │   └── CONTEXT-generation.md           # Synthesizer, module registry, provenance & pattern stores
 │   ├── architecture/

@@ -608,3 +608,68 @@ coding-agent advisory. Built TDD: RED on 21 failures plus one collection error, 
 * **Glue job-name derivation in `aws_telemetry`** takes the Terraform resource label, not the
   physical id (which lives in state, not in a plan). Marked with a `ponytail:` comment naming
   the ceiling; holds for MinusOps-generated stacks, may miss on adopted ones.
+
+---
+
+## 10. PRD-ARCH-2026-007 (Revision 7.0) — Unified CLI & 5-Hop Proving Harness — 2026-08-22
+
+Source: [`tasks/prd_v7_unified_cli_and_proving_harness.md`](../tasks/prd_v7_unified_cli_and_proving_harness.md).
+Built TDD: RED on 21 harness failures, then RED on the CLI package, then GREEN.
+
+**Suite after this work: 1127 tests collected across 90 test files, `pytest` exits 0.**
+
+### Delivered
+
+| FR | What landed | Where |
+| :--- | :--- | :--- |
+| FR-01 | 5-hop harness: ingest, transform, DQ, quarantine, serving, plus a tamper-evident `reports/<plan-hash>/proving_report.json` | `core/reporting/seed.py` (`prove_pipeline`, `verify_report`) |
+| FR-02 | `core/cli/` package: `main.py`, `context.py`, `formatters.py`, `commands/{use,runs,gate,cost,source}.py` | `core/cli/` |
+| FR-03 | `minusctl use`, `runs list` with `[*]`, `runs describe` spec card, `--dir`-free `gate plan` | `core/cli/context.py`, `core/cli/commands/` |
+| AC-05 | `minusctl = "core.cli.main:main"`, with `core.cli` and `core.cli.commands` in the wheel | `pyproject.toml` |
+| FR-04 | `AGENTS.md` and `.agents/AGENTS.md` moved to `minusctl` subcommands | both files |
+
+### Decisions worth recording
+
+* **The CLI package is a front door, not a rewrite.** `core/reporting/minusctl.py` carries
+  nineteen subcommands and the tests that prove each of them; moving that code would have risked
+  a deploy-lifecycle regression to gain a directory layout. `core/cli/` owns the five commands
+  that had to be written new and delegates the rest verbatim. `known_commands()` plus a test
+  asserting all nineteen legacy names makes losing one a visible failure rather than a silent
+  behaviour change.
+* **`prove` was already taken.** It meant the offline governance-evidence bundle. Rather than
+  redefining it, `--execute` selects the live five-hop data proof and the bare command is
+  unchanged — matching how `seed` already splits plan from execute.
+* **Great Expectations is not a dependency.** GE runs inside the Glue Python-shell job that
+  `modules/dq-great-expectations` deploys. Hop 3 starts that job and reads the validation-result
+  JSON. Importing GE (plus pandas and SQLAlchemy) into a control plane with a dependency-free
+  base install would be a heavy price for assertions that already run server-side.
+* **"Signed" means tamper-evident, not authenticated.** SHA-256 over the canonical payload, the
+  same meaning the audit chain already gives the word. There is no private key and no claim
+  about who produced the report.
+* **Hop 4 is evaluated after hop 5** because it needs the Gold row count, then re-inserted at
+  position 4 so the report reads in pipeline order.
+* **`core/cli` uses package-relative imports.** The rest of the repo puts each `core/`
+  subdirectory on `sys.path` and imports by bare name; doing both here gave every file two module
+  objects, and a `monkeypatch` on one was invisible to the other. That cost a debugging cycle and
+  is worth not repeating.
+* **Nothing is guessed from an empty context.** With no active run and no explicit flag, `gate`,
+  `cost` and `source` refuse. Falling back to the newest run would point an apply at
+  infrastructure nobody named.
+
+### Deviations from the advisory, stated for the record
+
+* **`core/cli/commands/` holds five modules, not ten.** `create`, `prove`, `export`, `audit` and
+  `doctor` are delegated to their existing implementations rather than re-fronted, because a
+  wrapper that only forwards `argv` adds a file and no behaviour. They are still reachable as
+  `minusctl <name>`, which is what AC-06 and the agent docs depend on.
+* **AGENTS.md keeps four box-drawing characters** (`U+2502`, `U+251C`, `U+2514`, `U+25BA`) in a
+  pre-existing decision-tree diagram. They are not emoji; NFR-01 targets CLI output and generated
+  reports, both of which are ASCII-clean and test-enforced.
+
+### Not built
+
+* **Hop 1 does not synthesize the fixture.** `--records` and `--malformed` DECLARE what the
+  fixture contains so hop 4 can do its arithmetic; the operator still supplies the file. A
+  Faker-style generator driven by `requirements.json` was in the PRD's FR-05 prose but is not in
+  the v7 task list, and generating data whose shape we guessed would make hop 4 prove the
+  generator rather than the pipeline.

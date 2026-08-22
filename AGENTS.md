@@ -108,21 +108,42 @@ Because there is no bundled IaC, **every tool that acts on infrastructure requir
 
 All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws|azure|gcp}` (default `aws`).
 
+**Use `minusctl` rather than a script path.** After `pip install -e .` it is on PATH; without
+an install, `python -m core.cli.main <command>` is the same entry point. The script paths below
+still work and the engines are unchanged -- `minusctl` is a front door, not a rewrite -- but the
+subcommand is the stable name and the path is an implementation detail.
+
+**Select a run once, then stop typing `--dir`.** `minusctl use <run-id>` records the active run
+in `.minus/context.json`; `gate`, `cost`, `source`, `prove` and `export` all default to it.
+Nothing is guessed: with no active run and no explicit flag, those commands refuse rather than
+falling back to the newest run, because "most recently generated" is not the same thing as
+"the one you are working on".
+
+```
+minusctl create "governed lakehouse for clickstream" --name clickstream --domain marketing --orchestrator mwaa
+minusctl use marketing-clickstream-mwaa_20260822_111530
+minusctl runs describe                 # full specification card for the active run
+minusctl gate plan                     # no --dir needed
+minusctl cost estimate                 # BCM estimate into the active run's reports/
+minusctl prove --execute               # live 5-hop data proof (mutating; approval-gated)
+minusctl export --target-repo ../marketing-analytics --dest-dir pipelines/clickstream --generate-workflow
+```
+
 | Capability | How you do it | Primary tool |
 | :--- | :--- | :--- |
-| **Operator workflow** | `python core/reporting/minusctl.py create "<request>"`, then complete `runs/<run-id>/requirements.json`, record `architecture_decision.json`, synthesize Terraform, and run `next` / `readiness` / `package` | Safe unified CLI |
-| **Create run workspace** | `python core/reporting/runs.py new --blueprint <id> --request "<request>"` | `core/reporting/runs.py` |
+| **Operator workflow** | `minusctl create "<request>" --name <workload> --domain <domain>`, then complete `runs/<run-id>/requirements.json`, record `architecture_decision.json`, synthesize Terraform, and run `minusctl next` / `readiness` / `package` | Safe unified CLI |
+| **Create run workspace** | `minusctl create "<request>" --name <workload>` (semantic id `<domain>-<workload>-<orchestrator>_<timestamp>`; registers the run in `runs/INDEX.md`) | `core/reporting/runs.py` |
 | **Resolve request to run** | `python core/generation/workflow.py resolve "<request>"` creates a requirements-first run and never emits production Terraform from demo fixtures | `core/generation/workflow.py` |
 | **No-cloud demo** | `python core/generation/demo.py governed-data-pipeline --owner data-platform --daily-data-gb 50` | Generates run Terraform + synthetic plan report without Terraform/AWS |
 | **Provision / change infra** | Generate or edit HCL in `runs/<run-id>/terraform/`, then run the deploy gate (§6.1) | `core/governance/plan_gate.py` + Terraform |
-| **Detect manual source edits** | `python core/governance/source_guard.py status --dir runs/<run-id>/terraform` and `python core/governance/source_guard.py diff --dir runs/<run-id>/terraform` | Generated-source baseline guard |
+| **Detect manual source edits** | `minusctl source status` / `minusctl source diff` (defaults to the active run; `minusctl source anchor` is the only write) | Generated-source baseline guard |
 | **Inspect generated reports** | `python core/reporting/plan_inspector.py services --latest`, `resources --latest`, `roles --latest`, `diff --latest` | Report and drift explorer |
 | **Inspect live state** | `aws <service> <describe/list/get>` (or `az`/`gcloud`) — read-only, safe | cloud CLI |
 | **Health diagnostics** | `python core/reporting/health_checker.py` | cloud CLI probes |
 | **Scan infra for issues** | `python core/reporting/optimize_analyzer.py --source-dir <dir>` | HCL scanner |
 | **Estimate cost** | `python core/cost/budget_calculator.py` (BCM Pricing Calculator API required for reportable costs) | Pricing API |
-| **Prepare BCM estimate** | `python core/cost/bcm_pricing_calculator.py prepare --report-dir runs/<run-id>/reports/<plan-hash> --account-id <account>` (no AWS calls) | BCM payload generator |
-| **Run BCM estimate** | `python core/cost/bcm_pricing_calculator.py run --report-dir runs/<run-id>/reports/<plan-hash> --mode gatekeeper` (AWS-side effect; approval required) | BCM Pricing Calculator API |
+| **Prepare BCM estimate** | `minusctl cost prepare --account-id <account>` (no AWS calls) | BCM payload generator |
+| **Run BCM estimate** | `minusctl cost estimate --mode gatekeeper` (AWS-side effect; approval required). The only source of a reportable cost total -- nothing else in MinusOps computes one | BCM Pricing Calculator API |
 | **Analyze live spend / anomalies** | `python core/reporting/finops_agent.py [--cost \| --anomalies \| --correlate]` (via active provider) | `core/providers/` |
 | **View the control-plane console (UI)** | `python app/dashboard_app.py` → http://127.0.0.1:8050 (`pip install -r requirements.txt`); non-local binds require `MINUS_DASH_TOKEN` | Plotly Dash |
 | **Notify (Slack/Jira), gated** | `core/reporting/finops_agent.py --notify-slack \| --notify-jira --approval-mode {gatekeeper\|auto-approve}` | `approval.py` gate |
@@ -132,11 +153,14 @@ All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws
 | **Clarify ambiguous work** | Read `.agents/skills/resolve-ambiguity/SKILL.md`, then ask one targeted question with a recommended answer | `resolve-ambiguity` skill |
 | **Stress-test a plan** | Read `.agents/skills/grill-me/SKILL.md`, then interview one decision at a time until major branches are resolved | `grill-me` skill |
 | **Audit an action** | `python core/governance/audit_logger.py --action <a> --details <d>` | append to tamper-evident `audit.jsonl` |
-| **Verify the audit chain** | `python core/reporting/minusctl.py audit verify` (or `python core/governance/audit_chain.py verify`) | hash-chain integrity check |
-| **Adopt existing Terraform** | `python core/reporting/minusctl.py adopt --dir <dir> [--anchor]` (inventory + SEC scan; `--anchor` is the only write) | `core/reporting/adopt.py` |
-| **Prove a stack end to end** | `python core/reporting/minusctl.py seed --run <run-id>` (plan only) / `--execute` (**mutates AWS**, routed through `approval.py`) | `core/reporting/seed.py` |
+| **Verify the audit chain** | `minusctl audit verify` | hash-chain integrity check |
+| **Adopt existing Terraform** | `minusctl adopt --dir <dir> [--anchor]` (inventory + SEC scan; `--anchor` is the only write) | `core/reporting/adopt.py` |
+| **Prove a stack end to end** | `minusctl prove` (offline governance evidence) / `minusctl prove --execute` (**mutates AWS**: the 5-hop data proof -- ingest, transform, data quality, quarantine, serving -- routed through `approval.py`, writes a tamper-evident `reports/<plan-hash>/proving_report.json`). `minusctl seed --execute` is the older 3-hop form | `core/reporting/seed.py` |
 | **Independent stage review** | `python core/governance/reflector.py --run-root runs/<id>` (read-only; exit 2 when blocked) | `core/governance/reflector.py` |
-| **Diagnose local env** | `python core/reporting/minusctl.py doctor [--json]` (cross-platform; exit 1 when a check is `error`) | `core/reporting/doctor.py` |
+| **Diagnose local env** | `minusctl doctor [--json]` (cross-platform; exit 1 when a check is `error`) | `core/reporting/doctor.py` |
+| **Select the active run** | `minusctl use <run-id>`; `minusctl runs list` marks it `[*]`, `minusctl runs describe` prints its full specification card | `core/cli/context.py` |
+| **Run the deploy gate** | `minusctl gate {verify\|plan\|approve\|apply}` (defaults to the active run; `--destroy` plans a governed teardown) | `core/governance/plan_gate.py` |
+| **Export to a domain repo** | `minusctl export --target-repo <path> --dest-dir pipelines/<name> [--generate-workflow]` (local file copy only; never touches AWS) | `core/reporting/export.py` |
 
 
 ### 3.1 Project-local decision skills

@@ -253,6 +253,44 @@ This document provides an exhaustive, architectural, and operational reference f
 
 ---
 
+### 8c. `core/reporting/seed.py` -- the 5-hop proving harness
+- **File Link:** [`core/reporting/seed.py`](./seed.py)
+- **Exact Purpose:** Proves a deployed stack actually carries data. A stack that plans cleanly,
+  applies cleanly and scores full readiness can still be thirty resources that have never moved a
+  byte.
+- **Two entry points, one set of hops:** [`seed()`](./seed.py) is the original three-step proof
+  behind `minusctl seed`; [`prove_pipeline()`](./seed.py) (PRD-ARCH-2026-007, FR-01) runs all five
+  behind `minusctl prove --execute`. Both call the same `_upload` / `_run_job` / `_query`
+  primitives, so each hop has one implementation.
+- **The five hops, in the order they break:**
+  1. `bronze_ingestion` -- Bronze is empty, so nothing downstream can be true.
+  2. `spark_glue_etl` -- the job exits on missing arguments, or 403s when it writes.
+  3. `great_expectations_dq` -- the suite never ran, or it ran and reported failures.
+  4. `quarantine_verification` -- malformed rows were dropped instead of quarantined.
+  5. `athena_serving_query` -- Athena has no catalog database, or the table has no rows.
+- **Hop 3 does not import Great Expectations.** GE runs inside the Glue Python-shell job that
+  [`modules/dq-great-expectations`](../../modules/dq-great-expectations/main.tf) deploys, which is
+  where the data is. This harness starts that job and reads the validation-result JSON it wrote.
+  Adding GE (and pandas, and SQLAlchemy) to a control plane whose base install has no runtime
+  dependencies would be a heavy price for assertions that already run server-side.
+- **Hop 4 is the arithmetic hop.** Injected records must equal Gold rows plus quarantined rows. A
+  transform that DROPS malformed rows leaves Gold looking clean and the count looking plausible;
+  nothing else in the harness catches it. Because it needs hop 5's Gold count, it is evaluated
+  after hop 5 and re-inserted at position 4 so the report reads in pipeline order.
+- **A failed hop stops the ones downstream.** Querying Gold after the transform failed returns a
+  stale-data answer that reads as success.
+- **A failed proof still writes its report.** Evidence of failure is evidence; a report that
+  exists only on success cannot be used to argue against a deploy.
+- **"Signed" means tamper-evident, not authenticated.** [`_sign()`](./seed.py) is a SHA-256 over
+  the canonical payload and [`verify_report()`](./seed.py) re-derives it, so an edited hop no
+  longer matches its own digest. It proves the file changed, not who changed it.
+- **Still the one mutating command.** Default is plan; `--execute` routes through
+  [`approval.py`](../governance/approval.py) with a single prompt naming every side effect.
+- **Tests:** [`tests/test_proving_harness.py`](../../tests/test_proving_harness.py) and
+  [`tests/test_seed_adopt.py`](../../tests/test_seed_adopt.py).
+
+---
+
 ### 8b. `core/reporting/export.py`
 - **File Link:** [`core/reporting/export.py`](./export.py)
 - **Exact Purpose:** The handover from control plane to domain repository (PRD-ARCH-2026-005, FR-03/FR-04). Copies `terraform/`, `dags/`, `scripts/`, `configs/` from a run into `<target-repo>/<dest-dir>/`, and optionally writes `<target-repo>/.github/workflows/<pipeline>-deploy.yml`.

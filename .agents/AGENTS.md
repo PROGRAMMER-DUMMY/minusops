@@ -7,7 +7,26 @@ Whenever working on this codebase, you must adhere to the following operational 
 * **Audit Trail**: Before proposing any command that interacts with live AWS resources or updates configurations, you must document the target action and the intended state change.
 * **Dry Runs**: You must run `terraform plan` or validation tests before seeking human approval. Present the plan output to the user in a clear format.
 
-## 2. Code Quality and Documentation
+## 2. Command Surface
+
+* **Invoke `minusctl`, not a script path.** Every capability is a subcommand:
+  `create`, `use`, `runs list|describe`, `gate {verify|plan|approve|apply}`, `cost
+  {prepare|estimate}`, `source {status|diff|anchor}`, `prove [--execute]`, `export`,
+  `audit verify`, `doctor`, plus `next`, `readiness`, `conformance`, `validate`, `package`,
+  `decision`, `accelerator`, `policy`, `reports`, `guard`, `adopt`, `seed`, `demo`.
+  Without an editable install, `python -m core.cli.main <command>` is the same entry point;
+  the old `python core/<area>/<file>.py` paths still work and are unchanged.
+* **Select the run once.** `minusctl use <run-id>` writes `.minus/context.json`; every
+  run-scoped command then defaults to it. With no active run and no explicit `--dir`/`--run`,
+  those commands REFUSE. Do not work around that by passing the newest run -- if you are not
+  sure which run is meant, ask.
+* **`minusctl prove --execute` and `minusctl seed --execute` are the only mutating
+  subcommands.** Both route through `approval.py` and land in the audit chain. Everything
+  else in the CLI is local-only by contract.
+* **No emojis in any output you generate** -- terminal text, log lines, generated markdown,
+  or reports.
+
+## 3. Code Quality and Documentation
 * **Referencing Resources**: When writing Terraform files, verify parameter defaults against hashicorp documentation schemas.
 * **Error Recovery**: If a terraform command fails due to provider constraints, missing variables, or state locking, do not retry blindly. Extract the error, write a troubleshooting entry, and request verification if human intervention is required.
 * **Skill Activation**: You must activate the `terraform-orchestrator` skill by reading its [SKILL.md](/.agents/skills/terraform-orchestrator/SKILL.md) instructions prior to any deployment operation.
