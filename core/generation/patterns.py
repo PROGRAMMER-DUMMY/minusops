@@ -78,13 +78,32 @@ def _jaccard(a, b):
     return len(a & b) / len(a | b)
 
 
+# `match_modules` scores a whole-phrase hit at 3 and a single shared token at 1. The weak
+# signal is right for RANKING -- it is why a near-miss still appears in the list for a human
+# to see -- and wrong for SELECTION. Reuse scoring is selection: it asks "which modules would
+# this request actually pull in", and one shared token ("lake" in "data lake" hitting
+# `governance-lakeformation`'s "lake formation") is not an answer to that.
+#
+# Regression this threshold prevents (2026-08-22, PRD v8): with the weak hits included, every
+# module added to the catalog grew the Jaccard denominator and pushed every stored pattern's
+# reuse_score down. A catalog that grows would silently stop reusing approved compositions,
+# and nothing would report it -- the scores just drift below min_overlap one by one.
+_SELECTION_MIN_SCORE = 3
+
+
+def _reuse_target(requirements):
+    """Modules a request actually names -- at least one whole-phrase hit, not token noise."""
+    return {m["id"] for m in module_registry.match_modules(
+        requirements, min_score=_SELECTION_MIN_SCORE)}
+
+
 def match_patterns(requirements, min_overlap=0.5):
     """
     Find prior approved patterns that fit new requirements, by overlap between the module set
     those requirements *would* select and each pattern's stored module set. Returns best-first
     with a `reuse_score`, so a near-identical request reuses a governed composition.
     """
-    target = {m["id"] for m in module_registry.match_modules(requirements)}
+    target = _reuse_target(requirements)
     out = []
     for p in load_patterns():
         score = _jaccard(target, p.get("modules", []))
