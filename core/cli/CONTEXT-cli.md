@@ -18,6 +18,16 @@ give every file two module objects, and a `monkeypatch` on one would not be seen
 
 ## [`main.py`](./main.py)
 - **Entry point** declared as `minusctl = "core.cli.main:main"` in `pyproject.toml`.
+- **The help screen is rendered by hand** ([`format_help()`](./main.py)), not by argparse.
+  Argparse renders subparsers as one flat blob plus a `{a,b,c,...}` usage line, which across
+  24 commands is the wall this replaces. [`COMMAND_GROUPS`](./main.py) orders them by
+  lifecycle stage and [`COMMAND_HELP`](./main.py) gives each a sentence -- an operator
+  choosing between `conformance` and `readiness` cannot do it from two words. A test asserts
+  the grouping and `known_commands()` stay in step, so adding a command without placing it
+  fails rather than silently vanishing from the help.
+- **Every command is registered as a subparser**, delegated ones bare and `add_help=False`,
+  so `minusctl <command>` parses and `minusctl <command> --help` reaches the owning
+  implementation's real flag list.
 - **Dispatch:** [`NATIVE`](./main.py) is handled here; [`DELEGATED`](./main.py) goes to
   `minusctl.main(argv)` verbatim. Both lists are written out rather than discovered, so losing a
   subcommand is a visible edit in this file instead of a silent behaviour change —
@@ -49,6 +59,21 @@ give every file two module objects, and a `monkeypatch` on one would not be seen
     off disk later and joined into a path.
 - **Atomic writes** (NFR-04): temp file plus `os.replace`. A half-written `context.json` is
   unparseable and "delete the file" is not an obvious recovery.
+
+## [`theme.py`](./theme.py)
+- **Purpose:** ANSI colour for the help screen, and the rules for when NOT to emit it.
+- **Off by default; on only for an interactive terminal.** Colour helps a human scan; it is
+  corruption everywhere else. `[1m` in a CI log, a redirected file or a `grep` result is
+  noise someone eventually writes a sed script to strip.
+- **Precedence:** `NO_COLOR` (any value) beats everything -- people who set it have a reason
+  and an opt-out must outrank our opt-in; then `MINUS_COLOR=1|0`; then `TERM=dumb`; then
+  `isatty()`.
+- **Styles take `enabled` explicitly** rather than reading global state, so a caller decides
+  once per render and the functions stay pure -- which is what makes them testable without a
+  fake terminal.
+- **[`visible_width()`](./theme.py)** exists because padding a coloured string by `len()`
+  counts the invisible bytes and every column after it drifts. Colour the name, pad outside
+  the escape.
 
 ## [`formatters.py`](./formatters.py)
 - **ASCII only**, enforced by `_ascii_only` rather than by convention (NFR-01). No emoji and no

@@ -39,6 +39,7 @@ for _path in (_CORE_DIR, os.path.dirname(_CORE_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+from . import theme  # noqa: E402
 from .commands import cost, gate, source, use  # noqa: E402
 from .commands import runs as runs_cmd  # noqa: E402
 
@@ -62,21 +63,104 @@ DELEGATED = (
 # `runs` is native for list/describe and delegated for anything else.
 _RUNS_NATIVE_ACTIONS = ("list", "describe")
 
+# One sentence per command, because an operator choosing between `conformance` and
+# `readiness` cannot do it from two words. These are what the help screen renders; each
+# command's own `--help` still carries its full flag list.
+COMMAND_HELP = {
+    "create": "Resolve a request into a requirements-first run workspace.",
+    "use": "Select the active run; gate, cost, source and prove then default to it.",
+    "runs": "List every run workspace, or describe one in full.",
+    "next": "Print the next safe command for a run, and any failure it is carrying.",
+    "gate": "Deploy gate: verify, plan, approve, apply, status. Plan-hash bound.",
+    "source": "Generated-source drift: status, diff, or anchor a new baseline.",
+    "guard": "Report whether generated Terraform has been edited by hand.",
+    "policy": "Inspect or promote the OPA Rego policy rules the gate enforces.",
+    "decision": "Read or template the architecture decision record for a run.",
+    "conformance": "Score a run against the AWS analytics reference architecture.",
+    "readiness": "Score whether a run is presentable to an enterprise reviewer.",
+    "audit": "Verify the tamper-evident audit chain has not been altered.",
+    "cost": "AWS BCM Pricing Calculator: prepare a profile, then estimate.",
+    "prove": "Prove the pipeline end to end; --execute runs the live 5-hop harness.",
+    "seed": "The older 3-hop data proof. Prefer `prove --execute`.",
+    "diagnose": "Explain a failure: evidence, root cause, options, next command.",
+    "validate": "Offline `terraform validate` for a run, credential-free.",
+    "export": "Package a run into a domain repository with its CI/CD workflow.",
+    "package": "Write the enterprise handoff bundle for a run.",
+    "accelerator": "Scaffold reviewable accelerator artifacts for a run.",
+    "demo": "Generate a no-cloud demo run and report, without Terraform or AWS.",
+    "doctor": "Diagnose the local environment: tools, credentials, container runtime.",
+    "adopt": "Inventory existing Terraform and scan it before adopting it.",
+    "reports": "Explore plan reports: services, resources, IAM roles, diffs.",
+}
+
+# Grouped by where a command sits in the lifecycle, so the screen reads as a workflow rather
+# than an alphabetical dump. Every command belongs to exactly one group; a test enforces that
+# the grouping and `known_commands()` stay in step, so adding a command without placing it
+# fails rather than silently vanishing from the help.
+COMMAND_GROUPS = (
+    ("Workspace and lifecycle", ("create", "use", "runs", "next")),
+    ("Deploy gate and governance",
+     ("gate", "source", "guard", "policy", "decision", "conformance", "readiness", "audit")),
+    ("Cost and verification", ("cost", "prove", "seed", "diagnose", "validate")),
+    ("Delivery and handoff", ("export", "package", "accelerator", "demo")),
+    ("Environment", ("doctor", "adopt", "reports")),
+)
+
+USAGE = "minusctl <command> [options]"
+
 
 def known_commands():
     """Every subcommand this CLI accepts, native and delegated."""
     return sorted(set(NATIVE) | set(DELEGATED))
 
 
+def format_help(enabled=None, stream=None):
+    """The grouped help screen.
+
+    Rendered by hand rather than through argparse's formatter: argparse renders subparsers as
+    one flat blob plus a `{a,b,c,...}` usage line, which across 24 commands is the wall this
+    replaces. Colour is decided once here and passed down, so the style functions stay pure.
+    """
+    if enabled is None:
+        enabled = theme.supports_color(stream)
+
+    width = max(len(name) for name in COMMAND_HELP)
+    lines = ["MinusOps control plane. Plan-bound, fail-closed, local by default.", "",
+             theme.heading("Usage:", enabled), f"  {USAGE}", ""]
+
+    for title, members in COMMAND_GROUPS:
+        lines.append(theme.heading(title, enabled))
+        for name in members:
+            # Colour the name, pad OUTSIDE the escape. Styling the padded label paints a
+            # block out to the column edge rather than highlighting the word.
+            label = theme.command(name, enabled) + " " * (width - len(name))
+            lines.append(f"  {label}  {COMMAND_HELP[name]}")
+        lines.append("")
+
+    lines.append(theme.heading("Options:", enabled))
+    lines.append(f"  {'-h, --help'.ljust(width)}  Show this message and exit.")
+    lines.append("")
+    lines.append(theme.dim(
+        "Run `minusctl <command> --help` for a command's own flags. Colour follows NO_COLOR "
+        "and MINUS_COLOR.", enabled))
+    return "\n".join(lines)
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(
-        prog="minusctl",
-        description="MinusOps control plane. Plan-bound, fail-closed, local by default.",
-        epilog="Delegated subcommands: " + ", ".join(sorted(DELEGATED))
-               + ". Run `minusctl <command> --help` for any of them.")
+    """Argparse parser for the NATIVE commands.
+
+    Every command is also registered as a bare subparser so `minusctl <command>` is a valid
+    invocation rather than a parse error. The help screen comes from `format_help()`, not from
+    argparse, and delegated commands never reach `parse_args` -- `main()` hands their whole
+    argv to the owning implementation first, so their real flags are parsed there.
+    """
+    parser = argparse.ArgumentParser(prog="minusctl", usage=USAGE, add_help=False)
+    parser.add_argument("-h", "--help", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
     for module in (use, runs_cmd, gate, cost, source):
         module.add_parser(sub)
+    for name in sorted(DELEGATED):
+        sub.add_parser(name, help=COMMAND_HELP.get(name, ""), add_help=False)
     return parser
 
 
@@ -89,12 +173,12 @@ def _delegate(argv):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
-        build_parser().print_help()
+        print(format_help())
         return 2
 
     command = argv[0]
     if command in ("-h", "--help"):
-        build_parser().print_help()
+        print(format_help())
         raise SystemExit(0)
 
     if command in DELEGATED:
