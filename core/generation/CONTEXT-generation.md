@@ -26,6 +26,15 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 | [`knowledge_store.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/knowledge_store.py) | Bi-temporal knowledge DB | SQLite database and JSONL corpus for bi-temporal facts, freshness clauses, and agent claims |
 | [`knowledge_degradation.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/knowledge_degradation.py) | Schema degradation check | Re-fetches live schemas to update/invalidate active schema claims in the knowledge store |
 | [`knowledge_delegation.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/knowledge_delegation.py) | Agent delegation hand-off | Formats `needs_review` claims for driving agent adjudication and records verdict claims |
+> **Ranking is not selection.** [`modules.match_modules`](./modules.py) scores a whole-phrase
+> hit at 3 and a single shared token at 1. The weak signal is right for ranking -- it is why a
+> near-miss still appears for a human to see -- and wrong anywhere a set of modules is
+> *chosen*. [`patterns._reuse_target`](./patterns.py) therefore filters to
+> `min_score=3`. Without that filter every module added to the catalog grew the Jaccard
+> denominator and pushed every stored pattern's `reuse_score` down, so a growing catalog would
+> silently stop reusing approved compositions with nothing reporting it (caught 2026-08-22 when
+> `governance-lakeformation`'s "lake formation" started matching every "data lake" request).
+
 | [`cicd.py`](./cicd.py) | CI/CD synthesis | 4-lane pre-merge validation, reusable feed factory, Jenkins parity, and the exported per-pipeline deploy workflow (`render_pipeline_workflow`, FR-04) whose `paths:` filter keeps one pipeline's commit from planning every sibling in a shared domain repo; OIDC only, never a static key. Renders text and writes without overwriting |
 | [`knowledge_diff.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/knowledge_diff.py) | Structural schema claim builder | Extracts deterministic `schema` claims from live provider schemas for `knowledge_store` |
 

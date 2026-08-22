@@ -39,7 +39,7 @@ MinusOps (Workspace Root)
 │   └── CONTEXT-app.md                      # Plotly Dash UI, click-to-code SVG inspector & HTTP routes
 │
 ├── modules/                                # INFRASTRUCTURE BUILDING BLOCKS
-│   └── CONTEXT-modules.md                  # 24 Terraform modules (VPC, S3, Glue, EMR, DBX, MSK, Snowflake, MWAA)
+│   └── CONTEXT-modules.md                  # Terraform building blocks (VPC, S3, Glue, EMR, DBX, MSK, Snowflake, MWAA, Lake Formation, semantic layers)
 │
 ├── .agents/                                # AGENT OPERATING SYSTEM
 │   └── CONTEXT-agents.md                   # AGENTS.md rules & 7 decision skills (grill-me, architect, doctor, etc.)

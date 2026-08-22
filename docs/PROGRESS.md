@@ -800,3 +800,79 @@ remembering: 22 passing tests said nothing about whether the two views agreed wi
   treated as production.
 * **`formatters.section()` deleted.** The bracketed FR-03 headings replaced it and nothing else
   called it.
+
+---
+
+## 13. PRD-ARCH-2026-008 (v8) -- Governance and semantic modules, spend ceilings, projection -- 2026-08-22
+
+Source: [`tasks/prd_v8_enterprise_governance_and_semantic_modules.md`](../tasks/prd_v8_enterprise_governance_and_semantic_modules.md).
+Raised by a self-audit: grill-me Pillars 12 and 13 were interviewing operators about four
+modules the catalog did not contain, so those requirements landed in `requirements.json` and
+synthesis produced nothing.
+
+**Suite: 1137 passed, 90 skipped, 358 slow deselected. `pytest` exits 0.** Wheel built and
+verified to contain all 29 modules plus both semantic-layer scaffolds.
+
+### Delivered
+
+| Task | What landed |
+| :--- | :--- |
+| 1 | `modules/governance-lakeformation/`, `modules/security-iam-scoped/` |
+| 2 | `modules/dbt-semantic-layer/` (models + dbt_project.yml), `modules/cube-semantic-layer/` (cube/schema + cube.js) |
+| 3 | Redshift `max_capacity` (default 128, validated >= base) and `aws_redshiftserverless_usage_limit` |
+| 4 | Athena partition projection on an opt-in, schema-supplied Glue table |
+| 5 | All four registered, packaged, and grill-me Pillar 14 pointed at `minusctl prove --execute` |
+
+### The two security details that are the point of Task 1
+
+* **Lake Formation ships inert.** `IAMAllowedPrincipals` holds ALL on every new database and
+  table by default; while that is true, IAM alone opens the data and every LF-Tag grant is
+  bypassed. The console shows the tags attached and queries keep working, so nothing signals
+  it. The empty `create_database_default_permissions {}` / `create_table_default_permissions {}`
+  blocks are what turn LF-TBAC on. A test asserts they are present AND empty, checked
+  structurally rather than by string, so deleting them as "unused" fails the suite.
+* **A cross-account role without `sts:ExternalId` is the confused deputy.** Role ARNs are not
+  secrets -- they appear in logs, error messages and support tickets. `trusted_external_principals`
+  set with `external_id` empty fails the PLAN through a `precondition`, so the defect is not
+  expressible rather than merely discouraged.
+
+### A regression I caused and the pre-existing fragility under it
+
+Adding `governance-lakeformation` broke `test_match_reuses_a_prior_approved_pattern`:
+`reuse_score` fell from above 0.5 to exactly 0.5.
+
+Cause: `match_modules` scores a whole-phrase hit at 3 and a **single shared token** at 1. The
+phrase "lake formation" overlaps "lake" in every "data lake" request. `patterns.match_patterns`
+was building its Jaccard target from *every* ranked hit, so each new module grew the
+denominator and pushed every stored pattern's reuse score down.
+
+That is not a bug in the new module -- it is ranking output used as selection. The weak signal
+exists so a near-miss still appears in a list for a human to read; it was never a claim that
+the module would be selected, and `match_patterns`'s own docstring already said "the module set
+those requirements *would* select". Fixed at the root:
+[`patterns._reuse_target`](../core/generation/patterns.py) filters to `min_score=3`.
+
+Worth keeping: **a growing catalog was silently degrading pattern reuse, and nothing reported
+it.** Scores drift below `min_overlap` one at a time; no test fails, no error prints, approved
+compositions just stop being offered. Only adding a module that happened to share a token with
+"data lake" surfaced it.
+
+### Smaller decisions
+
+* **The projected Athena table is opt-in and schema-supplied.** `query-athena` already
+  documented why it creates no tables ("a table needs a real column schema, and inventing one
+  produces tables that fail on first query"). Projection does not change that: no columns, no
+  table. Projection is always on when the table does exist, since a partitioned table created
+  here without it would reintroduce the `MSCK REPAIR` dependency the feature removes.
+* **`usage_limit_breach_action` defaults to `log`, not `deactivate`.** `deactivate` takes BI
+  offline mid-quarter-close. The default should wake a human, not stop the business.
+* **`max_capacity` defaults to 128 RPU** -- about 16x the 8 RPU floor. Enough headroom for a
+  real spike, small enough that a runaway query is a line item rather than an incident.
+* **The packaging test is a general guard**, not four assertions: every registered module must
+  appear in `[tool.setuptools.data-files]`. That list is hand-maintained and does not
+  auto-discover, which is how 5 of 14 modules went missing from a wheel before while working
+  perfectly from a source checkout. Verified against a real `python -m build --wheel`, not just
+  the test.
+* **Semantic-layer modules provision almost nothing.** The scaffold is the deliverable. A
+  module that created an EKS service here would be one MinusOps could not safely destroy, and
+  a dbt Cloud account would put credentials in a control plane that holds none.

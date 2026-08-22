@@ -122,6 +122,15 @@ core = ["py.typed"]
 "modules/governance-observability" = ["modules/governance-observability/main.tf"]
 "modules/databricks-workspace" = ["modules/databricks-workspace/main.tf"]
 "modules/networking-vpc" = ["modules/networking-vpc/main.tf"]
+"modules/governance-lakeformation" = ["modules/governance-lakeformation/main.tf"]
+"modules/security-iam-scoped" = ["modules/security-iam-scoped/main.tf"]
+# The semantic-layer modules ship scaffolds as well as HCL; the scaffold IS the
+# deliverable, so a wheel with only main.tf would install an empty promise.
+"modules/dbt-semantic-layer" = ["modules/dbt-semantic-layer/main.tf", "modules/dbt-semantic-layer/dbt_project.yml"]
+"modules/dbt-semantic-layer/models" = ["modules/dbt-semantic-layer/models/semantic_models.yml", "modules/dbt-semantic-layer/models/metrics.yml"]
+"modules/cube-semantic-layer" = ["modules/cube-semantic-layer/main.tf"]
+"modules/cube-semantic-layer/cube" = ["modules/cube-semantic-layer/cube/cube.js"]
+"modules/cube-semantic-layer/cube/schema" = ["modules/cube-semantic-layer/cube/schema/CustomerEvents.js"]
 "docs" = [
     "docs/architecture_synthesis.md",
     "docs/architecture_svg_skeleton.svg",

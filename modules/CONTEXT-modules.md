@@ -27,6 +27,10 @@
 | [`networking-vpc`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/main.tf) | Networking | Multi-AZ customer VPC with NAT Gateways, default SG & VPC Endpoints | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/main.tf), [`PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/PROVENANCE.json) |
 | [`orchestrator-mwaa`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-mwaa/main.tf) | Orchestration | Managed Workflows for Apache Airflow (MWAA) environment in private VPC with KMS & log streams | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-mwaa/main.tf) |
 | [`orchestrator-stepfunctions`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-stepfunctions/main.tf) | Orchestration | AWS Step Functions state machine workflow orchestrator | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-stepfunctions/main.tf) |
+| [`governance-lakeformation`](./governance-lakeformation/main.tf) | Governance | Lake Formation LF-TBAC: row filters and PII column masking on Gold, with the `IAMAllowedPrincipals` compatibility default revoked | [`main.tf`](./governance-lakeformation/main.tf) |
+| [`security-iam-scoped`](./security-iam-scoped/main.tf) | Governance | Least-privilege consumer access: scoped S3/KMS/Athena reads, external-ID trust for cross-account | [`main.tf`](./security-iam-scoped/main.tf) |
+| [`dbt-semantic-layer`](./dbt-semantic-layer/main.tf) | Serving | Code-native governed metrics (dbt / MetricFlow) plus a versioned manifest bucket | [`main.tf`](./dbt-semantic-layer/main.tf), [`models/`](./dbt-semantic-layer/models/) |
+| [`cube-semantic-layer`](./cube-semantic-layer/main.tf) | Serving | Headless semantic layer with a pre-aggregation cache and an encrypted Redis store | [`main.tf`](./cube-semantic-layer/main.tf), [`cube/`](./cube-semantic-layer/cube/) |
 | [`query-athena`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/query-athena/main.tf) | Query Engine | Athena workgroup, scan limit cutoff, encrypted results bucket & Iceberg maintenance | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/query-athena/main.tf), [`iceberg_maintenance.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/query-athena/iceberg_maintenance.tf) |
 | [`schema-registry-glue`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/schema-registry-glue/main.tf) | Governance | AWS Glue Schema Registry for Avro data contracts and compatibility rules | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/schema-registry-glue/main.tf) |
 | [`speed-layer-kinesis`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/speed-layer-kinesis/main.tf) | Streaming | Kinesis Data Streams speed layer with optional Apache Flink application | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/speed-layer-kinesis/main.tf) |
@@ -552,3 +556,61 @@ if a new third-party provider appears here without amending its reviewed allowli
 
 ## Governance & Provenance Tracking
 Every module in `modules/` is validated against security rules in [`core/reporting/optimize_analyzer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/optimize_analyzer.py). Upstream dependencies and provider schema compatibility are tracked via [`PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/databricks-workspace/PROVENANCE.json) files to ensure content hash integrity against infrastructure drift.
+
+---
+
+### `governance-lakeformation` (PRD v8 FR-01A)
+
+- **Purpose:** Tag-based access control on the Gold zone -- row filters and column-level PII
+  masking enforced for Athena and EMR.
+- **Why tags, not direct grants:** a grant per (principal, database, table, column) is O(n*m)
+  rows nobody prunes. Six months in, "who can read PII" needs a script. A tag grant is one row
+  per (principal, tag value): tag a new column `Confidentiality=PII` and every existing grant
+  applies immediately.
+- **THE footgun this module exists to avoid.** Lake Formation ships in a compatibility mode
+  where `IAMAllowedPrincipals` holds ALL on every new database and table. While that is true,
+  IAM alone still opens the data and **every LF-Tag grant is bypassed** -- the console shows
+  the tags attached, queries keep working, and nothing indicates the governance layer is
+  inert. The empty `create_database_default_permissions {}` and
+  `create_table_default_permissions {}` blocks are what actually turn LF-TBAC on. Deleting
+  them looks like a simplification and silently disables the module; a test asserts they are
+  present AND empty.
+- **`consumer_tag_values` defaults to `["Public"]`,** never PII. A default that granted PII
+  would be a module that quietly widened access on apply.
+- **Validations:** at least one administrator (an unadministered lake is unmanageable) and at
+  least one LF-Tag (tag-based control with no tags grants nothing and blocks nothing).
+
+### `security-iam-scoped` (PRD v8 FR-01B)
+
+- **Purpose:** least-privilege read access to Gold for BI and data-science consumers,
+  including cross-account.
+- **No `Resource = "*"`.** Every statement names the Gold bucket ARN, the CMK ARN, or the
+  workgroup it was given. A least-privilege module with a wildcard is a wildcard with a
+  reassuring name. (`gold_prefixes = ["*"]` is a KEY prefix inside one named bucket -- a
+  different thing, and the test distinguishes them.)
+- **No trust policy without an external ID.** A cross-account role naming only the peer
+  account is the confused-deputy problem: role ARNs appear in logs, error messages and
+  support tickets, so any principal in that account who learns this one can assume it. The
+  combination `trusted_external_principals` set + `external_id` empty fails the PLAN via a
+  `precondition`, so the defect is not expressible rather than merely discouraged.
+- **KMS is issued with the read grant.** `s3:GetObject` on a CMK-encrypted object returns
+  AccessDenied that names S3, not KMS -- one of the longer debugging sessions in this stack.
+
+### `dbt-semantic-layer` / `cube-semantic-layer` (PRD v8 FR-02)
+
+- **The deliverable is the scaffold**, not the infrastructure. `models/*.yml` and
+  `cube/schema/*.js` are what the domain team edits after `minusctl export`; the Terraform is
+  the manifest bucket and the pre-aggregation cache. Provisioning a dbt Cloud account or an
+  EKS service from here would put credentials in a control plane that holds none, and would
+  create a cluster MinusOps could not safely destroy.
+- **Which one:** dbt compiles SQL against the warehouse per request; Cube adds a
+  pre-aggregation cache, which is the entire reason to run a separate service. A Cube
+  deployment with no pre-aggregations is a proxy that re-scans the lake on every dashboard
+  refresh and costs more than the thing it fronts -- so a test asserts the schema declares
+  one.
+- **Both must agree on a metric.** `netRevenue` in the Cube schema and `net_revenue` in
+  `metrics.yml` are the same number; two definitions of one metric is the problem a semantic
+  layer exists to remove.
+- **`partitionGranularity` and `+partitioned_by` must match the projected partition key**
+  (`event_date`, see `query-athena`). Mismatched, every rollup rebuild scans the whole table
+  and the cache costs more than having none.
