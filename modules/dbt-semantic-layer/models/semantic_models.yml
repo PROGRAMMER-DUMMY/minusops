@@ -1,0 +1,54 @@
+# MetricFlow semantic models over the Gold zone.
+#
+# A semantic model needs all three of entities, dimensions and measures. MetricFlow will not
+# compile without them, and the reason is not bureaucratic: entities are the join keys,
+# dimensions are the legal group-bys, and measures are the only columns anyone may aggregate.
+# Declaring them is what stops a dashboard (or an LLM) from joining on a column that happens
+# to share a name and reporting a number nobody can reproduce.
+#
+# Replace the table names and columns with your own. Everything here is a scaffold: the shape
+# is correct, the business meaning is yours to supply.
+
+semantic_models:
+  - name: customer_events
+    description: >-
+      One row per customer interaction in the Gold zone. Grain is stated explicitly because a
+      measure defined at the wrong grain double-counts silently and looks plausible.
+    model: ref('gold_customer_events')
+    defaults:
+      agg_time_dimension: event_date
+
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_id
+      - name: session
+        type: foreign
+        expr: session_id
+
+    dimensions:
+      - name: event_date
+        type: time
+        type_params:
+          time_granularity: day
+        # Matches the partition key the Athena table projects on. A dimension that does not
+        # line up with the partitioning turns every metric query into a full scan.
+        expr: event_date
+      - name: channel
+        type: categorical
+      - name: country
+        type: categorical
+
+    measures:
+      - name: event_count
+        agg: count
+        expr: event_id
+        description: Interactions. Not unique customers -- see the entity above for that.
+      - name: revenue_amount
+        agg: sum
+        expr: revenue
+        description: Gross revenue in account currency, before refunds.
+      - name: refund_amount
+        agg: sum
+        expr: refunds
+        description: Refunds as a positive number; net revenue subtracts it in metrics.yml.
