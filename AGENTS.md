@@ -27,6 +27,8 @@ Read these skill files when their trigger applies:
 - [`.agents/skills/resolve-ambiguity/SKILL.md`](./.agents/skills/resolve-ambiguity/SKILL.md) — when a request is unclear, underspecified, too broad, too simple for hidden risk, or supports incompatible outcomes.
 - [`.agents/skills/grill-me/SKILL.md`](./.agents/skills/grill-me/SKILL.md) — **the mandatory front door for any build/create request**: gather full functional + non-functional requirements (one question at a time) before generating; also when the user asks to be grilled or to resolve a decision tree.
 - [`.agents/skills/architect/SKILL.md`](./.agents/skills/architect/SKILL.md) — after requirements are gathered: research current services/reference architectures, choose the best-fit, compose vetted modules (`core/generation/modules.py` + `core/generation/synthesizer.py`), and govern through the deploy gate. The path for any scenario the demo blueprint doesn't fit.
+- [`.agents/skills/context-graph/SKILL.md`](./.agents/skills/context-graph/SKILL.md) — when maintaining, auditing, or synchronizing file-by-file context documentation (`CONTEXT-MAP.md` and `CONTEXT-[folder].md`) across the repository.
+- [`.agents/skills/integration-guide/SKILL.md`](./.agents/skills/integration-guide/SKILL.md) — before adding or modifying CLI subcommands, Terraform modules, outbound integration hooks, or autonomous subagents.
 
 Read these subagent manifests when a notification must be sent. Each dispatches exactly one
 message through `core/integrations/` and stops:
@@ -171,6 +173,8 @@ Use the repo-local skills under `.agents/skills/` when the user's request is unc
 - **`grill-me`** — **the mandatory front door for build/create requests.** Gather full functional + non-functional requirements (functional who/what/how + the ISO 25010 / FURPS+ non-functional checklist, quantified, MoSCoW-scoped), one question at a time with a recommended default; cross-question contradictions and flag missing pieces. Also use for stress-testing a plan.
 - **`architect`** — after `grill-me`, for any scenario the demo blueprint doesn't fit: research current services / reference architectures, choose the best-fit, **compose vetted modules** into governed Terraform, and run it through the deploy gate. Replaces hand-writing a blueprint per scenario.
 - **`resolve-ambiguity`** — for genuinely ambiguous points (which cloud/region, an incompatible-outcomes fork). One targeted question with a recommendation. Not a substitute for `grill-me`'s requirements interrogation.
+- **`context-graph`** — for auditing, updating, and synchronizing file-by-file context trees (`CONTEXT-MAP.md` and `CONTEXT-[folder].md`) across the repository without documentation drift.
+- **`integration-guide`** — for adding or customizing CLI subcommands, Terraform modules, outbound integration hooks, and autonomous subagents per [`docs/extensibility_and_integration_guide.md`](./docs/extensibility_and_integration_guide.md).
 
 Do not use these skills to slow down clear, low-risk work — but a request to *provision infrastructure* is never low-risk, so it always starts with `grill-me`.
 

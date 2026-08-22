@@ -42,7 +42,7 @@ MinusOps (Workspace Root)
 │   └── CONTEXT-modules.md                  # Terraform building blocks (VPC, S3, Glue, EMR, DBX, MSK, Snowflake, MWAA, Lake Formation, semantic layers)
 │
 ├── .agents/                                # AGENT OPERATING SYSTEM
-│   └── CONTEXT-agents.md                   # AGENTS.md rules & 7 decision skills (grill-me, architect, doctor, etc.)
+│   └── CONTEXT-agents.md                   # AGENTS.md rules & 9 decision skills (grill-me, architect, doctor, context-graph, integration-guide, etc.)
 │
 ├── deploy/                                 # MODE 3 CONTROL-PLANE HOSTING
 │   └── CONTEXT-deploy.md                   # Dockerfile usage & EKS manifests (IRSA, ALB)
