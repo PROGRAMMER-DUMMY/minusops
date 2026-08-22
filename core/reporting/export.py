@@ -39,6 +39,7 @@ for _sub in ("generation", "governance", "reporting"):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 import cicd  # noqa: E402
+import serving  # noqa: E402
 
 # The directories a domain team can actually deploy. Everything else in a run workspace is
 # control-plane evidence and stays here.
@@ -116,6 +117,11 @@ def export_run(run_root, target_repo, dest_dir=None, generate_workflow=False,
         for name in _copy_tree(src, os.path.join(dest, sub)):
             copied.append(os.path.join(rel_dest, sub, name))
 
+    # PRD v9 s3: an analyst opening the domain repo should be able to connect and run
+    # something. Written only when the stack has real outputs -- a connections.yaml full of
+    # blanks gets committed once and never corrected.
+    copied.extend(_write_connection_scaffold(run_root, dest, rel_dest, pipeline_name))
+
     workflow_path = None
     if generate_workflow:
         workflows = os.path.join(root, ".github", "workflows")
@@ -135,6 +141,44 @@ def export_run(run_root, target_repo, dest_dir=None, generate_workflow=False,
     }
     _audit(manifest)
     return manifest
+
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_connection_scaffold(run_root, dest, rel_dest, pipeline_name):
+    """connections.yaml + queries/sample_queries.sql, or nothing.
+
+    Addresses only, never credentials: these files are committed to a domain repository, and
+    anything secret-shaped in them is a secret in git. Authentication is the consumer's IAM
+    role.
+    """
+    outputs = _read_json(os.path.join(run_root, "terraform", "outputs.json")) or {}
+    decision = _read_json(os.path.join(run_root, "architecture_decision.json")) or {}
+    found = serving.endpoints(outputs, modules=decision.get("selected_modules") or [])
+    if not found:
+        return []
+
+    written = []
+    connections = os.path.join(dest, "connections.yaml")
+    with open(connections, "w", encoding="utf-8", newline="\n") as f:
+        f.write(serving.as_yaml(found, pipeline_name=pipeline_name))
+    written.append(os.path.join(rel_dest, "connections.yaml"))
+
+    sql = serving.sample_queries(outputs)
+    if sql:
+        queries_dir = os.path.join(dest, "queries")
+        os.makedirs(queries_dir, exist_ok=True)
+        with open(os.path.join(queries_dir, "sample_queries.sql"), "w",
+                  encoding="utf-8", newline="\n") as f:
+            f.write(sql)
+        written.append(os.path.join(rel_dest, "queries", "sample_queries.sql"))
+    return written
 
 
 def _audit(manifest):

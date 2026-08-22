@@ -56,7 +56,7 @@ NATIVE = {
 DELEGATED = (
     "create", "policy", "guard", "reports", "next", "package", "readiness", "conformance",
     "validate", "decision", "accelerator", "prove", "audit", "demo", "doctor", "adopt",
-    "seed", "export",
+    "seed", "export", "diagnose",
 )
 
 # `runs` is native for list/describe and delegated for anything else.

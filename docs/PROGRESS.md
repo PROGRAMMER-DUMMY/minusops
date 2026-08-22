@@ -876,3 +876,62 @@ compositions just stop being offered. Only adding a module that happened to shar
 * **Semantic-layer modules provision almost nothing.** The scaffold is the deliverable. A
   module that created an EKS service here would be one MinusOps could not safely destroy, and
   a dbt Cloud account would put credentials in a control plane that holds none.
+
+---
+
+## 14. PRD-ARCH-2026-009 (v9) -- Incident diagnostics and serving topology -- 2026-08-22
+
+Source: [`tasks/prd_v9_incident_diagnostics_and_serving_topology.md`](../tasks/prd_v9_incident_diagnostics_and_serving_topology.md).
+
+**Suite: 1187 passed, 90 skipped, 362 slow deselected. `pytest` exits 0.**
+
+### Delivered
+
+| FR | What landed |
+| :--- | :--- |
+| FR-01/02/03 | `core/reporting/incident_diagnostics.py` -- 9 signatures across the four operational domains, each with >= 2 evaluated options |
+| FR-04 | `minusctl diagnose`, plus a diagnostic banner in `minusctl next` when the run holds a failure |
+| Section 3 | `core/reporting/serving.py`, the `[Serving Endpoints & Consumption]` card section, and a `connections.yaml` + `queries/sample_queries.sql` scaffold on export |
+
+### NFR-03 could not be implemented as written
+
+The PRD asks for "verified AWS pricing rates (e.g. Glue DPU rate $0.44/DPU-hour)", and FR-01's
+example report prints `+$0.44/hour per worker`.
+
+That is a us-east-1 list price. It is wrong in eu-west-1, wrong in ap-south-1, and wrong
+everywhere after any repricing -- and it is exactly the hardcoded rate table
+`core/cost/budget_calculator.py` exists to refuse ("anyone finishing this file by adding a rate
+table ... has reintroduced the fabricated total it exists to refuse"). I checked whether the
+reviewed catalog could supply it honestly: `pricing_catalog.rate_citation_for_service_code`
+is the sanctioned mechanism, but `pricing_data/aws_resource_map.json` carries no rate citation
+for `AWSGlue`, so there is no verified figure to cite.
+
+What IS durable is the RATIO. A G.2X worker carries twice the DPUs of a G.1X in every region,
+forever, because that is what the instance class is. So `RemediationOption.cost_multiplier`
+holds a structural ratio, `cost_delta` describes the change relatively ("2x compute cost per
+worker-hour"), and the report ends with a pointer to `minusctl cost estimate` -- the only path
+in MinusOps that produces a reportable dollar total. `_rate_citation()` surfaces a dated
+catalog citation the moment one exists. A test asserts no option's `cost_delta` contains `$`.
+
+### Decisions
+
+* **An unrecognised error gets no diagnosis.** `matched: False`, raw evidence attached, no root
+  cause, no options. A confident wrong root cause is worse than none: the report looks
+  authoritative, so the engineer follows it instead of reading the error. The report still
+  renders -- an unclassifiable failure is exactly when someone needs the evidence laid out.
+* **Every rule offers at least one zero-cost option.** If the only way out of every incident
+  were to spend more, the engine would be a sales funnel wearing a diagnostic's clothes.
+* **Offline means no subprocess at all,** asserted by monkeypatching `subprocess.run` to raise.
+  This runs mid-incident on a laptop with no credentials; reaching for CloudWatch there is
+  slower for no answer and fails exactly when it is needed.
+* **An endpoint is emitted only when the stack provisioned it and every part of the address is
+  known.** `serving._require()` drops the whole endpoint on any missing part. A Redshift
+  string for a stack with no Redshift fails at connect time and the analyst blames the tool; a
+  half-built `AwsRegion=None` URL is worse, because it looks plausible enough to paste.
+* **The connection scaffold carries addresses only.** It is committed to a domain repository,
+  so anything secret-shaped in it is a secret in git. A test forbids `AKIA`,
+  `aws_secret_access_key`, `password:` and `SecretAccessKey`.
+* **`as_yaml` is hand-rolled** rather than PyYAML: `core/` has no runtime dependencies and the
+  shape is flat and fixed -- the same reasoning `cicd.parse_feed` carries.
+* **The `next` banner appears only when there is a failure.** A diagnostic line on every
+  healthy run is noise nobody reads, and noise is how the real one gets missed.

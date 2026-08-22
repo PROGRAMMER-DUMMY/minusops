@@ -25,6 +25,7 @@ import os
 from .. import context as cli_context
 from .. import formatters
 import runs
+import serving
 
 TIERS = ("dev", "test", "uat", "prod")
 
@@ -220,7 +221,10 @@ def _describe(args):
         if value:
             endpoints.append((label, value if key == "region" else f"s3://{value}"))
 
-    print(formatters.card(f"PIPELINE SPECIFICATION: {record['run_id']}", [
+    # Only what the stack actually provisioned (PRD v9 s3). An endpoint for infrastructure
+    # that does not exist fails at connect time and the analyst blames the tool.
+    served = serving.endpoints(outputs, modules=decision.get("selected_modules") or [])
+    sections = [
         ("Metadata", [
             ("Domain", record.get("domain")),
             ("Workload", record.get("name") or record.get("blueprint")),
@@ -238,5 +242,10 @@ def _describe(args):
             ("Decision Record", _artifact(root, "architecture_decision.json")),
             ("Requirements", _artifact(root, "requirements.json")),
         ]),
-    ]))
+    ]
+    if served:
+        # Inserted before Artifact Paths: an analyst wants the address, not the file layout.
+        sections.insert(-1, ("Serving Endpoints & Consumption",
+                             [(e["label"], e["connection"]) for e in served]))
+    print(formatters.card(f"PIPELINE SPECIFICATION: {record['run_id']}", sections))
     return 0

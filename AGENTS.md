@@ -161,6 +161,7 @@ minusctl export --target-repo ../marketing-analytics --dest-dir pipelines/clicks
 | **Select the active run** | `minusctl use <run-id>`; `minusctl runs list [--domain <d>] [--tier dev\|test\|uat\|prod] [--orchestrator <o>]` marks it `[*]`, `minusctl runs describe` prints its full specification card. Run-resolution order: explicit `--run`/`--dir`, then the run directory you are standing in, then the active context, then **refusal** -- never "the newest run" | `core/cli/context.py` |
 | **Run the deploy gate** | `minusctl gate {verify\|plan\|approve\|apply}` (defaults to the active run; `--destroy` plans a governed teardown; `--with-telemetry` correlates detected drift with CloudTrail identity and Glue failure signatures -- read-only, advisory, off by default; `--role-arn <arn>` makes `approve` refuse unless the active session is that role). `minusctl gate status` reads recorded verdicts without invoking Terraform | `core/governance/plan_gate.py` |
 | **Export to a domain repo** | `minusctl export --target-repo <path> --dest-dir pipelines/<name> [--generate-workflow]` (local file copy only; never touches AWS) | `core/reporting/export.py` |
+| **Explain a failure** | `minusctl diagnose --run <id>` (or `--error "<text>"`) -- evidence, root cause, evaluated options with cost RATIOS, and the next command. Offline and network-free by default; `--with-telemetry` adds CloudTrail/Glue context, fail-open. Exit 1 when no signature matched | `core/reporting/incident_diagnostics.py` |
 
 
 ### 3.1 Project-local decision skills

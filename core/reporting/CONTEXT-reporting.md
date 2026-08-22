@@ -18,6 +18,8 @@ This document provides an exhaustive, architectural, and operational reference f
 - [`core/reporting/reporter.py`](./reporter.py) — Core reporting engine generating versioned, plan-hash-keyed report bundles containing `manifest.json`, `plan.json`, `architecture.svg`, `dataflow.svg`, `plan.pdf`, `cost.pdf`, and `inspect.pdf`.
 - [`core/reporting/runs.py`](./runs.py) — Run workspace manager managing isolated run directories under `runs/<run-id>/`, plus the central registry (`runs/index.json`, `runs/INDEX.md`).
 - [`core/reporting/export.py`](./export.py) — Packages a run into a domain repository: copies the four deployable directories and, on request, a per-pipeline GitHub Actions workflow.
+- [`core/reporting/incident_diagnostics.py`](./incident_diagnostics.py) — Turns a raw failure into the four-part resolution report: evidence, root cause, evaluated alternatives, next command.
+- [`core/reporting/serving.py`](./serving.py) — Concrete serving endpoints for the four consumption archetypes, emitted only for infrastructure the stack actually provisioned.
 - [`core/reporting/toolpath.py`](./toolpath.py) — Cross-platform discovery utility for external CLIs (`terraform`, `aws`, headless browsers) without hardcoding user home paths.
 - [`core/reporting/cli_diagnostics.py`](./cli_diagnostics.py) — Agent-facing failure formatting: fuzzy run-id resolution, lifecycle stage interception, and the three-part `WHAT FAILED / WHY IT FAILED / ACTION REQUIRED` error (MINUS-157..160).
 - [`core/reporting/excel_finops_generator.py`](./excel_finops_generator.py) — Dual-tier FinOps `.xlsx` writer (executive summary + engineering ledger) built on stdlib `zipfile` + OpenXML, no third-party dependency.
@@ -306,6 +308,59 @@ This document provides an exhaustive, architectural, and operational reference f
 - **Tests:** [`tests/test_export.py`](../../tests/test_export.py), plus the CLI path in [`tests/test_minusctl.py`](../../tests/test_minusctl.py).
 
 ---
+
+
+---
+
+### 8d. `core/reporting/incident_diagnostics.py` (PRD v9 FR-01..04)
+- **File Link:** [`core/reporting/incident_diagnostics.py`](./incident_diagnostics.py)
+- **Exact Purpose:** A Terraform apply error, a YARN OOM kill and a Great Expectations
+  assertion failure are three opaque stack traces that all end with an engineer guessing.
+  This turns each into evidence, root cause, alternatives with trade-offs, and the exact next
+  command.
+- **Declarative rule table** ([`FAILURE_RULES`](./incident_diagnostics.py)), per Matt's ruling
+  of 2026-08-22: a list of frozen `FailureRule` dataclasses rather than an if/elif chain, so
+  adding a signature is a data edit and each rule is independently testable. Order matters --
+  the first match wins -- so specific patterns sit above general ones.
+- **Three refusals, each enforced by a test:**
+  - **It does not guess.** An unrecognised error returns `matched: False` with the raw
+    evidence and no root cause. A confident wrong diagnosis is worse than none: the report
+    looks authoritative, so the engineer follows it instead of reading the error.
+  - **It does not invent a price.** PRD v9 NFR-03 asked for "verified AWS pricing rates (e.g.
+    $0.44/DPU-hour)". That is a us-east-1 list price, wrong in eu-west-1 and wrong after any
+    repricing, and exactly the fabricated figure
+    [`budget_calculator.py`](../cost/budget_calculator.py) exists to refuse. What IS durable
+    is the RATIO -- a G.2X worker carries twice the DPUs of a G.1X in every region, forever --
+    so options carry `cost_multiplier` and the report points at `minusctl cost estimate` for
+    dollars. [`_rate_citation()`](./incident_diagnostics.py) surfaces a dated catalog citation
+    if one ever exists for the service.
+  - **It does not touch the network by default.** Pure regex over a string, no subprocess at
+    all: this runs on a laptop with no credentials, mid-incident. Telemetry is caller-injected
+    and fail-open, the same contract as [`cloud_drift`](../governance/cloud_drift.py).
+- **Every rule offers at least two paths and at least one at `cost_multiplier == 1.0`.** If
+  the only way out of every incident were to spend more, the engine would be a sales funnel.
+- **Tests:** [`tests/test_incident_diagnostics.py`](../../tests/test_incident_diagnostics.py).
+
+### 8e. `core/reporting/serving.py` (PRD v9 section 3)
+- **File Link:** [`core/reporting/serving.py`](./serving.py)
+- **Exact Purpose:** The concrete address for each of the four consumption archetypes --
+  `ad_hoc_sql` (Athena JDBC), `data_warehouse` (Redshift Serverless), `semantic_layer`, and
+  `reverse_etl` (the S3 stage) -- so an analyst does not reconstruct them from Terraform
+  outputs by hand.
+- **An endpoint is emitted only when the stack provisioned it AND every part of the address is
+  known.** [`_require()`](./serving.py) drops the whole endpoint if any part is missing. A
+  Redshift connection string for a stack with no Redshift fails at connect time and the
+  analyst blames the tool; a half-built `jdbc:awsathena://AwsRegion=None;...` is worse, because
+  it looks plausible enough to paste.
+- **Nothing is reconstructed from a name_prefix.** Every value comes from `terraform
+  output`-derived JSON, the same reasoning [`seed.read_outputs()`](./seed.py) carries.
+- **[`as_yaml()`](./serving.py) is hand-rolled**, not PyYAML: `core/` has no runtime
+  dependencies and the shape is flat and fixed. It carries addresses only -- these files are
+  committed to a domain repository, so anything secret-shaped in them is a secret in git.
+- **Used by:** the `[Serving Endpoints & Consumption]` card section in
+  [`core/cli/commands/runs.py`](../cli/commands/runs.py) and the `connections.yaml` +
+  `queries/sample_queries.sql` scaffold in [`export.py`](./export.py).
+- **Tests:** [`tests/test_serving_topology.py`](../../tests/test_serving_topology.py).
 
 ### 9. `core/reporting/toolpath.py`
 - **File Link:** [`core/reporting/toolpath.py`](./toolpath.py)

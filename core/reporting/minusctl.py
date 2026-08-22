@@ -39,6 +39,7 @@ import architecture_model  # noqa: E402
 import accelerators  # noqa: E402
 import audit_chain  # noqa: E402
 import cli_diagnostics  # noqa: E402
+import incident_diagnostics  # noqa: E402
 import adopt as adopt_engine  # noqa: E402
 import demo  # noqa: E402
 import doctor  # noqa: E402
@@ -221,6 +222,22 @@ def _run_reports(run):
     return reports
 
 
+def _diagnostic_banner(run):
+    """A one-line pointer when the run holds a failure (PRD v9 FR-04).
+
+    `next` is where an operator looks after something breaks, and sending them to the happy
+    path while a failed proving report sits in the run is how the failure gets missed. Only
+    when there IS one: a banner on every healthy run is noise nobody reads.
+    """
+    evidence = incident_diagnostics.extract_evidence(run.get("root", ""))
+    if not evidence["raw_error"]:
+        return []
+    result = incident_diagnostics.diagnose(evidence["raw_error"])
+    label = result["rule_id"] if result["matched"] else "unclassified failure"
+    return ["", f"failure    : {label} -- {result['category']}",
+            f"diagnose   : minusctl diagnose --run {run.get('run_id', '<id>')}"]
+
+
 def _next_steps(run):
     tf_dir = run["terraform_dir"]
     workflow_record = _read_workflow(run)
@@ -251,6 +268,7 @@ def _next_steps(run):
             "synthesize : python core/generation/synthesizer.py \"<requirements summary>\" --run " + run["run_id"] + " --requirements-file " + requirements_file + " --decision-file " + decision_file,
             "blocked    : do not generate Terraform from demo fixtures for production",
         ])
+        lines.extend(_diagnostic_banner(run))
         return {"run": run, "source": {"status": "PRE_GENERATION"}, "reports": [], "text": "\n".join(lines)}
 
     guard = source_guard.status(tf_dir)
@@ -277,6 +295,7 @@ def _next_steps(run):
             "drift      : python core/reporting/minusctl.py reports diff --latest",
         ])
     lines.append("blocked    : do not apply until a reviewed plan hash is approved")
+    lines.extend(_diagnostic_banner(run))
     return {"run": run, "source": guard, "reports": reports, "text": "\n".join(lines)}
 
 
@@ -929,6 +948,25 @@ def main(argv=None):
     export_cmd.add_argument("--region", default="us-east-1")
     export_cmd.add_argument("--json", action="store_true")
 
+    diagnose_cmd = sub.add_parser(
+        "diagnose", help="explain a failure: evidence, root cause, options, next command")
+    _rich(diagnose_cmd,
+          ['python core/reporting/minusctl.py diagnose --run <run-id>',
+           'python core/reporting/minusctl.py diagnose --error "Container killed by YARN..."'],
+          requires=("a failure -- from --error text, or extracted from the run's local "
+                    "artifacts",),
+          produces=("a four-part resolution report on stdout",),
+          next_step="pick an option and run the command it names")
+    diagnose_cmd.add_argument("--run", default=None,
+                              help="run workspace to pull local failure evidence from")
+    diagnose_cmd.add_argument("--error", default="", help="raw error text")
+    diagnose_cmd.add_argument("--address", default=None, help="e.g. aws_glue_job.etl")
+    diagnose_cmd.add_argument("--resource-type", default=None)
+    diagnose_cmd.add_argument("--with-telemetry", action="store_true",
+                              help="ask CloudTrail/Glue about the failing resource "
+                                   "(read-only, fail-open)")
+    diagnose_cmd.add_argument("--json", action="store_true")
+
     policy = sub.add_parser("policy", help="inspect or promote policy rules")
     policy.add_argument("action", choices=["list", "promote", "demote"])
     policy.add_argument("rule_id", nargs="?", help="e.g. SEC-01")
@@ -1191,6 +1229,22 @@ def main(argv=None):
             return 1
         _json_or_text(manifest, args.json, export_engine.format_manifest(manifest))
         return 0
+
+    if args.cmd == "diagnose":
+        run_root = None
+        if args.run:
+            run_root = _run_by_id_or_latest(args.run, command="diagnose")["root"]
+        telemetry = None
+        if args.with_telemetry:
+            import cloud_drift
+            telemetry = cloud_drift.aws_telemetry
+        result = incident_diagnostics.diagnose(
+            args.error, telemetry=telemetry, address=args.address,
+            resource_type=args.resource_type, run_root=run_root)
+        _json_or_text(result, args.json, incident_diagnostics.format_report(result))
+        # Non-zero when nothing matched, so a CI step can tell "diagnosed" from "still
+        # unknown" without parsing the report.
+        return 0 if result["matched"] else 1
 
     if args.cmd == "runs":
         if args.action == "list":
