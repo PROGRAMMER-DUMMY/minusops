@@ -22,11 +22,32 @@ Never raises. A malformed drift entry is counted and reported, never allowed to 
 plan -- the gate failing closed on its own advisory reader would be worse than the blind spot
 it replaces.
 
-Depends on: plan_reader
-Shells out to: nothing
+TELEMETRY CORRELATION (PRD-ARCH-2026-005, FR-06) answers the question drift alone cannot:
+WHY did someone resize this Glue job by hand? CloudTrail names the principal, the job-run
+history carries the OutOfMemoryError that preceded it, and a reviewer who can see both is
+choosing between two known options instead of guessing. It is opt-in and fail-open: the
+lookup is injected by the caller, `classify(plan_json)` alone stays offline and free, and a
+lookup that raises produces no evidence rather than an exception. It never changes the
+revert verdict -- an explained change is still a change the plan is about to undo.
+
+Depends on: plan_reader; core/providers/aws.py, imported lazily inside `aws_telemetry` only
+    (so the default offline path costs no import and makes no AWS call)
+Shells out to: nothing directly -- `aws_telemetry` reaches the `aws` CLI through
+    aws.run_aws (`cloudtrail lookup-events`, `glue get-job-runs`), both read-only
 Used by: core/governance/plan_gate.py
 """
+import datetime
+
 import plan_reader
+
+# Only these expose a run history worth correlating. Asking CloudTrail about every
+# drifted S3 bucket would add a round trip per resource for nothing.
+TELEMETRY_TYPES = ("aws_glue_job", "aws_emr_cluster")
+
+_EVENT_SOURCE = {
+    "aws_glue_job": "glue.amazonaws.com",
+    "aws_emr_cluster": "elasticmapreduce.amazonaws.com",
+}
 
 
 def _changed_attributes(before, after):
@@ -38,7 +59,7 @@ def _changed_attributes(before, after):
     return {k for k in set(before) | set(after) if before.get(k) != after.get(k)}
 
 
-def classify(plan_json):
+def classify(plan_json, telemetry=None):
     drift_entries = plan_reader.resource_drift(plan_json)
     resource_changes, _ = plan_reader.read_resource_changes(
         plan_json, treat_absent_as_error=False)
@@ -80,6 +101,7 @@ def classify(plan_json):
             reverted.append({"address": entry["address"], "type": entry.get("type"),
                              "attributes": undone})
 
+    evidence = _correlate(drifted, telemetry)
     return {
         "drift_count": len(drifted),
         "drifted": drifted,
@@ -87,7 +109,84 @@ def classify(plan_json):
         "reverted_count": len(reverted),
         "reverts_out_of_band_changes": bool(reverted),
         "malformed_count": malformed,
+        "telemetry_available": bool(evidence),
+        "telemetry_evidence": evidence,
     }
+
+
+def _correlate(drifted, telemetry):
+    """Ask the injected lookup about each drifted resource. Advisory in every direction:
+    no lookup, a lookup that raises, and a lookup that finds nothing all produce the same
+    empty result, because "we could not tell" must never read as "nobody did this"."""
+    if not telemetry:
+        return []
+    evidence = []
+    for row in drifted:
+        try:
+            found = telemetry(row["address"], row.get("type"))
+        except Exception:  # noqa: BLE001 -- a network failure must not fail a plan
+            continue
+        if not found:
+            continue
+        evidence.append({
+            "address": row["address"],
+            "type": row.get("type"),
+            "identity": found.get("identity"),
+            "errors": list(found.get("errors") or []),
+        })
+    return evidence
+
+
+def aws_telemetry(address, resource_type, lookback_hours=24):
+    """CloudTrail principal + recent failure signatures for one drifted resource, or None.
+
+    Returns None for every condition that is not a positive finding -- unsupported type,
+    missing CLI, no credentials, no matching events -- so the caller cannot mistake an
+    unanswerable question for an answered one."""
+    if resource_type not in TELEMETRY_TYPES:
+        return None
+    try:
+        import aws
+    except ImportError:
+        return None
+
+    identity = _cloudtrail_identity(aws, resource_type, lookback_hours)
+    errors = _job_run_errors(aws, address) if resource_type == "aws_glue_job" else []
+    if not identity and not errors:
+        return None
+    return {"identity": identity, "errors": errors}
+
+
+def _cloudtrail_identity(aws, resource_type, lookback_hours):
+    since = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(hours=lookback_hours)).replace(microsecond=0).isoformat()
+    ok, data, _ = aws.run_aws([
+        "cloudtrail", "lookup-events",
+        "--lookup-attributes",
+        f"AttributeKey=EventSource,AttributeValue={_EVENT_SOURCE[resource_type]}",
+        "--start-time", since, "--max-results", "10", "--output", "json"])
+    if not ok or not isinstance(data, dict):
+        return None
+    for event in data.get("Events") or []:
+        if isinstance(event, dict) and event.get("Username"):
+            return event["Username"]
+    return None
+
+
+def _job_run_errors(aws, address):
+    # ponytail: the Glue job NAME is derived from the Terraform resource label, which holds
+    # for MinusOps-generated stacks but not for every adopted one -- the physical id lives in
+    # state, which a plan classifier does not read. If a mismatch ever matters, thread the
+    # drift entry's `before` attributes through instead of the address.
+    job_name = address.split(".")[-1]
+    ok, data, _ = aws.run_aws([
+        "glue", "get-job-runs", "--job-name", job_name,
+        "--max-results", "5", "--output", "json"])
+    if not ok or not isinstance(data, dict):
+        return []
+    return [run["ErrorMessage"] for run in data.get("JobRuns") or []
+            if isinstance(run, dict) and run.get("JobRunState") == "FAILED"
+            and run.get("ErrorMessage")]
 
 
 def format_result(result):
@@ -99,6 +198,12 @@ def format_result(result):
         lines.append(f"  - REVERTS out-of-band change: {row['address']} "
                      f"({', '.join(row['attributes'])}) -- this plan undoes a change someone "
                      f"made directly in the account")
+    for row in result.get("telemetry_evidence") or []:
+        # Advisory only. It explains the change; it does not approve undoing it.
+        if row.get("identity"):
+            lines.append(f"  - correlated: {row['address']} was changed by {row['identity']}")
+        for message in row.get("errors") or []:
+            lines.append(f"    preceded by: {message}")
     if result["malformed_count"]:
         lines.append(f"  - {result['malformed_count']} malformed drift entry(ies) could not be read")
     return "\n".join(lines)
