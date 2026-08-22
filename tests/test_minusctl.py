@@ -261,3 +261,96 @@ def test_guard_refresh_requires_acknowledgment(tmp_path, monkeypatch):
     assert code == 0
     audit = (tmp_path / ".agents" / "logs" / "audit.jsonl").read_text(encoding="utf-8")
     assert "guard_refresh" in audit and "alarm fix is correct" in audit
+
+
+# --- PRD-ARCH-2026-005: semantic runs and multi-repo export ---------------------------
+
+def test_create_with_a_name_produces_a_semantic_run_directory(tmp_path, monkeypatch):
+    """AC-01. `runs/` is where an operator goes looking six weeks later; forty
+    `20260822-111530-requirements-first` directories are forty identical labels."""
+    _patch_runs(tmp_path, monkeypatch)
+
+    code, output = _capture([
+        "create", "Clickstream pipeline for marketing team",
+        "--name", "clickstream", "--domain", "marketing", "--orchestrator", "mwaa",
+        "--json",
+    ])
+    data = json.loads(output)
+
+    assert code == 0
+    assert data["run"]["run_id"].startswith("marketing-clickstream-mwaa_")
+    assert os.path.isdir(data["run"]["root"])
+
+
+def test_create_without_a_name_is_unchanged(tmp_path, monkeypatch):
+    """Every existing caller and every golden fixture passes no name."""
+    _patch_runs(tmp_path, monkeypatch)
+
+    code, output = _capture(["create", "a governed AWS data pipeline", "--json"])
+    data = json.loads(output)
+
+    assert code == 0
+    assert data["run"]["run_id"].endswith("-requirements-first")
+
+
+def test_create_registers_the_run_in_the_central_index(tmp_path, monkeypatch):
+    """AC-02."""
+    _patch_runs(tmp_path, monkeypatch)
+
+    _capture(["create", "Clickstream pipeline", "--name", "clickstream",
+              "--domain", "marketing", "--owner", "data-eng@acme.com", "--json"])
+
+    index = json.loads((tmp_path / "runs" / "index.json").read_text(encoding="utf-8"))
+    assert index[0]["domain"] == "marketing"
+    assert index[0]["owner"] == "data-eng@acme.com"
+
+
+def test_export_packages_a_run_into_a_domain_repo(tmp_path, monkeypatch):
+    """AC-03 through the CLI, which is the only surface an operator touches."""
+    _patch_runs(tmp_path, monkeypatch)
+    code, output = _capture(["create", "Clickstream pipeline", "--name", "clickstream",
+                             "--domain", "marketing", "--json"])
+    run = json.loads(output)["run"]
+    (tmp_path / "runs" / run["run_id"] / "terraform" / "main.tf").write_text(
+        'resource "aws_s3_bucket" "b" {\n  bucket = "b"\n}\n', encoding="utf-8")
+    repo = tmp_path / "marketing-analytics"
+    repo.mkdir()
+
+    code, output = _capture([
+        "export", "--run", run["run_id"], "--target-repo", str(repo),
+        "--dest-dir", "pipelines/clickstream", "--generate-workflow",
+    ])
+
+    assert code == 0
+    assert (repo / "pipelines" / "clickstream" / "terraform" / "main.tf").exists()
+    assert (repo / ".github" / "workflows" / "clickstream-deploy.yml").exists()
+
+
+def test_export_of_an_unknown_run_fails_loudly(tmp_path, monkeypatch):
+    """Same contract as every other run-scoped subcommand: SystemExit carrying the
+    agent-readable diagnostic, not a bare code."""
+    import pytest
+    _patch_runs(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    with pytest.raises(SystemExit) as exit_info:
+        _capture(["export", "--run", "no-such-run", "--target-repo", str(repo),
+                  "--dest-dir", "pipelines/x"])
+
+    assert "no-such-run" in str(exit_info.value)
+
+
+def test_export_refuses_a_run_that_was_never_synthesized(tmp_path, monkeypatch):
+    """A run created but not yet synthesized has an empty terraform/. Exporting it would
+    hand the domain team a pipeline-shaped hole and a workflow that plans nothing."""
+    _patch_runs(tmp_path, monkeypatch)
+    _, output = _capture(["create", "Clickstream pipeline", "--name", "clickstream", "--json"])
+    run = json.loads(output)["run"]
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    code, _ = _capture(["export", "--run", run["run_id"], "--target-repo", str(repo),
+                        "--dest-dir", "pipelines/clickstream"])
+
+    assert code == 1

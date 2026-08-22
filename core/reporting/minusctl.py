@@ -903,9 +903,31 @@ def main(argv=None):
           next_step=f"answer the REVIEW fields, then python core/reporting/minusctl.py decision template --write")
     create.add_argument("request")
     create.add_argument("--cloud", default=None)
+    create.add_argument("--name", help="workload name; produces a semantic run id "
+                                       "<domain>-<name>-<orchestrator>_<timestamp>")
+    create.add_argument("--domain", help="owning data domain, e.g. marketing")
+    create.add_argument("--orchestrator", help="orchestrator id, e.g. mwaa")
+    create.add_argument("--owner", help="owning team contact, recorded in runs/INDEX.md")
     create.add_argument("--input", action="append", default=[], help="Captured request input as name=value")
     create.add_argument("--generate", action="store_true", help="Compatibility flag; generation is blocked until requirements and architecture decision are complete")
     create.add_argument("--json", action="store_true")
+
+    export_cmd = sub.add_parser(
+        "export", help="package a run into a domain repository (local file copy only)")
+    _rich(export_cmd,
+          ['python core/reporting/minusctl.py export --run marketing-clickstream-mwaa_20260822_111530 '
+           '--target-repo ../marketing-analytics --dest-dir pipelines/clickstream --generate-workflow'],
+          requires=("a synthesized run with generated Terraform",),
+          produces=("<target-repo>/<dest-dir>/{terraform,dags,scripts,configs}",
+                    "<target-repo>/.github/workflows/<pipeline>-deploy.yml (with --generate-workflow)"),
+          next_step="review the diff in the domain repo, commit, and open a PR")
+    export_cmd.add_argument("--run", default="latest")
+    export_cmd.add_argument("--target-repo", required=True)
+    export_cmd.add_argument("--dest-dir", help="e.g. pipelines/clickstream")
+    export_cmd.add_argument("--pipeline-name", help="defaults to the last segment of --dest-dir")
+    export_cmd.add_argument("--generate-workflow", action="store_true")
+    export_cmd.add_argument("--region", default="us-east-1")
+    export_cmd.add_argument("--json", action="store_true")
 
     policy = sub.add_parser("policy", help="inspect or promote policy rules")
     policy.add_argument("action", choices=["list", "promote", "demote"])
@@ -1134,9 +1156,25 @@ def main(argv=None):
             cloud=args.cloud,
             inputs=workflow.parse_input(args.input),
             generate=args.generate,
+            name=args.name, domain=args.domain, orchestrator=args.orchestrator,
+            owner=args.owner,
         )
         _json_or_text(record, args.json, workflow.format_result(record))
         return 0 if record.get("ok") else 2
+
+    if args.cmd == "export":
+        import export as export_engine
+        run = _run_by_id_or_latest(args.run, command="export")
+        try:
+            manifest = export_engine.export_run(
+                run["root"], args.target_repo, dest_dir=args.dest_dir,
+                generate_workflow=args.generate_workflow,
+                pipeline_name=args.pipeline_name, region=args.region)
+        except ValueError as exc:
+            print(f"[ERR] {exc}", file=sys.stderr)
+            return 1
+        _json_or_text(manifest, args.json, export_engine.format_manifest(manifest))
+        return 0
 
     if args.cmd == "runs":
         if args.action == "list":
