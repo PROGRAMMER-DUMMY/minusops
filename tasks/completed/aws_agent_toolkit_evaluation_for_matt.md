@@ -56,7 +56,7 @@ The **Agent Toolkit for AWS** is Amazon's official suite of **Model Context Prot
 * **Why It Matters:**
   * LLMs frequently hallucinate deprecated Terraform resource arguments or obsolete AWS CLI flags (e.g. guessing Glue 4.0 parameter names or Athena query limits).
 * **How MinusOps Adopts It:**
-  * Update [`core/architecture/discovery.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/discovery.py) to check if the AWS MCP Server is running locally. If active, query `aws___search_documentation` for the authoritative parameter schema before synthesizing HCL modules.
+  * Update [`core/architecture/discovery.py`](../../core/architecture/discovery.py) to check if the AWS MCP Server is running locally. If active, query `aws___search_documentation` for the authoritative parameter schema before synthesizing HCL modules.
 
 ---
 
@@ -90,7 +90,7 @@ The **Agent Toolkit for AWS** is Amazon's official suite of **Model Context Prot
 * **Why It Matters:**
   * Streamlines developer onboarding. Rather than manually configuring Claude Code, Antigravity, or Cursor MCP JSON files, running `aws configure agent-toolkit` sets up authenticated local credentials in one shot.
 * **How MinusOps Adopts It:**
-  * In [`core/reporting/doctor.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/doctor.py), add a diagnostic probe under `check_environment()`:
+  * In [`core/reporting/doctor.py`](../../core/reporting/doctor.py), add a diagnostic probe under `check_environment()`:
     * `[PASS] AWS Agent Toolkit MCP server detected on localhost` OR
     * `[INFO] Run 'aws configure agent-toolkit' to enable live AWS MCP doc search.`
 

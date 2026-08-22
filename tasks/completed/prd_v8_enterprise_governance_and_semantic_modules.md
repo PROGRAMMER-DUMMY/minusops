@@ -15,14 +15,14 @@
 
 ## 1. Executive Summary & Problem Statement
 
-A gap analysis between the grilling interrogation engine ([`.agents/skills/grill-me/SKILL.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/.agents/skills/grill-me/SKILL.md)) and the physical module catalog ([`core/generation/modules.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/modules.py)) revealed four architectural items required for end-to-end coherence:
+A gap analysis between the grilling interrogation engine ([`.agents/skills/grill-me/SKILL.md`](../../.agents/skills/grill-me/SKILL.md)) and the physical module catalog ([`core/generation/modules.py`](../../core/generation/modules.py)) revealed four architectural items required for end-to-end coherence:
 
 1. **Grill-Me vs. Catalog Module Mismatch (Pillars 12 & 13):**
    - The grilling interview asks about Semantic Layers (Pillar 12) and Fine-Grained Data Governance (Pillar 13), referencing four modules: `dbt-semantic-layer`, `cube-semantic-layer`, `governance-lakeformation`, and `security-iam-scoped`.
    - None of these four modules currently exist in `modules/` or in `core/generation/modules.py`. Capturing these requirements in `requirements.json` produces an unbuildable specification during synthesis.
 
 2. **Unbounded Spend Ceiling in Redshift Serverless:**
-   - [`modules/consumption-redshift-serverless/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/consumption-redshift-serverless/main.tf) defines `base_capacity_rpu` (the floor) but omits `max_capacity` (the ceiling) and usage limit controls (`aws_redshiftserverless_usage_limit`). Under heavy analytical load, Redshift Serverless scales RPUs without an upper bound, violating the repo's strict FinOps predictability doctrine.
+   - [`modules/consumption-redshift-serverless/main.tf`](../../modules/consumption-redshift-serverless/main.tf) defines `base_capacity_rpu` (the floor) but omits `max_capacity` (the ceiling) and usage limit controls (`aws_redshiftserverless_usage_limit`). Under heavy analytical load, Redshift Serverless scales RPUs without an upper bound, violating the repo's strict FinOps predictability doctrine.
 
 3. **Partition Projection in Athena Query Tables:**
    - Partitioned Athena tables currently rely on `MSCK REPAIR TABLE`, which degrades in performance as partition volume grows. Adding native AWS Athena Partition Projection (`projection.enabled = "true"`) enables in-memory partition resolution with zero repair overhead.
@@ -75,7 +75,7 @@ Create and register two new semantic layer scaffolding modules:
 ---
 
 ### FR-03: Redshift Serverless FinOps Spend Ceilings
-Update [`modules/consumption-redshift-serverless/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/consumption-redshift-serverless/main.tf):
+Update [`modules/consumption-redshift-serverless/`](../../modules/consumption-redshift-serverless/main.tf):
 * Add `max_capacity` variable with `default = 128` (or 256) and validation enforcing `max_capacity >= var.base_capacity_rpu`.
 * Attach `aws_redshiftserverless_usage_limit` resource:
   * Limits RPU-hours per day/month.
@@ -84,7 +84,7 @@ Update [`modules/consumption-redshift-serverless/`](file:///C:/Users/shubh/Pycha
 ---
 
 ### FR-04: Athena Partition Projection
-Update [`modules/query-athena/`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/query-athena/main.tf) and table DDL generators:
+Update [`modules/query-athena/`](../../modules/query-athena/main.tf) and table DDL generators:
 * Add partition projection table properties in Glue Catalog / Athena DDL:
   * `projection.enabled = "true"`
   * `projection.date.type = "date"`

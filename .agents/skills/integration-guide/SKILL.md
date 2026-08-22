@@ -28,14 +28,14 @@ Before proposing or implementing any extension, verify:
 3. [ ] Resolve active run via `core/cli/context.py:resolve_context()`.
 4. [ ] Format outputs with `core/cli/formatters.py` and respect `NO_COLOR` in `core/cli/theme.py`.
 5. [ ] Add unit tests in `tests/test_cli_package.py` and `tests/test_cli_help.py`.
-6. [ ] Update [`core/cli/CONTEXT-cli.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/cli/CONTEXT-cli.md) and [`AGENTS.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/AGENTS.md).
+6. [ ] Update [`core/cli/CONTEXT-cli.md`](../../../core/cli/CONTEXT-cli.md) and [`AGENTS.md`](../../../AGENTS.md).
 
 ### B. Adding a New Terraform Building Block Module
 1. [ ] Create `modules/<module-id>/main.tf` with typed variables and explicit outputs.
 2. [ ] Add `modules/<module-id>/PROVENANCE.json`.
-3. [ ] Register in [`core/generation/modules.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/modules.py) with match keywords and I/O.
+3. [ ] Register in [`core/generation/modules.py`](../../../core/generation/modules.py) with match keywords and I/O.
 4. [ ] Add `"modules/<module-id>/*"` to `[tool.setuptools.data-files]` in `pyproject.toml`.
-5. [ ] Add documentation entry in [`modules/CONTEXT-modules.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/CONTEXT-modules.md).
+5. [ ] Add documentation entry in [`modules/CONTEXT-modules.md`](../../../modules/CONTEXT-modules.md).
 6. [ ] Add module tests in `tests/test_modules.py`.
 
 ### C. Adding an Outbound Integration Hook
@@ -44,8 +44,8 @@ Before proposing or implementing any extension, verify:
 3. [ ] Never accept, echo, or log secret tokens or webhook URLs.
 4. [ ] Return `{"ok": true, "sent": false}` when channel is unconfigured.
 5. [ ] Append event to audit trail via `audit_logger.log_audit_event()`.
-6. [ ] Update [`core/integrations/CONTEXT-integrations.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/integrations/CONTEXT-integrations.md).
+6. [ ] Update [`core/integrations/CONTEXT-integrations.md`](../../../core/integrations/CONTEXT-integrations.md).
 
 ### D. Adding an Autonomous Subagent
 1. [ ] Create `.agents/subagents/<name>-agent.md` specifying role, tools, and single-dispatch exit rule.
-2. [ ] Register manifest in [`AGENTS.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/AGENTS.md) Section 0.
+2. [ ] Register manifest in [`AGENTS.md`](../../../AGENTS.md) Section 0.

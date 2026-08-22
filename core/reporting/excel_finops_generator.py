@@ -238,7 +238,7 @@ def generate_executive_project_summary_excel(output_path, project_records):
             (total_curr, 3, "n"),
             (total_delta, 4 if total_delta > 0 else 5, "n"),
             (total_pct, 7 if total_pct > 0 else 8, "n"),
-            ("⚠️ PORTFOLIO SURGE (>15%)" if total_pct > 0.15 else "✅ HEALTHY (<15%)", 10 if total_pct > 0.15 else 11, "s"),
+            ("[WARN] PORTFOLIO SURGE (>15%)" if total_pct > 0.15 else "[OK] HEALTHY (<15%)", 10 if total_pct > 0.15 else 11, "s"),
         ],
         [],
         [("PROJECT-BY-PROJECT EXECUTIVE LEDGER (1 ROW PER PROJECT REPOSITORY)", 12, "s")],
@@ -261,7 +261,7 @@ def generate_executive_project_summary_excel(output_path, project_records):
     for p in project_records:
         delta = p["current_month_usd"] - p["last_month_usd"]
         pct = (delta / p["last_month_usd"]) if p["last_month_usd"] else 0.0
-        status_text = "⚠️ REVIEW REQUIRED" if pct > 0.15 else "✅ HEALTHY"
+        status_text = "[WARN] REVIEW REQUIRED" if pct > 0.15 else "[OK] HEALTHY"
         status_style = 10 if pct > 0.15 else 11
 
         rows.append([

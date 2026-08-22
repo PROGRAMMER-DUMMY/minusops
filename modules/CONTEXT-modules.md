@@ -1,7 +1,7 @@
 # CONTEXT-modules.md — Reusable Building Block Modules Context
 
 ## Overview
-`modules/` contains vetted, cloud-native Terraform modules used by [`core/generation/synthesizer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/synthesizer.py) and registered in [`core/generation/modules.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/modules.py) to construct production-ready data pipelines and cloud infrastructure in **MinusOps**.
+`modules/` contains vetted, cloud-native Terraform modules used by [`core/generation/synthesizer.py`](../core/generation/synthesizer.py) and registered in [`core/generation/modules.py`](../core/generation/modules.py) to construct production-ready data pipelines and cloud infrastructure in **MinusOps**.
 
 ---
 
@@ -9,35 +9,35 @@
 
 | Module Directory | Category | Primary Function | Key Files |
 | :--- | :--- | :--- | :--- |
-| [`compaction-glue`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compaction-glue/main.tf) | Storage / Maintenance | Scheduled S3 small-file compaction via Glue PySpark jobs | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compaction-glue/main.tf), [`scripts/compact.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compaction-glue/scripts/compact.py) |
-| [`compute-databricks-delta`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-databricks-delta/main.tf) | Compute / Storage | Unity Catalog External Locations and Delta Sharing grants over S3 Gold lake | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-databricks-delta/main.tf) |
-| [`compute-emr-serverless`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-emr-serverless/main.tf) | Compute | EMR Serverless Spark application on Graviton ARM64 for sustained Spark workloads | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-emr-serverless/main.tf) |
-| [`compute-emr-ec2-spot`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-emr-ec2-spot/main.tf) | Compute | EMR on EC2 3-fleet Graviton Spot task capacity for the 5+ TB/day tier | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-emr-ec2-spot/main.tf) |
-| [`compute-glue-etl`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-glue-etl/main.tf) | Compute | AWS Glue ETL Spark jobs with job bookmarking & failure alerts | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-glue-etl/main.tf), [`scripts/etl.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-glue-etl/scripts/etl.py) |
-| [`consumption-redshift-serverless`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/consumption-redshift-serverless/main.tf) | Analytics | Redshift Serverless workgroup & namespace for high-concurrency BI | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/consumption-redshift-serverless/main.tf) |
-| [`databricks-workspace`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/databricks-workspace/main.tf) | Compute / Analytics | Databricks E2 customer VPC workspace, Unity Catalog metastore & SEC-05 cross-account IAM | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/databricks-workspace/main.tf), [`PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/databricks-workspace/PROVENANCE.json) |
-| [`dq-great-expectations`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/dq-great-expectations/main.tf) | Data Quality | Data quality validation gates using Great Expectations on AWS Glue | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/dq-great-expectations/main.tf) |
-| [`governance-observability`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/governance-observability/main.tf) | Governance | AWS Budgets, CloudWatch Billing Alarms, and SNS notification alerts | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/governance-observability/main.tf) |
-| [`ingest-firehose`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingest-firehose/main.tf) | Ingestion | Kinesis Data Firehose micro-batch ingestion stream to S3 Bronze zone | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingest-firehose/main.tf) |
-| [`ingestion-appflow`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-appflow/main.tf) | Ingestion | SaaS pulls (Salesforce/Zendesk/ServiceNow) into Bronze via Amazon AppFlow | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-appflow/main.tf) |
-| [`ingestion-dms`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-dms/main.tf) | Ingestion | Database CDC (RDS / on-premise) into Bronze via AWS DMS, credentials by Secrets Manager reference | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-dms/main.tf) |
-| [`ingestion-sftp`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-sftp/main.tf) | Ingestion | Partner file drops via AWS Transfer Family, one chrooted role per user | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-sftp/main.tf) |
-| [`ingestion-webhook`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-webhook/main.tf) | Ingestion | HTTPS event receiver: API Gateway to SQS with a DLQ, no Lambda in the path | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingestion-webhook/main.tf) |
+| [`compaction-glue`](./compaction-glue/main.tf) | Storage / Maintenance | Scheduled S3 small-file compaction via Glue PySpark jobs | [`main.tf`](./compaction-glue/main.tf), [`scripts/compact.py`](./compaction-glue/scripts/compact.py) |
+| [`compute-databricks-delta`](./compute-databricks-delta/main.tf) | Compute / Storage | Unity Catalog External Locations and Delta Sharing grants over S3 Gold lake | [`main.tf`](./compute-databricks-delta/main.tf) |
+| [`compute-emr-serverless`](./compute-emr-serverless/main.tf) | Compute | EMR Serverless Spark application on Graviton ARM64 for sustained Spark workloads | [`main.tf`](./compute-emr-serverless/main.tf) |
+| [`compute-emr-ec2-spot`](./compute-emr-ec2-spot/main.tf) | Compute | EMR on EC2 3-fleet Graviton Spot task capacity for the 5+ TB/day tier | [`main.tf`](./compute-emr-ec2-spot/main.tf) |
+| [`compute-glue-etl`](./compute-glue-etl/main.tf) | Compute | AWS Glue ETL Spark jobs with job bookmarking & failure alerts | [`main.tf`](./compute-glue-etl/main.tf), [`scripts/etl.py`](./compute-glue-etl/scripts/etl.py) |
+| [`consumption-redshift-serverless`](./consumption-redshift-serverless/main.tf) | Analytics | Redshift Serverless workgroup & namespace for high-concurrency BI | [`main.tf`](./consumption-redshift-serverless/main.tf) |
+| [`databricks-workspace`](./databricks-workspace/main.tf) | Compute / Analytics | Databricks E2 customer VPC workspace, Unity Catalog metastore & SEC-05 cross-account IAM | [`main.tf`](./databricks-workspace/main.tf), [`PROVENANCE.json`](./databricks-workspace/PROVENANCE.json) |
+| [`dq-great-expectations`](./dq-great-expectations/main.tf) | Data Quality | Data quality validation gates using Great Expectations on AWS Glue | [`main.tf`](./dq-great-expectations/main.tf) |
+| [`governance-observability`](./governance-observability/main.tf) | Governance | AWS Budgets, CloudWatch Billing Alarms, and SNS notification alerts | [`main.tf`](./governance-observability/main.tf) |
+| [`ingest-firehose`](./ingest-firehose/main.tf) | Ingestion | Kinesis Data Firehose micro-batch ingestion stream to S3 Bronze zone | [`main.tf`](./ingest-firehose/main.tf) |
+| [`ingestion-appflow`](./ingestion-appflow/main.tf) | Ingestion | SaaS pulls (Salesforce/Zendesk/ServiceNow) into Bronze via Amazon AppFlow | [`main.tf`](./ingestion-appflow/main.tf) |
+| [`ingestion-dms`](./ingestion-dms/main.tf) | Ingestion | Database CDC (RDS / on-premise) into Bronze via AWS DMS, credentials by Secrets Manager reference | [`main.tf`](./ingestion-dms/main.tf) |
+| [`ingestion-sftp`](./ingestion-sftp/main.tf) | Ingestion | Partner file drops via AWS Transfer Family, one chrooted role per user | [`main.tf`](./ingestion-sftp/main.tf) |
+| [`ingestion-webhook`](./ingestion-webhook/main.tf) | Ingestion | HTTPS event receiver: API Gateway to SQS with a DLQ, no Lambda in the path | [`main.tf`](./ingestion-webhook/main.tf) |
 | [`metadata-control-table`](./metadata-control-table/main.tf) | Orchestration | Fallback DynamoDB pipeline control table for dynamic DAG parameters; primary path reads an existing enterprise table via a column mapping | [`main.tf`](./metadata-control-table/main.tf), [`scripts/fetch_pipeline_config.py`](./metadata-control-table/scripts/fetch_pipeline_config.py) |
-| [`networking-vpc`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/main.tf) | Networking | Multi-AZ customer VPC with NAT Gateways, default SG & VPC Endpoints | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/main.tf), [`PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/PROVENANCE.json) |
-| [`orchestrator-mwaa`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-mwaa/main.tf) | Orchestration | Managed Workflows for Apache Airflow (MWAA) environment in private VPC with KMS & log streams | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-mwaa/main.tf) |
-| [`orchestrator-stepfunctions`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-stepfunctions/main.tf) | Orchestration | AWS Step Functions state machine workflow orchestrator | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-stepfunctions/main.tf) |
+| [`networking-vpc`](./networking-vpc/main.tf) | Networking | Multi-AZ customer VPC with NAT Gateways, default SG & VPC Endpoints | [`main.tf`](./networking-vpc/main.tf), [`PROVENANCE.json`](./networking-vpc/PROVENANCE.json) |
+| [`orchestrator-mwaa`](./orchestrator-mwaa/main.tf) | Orchestration | Managed Workflows for Apache Airflow (MWAA) environment in private VPC with KMS & log streams | [`main.tf`](./orchestrator-mwaa/main.tf) |
+| [`orchestrator-stepfunctions`](./orchestrator-stepfunctions/main.tf) | Orchestration | AWS Step Functions state machine workflow orchestrator | [`main.tf`](./orchestrator-stepfunctions/main.tf) |
 | [`governance-lakeformation`](./governance-lakeformation/main.tf) | Governance | Lake Formation LF-TBAC: row filters and PII column masking on Gold, with the `IAMAllowedPrincipals` compatibility default revoked | [`main.tf`](./governance-lakeformation/main.tf) |
 | [`security-iam-scoped`](./security-iam-scoped/main.tf) | Governance | Least-privilege consumer access: scoped S3/KMS/Athena reads, external-ID trust for cross-account | [`main.tf`](./security-iam-scoped/main.tf) |
 | [`dbt-semantic-layer`](./dbt-semantic-layer/main.tf) | Serving | Code-native governed metrics (dbt / MetricFlow) plus a versioned manifest bucket | [`main.tf`](./dbt-semantic-layer/main.tf), [`models/`](./dbt-semantic-layer/models/) |
 | [`cube-semantic-layer`](./cube-semantic-layer/main.tf) | Serving | Headless semantic layer with a pre-aggregation cache and an encrypted Redis store | [`main.tf`](./cube-semantic-layer/main.tf), [`cube/`](./cube-semantic-layer/cube/) |
-| [`query-athena`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/query-athena/main.tf) | Query Engine | Athena workgroup, scan limit cutoff, encrypted results bucket & Iceberg maintenance | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/query-athena/main.tf), [`iceberg_maintenance.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/query-athena/iceberg_maintenance.tf) |
-| [`schema-registry-glue`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/schema-registry-glue/main.tf) | Governance | AWS Glue Schema Registry for Avro data contracts and compatibility rules | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/schema-registry-glue/main.tf) |
-| [`speed-layer-kinesis`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/speed-layer-kinesis/main.tf) | Streaming | Kinesis Data Streams speed layer with optional Apache Flink application | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/speed-layer-kinesis/main.tf) |
-| [`storage-medallion-s3`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/storage-medallion-s3/main.tf) | Storage | Tiered S3 Medallion Lake (Bronze/Silver/Gold) with KMS CMK & Glacier lifecycle | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/storage-medallion-s3/main.tf) |
-| [`streaming-msk-kafka`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/streaming-msk-kafka/main.tf) | Streaming | Managed Apache Kafka cluster (AWS MSK) with IAM SASL auth & multi-AZ distribution | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/streaming-msk-kafka/main.tf) |
-| [`table-format-iceberg`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/table-format-iceberg/main.tf) | Storage Format | Apache Iceberg table format v2 definition in Glue Catalog | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/table-format-iceberg/main.tf) |
-| [`warehouse-snowflake-aws`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/warehouse-snowflake-aws/main.tf) | Warehouse | Snowflake on AWS storage integration, SEC-05 external ID handshake & Snowpipe SQS queues | [`main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/warehouse-snowflake-aws/main.tf) |
+| [`query-athena`](./query-athena/main.tf) | Query Engine | Athena workgroup, scan limit cutoff, encrypted results bucket & Iceberg maintenance | [`main.tf`](./query-athena/main.tf), [`iceberg_maintenance.tf`](./query-athena/iceberg_maintenance.tf) |
+| [`schema-registry-glue`](./schema-registry-glue/main.tf) | Governance | AWS Glue Schema Registry for Avro data contracts and compatibility rules | [`main.tf`](./schema-registry-glue/main.tf) |
+| [`speed-layer-kinesis`](./speed-layer-kinesis/main.tf) | Streaming | Kinesis Data Streams speed layer with optional Apache Flink application | [`main.tf`](./speed-layer-kinesis/main.tf) |
+| [`storage-medallion-s3`](./storage-medallion-s3/main.tf) | Storage | Tiered S3 Medallion Lake (Bronze/Silver/Gold) with KMS CMK & Glacier lifecycle | [`main.tf`](./storage-medallion-s3/main.tf) |
+| [`streaming-msk-kafka`](./streaming-msk-kafka/main.tf) | Streaming | Managed Apache Kafka cluster (AWS MSK) with IAM SASL auth & multi-AZ distribution | [`main.tf`](./streaming-msk-kafka/main.tf) |
+| [`table-format-iceberg`](./table-format-iceberg/main.tf) | Storage Format | Apache Iceberg table format v2 definition in Glue Catalog | [`main.tf`](./table-format-iceberg/main.tf) |
+| [`warehouse-snowflake-aws`](./warehouse-snowflake-aws/main.tf) | Warehouse | Snowflake on AWS storage integration, SEC-05 external ID handshake & Snowpipe SQS queues | [`main.tf`](./warehouse-snowflake-aws/main.tf) |
 
 ---
 
@@ -45,8 +45,8 @@
 
 ### 1. `compaction-glue`
 - **Files**:
-  - [`modules/compaction-glue/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compaction-glue/main.tf)
-  - [`modules/compaction-glue/scripts/compact.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compaction-glue/scripts/compact.py)
+  - [`modules/compaction-glue/main.tf`](./compaction-glue/main.tf)
+  - [`modules/compaction-glue/scripts/compact.py`](./compaction-glue/scripts/compact.py)
 - **Architectural Role**: Solves the S3 "small-files problem" in data lake zones (where thousands of small files degrade Athena scan speeds by 62-88% and cause S3 throttling) by running a scheduled Glue PySpark job to coalesce Parquet objects to ~128 MB.
 - **Provisioned Resources**:
   - `aws_iam_role.compact`: Glue execution role (`glue.amazonaws.com`).
@@ -65,13 +65,13 @@
 - **Outputs**:
   - `compaction_job_name`: Name of the created Glue compaction job.
 - **Scripts**:
-  - [`scripts/compact.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compaction-glue/scripts/compact.py): PySpark script that parses `--target_buckets`, calculates target partition count based on `TARGET_OBJECT_MB = 128`, reads Parquet prefixes, and rewrites them into `_compacted/` locations.
+  - [`scripts/compact.py`](./compaction-glue/scripts/compact.py): PySpark script that parses `--target_buckets`, calculates target partition count based on `TARGET_OBJECT_MB = 128`, reads Parquet prefixes, and rewrites them into `_compacted/` locations.
 
 ---
 
 ### 2. `compute-emr-serverless`
 - **Files**:
-  - [`modules/compute-emr-serverless/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-emr-serverless/main.tf)
+  - [`modules/compute-emr-serverless/main.tf`](./compute-emr-serverless/main.tf)
 - **Architectural Role**: Serverless Spark compute engine for sustained, heavy transformation workloads (>= TB/day scale) where EMR Serverless pricing is superior to Glue per-minute premiums. Includes auto-stop idle configuration.
 - **Provisioned Resources**:
   - `aws_emrserverless_application.spark`: EMR Serverless application running Spark (`emr-7.5.0` default), capped maximum vCPU/memory, and 15-minute idle auto-stop.
@@ -92,8 +92,8 @@
 
 ### 3. `compute-glue-etl`
 - **Files**:
-  - [`modules/compute-glue-etl/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-glue-etl/main.tf)
-  - [`modules/compute-glue-etl/scripts/etl.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-glue-etl/scripts/etl.py)
+  - [`modules/compute-glue-etl/main.tf`](./compute-glue-etl/main.tf)
+  - [`modules/compute-glue-etl/scripts/etl.py`](./compute-glue-etl/scripts/etl.py)
 - **Architectural Role**: Managed AWS Glue 4.0 Spark batch ETL job provisioning. Features job bookmarking for incremental processing (Well-Architected Analytics Lens BP10) and optional EventBridge failure alerting.
 - **Failure Modes closed (2026-08-17 live run)**: the job previously exited `SystemExit` because `--source_path`/`--target_path` were never set (MINUS-109), and 403'd on its first write to Silver because the role held no S3 write or KMS data-key grant (MINUS-108). Both are now wired by the synthesizer; leaving `data_buckets`/`source_bucket`/`target_bucket` empty reproduces the old behavior by design, for operators driving the module by hand.
 - **Provisioned Resources**:
@@ -122,12 +122,12 @@
   - `glue_job_arns`: List of created Glue job ARNs.
   - `glue_role_arn`: ARN of the Glue execution role.
 - **Scripts**:
-  - [`scripts/etl.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-glue-etl/scripts/etl.py): PySpark starter ETL script. Reads `--source_path`, `--target_path`, `--source_format`, `--target_format` via `getResolvedOptions`, then `spark.read.format(source_format).load(...)` -> passthrough transform -> `write.format(target_format).save(...)`. Still raises `SystemExit` when the paths are unset, so an unwired job fails loudly rather than silently no-op'ing; the formats fall back to `json`/`parquet`.
+  - [`scripts/etl.py`](./compute-glue-etl/scripts/etl.py): PySpark starter ETL script. Reads `--source_path`, `--target_path`, `--source_format`, `--target_format` via `getResolvedOptions`, then `spark.read.format(source_format).load(...)` -> passthrough transform -> `write.format(target_format).save(...)`. Still raises `SystemExit` when the paths are unset, so an unwired job fails loudly rather than silently no-op'ing; the formats fall back to `json`/`parquet`.
 
 ---
 
 ### 3a. `compute-emr-ec2-spot` (MINUS-128)
-- **Files**: [`modules/compute-emr-ec2-spot/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/compute-emr-ec2-spot/main.tf)
+- **Files**: [`modules/compute-emr-ec2-spot/main.tf`](./compute-emr-ec2-spot/main.tf)
 - **Architectural Role**: the top tier of the compute matrix. Use **only above ~5 TB/day** -- below that EMR Serverless costs less all-in once cluster idle time and operational burden are counted, and Glue costs less again.
 - **The three-fleet split is the whole design**, and using fleets rather than groups is what makes it possible:
   - `master_instance_fleet` -> **on demand**. A lost master kills the cluster; the saving on one node is rounding error against re-running a day of batch.
@@ -143,7 +143,7 @@
 
 ### 4. `consumption-redshift-serverless`
 - **Files**:
-  - [`modules/consumption-redshift-serverless/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/consumption-redshift-serverless/main.tf)
+  - [`modules/consumption-redshift-serverless/main.tf`](./consumption-redshift-serverless/main.tf)
 - **Architectural Role**: Provision Redshift Serverless for high-concurrency BI analytics and complex data warehousing workloads where interactive query engines (like Athena) reach concurrency limits.
 - **Provisioned Resources**:
   - `aws_redshiftserverless_namespace.this`: Logical Redshift Serverless database namespace (`${var.name_prefix}-analytics`).
@@ -161,8 +161,8 @@
 
 ### 5. `databricks-workspace`
 - **Files**:
-  - [`modules/databricks-workspace/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/databricks-workspace/main.tf)
-  - [`modules/databricks-workspace/PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/databricks-workspace/PROVENANCE.json)
+  - [`modules/databricks-workspace/main.tf`](./databricks-workspace/main.tf)
+  - [`modules/databricks-workspace/PROVENANCE.json`](./databricks-workspace/PROVENANCE.json)
 - **Architectural Role**: Deploys a Databricks E2 workspace on AWS in a customer-managed VPC (VPC ID, subnets, security group supplied from `networking-vpc`). Configures AWS S3 root storage, Databricks cross-account IAM role with external ID validation (`SEC-05`), Unity Catalog metastore & assignment, optional Unity Catalog catalog, and optional SQL Warehouse.
 - **Provisioned Resources**:
   - `aws_s3_bucket.root_storage_bucket`: Root S3 storage bucket (`${var.name_prefix}-dbx-root`).
@@ -200,13 +200,13 @@
   - `sql_warehouse_id`: ID of created SQL Warehouse (or null).
   - `sql_warehouse_jdbc_url`: JDBC URL of created SQL Warehouse (or null).
 - **Provenance**:
-  - [`PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/databricks-workspace/PROVENANCE.json): Tracks version 3 schema validation against `databricks/databricks >= 1.0` (confirmed against provider v1.121.0), documenting provider_config account-level patterns.
+  - [`PROVENANCE.json`](./databricks-workspace/PROVENANCE.json): Tracks version 3 schema validation against `databricks/databricks >= 1.0` (confirmed against provider v1.121.0), documenting provider_config account-level patterns.
 
 ---
 
 ### 6. `dq-great-expectations`
 - **Files**:
-  - [`modules/dq-great-expectations/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/dq-great-expectations/main.tf)
+  - [`modules/dq-great-expectations/main.tf`](./dq-great-expectations/main.tf)
 - **Architectural Role**: Automated data quality validation gate using Great Expectations running on AWS Glue (Python-shell). Stores validation results and Data Docs in a dedicated, lifecycle-managed S3 bucket.
 - **Provisioned Resources**:
   - `aws_s3_bucket.results`: Dedicated S3 bucket for DQ results and Data Docs, suffixed with AWS Account ID and `md5(var.run_id)` to prevent collisions.
@@ -231,7 +231,7 @@
 
 ### 7. `governance-observability`
 - **Files**:
-  - [`modules/governance-observability/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/governance-observability/main.tf)
+  - [`modules/governance-observability/main.tf`](./governance-observability/main.tf)
 - **Architectural Role**: Cross-cutting governance guardrail providing real-time FinOps budget enforcement, CloudWatch billing metric alarms, and SNS alert notifications across pipeline deployments.
 - **Provisioned Resources**:
   - `aws_sns_topic.alerts` (count-based): Created if `alarm_sns_topic_arn` is not supplied.
@@ -263,7 +263,7 @@
 
 ### 8. `ingest-firehose`
 - **Files**:
-  - [`modules/ingest-firehose/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/ingest-firehose/main.tf)
+  - [`modules/ingest-firehose/main.tf`](./ingest-firehose/main.tf)
 - **Architectural Role**: Micro-batch streaming ingestion into the S3 Bronze lake layer via Kinesis Data Firehose. Uses high buffering limits (64 MB / 300 s) to batch incoming events into ~128 MB scan-friendly objects and compress them using GZIP.
 - **Provisioned Resources**:
   - `aws_iam_role.firehose`: IAM role assumed by `firehose.amazonaws.com`.
@@ -283,8 +283,8 @@
 
 ### 9. `networking-vpc`
 - **Files**:
-  - [`modules/networking-vpc/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/main.tf)
-  - [`modules/networking-vpc/PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/PROVENANCE.json)
+  - [`modules/networking-vpc/main.tf`](./networking-vpc/main.tf)
+  - [`modules/networking-vpc/PROVENANCE.json`](./networking-vpc/PROVENANCE.json)
 - **Architectural Role**: Foundation networking module providing a multi-AZ customer VPC with public/private subnet pairs, Internet Gateway, shared or per-AZ NAT Gateways, default self-referencing security group (for MWAA/Databricks), S3 Gateway VPC Endpoint (unconditional/free), and opt-in STS/Kinesis Interface VPC Endpoints.
 - **Provisioned Resources**:
   - `aws_vpc.this`: Main VPC (`enable_dns_support = true`, `enable_dns_hostnames = true`).
@@ -314,13 +314,13 @@
   - `default_security_group_id`: ID of default self-referencing security group.
   - `nat_gateway_ids`: List of NAT Gateway IDs.
 - **Provenance**:
-  - [`PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/networking-vpc/PROVENANCE.json): Tracks version 1, content hash, live-testing validation from `runs/manual-mwaa-network-scratch` (15 resources created and destroyed cleanly).
+  - [`PROVENANCE.json`](./networking-vpc/PROVENANCE.json): Tracks version 1, content hash, live-testing validation from `runs/manual-mwaa-network-scratch` (15 resources created and destroyed cleanly).
 
 ---
 
 ### 10. `orchestrator-mwaa`
 - **Files**:
-  - [`modules/orchestrator-mwaa/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-mwaa/main.tf)
+  - [`modules/orchestrator-mwaa/main.tf`](./orchestrator-mwaa/main.tf)
 - **Architectural Role**: Managed Workflows for Apache Airflow (MWAA) environment running inside customer private subnets for DAG-based pipeline orchestration.
 - **Provisioned Resources**:
   - `aws_iam_role.mwaa`: MWAA execution role assumed by `airflow.amazonaws.com` and `airflow-env.amazonaws.com`.
@@ -342,7 +342,7 @@
 
 ### 11. `orchestrator-stepfunctions`
 - **Files**:
-  - [`modules/orchestrator-stepfunctions/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/orchestrator-stepfunctions/main.tf)
+  - [`modules/orchestrator-stepfunctions/main.tf`](./orchestrator-stepfunctions/main.tf)
 - **Architectural Role**: Serverless state machine orchestration for AWS workloads (Glue jobs, Lambda, EMR). Generates a sequential Glue job execution workflow in Amazon States Language (ASL) if no custom JSON definition is passed.
 - **Provisioned Resources**:
   - `aws_iam_role.sfn`: Execution role assumed by `states.amazonaws.com`.
@@ -365,7 +365,7 @@
 
 ### 12. `query-athena`
 - **Files**:
-  - [`modules/query-athena/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/query-athena/main.tf)
+  - [`modules/query-athena/main.tf`](./query-athena/main.tf)
 - **Architectural Role**: Serving query layer for ad-hoc SQL analysts and BI tools (Tableau, PowerBI). Configures an Athena workgroup with mandatory per-query scan limits (10 GiB default) to prevent runaway costs, and a dedicated, lifecycle-managed query results S3 bucket.
 - **Provisioned Resources**:
   - `aws_s3_bucket.results`: Dedicated query results bucket suffixed with AWS Account ID and `md5(var.run_id)`.
@@ -389,7 +389,7 @@
 
 ### 13. `schema-registry-glue`
 - **Files**:
-  - [`modules/schema-registry-glue/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/schema-registry-glue/main.tf)
+  - [`modules/schema-registry-glue/main.tf`](./schema-registry-glue/main.tf)
 - **Architectural Role**: Enforces data contracts and prevents downstream pipeline corruption by registering Avro schemas in AWS Glue Schema Registry with configurable evolution rules (`BACKWARD`, `FORWARD`, `FULL`).
 - **Provisioned Resources**:
   - `aws_glue_registry.this`: AWS Glue Schema Registry (`${var.name_prefix}-registry`).
@@ -407,7 +407,7 @@
 
 ### 14. `speed-layer-kinesis`
 - **Files**:
-  - [`modules/speed-layer-kinesis/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/speed-layer-kinesis/main.tf)
+  - [`modules/speed-layer-kinesis/main.tf`](./speed-layer-kinesis/main.tf)
 - **Architectural Role**: Real-time event streaming "speed layer" for Lambda/Kappa architectures using KMS-encrypted Kinesis Data Streams and optional Managed Service for Apache Flink applications.
 - **Provisioned Resources**:
   - `aws_kinesis_stream.this`: KMS-encrypted Kinesis Data Stream (`alias/aws/kinesis`).
@@ -432,7 +432,7 @@
 
 All four land data in the Bronze zone and are wired by the synthesizer with `target_bucket` and (except AppFlow, which writes through its own service role) `target_bucket_kms_key_arn` -- without the key grant the write 403s on an SSE-KMS bucket, the same failure MINUS-108 fixed for Glue.
 
-**None of them takes a credential as a Terraform variable** (TerraShark FM-02). A password or token as a variable ends up in the plan and in state; each takes a Secrets Manager ARN or an out-of-band connector-profile name instead. [`tests/test_ingestion_modules.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_ingestion_modules.py) asserts this across all four.
+**None of them takes a credential as a Terraform variable** (TerraShark FM-02). A password or token as a variable ends up in the plan and in state; each takes a Secrets Manager ARN or an out-of-band connector-profile name instead. [`tests/test_ingestion_modules.py`](../tests/test_ingestion_modules.py) asserts this across all four.
 
 All four were validated against the **installed provider schema** (`terraform providers schema -json`, AWS v6.60.0), not the rendered registry docs. That caught two real breaks: `aws_dms_endpoint`'s `s3_settings` block was removed in provider v6 (the dedicated `aws_dms_s3_endpoint` resource replaces it), and `aws_appflow_flow`'s `connector_operator` fields are attributes rather than nested blocks.
 
@@ -465,7 +465,7 @@ All four were validated against the **installed provider schema** (`terraform pr
 
 ### 15. `storage-medallion-s3`
 - **Files**:
-  - [`modules/storage-medallion-s3/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/storage-medallion-s3/main.tf)
+  - [`modules/storage-medallion-s3/main.tf`](./storage-medallion-s3/main.tf)
 - **Architectural Role**: Tiered S3 Data Lake (Bronze raw landing, Silver cleaned, Gold curated) with customer-managed KMS key (CMK) encryption, key rotation, block public access, bucket versioning, and Glacier lifecycle transition rules (`COST-01`).
 - **Provisioned Resources**:
   - `aws_kms_key.lake`: Customer managed KMS key with 30-day deletion window and automated key rotation enabled. **No explicit `policy` (MINUS-112, decided 2026-08-18):** omitting it keeps AWS's default key policy, whose account-root delegation is what lets the IAM role policies in `compute-glue-etl`/`query-athena` grant KMS access at all. A service-principal-only policy is the classic CMK lockout and would not have fixed the observed 403 (a missing `kms:GenerateDataKey`, granted via IAM instead). Add service-principal statements with `kms:ViaService` conditions only for a service that cannot assume a role, and keep the root statement when doing so.
@@ -496,7 +496,7 @@ All four were validated against the **installed provider schema** (`terraform pr
 
 ### 16. `table-format-iceberg`
 - **Files**:
-  - [`modules/table-format-iceberg/main.tf`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/table-format-iceberg/main.tf)
+  - [`modules/table-format-iceberg/main.tf`](./table-format-iceberg/main.tf)
 - **Architectural Role**: Apache Iceberg table format v2 provisioning in AWS Glue Catalog over S3 lake buckets (Gold/Curated zone), enabling ACID transactions, time-travel queries, snapshot isolation, and fast metadata scanning at 100 TB+ scale.
 - **Provisioned Resources**:
   - `aws_glue_catalog_database.iceberg`: AWS Glue Catalog Database (`${var.name_prefix}_iceberg`).
@@ -555,7 +555,7 @@ if a new third-party provider appears here without amending its reviewed allowli
 ---
 
 ## Governance & Provenance Tracking
-Every module in `modules/` is validated against security rules in [`core/reporting/optimize_analyzer.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/optimize_analyzer.py). Upstream dependencies and provider schema compatibility are tracked via [`PROVENANCE.json`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/modules/databricks-workspace/PROVENANCE.json) files to ensure content hash integrity against infrastructure drift.
+Every module in `modules/` is validated against security rules in [`core/reporting/optimize_analyzer.py`](../core/reporting/optimize_analyzer.py). Upstream dependencies and provider schema compatibility are tracked via [`PROVENANCE.json`](./databricks-workspace/PROVENANCE.json) files to ensure content hash integrity against infrastructure drift.
 
 ---
 

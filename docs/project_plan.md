@@ -31,8 +31,14 @@ gantt
 
 ---
 
-## Natural Language Intent Dispatcher
-We deployed a central query parsing coordinator: [dispatcher.py](/core/reporting/dispatcher.py).
+## Natural Language Intent Dispatcher (REMOVED)
+
+> **Superseded.** `core/reporting/dispatcher.py` and its tests were removed on 2026-07-27
+> (commit `748880f`). Named subcommands under [`minusctl`](../core/cli/main.py) replaced the
+> guess-the-intent routing described below; run `minusctl --help` for the current surface.
+> [`intent_resolver.py`](../core/generation/intent_resolver.py) is a different thing -- it maps
+> a build request to an approved blueprint, it does not route queries to scripts.
+> This section is kept as a record of the original plan.
 
 Rather than executing scripts individually, operators can type vague queries. Operational queries still route to the target script:
 * **Query**: `"check if the pipeline is online"` &rarr; triggers `health_checker.py`.
@@ -41,7 +47,7 @@ Rather than executing scripts individually, operators can type vague queries. Op
 * **Query**: `"why did spend spike / find anomalies"` &rarr; triggers `finops_agent.py` (live AWS).
 * **Query**: `"apply the changes"` &rarr; triggers `plan_gate.py run` (the deploy gate).
 
-Creation requests now take a safer enterprise path through [intent_resolver.py](/core/generation/intent_resolver.py) and the requirements/architecture decision record:
+Creation requests now take a safer enterprise path through [intent_resolver.py](../core/generation/intent_resolver.py) and the requirements/architecture decision record:
 * **Query**: `"create a data pipeline"` &rarr; creates a requirements-first run; no production Terraform is generated until requirements and an architecture decision are recorded.
 * The resolver creates a requirements-first path and lists the next safe actions.
 * It does not generate Terraform, plan, or apply infrastructure by itself.
@@ -57,13 +63,13 @@ Creation requests now take a safer enterprise path through [intent_resolver.py](
      was built first to exercise the engine end-to-end, then deleted so the repo is engine-only.
    * It remains recoverable from git history if a worked example is needed for reference.
 2. **`agy` Customizations & Diagnostics**:
-   * Workspace Rules ([AGENTS.md](/.agents/AGENTS.md)) to enforce safety boundaries.
-   * [audit_logger.py](/core/governance/audit_logger.py) and [plan_gate.py](/core/governance/plan_gate.py) to audit actions and gate mutating deployments (plan-bound, MFA via the cloud CLI).
-   * [approval.py](/core/governance/approval.py) approval gate with selectable `gatekeeper` / `auto-approve` modes for side effects.
-   * [finops_agent.py](/core/reporting/finops_agent.py) live cost intelligence over the real account (Cost Explorer, anomalies, CloudTrail correlation).
-   * [optimize_analyzer.py](/core/reporting/optimize_analyzer.py) configuration scanner.
-   * [intent_resolver.py](/core/generation/intent_resolver.py) to map short enterprise creation requests to requirements-first runs and architecture decisions.
-   * Live FinOps operator console ([app/dashboard_app.py](/app/dashboard_app.py)) — a Plotly Dash app rendering real spend, monthly burn, and the anomaly ledger via the active cloud provider.
+   * Workspace Rules ([AGENTS.md](../.agents/AGENTS.md)) to enforce safety boundaries.
+   * [audit_logger.py](../core/governance/audit_logger.py) and [plan_gate.py](../core/governance/plan_gate.py) to audit actions and gate mutating deployments (plan-bound, MFA via the cloud CLI).
+   * [approval.py](../core/governance/approval.py) approval gate with selectable `gatekeeper` / `auto-approve` modes for side effects.
+   * [finops_agent.py](../core/reporting/finops_agent.py) live cost intelligence over the real account (Cost Explorer, anomalies, CloudTrail correlation).
+   * [optimize_analyzer.py](../core/reporting/optimize_analyzer.py) configuration scanner.
+   * [intent_resolver.py](../core/generation/intent_resolver.py) to map short enterprise creation requests to requirements-first runs and architecture decisions.
+   * Live FinOps operator console ([app/dashboard_app.py](../app/dashboard_app.py)) — a Plotly Dash app rendering real spend, monthly burn, and the anomaly ledger via the active cloud provider.
 
 ---
 

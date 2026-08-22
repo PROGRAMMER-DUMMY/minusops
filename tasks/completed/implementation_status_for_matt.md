@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Date** | 2026-08-21 |
 | **Branch** | `feat/minusops-enterprise-nextgen-v2` |
-| **Source documents** | [`new_prd_for_architect.md`](./new_prd_for_architect.md), [`implementation_plan_for_architect.md`](./implementation_plan_for_architect.md), [`minusops_friction.md`](../minusops_friction.md) |
+| **Source documents** | [`new_prd_for_architect.md`](./new_prd_for_architect.md), [`implementation_plan_for_architect.md`](./implementation_plan_for_architect.md), [`minusops_friction.md`](../../minusops_friction.md) |
 | **Full suite** | exit 0 across 81 test files |
 | **Working tree** | Clean. 10 commits pushed to `origin/feat/minusops-enterprise-nextgen-v2`. |
 
@@ -16,10 +16,10 @@ All three source documents have been read in full.
 
 | Phase | Status | Evidence |
 | :--- | :--- | :--- |
-| **1 — Integration tool hooks** | **Done** | [`core/integrations/`](../core/integrations/) — `base_hook`, `slack_hook`, `teams_hook`, `outlook_hook`, `confluence_hook`, `jira_hook`. [`tests/test_integrations.py`](../tests/test_integrations.py) passes. |
-| **2 — Subagent manifests** | **Done, relocated** | [`.claude/agents/`](../.claude/agents/) — `slack-agent`, `teams-agent`, `outlook-agent`, `confluence-agent`. See §5 for why not `.agents/subagents/*.json`. |
-| **3 — Metadata control table + dynamic DAG config** | **Done** | [`modules/metadata-control-table/`](../modules/metadata-control-table/) + `scripts/fetch_pipeline_config.py`. Registry now carries 25 modules. |
-| **4 — CI/CD workflow generator** | **Done** | [`core/generation/cicd.py`](../core/generation/cicd.py) — 4-lane pre-merge, reusable feed factory, matrix discovery, Jenkins parity. [`tests/test_cicd.py`](../tests/test_cicd.py), 16 tests. |
+| **1 — Integration tool hooks** | **Done** | [`core/integrations/`](../../core/integrations/) — `base_hook`, `slack_hook`, `teams_hook`, `outlook_hook`, `confluence_hook`, `jira_hook`. [`tests/test_integrations.py`](../../tests/test_integrations.py) passes. |
+| **2 — Subagent manifests** | **Done, relocated** | [`.agents/subagents/`](../../.agents/subagents/) — `slack-agent`, `teams-agent`, `outlook-agent`, `confluence-agent`. See §5 for why not `.agents/subagents/*.json`. |
+| **3 — Metadata control table + dynamic DAG config** | **Done** | [`modules/metadata-control-table/`](../../modules/metadata-control-table/) + `scripts/fetch_pipeline_config.py`. Registry now carries 25 modules. |
+| **4 — CI/CD workflow generator** | **Done** | [`core/generation/cicd.py`](../../core/generation/cicd.py) — 4-lane pre-merge, reusable feed factory, matrix discovery, Jenkins parity. [`tests/test_cicd.py`](../../tests/test_cicd.py), 16 tests. |
 | **5 — Regression + audit verification** | **Done** | Full suite exit 0 across 81 test files; context drift check clean. |
 
 ### Deviations from the plan text, and why
@@ -42,7 +42,7 @@ All three source documents have been read in full.
 | **FR-05** | Cryptographic plan binding | **Already implemented** — `plan_gate` SHA-256 over `resource_changes` + `output_changes` |
 | **FR-06** | Privilege escalation prevention | **Not done.** Requires the §13 boundary deployed in AWS. The §13 JSON is defective as written — see §6. |
 | **FR-07** | Two-person rule | **Already implemented** — `plan_gate._enforce_production_approval` |
-| **FR-08** | FinOps circuit breakers | **Done.** Athena `bytes_scanned_cutoff` ✅, Glacier lifecycle ✅, and `aws_glue_job` now sets `timeout = var.timeout_minutes` (default 120, validated against AWS's 2880 ceiling) ✅. Previously absent, so AWS applied its 48-hour default. Pinned by [`tests/test_finops_circuit_breakers.py`](../tests/test_finops_circuit_breakers.py) and mutation-checked. |
+| **FR-08** | FinOps circuit breakers | **Done.** Athena `bytes_scanned_cutoff` ✅, Glacier lifecycle ✅, and `aws_glue_job` now sets `timeout = var.timeout_minutes` (default 120, validated against AWS's 2880 ceiling) ✅. Previously absent, so AWS applied its 48-hour default. Pinned by [`tests/test_finops_circuit_breakers.py`](../../tests/test_finops_circuit_breakers.py) and mutation-checked. |
 | **FR-09** | Runtime dependency pinning | **Not done, and contradicts §6.6.** See §6. |
 
 **Six of nine already existed before this work began.** The PRD documents them as requirements without marking them as shipped, which makes the remaining scope look larger than it is.

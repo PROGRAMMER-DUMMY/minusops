@@ -9,7 +9,7 @@ This skill equips `agy` with the procedures, scripts, and policies needed to saf
 
 ## The Secure Orchestration Loop
 
-All infrastructure changes go through **[core/governance/plan_gate.py](/core/governance/plan_gate.py)** — a plan-bound deploy gate that enforces the loop in code (verify → plan → hash → approve → apply), audits every stage, and refuses to apply any plan whose hash you did not approve.
+All infrastructure changes go through **[core/governance/plan_gate.py](../../../core/governance/plan_gate.py)** — a plan-bound deploy gate that enforces the loop in code (verify → plan → hash → approve → apply), audits every stage, and refuses to apply any plan whose hash you did not approve.
 
 ```
   verify  -->  plan  -->  approve (review + confirm)  -->  apply (exact tfplan)

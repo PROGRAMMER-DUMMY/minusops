@@ -95,7 +95,7 @@ This document catalogs known architectural friction points, potential contract m
 * **Workaround**: Automated pipelines must explicitly supply `--mode auto-approve` with allowlisted credentials and clean G5/G9 safety classifications.
 
 ### 3.5 Out-of-Band Cloud Drift vs. Autonomous Deployment
-* **Location**: [`core/governance/cloud_drift.py`](./core/governance/cloud_drift.py) & [`destructive_change_gate.py`](./destructive_change_gate.py)
+* **Location**: [`core/governance/cloud_drift.py`](./core/governance/cloud_drift.py) & [`destructive_change_gate.py`](./core/governance/destructive_change_gate.py)
 * **The Conflict**: Autonomous deployment (`auto-approve`) is strictly forbidden from reverting out-of-band manual changes or executing non-create actions on stateful/IAM resources.
 * **Friction Mode**: If an engineer made an emergency console edit (e.g. modifying an S3 lifecycle rule or IAM trust policy), any automated pipeline attempting to apply HCL will be halted by `cloud_drift.py`.
 * **Consequence**: Manual intervention and interactive signoff are mandatory whenever cloud drift is detected.

@@ -76,7 +76,7 @@ at authentication time, so by the time `terraform apply` runs the session is alr
 ---
 
 ## 4. Verification & Compliance Scans
-Our security scanner ([**`optimize_analyzer.py`**](/core/reporting/optimize_analyzer.py)) runs a
+Our security scanner ([**`optimize_analyzer.py`**](../core/reporting/optimize_analyzer.py)) runs a
 per-resource security audit on every `plan_gate verify`:
 * **Rule `SEC-02`**: Flags any IAM policy that declares `"Resource": "*"` or wildcard statements.
 * **Blocking enforcement**: `SEC-*` findings are *blocking* — the scanner exits non-zero and

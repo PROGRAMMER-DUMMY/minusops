@@ -73,7 +73,7 @@ MinusOps (Workspace Root)
 
 ### 1. How to Refer to Context Files
 * **Before making changes**: Prior to modifying any code in a directory, read the corresponding `CONTEXT-[folder].md` file to understand all dependencies, failure modes, and safety invariants.
-* **Clickable Links**: All file references in context documentation MUST use GitHub-style markdown links with the `file://` URI scheme (e.g., [`plan_gate.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/governance/plan_gate.py)).
+* **Clickable Links**: All file references in context documentation MUST use GitHub-style markdown links with the `file://` URI scheme (e.g., [`plan_gate.py`](./core/governance/plan_gate.py)).
 
 ### 2. How to Update Context Files
 * **Atomic Updates**: Any code change, refactor, or feature addition MUST include an immediate update to the corresponding `CONTEXT-[folder].md` file in the same task.
@@ -87,7 +87,7 @@ MinusOps (Workspace Root)
 * When creating a **new directory** or **subpackage**:
   1. Create a `CONTEXT-[folder].md` inside that directory.
   2. Document every file within the folder exhaustively (no high-level placeholders or half-reads).
-  3. Register the new context file in [`CONTEXT-MAP.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/CONTEXT-MAP.md).
+  3. Register the new context file in [`CONTEXT-MAP.md`](./CONTEXT-MAP.md).
 
 ### 4. Keeping Context Files Up to Date
 * **No Spec Drift**: Context files are source-controlled artifacts and must never drift from actual python/HCL implementation.
@@ -96,5 +96,5 @@ MinusOps (Workspace Root)
 ---
 
 ## Project Connections
-* **Current Status & Handoff**: See [`HANDOFF.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/HANDOFF.md) for live progress, active architecture decisions, and current execution milestones.
-* **Operating Rules**: See [`.agents/AGENTS.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/.agents/AGENTS.md) for non-negotiable workspace safety constraints.
+* **Current Status & Handoff**: See [`HANDOFF.md`](./HANDOFF.md) for live progress, active architecture decisions, and current execution milestones.
+* **Operating Rules**: See [`.agents/AGENTS.md`](.agents/AGENTS.md) for non-negotiable workspace safety constraints.

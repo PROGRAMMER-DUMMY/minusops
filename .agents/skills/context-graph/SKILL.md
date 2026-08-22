@@ -12,7 +12,7 @@ This skill equips agents and engineers to maintain the exhaustive, file-by-file 
 ## 1. The Context Architecture
 
 The context graph consists of two layers:
-1. **[`CONTEXT-MAP.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/CONTEXT-MAP.md):** The master navigation tree mapping every directory in the repository to its local context file.
+1. **[`CONTEXT-MAP.md`](../../../CONTEXT-MAP.md):** The master navigation tree mapping every directory in the repository to its local context file.
 2. **`CONTEXT-[folder].md`:** Dedicated file-by-file indexes living inside each directory (e.g. `core/cli/CONTEXT-cli.md`, `modules/CONTEXT-modules.md`, `core/reporting/CONTEXT-reporting.md`).
 
 ---
@@ -34,11 +34,17 @@ Activate this skill whenever:
 Run `git status` or inspect recent commits to identify all changed, added, or deleted files.
 
 ### Step 2: Open Directory Context Document
-Open the `CONTEXT-[folder].md` corresponding to the modified directory (e.g. if editing `core/cli/commands/gate.py`, open [`core/cli/CONTEXT-cli.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/cli/CONTEXT-cli.md)).
+Open the `CONTEXT-[folder].md` corresponding to the modified directory (e.g. if editing `core/cli/commands/gate.py`, open [`core/cli/CONTEXT-cli.md`](../../../core/cli/CONTEXT-cli.md)).
 
 ### Step 3: Update File Specifications
 For each modified file, verify and update:
-1. **File Link:** GitHub-style markdown link using the `file://` scheme.
+1. **File Link:** A repo-relative markdown link -- `[main.py](./main.py)`,
+   `[minusctl.py](../reporting/minusctl.py)`, `[plan_gate.py](../../core/governance/plan_gate.py)`.
+   Never the `file://` scheme and never a leading `/`. An absolute `file:///C:/Users/...` URL
+   names one developer's disk, so it is dead in every clone, and browsers refuse to follow
+   `file://` from an https page at all -- making it the one link form guaranteed broken on
+   GitHub, which is where these documents are read. A leading `/` fails the same way: GitHub
+   resolves it against the site root, not the repository root.
 2. **Exact Purpose:** One or two sentences describing what the file accomplishes.
 3. **Key Functions & Classes:** Exact function names, arguments, and return types.
 4. **Inputs & Outputs:** CLI flags, environment variables, files read/written.
@@ -46,9 +52,10 @@ For each modified file, verify and update:
 6. **Architectural Role & Dependencies:** Upstream callers and downstream consumers.
 
 ### Step 4: Validate Links & Format Invariants
-* Ensure all links resolve to valid local paths on disk.
+* Ensure all links are repo-relative and resolve to valid paths on disk. `pytest
+  tests/test_docs_examples.py` enforces both and is the fastest way to check.
 * Confirm strictly **zero emojis** are present.
 * Use clean ASCII tables and GitHub-style code fences.
 
 ### Step 5: Update Master `CONTEXT-MAP.md` (If New Directory)
-If a new folder was introduced, register it in [`CONTEXT-MAP.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/CONTEXT-MAP.md) under the Master Context Tree.
+If a new folder was introduced, register it in [`CONTEXT-MAP.md`](../../../CONTEXT-MAP.md) under the Master Context Tree.

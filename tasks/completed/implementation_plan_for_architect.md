@@ -3,7 +3,7 @@
 | Attribute | Details |
 | :--- | :--- |
 | **Document ID** | IMPL-ARCH-2026-001 (Revision 2 - Architect-Harmonized) |
-| **Companion PRD** | [`tasks/new_prd_for_architect.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tasks/new_prd_for_architect.md) |
+| **Companion PRD** | [`tasks/completed/new_prd_for_architect.md`](./new_prd_for_architect.md) |
 | **Lead Architect** | Matt (Architecture & Platform Engineering Lead) |
 | **Review Framework** | Ponytail Anti-Overengineering (YAGNI / Zero-Bloat Standard) |
 | **Handshake Target** | `coding_agent` (for execution on dedicated feature branch) |
@@ -131,8 +131,8 @@ When the `coding_agent` is initialized to start implementation:
    git checkout -b feature/enterprise-subagent-fabric
    ```
 2. **Required Reading:** The coding agent must read both:
-   * [`tasks/new_prd_for_architect.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tasks/new_prd_for_architect.md) (The Harmonized Architectural Specification)
-   * [`tasks/implementation_plan_for_architect.md`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tasks/implementation_plan_for_architect.md) (This Technical Implementation Plan)
+   * [`tasks/completed/new_prd_for_architect.md`](./new_prd_for_architect.md) (The Harmonized Architectural Specification)
+   * [`tasks/completed/implementation_plan_for_architect.md`](./implementation_plan_for_architect.md) (This Technical Implementation Plan)
 3. **Invariants to Preserve:**
    * Do not introduce heavy third-party dependencies (`requests`, `pandas`, `openpyxl`). Use standard library.
    * Preserve all 44 passing unit and governance regression tests.
