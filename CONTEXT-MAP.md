@@ -27,7 +27,7 @@ MinusOps (Workspace Root)
 │   ├── cost/
 │   │   └── CONTEXT-cost.md                 # BCM Pricing Calculator, catalog resolution & pricing audits
 │   ├── reporting/
-│   │   └── CONTEXT-reporting.md            # minusctl CLI, reporter, optimize_analyzer & finops_agent
+│   │   └── CONTEXT-reporting.md            # minusctl CLI, run registry, multi-repo export, reporter, optimize_analyzer & finops_agent
 │   ├── integrations/
 │   │   └── CONTEXT-integrations.md         # Approval-gated outbound hooks: Slack, Teams, SMTP, Confluence, Jira
 │   └── providers/

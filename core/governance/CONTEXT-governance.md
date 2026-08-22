@@ -148,15 +148,22 @@ The `core/governance/` engine enforces state-aware, plan-bound, tamper-evident i
 
 - **Exact Purpose**: Inspects Terraform plan JSON `resource_drift` entries to detect out-of-band cloud changes and flags plans that attempt to revert those manual changes.
 - **Key Functions / Classes**:
-  - [`classify(plan_json)`](./cloud_drift.py): Compares `resource_drift` before/after values with `resource_changes` proposed values to identify reverted attributes.
-  - [`format_result(result)`](./cloud_drift.py): Generates human-readable summary lines highlighting out-of-band reverts.
+  - [`classify(plan_json, telemetry=None)`](./cloud_drift.py): Compares `resource_drift` before/after values with `resource_changes` proposed values to identify reverted attributes.
+  - [`format_result(result)`](./cloud_drift.py): Generates human-readable summary lines highlighting out-of-band reverts and any correlated telemetry.
   - [`_changed_attributes(before, after)`](./cloud_drift.py): Calculates top-level attribute key differences between two resource state dicts.
+  - [`aws_telemetry(address, resource_type, lookback_hours=24)`](./cloud_drift.py): CloudTrail principal plus recent Glue job-run failure signatures for one drifted resource, or `None`.
+  - [`_correlate(drifted, telemetry)`](./cloud_drift.py): Applies the injected lookup to each drifted resource.
+- **Telemetry correlation (PRD-ARCH-2026-005, FR-06)**: Drift says a Glue job was resized by hand; it does not say why, leaving a reviewer to choose between "revert" and "leave it" with no information. CloudTrail names the principal and the job-run history carries the `OutOfMemoryError` that preceded the change.
+  - **Opt-in**: the lookup is injected by the caller. `classify(plan_json)` alone stays offline, makes no AWS call, and does not import the provider.
+  - **Fail-open**: a lookup that raises, or one that finds nothing, both yield `telemetry_available: False` and no evidence. A network problem must never be the reason a plan is blocked.
+  - **Never permits**: correlation does not change the revert verdict. An explained change is still a change the plan is about to undo — "claims inform, never permit".
+  - **Scoped to [`TELEMETRY_TYPES`](./cloud_drift.py)** (`aws_glue_job`, `aws_emr_cluster`); asking CloudTrail about every drifted S3 bucket would add a round trip per resource for nothing.
 - **Inputs & Outputs**:
-  - *Inputs*: Parsed `terraform show -json` plan dictionary.
-  - *Outputs*: Dictionary with `drift_count`, `drifted` items, `reverted` items, `reverted_count`, `reverts_out_of_band_changes` boolean, and `malformed_count`.
+  - *Inputs*: Parsed `terraform show -json` plan dictionary; optional `telemetry(address, resource_type)` callable.
+  - *Outputs*: Dictionary with `drift_count`, `drifted` items, `reverted` items, `reverted_count`, `reverts_out_of_band_changes` boolean, `malformed_count`, `telemetry_available`, and `telemetry_evidence`.
 - **Failure Modes**:
-  - Never raises exceptions; malformed drift entries increment `malformed_count` and allow classification to finish gracefully.
-- **Architectural Role**: Prevents accidental reversal of emergency manual cloud interventions during automated deploys.
+  - Never raises exceptions; malformed drift entries increment `malformed_count` and allow classification to finish gracefully. A raising telemetry lookup is swallowed per resource.
+- **Architectural Role**: Prevents accidental reversal of emergency manual cloud interventions during automated deploys, and — when credentials allow — explains them.
 
 ---
 

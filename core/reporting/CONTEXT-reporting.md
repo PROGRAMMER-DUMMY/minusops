@@ -16,7 +16,8 @@ This document provides an exhaustive, architectural, and operational reference f
 - [`core/reporting/optimize_analyzer.py`](./optimize_analyzer.py) — Per-resource HCL scanner evaluating security (`SEC-*`), cost (`COST-*`), observability (`OBS-*`), and data performance (`DATA-*`) rules, with optional Checkov/Trivy/TFLint external integration.
 - [`core/reporting/plan_inspector.py`](./plan_inspector.py) — Plan explorer analyzing `plan.json` for services, resources, IAM roles, source snapshot hashing, and source drift diffing.
 - [`core/reporting/reporter.py`](./reporter.py) — Core reporting engine generating versioned, plan-hash-keyed report bundles containing `manifest.json`, `plan.json`, `architecture.svg`, `dataflow.svg`, `plan.pdf`, `cost.pdf`, and `inspect.pdf`.
-- [`core/reporting/runs.py`](./runs.py) — Run workspace manager managing isolated run directories under `runs/<run-id>/`.
+- [`core/reporting/runs.py`](./runs.py) — Run workspace manager managing isolated run directories under `runs/<run-id>/`, plus the central registry (`runs/index.json`, `runs/INDEX.md`).
+- [`core/reporting/export.py`](./export.py) — Packages a run into a domain repository: copies the four deployable directories and, on request, a per-pipeline GitHub Actions workflow.
 - [`core/reporting/toolpath.py`](./toolpath.py) — Cross-platform discovery utility for external CLIs (`terraform`, `aws`, headless browsers) without hardcoding user home paths.
 - [`core/reporting/cli_diagnostics.py`](./cli_diagnostics.py) — Agent-facing failure formatting: fuzzy run-id resolution, lifecycle stage interception, and the three-part `WHAT FAILED / WHY IT FAILED / ACTION REQUIRED` error (MINUS-157..160).
 - [`core/reporting/excel_finops_generator.py`](./excel_finops_generator.py) — Dual-tier FinOps `.xlsx` writer (executive summary + engineering ledger) built on stdlib `zipfile` + OpenXML, no third-party dependency.
@@ -235,17 +236,36 @@ This document provides an exhaustive, architectural, and operational reference f
 
 ### 8. `core/reporting/runs.py`
 - **File Link:** [`core/reporting/runs.py`](./runs.py)
-- **Exact Purpose:** Manages isolated run workspaces under `runs/<run-id>/` to keep generated Terraform and reports separate from source-controlled code.
+- **Exact Purpose:** Manages isolated run workspaces under `runs/<run-id>/`, and maintains the central registry that makes the set of runs readable from one file.
+- **Two id shapes, both valid (PRD-ARCH-2026-005, FR-01):** a run created with a `name` gets `<domain>-<name>-<orchestrator>_<YYYYMMDD_HHMMSS>`; a run created without one keeps the original `<YYYYMMDD-HHMMSS>-<blueprint>`. Nothing parses an id to find a run — [`list_runs()`](./runs.py) discovers workspaces by the presence of `run.json` — so the two coexist with no migration and no aliasing.
 - **Key Functions/Classes:**
-  - [`new_run(blueprint="manual", request="", cloud="aws")`](./runs.py): Creates a new timestamped run directory (`YYYYMMDD-HHMMSS-<slug>`) with subdirectories (`terraform/`, `reports/`, `bcm/`) and writes `run.json`.
-  - [`list_runs()`](./runs.py): Discovers and lists all run workspaces sorted by creation timestamp.
-  - [`latest_run()`](./runs.py): Returns the metadata for the most recently created run.
-  - [`get_run(run_id=None)`](./runs.py): Resolves a run workspace by exact ID or prefix.
+  - [`new_run(blueprint, request, cloud, name, domain, orchestrator, owner, target_repo)`](./runs.py): Creates the directory tree (`terraform/`, `reports/`, `bcm/`), writes `run.json`, then calls `sync_index()`.
+  - [`sync_index()`](./runs.py): Rebuilds `runs/index.json` and `runs/INDEX.md` from the `run.json` files on disk. Rebuilt rather than appended, so a hand-deleted run drops out and a corrupt `run.json` costs only its own row.
+  - [`_atomic_write(path, text)`](./runs.py): Temp file in the same directory plus `os.replace`. Two runs created in parallel both rewrite the registry; an in-situ write lets a reader catch a truncated `index.json`.
+  - [`list_runs()`](./runs.py) / [`latest_run()`](./runs.py) / [`get_run(run_id)`](./runs.py): Discovery by exact id or prefix.
+- **The cost column is null, never zero.** `estimated_monthly_cost` is reported only from evidenced BCM figures carried on the run. A `0.0` default would read as "this pipeline is free" on the one page executives open. Same doctrine as [`core/cost/budget_calculator.py`](../cost/budget_calculator.py).
 - **Inputs/Outputs:**
-  - *Inputs:* Blueprint name, user request string, active cloud provider.
-  - *Outputs:* Created workspace directory tree and `run.json` metadata file.
-- **Failure Modes:** Returns empty list or `None` if `runs/` directory does not exist or `run.json` is corrupted.
-- **Architectural Role:** Provides clean workspace isolation for synthesized Terraform configurations, BCM pricing payloads, and deploy report bundles.
+  - *Inputs:* Blueprint name, user request string, active cloud provider, optional semantic metadata.
+  - *Outputs:* Workspace directory tree, `run.json`, `runs/index.json`, `runs/INDEX.md`.
+- **Failure Modes:** Returns empty list or `None` if `runs/` does not exist or `run.json` is corrupted; a corrupt run is skipped by both `list_runs()` and the registry rather than failing either.
+- **Architectural Role:** Workspace isolation for synthesized Terraform, BCM payloads, and deploy report bundles — plus the one enumerable index of everything MinusOps has generated.
+- **Tests:** [`tests/test_runs.py`](../../tests/test_runs.py).
+
+---
+
+### 8b. `core/reporting/export.py`
+- **File Link:** [`core/reporting/export.py`](./export.py)
+- **Exact Purpose:** The handover from control plane to domain repository (PRD-ARCH-2026-005, FR-03/FR-04). Copies `terraform/`, `dags/`, `scripts/`, `configs/` from a run into `<target-repo>/<dest-dir>/`, and optionally writes `<target-repo>/.github/workflows/<pipeline>-deploy.yml`.
+- **What it does NOT copy is part of the contract:** `reports/`, `bcm/` and `run.json` are control-plane evidence. Shipping them would couple the domain team to a tool they do not run. What lands is plain Terraform that `terraform init && terraform apply` handles with no MinusOps runtime present (NFR-01).
+- **Key Functions/Classes:**
+  - [`export_run(run_root, target_repo, dest_dir, generate_workflow, pipeline_name, region)`](./export.py): Validates, copies, optionally renders the workflow, audits, returns a manifest.
+  - [`_resolve_dest(target_repo, dest_dir)`](./export.py): `--dest-dir` is operator-typed and joined onto a repo root. Checked against the *resolved real path*, because `os.path.join` silently discards the root when the second argument is absolute and `..` walks out of it.
+  - [`_safe_name(value)`](./export.py): The pipeline name becomes a filename under `.github/workflows/`; anything outside `[A-Za-z0-9][A-Za-z0-9._-]*` can forge a path.
+  - [`_copy_tree(src, dest)`](./export.py): Replaces rather than merges. A resource dropped from the run must disappear from the domain repo — a leftover `.tf` file is one `terraform apply` away from recreating infrastructure the architecture no longer declares.
+  - [`_audit(manifest)`](./export.py): NFR-03. Never raises: the files are already on disk by then, so failing here would report a failure that did not happen.
+- **Local file copy only.** No AWS call, no Terraform invocation. The mutating path stays behind [`plan_gate.py`](../governance/plan_gate.py).
+- **Dependencies:** [`core/generation/cicd.py`](../generation/cicd.py) for `render_pipeline_workflow`; `core/governance/audit_logger.py` lazily.
+- **Tests:** [`tests/test_export.py`](../../tests/test_export.py), plus the CLI path in [`tests/test_minusctl.py`](../../tests/test_minusctl.py).
 
 ---
 

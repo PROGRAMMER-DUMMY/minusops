@@ -26,7 +26,7 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 | [`knowledge_store.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/knowledge_store.py) | Bi-temporal knowledge DB | SQLite database and JSONL corpus for bi-temporal facts, freshness clauses, and agent claims |
 | [`knowledge_degradation.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/knowledge_degradation.py) | Schema degradation check | Re-fetches live schemas to update/invalidate active schema claims in the knowledge store |
 | [`knowledge_delegation.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/knowledge_delegation.py) | Agent delegation hand-off | Formats `needs_review` claims for driving agent adjudication and records verdict claims |
-| [`cicd.py`](./cicd.py) | CI/CD synthesis | 4-lane pre-merge validation, reusable feed factory, Jenkins parity; renders text and writes without overwriting |
+| [`cicd.py`](./cicd.py) | CI/CD synthesis | 4-lane pre-merge validation, reusable feed factory, Jenkins parity, and the exported per-pipeline deploy workflow (`render_pipeline_workflow`, FR-04) whose `paths:` filter keeps one pipeline's commit from planning every sibling in a shared domain repo; OIDC only, never a static key. Renders text and writes without overwriting |
 | [`knowledge_diff.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/generation/knowledge_diff.py) | Structural schema claim builder | Extracts deterministic `schema` claims from live provider schemas for `knowledge_store` |
 
 ---

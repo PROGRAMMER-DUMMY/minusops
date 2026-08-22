@@ -559,3 +559,52 @@ All 21 engineering tickets from the **MinusOps Enterprise v2.0 Roadmap (`MINUS-1
    - `minusctl doctor --fix` container auto-recovery with 20s timeout and isolated environment handling.
    - Fail-closed production OPA presence enforcement in `plan_gate.py verify`.
    - `core/reporting/cli_diagnostics.py`: Fuzzy typo run matching with dynamic attached description tips (`get_run_description_tip()`), ANSI escape sequence sanitization, pre-requisite stage interception, and 3-part actionable error formatting (`WHAT FAILED` / `WHY IT FAILED` / `ACTION REQUIRED`).
+
+---
+
+## 9. PRD-ARCH-2026-005 (Revision 5.0) — Multi-Repo Export & Semantic Runs — 2026-08-22
+
+Source: [`tasks/deplyoymend_pr.md`](../tasks/deplyoymend_pr.md), implemented against the
+coding-agent advisory. Built TDD: RED on 21 failures plus one collection error, then GREEN.
+
+**Suite after this work: 1079 tests collected across 88 test files, `pytest` exits 0.**
+
+### Delivered
+
+| FR | What landed | Where |
+| :--- | :--- | :--- |
+| FR-01 | Semantic run ids `<domain>-<name>-<orchestrator>_<YYYYMMDD_HHMMSS>`; the legacy `<YYYYMMDD-HHMMSS>-<blueprint>` id is unchanged when no `name` is passed | `core/reporting/runs.py` |
+| FR-02 | `runs/index.json` + `runs/INDEX.md`, rebuilt on every `new_run()` and swapped in with `os.replace` | `core/reporting/runs.py` (`sync_index`, `_atomic_write`) |
+| FR-03 | `minusctl export --run … --target-repo … --dest-dir … [--generate-workflow]` | `core/reporting/export.py`, `core/reporting/minusctl.py` |
+| FR-04 | Per-pipeline GitHub Actions workflow with `paths:` isolation, OIDC-only auth, apply gated to `push` | `core/generation/cicd.py` (`render_pipeline_workflow`) |
+| FR-06 | Opt-in, fail-open CloudTrail + Glue job-run correlation on drifted resources | `core/governance/cloud_drift.py` (`classify(..., telemetry=)`, `aws_telemetry`) |
+
+### Advisory questions, as answered in code
+
+1. **Legacy run migration** — neither migrated nor aliased. `list_runs()` never parsed an id;
+   it discovers workspaces by the presence of `run.json`, so both shapes coexist with no
+   migration step and no compatibility layer to maintain.
+2. **Index concurrency** — atomic swap (`tempfile.mkstemp` in the same directory, then
+   `os.replace`), no lock. A lock would serialize writers; the swap makes a partial read
+   impossible, which is the actual failure being prevented.
+3. **Template engine** — stdlib only. `cicd.py`'s existing `__TOKEN__` + `_fill` convention
+   is reused rather than duplicated in a new `workflow_templates.py`, because GitHub's
+   `${{ }}` collides with `str.format`/`string.Template` and that workaround already exists
+   in this file. One module, one convention.
+4. **Telemetry** — advisory and fail-open. The lookup is injected by the caller, so
+   `classify(plan_json)` alone makes no AWS call; a lookup that raises or finds nothing
+   yields `telemetry_available: False`. Correlation never changes the revert verdict.
+
+### Not built (out of the advisory's scope, stated for the record)
+
+* **FR-05 / AC-05 — Synthetic Data Proving Harness.** The PRD specifies five hops ending in a
+  signed `proving_report.json`. `core/reporting/seed.py` today covers three (S3 upload → Glue
+  job → Athena query) and writes no proving report. The Great Expectations data-quality hop,
+  the quarantine-routing check, and the signed report are absent. The advisory's five
+  implementation steps did not include it.
+* **`estimated_monthly_cost` is null for every run** until BCM evidence is attached to
+  `run.json`. The registry column is deliberately not defaulted to `0.0` — see
+  [`core/reporting/CONTEXT-reporting.md`](../core/reporting/CONTEXT-reporting.md).
+* **Glue job-name derivation in `aws_telemetry`** takes the Terraform resource label, not the
+  physical id (which lives in state, not in a plan). Marked with a `ponytail:` comment naming
+  the ceiling; holds for MinusOps-generated stacks, may miss on adopted ones.
