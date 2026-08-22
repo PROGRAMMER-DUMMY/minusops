@@ -73,14 +73,18 @@ locals {
   emit_athena  = var.athena_workgroup_arn != ""
 }
 
-# Fails the plan rather than the audit: a cross-account trust with no external ID is the
+# Fails the PLAN rather than the audit: a cross-account trust with no external ID is the
 # defect this module exists to prevent, so it must not be expressible.
+#
+# No `count` guard here, and the condition is a real expression rather than a constant. Both
+# matter: `terraform validate` rejects `condition = false` outright ("must refer to at least
+# one object from elsewhere in the configuration"), and a counted resource only evaluates its
+# precondition when it exists -- which is fine, but leaves nothing for the validator to check.
+# Always present, condition references both variables, fails only on the bad combination.
 resource "terraform_data" "external_id_required" {
-  count = local.create_role && var.external_id == "" ? 1 : 0
-
   lifecycle {
     precondition {
-      condition     = false
+      condition     = length(var.trusted_external_principals) == 0 || var.external_id != ""
       error_message = "trusted_external_principals is set but external_id is empty. A cross-account role without an sts:ExternalId condition can be assumed by anyone who learns its ARN."
     }
   }

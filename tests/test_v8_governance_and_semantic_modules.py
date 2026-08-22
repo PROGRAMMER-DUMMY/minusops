@@ -368,3 +368,46 @@ def test_every_module_the_interview_names_exists_in_the_catalog():
                                  "warehouse", "consumption", "dq", "schema", "table",
                                  "compaction", "metadata", "networking", "speed"})
     assert not unbuildable, f"grill-me names modules the catalog cannot build: {unbuildable}"
+
+
+# --- Regression: the guard must be expressible Terraform ------------------------------
+
+def test_the_external_id_precondition_references_real_configuration():
+    """`condition = false` is rejected by `terraform validate`: "The condition expression
+    must refer to at least one object from elsewhere in the configuration, or else its result
+    would not be checking anything." Encoding the rule in `count` and leaving the condition
+    constant produced HCL that passed every structural test here and failed on first plan."""
+    hcl = _hcl("security-iam-scoped")
+
+    block = hcl.split("precondition {")[1].split("}")[0]
+    assert "var.external_id" in block
+    assert "var.trusted_external_principals" in block
+    assert "condition     = false" not in block
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("module_id", NEW_MODULES)
+def test_the_module_is_valid_terraform(module_id, tmp_path):
+    """The check that would have caught the precondition bug. Marked slow because it runs a
+    real `terraform init`, which on Windows copies the provider rather than symlinking it."""
+    import shutil
+    import subprocess
+    import sys
+
+    sys.path.insert(0, os.path.join(ROOT, "core", "reporting"))
+    import toolpath
+
+    terraform = toolpath.find_tool("terraform")
+    if not terraform:
+        pytest.skip("terraform not on PATH")
+
+    work = tmp_path / module_id
+    shutil.copytree(os.path.join(ROOT, "modules", module_id), work,
+                    ignore=shutil.ignore_patterns(".terraform*"))
+    init = subprocess.run([terraform, f"-chdir={work}", "init", "-backend=false",
+                           "-input=false", "-no-color"], capture_output=True, text=True)
+    assert init.returncode == 0, init.stderr or init.stdout
+
+    result = subprocess.run([terraform, f"-chdir={work}", "validate", "-no-color"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
