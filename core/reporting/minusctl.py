@@ -1012,6 +1012,22 @@ def main(argv=None):
     prove_cmd = sub.add_parser("prove", help="run the end-to-end evidence harness for a run")
     prove_cmd.add_argument("--run", default="latest")
     prove_cmd.add_argument("--json", action="store_true")
+    # Without --execute this stays the OFFLINE governance-chain evidence bundle it has
+    # always been. With it, the same command proves the live data path across five hops --
+    # the only mutating thing here, routed through approval.py like `seed`.
+    prove_cmd.add_argument("--execute", action="store_true",
+                           help="run the live 5-hop data proof against the applied stack "
+                                "(mutating; routes through approval.py)")
+    prove_cmd.add_argument("--fixture", default=None, help="synthetic records to inject")
+    prove_cmd.add_argument("--table", default="customer_gold")
+    prove_cmd.add_argument("--records", type=int, default=1000,
+                           help="records the fixture injects; hop 4 proves none were lost")
+    prove_cmd.add_argument("--malformed", type=int, default=0,
+                           help="how many of those records are deliberately invalid")
+    prove_cmd.add_argument("--plan-hash", default=None,
+                           help="bind the report to a plan hash; reports/<hash>/proving_report.json")
+    prove_cmd.add_argument("--approval-mode", default="gatekeeper",
+                           choices=["gatekeeper", "auto-approve"])
 
     audit_cmd = sub.add_parser("audit", help="verify the tamper-evident audit chain")
     _rich(audit_cmd,
@@ -1316,6 +1332,21 @@ def main(argv=None):
         ])
         _json_or_text(result, args.json, text)
         return 0
+
+    if args.cmd == "prove" and args.execute:
+        run = _run_by_id_or_latest(args.run, command=args.cmd)
+        fixture = args.fixture or os.path.join(
+            os.path.dirname(os.path.abspath(run["terraform_dir"])), seed_engine.FIXTURE)
+        try:
+            result = seed_engine.prove_pipeline(
+                run["terraform_dir"], fixture, table=args.table, execute=True,
+                approval_mode=args.approval_mode, records=args.records,
+                malformed=args.malformed, run_name=run["run_id"],
+                plan_hash=args.plan_hash, reports_dir=run["reports_dir"])
+        except seed_engine.SeedError as exc:
+            raise SystemExit(str(exc))
+        _json_or_text(result, args.json, seed_engine.format_proof(result))
+        return 0 if result["ok"] else 1
 
     if args.cmd == "prove":
         result = _prove(_run_by_id_or_latest(args.run, command=args.cmd))

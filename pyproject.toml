@@ -50,7 +50,10 @@ dev = [
 
 [project.scripts]
 # Pip-installable console commands — clients run `minusctl ...`, not `python core/x.py ...`.
-minusctl = "core.reporting.minusctl:main"
+# The unified front door (PRD-ARCH-2026-007). It owns `use`, `runs list/describe`, `gate`,
+# `cost` and `source`, and delegates every other subcommand to core.reporting.minusctl,
+# which stays importable and runnable on its own.
+minusctl = "core.cli.main:main"
 minus-gate = "core.governance.plan_gate:main"
 minus-resolve = "core.generation.intent_resolver:main"
 minus-workflow = "core.generation.workflow:main"
@@ -74,6 +77,8 @@ packages = [
     # Not optional: finops_agent imports the Slack and Jira hooks at module scope, so a wheel
     # without core.integrations fails on import, not on first notify.
     "core.integrations",
+    # Both, or `minusctl` resolves to a module the wheel does not contain.
+    "core.cli", "core.cli.commands",
 ]
 
 [tool.setuptools.package-data]

@@ -85,3 +85,8 @@ docs/REPO_MAP.md
 # MINUS-153: the real team directory names people and their alert routing -- reconnaissance
 # a repo should not hand out. configs/teams.yaml.example is the committed template.
 configs/teams.yaml
+
+# PRD-ARCH-2026-007: `minusctl use` writes the operator's active run here. It is per-checkout
+# session state, not project configuration -- committing it would make one person's selection
+# everyone else's default, and `gate apply` reads it.
+.minus/
