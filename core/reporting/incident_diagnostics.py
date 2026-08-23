@@ -74,6 +74,15 @@ class FailureRule:
     vulnerability: str
     options: tuple
     service_code: str = ""
+    # Does this failure produce wrong-but-plausible output rather than an obvious stop?
+    # Silent failures bump severity, because by the time anyone looks the bad numbers have
+    # already been acted on. Defaults False: a loud crash is the safer assumption to make
+    # about a rule nobody has classified.
+    silent: bool = False
+    # Does it touch regulated data or the controls protecting it? Forces P1.
+    regulated: bool = False
+    # A failure that resolves itself needs a ticket, not a pager.
+    transient: bool = False
 
 
 # Ordered: first match wins, so specific patterns sit above general ones.
@@ -156,6 +165,7 @@ FAILURE_RULES = [
     # --- Terraform apply ---------------------------------------------------------------
     FailureRule(
         rule_id="TF-IAM-CONSISTENCY-01",
+        transient=True,
         pattern=re.compile(r"(has been propagated|invalidinputexception.*role|"
                            r"is not authorized to perform: iam:passrole|"
                            r"invalidparameterexception.*role)", re.I),
@@ -251,6 +261,7 @@ FAILURE_RULES = [
     # --- Athena / Trino ----------------------------------------------------------------
     FailureRule(
         rule_id="ATHENA-SPLIT-01",
+        silent=True,
         pattern=re.compile(r"(hive_cannot_open_split|hive_bad_data|"
                            r"hive_partition_schema_mismatch)", re.I),
         category="Athena Split / Schema Mismatch",
@@ -314,6 +325,7 @@ FAILURE_RULES = [
     # --- Proving harness / data quality -------------------------------------------------
     FailureRule(
         rule_id="DQ-EXPECTATION-01",
+        silent=True,
         pattern=re.compile(r"(great expectations.*fail|expectations did not pass|"
                            r"expectation.*failed|assertions_failed)", re.I),
         category="Data Quality Assertion Failure",
@@ -346,6 +358,7 @@ FAILURE_RULES = [
     ),
     FailureRule(
         rule_id="DQ-QUARANTINE-01",
+        silent=True,
         pattern=re.compile(r"(quarantine.*(exceed|threshold|spillover)|"
                            r"unaccounted for|records? (were )?lost)", re.I),
         category="Quarantine Threshold / Data Loss",
@@ -444,7 +457,8 @@ def extract_evidence(run_root):
     return empty
 
 
-def diagnose(error_text, telemetry=None, address=None, resource_type=None, run_root=None):
+def diagnose(error_text, telemetry=None, address=None, resource_type=None, run_root=None,
+             tier=None, has_pii=False, stakeholder_detected=False):
     """
     Classify a failure and return the structured diagnosis behind the report.
 
@@ -477,11 +491,19 @@ def diagnose(error_text, telemetry=None, address=None, resource_type=None, run_r
     if haystack.strip():
         rule = next((r for r in FAILURE_RULES if r.pattern.search(haystack)), None)
 
+    # Severity is assessed even for an unmatched error: "we do not know what broke" and
+    # "we do not know how much it matters" are separate questions, and a PII exposure is a
+    # P1 whether or not a rule recognised the stack trace.
+    assessed = assess_severity(rule, tier=tier, has_pii=has_pii,
+                               stakeholder_detected=stakeholder_detected)
+
     if rule is None:
         return {"matched": False, "rule_id": None, "category": "Unclassified",
                 "root_cause": None, "vulnerability": None, "options": [],
                 "evidence": evidence, "telemetry_available": telemetry_available,
-                "rate_citation": None}
+                "rate_citation": None, "severity": assessed["severity"],
+                "route": assessed["route"], "severity_reason": assessed["reason"],
+                "severity_factors": assessed["factors"]}
 
     return {
         "matched": True,
@@ -493,7 +515,108 @@ def diagnose(error_text, telemetry=None, address=None, resource_type=None, run_r
         "evidence": evidence,
         "telemetry_available": telemetry_available,
         "rate_citation": _rate_citation(rule.service_code),
+        "severity": assessed["severity"],
+        "route": assessed["route"],
+        "severity_reason": assessed["reason"],
+        "severity_factors": assessed["factors"],
     }
+
+
+# --- Severity (PRD v11 FR-05) ----------------------------------------------------------
+#
+# Severity is computed per incident from impact, NOT looked up from the alert's source.
+# The rejected design mapped outage->P1, data-quality->P2, FinOps->P3 and pinned each to a
+# channel. Two of this module's own rules break under it: DQ-QUARANTINE-01 is silent,
+# unrecoverable data loss that the mapping caps at a Teams message, and
+# TF-IAM-CONSISTENCY-01 is a self-healing retry that the mapping pages someone for at 3am.
+# Over-paging and under-reacting from the same table.
+#
+# Inputs, in the order they are applied:
+#   1. Regulated-data exposure -> P1, overriding everything. A small PII leak outranks a
+#      large low-risk outage, because the exposure may already have happened.
+#   2. Asset tier -> the baseline. This is the pre-computed "who depends on this" answer
+#      and is the single fastest signal available at triage.
+#   3. Silent failure -> one level worse. Wrong-but-plausible output has already been acted
+#      on by the time anyone looks; an obvious crash has not.
+#   4. Transient -> one level better. A failure that resolves itself needs a ticket.
+#
+# Routing keys on the computed severity, so a P1 cost anomaly pages exactly like a P1
+# outage rather than being filed as email because of which tool noticed it.
+
+SEVERITIES = ("P1", "P2", "P3", "P4")
+UNCLASSIFIED = "UNCLASSIFIED"
+
+# Tier 0 leans P1/P2, Tier 1 P2/P3, Tier 2/3 P3/P4 -- baselines sit at the top of each
+# band so the modifiers below can move in both directions.
+TIER_BASELINE = {"0": "P1", "1": "P2", "2": "P3", "3": "P4"}
+
+ROUTES = {
+    "P1": "PagerDuty page, plus a Slack/Teams incident channel and leadership notification",
+    "P2": "Secondary on-call page, plus a Slack/Teams thread with an update SLA",
+    "P3": "Jira ticket and an async team notification",
+    "P4": "Operational log and dashboard only; no notification",
+    UNCLASSIFIED: "Human triage: declare the asset tier, then re-run the diagnosis",
+}
+
+
+def _shift(severity, steps):
+    """Move `steps` levels (negative = more severe), clamped to the ends of the scale."""
+    index = min(max(SEVERITIES.index(severity) + steps, 0), len(SEVERITIES) - 1)
+    return SEVERITIES[index]
+
+
+def find_rule(error_text):
+    """The first rule whose pattern matches, or None. Order matters -- see FAILURE_RULES."""
+    haystack = _text(error_text)
+    if not haystack.strip():
+        return None
+    return next((r for r in FAILURE_RULES if r.pattern.search(haystack)), None)
+
+
+def assess_severity(rule, tier=None, has_pii=False, silent_override=None,
+                    stakeholder_detected=False):
+    """Compute severity and its routing from impact, returning the reasoning with it.
+
+    `tier` is the run's declared asset tier ("0".."3"). Without one this returns
+    UNCLASSIFIED rather than a number: the same doctrine as an unmatched error. A severity
+    nobody can justify from declared facts is worse than none, because it looks
+    authoritative enough to act on.
+
+    `silent_override` lets a caller state what the rule cannot know -- whether THIS
+    occurrence produced wrong-but-plausible output. None defers to the rule's own flag.
+    """
+    regulated = bool(has_pii) or bool(getattr(rule, "regulated", False))
+    if regulated:
+        return {"severity": "P1", "route": ROUTES["P1"],
+                "reason": ("regulated/PII data or the controls protecting it are involved, "
+                           "which forces P1 regardless of asset tier"),
+                "tier": tier, "factors": ["regulated_data"]}
+
+    key = str(tier).strip() if tier is not None else ""
+    if key not in TIER_BASELINE:
+        return {"severity": UNCLASSIFIED, "route": ROUTES[UNCLASSIFIED],
+                "reason": ("no asset tier is declared for this run, so business impact "
+                           "cannot be established; refusing to guess a severity"),
+                "tier": tier, "factors": []}
+
+    severity = TIER_BASELINE[key]
+    factors = [f"tier_{key}_baseline_{severity}"]
+
+    silent = getattr(rule, "silent", False) if silent_override is None else bool(silent_override)
+    if silent:
+        severity = _shift(severity, -1)
+        factors.append("silent_failure")
+    if stakeholder_detected:
+        severity = _shift(severity, -1)
+        factors.append("stakeholder_detected_before_monitor")
+    if getattr(rule, "transient", False):
+        severity = _shift(severity, 1)
+        factors.append("transient_self_healing")
+
+    return {"severity": severity, "route": ROUTES[severity], "tier": tier,
+            "factors": factors,
+            "reason": f"tier {key} baseline {TIER_BASELINE[key]}, adjusted by "
+                      + (", ".join(factors[1:]) or "nothing")}
 
 
 def _wrap(label, value, indent=23):
@@ -511,6 +634,13 @@ def format_report(result):
     rule = "=" * REPORT_WIDTH
     lines = [rule, "DIAGNOSTIC & INCIDENT RESOLUTION REPORT", rule, ""]
     evidence = result["evidence"]
+
+    # Severity leads: it decides who is woken and how fast, so it is the first thing the
+    # reader needs. It sits above the evidence rather than buried under the options.
+    if result.get("severity"):
+        lines.extend(_wrap("Severity:", f"{result['severity']} -- {result['severity_reason']}"))
+        lines.extend(_wrap("Routing:", result.get("route") or "-"))
+        lines.append("")
 
     lines.append("1. EXACT LOG & TELEMETRY EVIDENCE")
     lines.extend(_wrap("Resource Address:", evidence.get("address") or "-"))

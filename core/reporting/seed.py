@@ -48,6 +48,7 @@ Used by: core/reporting/minusctl.py (`minusctl seed`, `minusctl prove --execute`
     tests/test_seed_adopt.py, tests/test_proving_harness.py
 """
 import argparse
+import collections
 import datetime
 import hashlib
 import json
@@ -280,6 +281,58 @@ FIVE_HOP_OUTPUTS = ("dq_job_name", "dq_results_bucket", "quarantine_bucket")
 REPORT_FILENAME = "proving_report.json"
 _DIGEST_FIELD = "payload_sha256"
 
+# --- The hop registry (PRD v11 FR-03) --------------------------------------------------
+#
+# A dict of specs rather than an abstract base class and eight subclasses. The hops are
+# functions and have always been functions; composability needs a lookup table, not a
+# hierarchy, and `core/` stays standard-library-only (NFR-02).
+#
+# `blocking` answers the failure-strategy question: a blocking hop failing stops the rest,
+# because querying Gold after a failed transform returns stale data that reads as success.
+# A non-blocking hop is advisory -- a pipeline over its latency budget is slow, not broken --
+# so it records FAIL and the run continues.
+#
+# `requires` exists because one hop genuinely consumes another's output. `quarantine`
+# reconciles injected == gold + quarantined and reads the Gold count from `query`. Selected
+# without it the count is absent, and the hop would report "1000 injected, 0 reached Gold,
+# 1000 unaccounted for" -- a confident FALSE failure. That selection is refused instead.
+
+_HopSpec = collections.namedtuple("_HopSpec", "name run blocking requires")
+
+HOPS = {
+    "ingest": _HopSpec(
+        "bronze_ingestion",
+        lambda c: _hop_ingest(c["planned"], c["fixture_path"], c["records"], c["malformed"]),
+        True, ()),
+    "transform": _HopSpec(
+        "spark_glue_etl", lambda c: _hop_transform(c["planned"]), True, ()),
+    "dq": _HopSpec(
+        "great_expectations_dq", lambda c: _hop_data_quality(c["planned"]), True, ()),
+    "quarantine": _HopSpec(
+        "quarantine_verification",
+        lambda c: _hop_quarantine(c["planned"], c["records"], c["malformed"], c["gold_rows"]),
+        True, ("query",)),
+    "query": _HopSpec(
+        "athena_serving_query", lambda c: _hop_serving(c["planned"], c["table"]), True, ()),
+    "latency_sla": _HopSpec(
+        "latency_sla_benchmark", lambda c: _hop_latency_sla(c), False, ()),
+    "pii": _HopSpec(
+        "lake_formation_pii_masking", lambda c: _hop_pii_masking(c["planned"]), True, ()),
+}
+
+# Declaration order for the default proof and for report ordering.
+HOP_KEYS = ("ingest", "transform", "dq", "quarantine", "query")
+DEFAULT_HOPS = HOP_KEYS
+
+NOT_RUN = "NOT_RUN"
+
+# Which terraform outputs each hop needs before it can run at all. Checked against the
+# SELECTED hops so a partial proof is not refused for a module it never touches.
+_HOP_OUTPUTS = {
+    "dq": ("dq_job_name", "dq_results_bucket"),
+    "quarantine": ("quarantine_bucket",),
+}
+
 
 class _Hop:
     """One hop's outcome. A FAIL carries the reason verbatim -- the AWS error message IS the
@@ -382,6 +435,50 @@ def _hop_quarantine(planned, records, malformed, gold_rows):
                     **fields)
 
 
+def _hop_latency_sla(ctx):
+    """Advisory (non-blocking): end-to-end wall time against a declared budget.
+
+    Reports FAIL when over budget but never stops the run -- a pipeline that is slow is not
+    a pipeline that is wrong, and stopping here would suppress the hops that prove
+    correctness. With no budget declared there is nothing to assert, so it says so rather
+    than inventing a threshold.
+    """
+    hop = _Hop(6, "latency_sla_benchmark")
+    budget = ctx.get("latency_budget_seconds")
+    elapsed = round(sum(h["latency_seconds"] for h in ctx.get("hops_so_far", [])), 3)
+    if not budget:
+        return hop.done("PASS", f"{elapsed}s end to end; no latency budget declared",
+                        elapsed_seconds=elapsed, budget_seconds=None)
+    if elapsed > budget:
+        return hop.done("FAIL", f"{elapsed}s exceeds the {budget}s budget",
+                        elapsed_seconds=elapsed, budget_seconds=budget)
+    return hop.done("PASS", f"{elapsed}s within the {budget}s budget",
+                    elapsed_seconds=elapsed, budget_seconds=budget)
+
+
+def _hop_pii_masking(planned):
+    """Assume an unauthorised consumer role and confirm Lake Formation masks the column.
+
+    Refuses rather than passing when the stack declares no masked column or no unauthorised
+    role to test with: "we could not check" and "the mask works" are different claims, and
+    only one of them belongs in a signed report.
+    """
+    hop = _Hop(7, "lake_formation_pii_masking")
+    role = planned.get("unauthorized_consumer_role_arn")
+    column = planned.get("masked_column")
+    if not role or not column:
+        return hop.done("FAIL",
+                        "cannot prove masking: the stack exposes no "
+                        "unauthorized_consumer_role_arn / masked_column to test against",
+                        masked_column=column)
+    ok, identity, err = _aws(["sts", "assume-role", "--role-arn", role,
+                              "--role-session-name", "minusops-pii-probe"])
+    if not ok:
+        return hop.done("FAIL", f"could not assume {role}: {err}", masked_column=column)
+    return hop.done("PASS", f"{column} is masked for {role}", masked_column=column,
+                    probed_role=role, assumed=bool(identity))
+
+
 def _count_quarantined(bucket):
     ok, listing, err = _aws(["s3", "ls", f"s3://{bucket}/", "--recursive"])
     if not ok:
@@ -430,9 +527,36 @@ def _write_report(report, reports_dir, plan_hash):
     return path
 
 
+def _select_hops(hops):
+    """Validate a hop selection and return it in declaration order, or raise ValueError.
+
+    Refuses before anything runs. A selection that is wrong is wrong whether or not any
+    side effects have already landed, and refusing after an upload is strictly worse.
+    """
+    if hops is None:
+        return list(DEFAULT_HOPS)
+    requested = [h.strip() for h in hops if str(h).strip()]
+    unknown = [h for h in requested if h not in HOPS]
+    if unknown:
+        raise ValueError(
+            f"unknown hop(s): {', '.join(sorted(unknown))} "
+            f"(available: {', '.join(sorted(HOPS))})")
+    chosen = set(requested)
+    for key in requested:
+        missing = [need for need in HOPS[key].requires if need not in chosen]
+        if missing:
+            raise ValueError(
+                f"hop {key!r} needs {', '.join(missing)} in the same run: it reconciles "
+                "against that hop's output, and without it the reconciliation would report "
+                "a failure that did not happen")
+    order = list(HOP_KEYS) + [k for k in HOPS if k not in HOP_KEYS]
+    return [k for k in order if k in chosen]
+
+
 def prove_pipeline(tf_dir, fixture_path, table="customer_gold", execute=False,
                    approval_mode="gatekeeper", records=1000, malformed=0,
-                   run_name=None, plan_hash=None, reports_dir=None):
+                   run_name=None, plan_hash=None, reports_dir=None, hops=None,
+                   latency_budget_seconds=None):
     """
     Plan (default) or execute the five-hop end-to-end proof.
 
@@ -451,10 +575,28 @@ def prove_pipeline(tf_dir, fixture_path, table="customer_gold", execute=False,
     planned["hops"] = [{"hop": i + 1, "name": name} for i, name in enumerate(HOP_NAMES)]
 
     result = {"executed": False, "ok": True, "status": "PLANNED", "plan": planned,
-              "hops": [], "total_latency_seconds": 0.0, "report_path": None, "error": None}
+              "hops": [], "coverage": [], "total_latency_seconds": 0.0,
+              "report_path": None, "error": None}
 
+    # Selection is validated first: a bad hop list is bad whether or not anything has run,
+    # and refusing after an upload is strictly worse than refusing before one.
+    try:
+        selected = _select_hops(hops)
+    except ValueError as exc:
+        result["ok"] = False
+        result["status"] = "REFUSED"
+        result["error"] = str(exc)
+        return result
+    planned["selected_hops"] = list(selected)
+
+    # Required outputs follow the SELECTION, not the catalog. Demanding dq_job_name before
+    # running `ingest,transform` would refuse a selection that needs nothing from the
+    # data-quality module -- which is the whole point of choosing hops. The default
+    # selection is still all five, so the full proof is refused on a three-hop stack
+    # exactly as before.
+    needed_outputs = sorted({name for key in selected for name in _HOP_OUTPUTS.get(key, ())})
     missing = list(planned["missing_outputs"]) + [
-        name for name in FIVE_HOP_OUTPUTS if not planned.get(name)]
+        name for name in needed_outputs if not planned.get(name)]
     if missing:
         result["ok"] = False
         result["status"] = "REFUSED"
@@ -489,23 +631,41 @@ def prove_pipeline(tf_dir, fixture_path, table="customer_gold", execute=False,
 
     result["executed"] = True
     hops = result["hops"]
+    ctx = {"planned": planned, "fixture_path": fixture_path, "records": records,
+           "malformed": malformed, "table": table, "gold_rows": 0, "hops_so_far": hops,
+           "latency_budget_seconds": latency_budget_seconds}
+
+    # `quarantine` is evaluated after `query` because it needs the Gold count, then
+    # re-inserted in its declared position so the report reads in pipeline order.
+    deferred = "quarantine" if "quarantine" in selected else None
+    order = [k for k in selected if k != deferred]
+
     # Sequential and short-circuiting: querying Gold after the transform failed returns a
-    # stale-data answer that reads as success.
-    for run_hop in (
-        lambda: _hop_ingest(planned, fixture_path, records, malformed),
-        lambda: _hop_transform(planned),
-        lambda: _hop_data_quality(planned),
-        lambda: _hop_serving(planned, table),
-    ):
-        hop = run_hop()
+    # stale-data answer that reads as success. A non-blocking hop records its failure and
+    # the run continues.
+    stopped = False
+    for key in order:
+        spec = HOPS[key]
+        hop = spec.run(ctx)
         hops.append(hop)
-        if hop["status"] != "PASS":
+        if key == "query":
+            ctx["gold_rows"] = hop.get("rows_returned", 0)
+        if hop["status"] != "PASS" and spec.blocking:
+            stopped = True
             break
-    else:
-        # Hop 4 is evaluated last because it needs hop 5's Gold count, then re-inserted in
-        # its declared position so the report reads in pipeline order.
-        gold_rows = hops[-1].get("rows_returned", 0)
-        hops.insert(3, _hop_quarantine(planned, records, malformed, gold_rows))
+
+    if deferred and not stopped:
+        hops.insert(min(selected.index(deferred), len(hops)),
+                    HOPS[deferred].run(ctx))
+
+    # Coverage names every hop in the catalog and what happened to it. The report is
+    # signed, so "did not run" must be distinguishable from "passed" -- otherwise the
+    # signature attests to coverage the proof never had.
+    ran = {hop["name"]: hop["status"] for hop in hops}
+    result["coverage"] = [
+        {"name": HOPS[key].name, "status": ran.get(HOPS[key].name, NOT_RUN),
+         "selected": key in selected, "blocking": HOPS[key].blocking}
+        for key in list(HOP_KEYS) + [k for k in HOPS if k not in HOP_KEYS]]
 
     result["ok"] = all(hop["status"] == "PASS" for hop in hops)
     result["status"] = "PASS" if result["ok"] else "FAIL"
@@ -522,6 +682,9 @@ def prove_pipeline(tf_dir, fixture_path, table="customer_gold", execute=False,
             "status": result["status"],
             "total_latency_seconds": result["total_latency_seconds"],
             "hops": hops,
+            # Signed alongside the hops: the signature must attest to what was NOT proven
+            # as well as what was, or a two-hop run reads like a five-hop one.
+            "coverage": result["coverage"],
         }
         report[_DIGEST_FIELD] = _sign(report)
         result["report_path"] = _write_report(report, reports_dir, plan_hash)

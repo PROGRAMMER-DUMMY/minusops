@@ -445,3 +445,168 @@ def test_prove_execute_reports_a_failing_pipeline_as_a_failure(tmp_path, monkeyp
                                       "--fixture", str(fixture)])
 
     assert code == 1
+
+
+# --- PRD v11 Step 3 (FR-03): the modular hop registry ---------------------------------
+
+def test_the_registry_covers_exactly_the_declared_hop_names():
+    """A hop in HOP_NAMES with no registry entry cannot be selected; a registry entry
+    missing from HOP_NAMES never appears in a plan. Either way the report lies about what
+    the proof covered."""
+    # The registry is a superset of the default proof: latency_sla and pii are selectable
+    # extensions, not part of the five-hop sequence.
+    assert set(seed_engine.HOP_KEYS) <= set(seed_engine.HOPS)
+    assert [seed_engine.HOPS[k].name for k in seed_engine.HOP_KEYS] == list(seed_engine.HOP_NAMES)
+    # Every dependency names a hop that exists, or the selection guard cannot enforce it.
+    for key, spec in seed_engine.HOPS.items():
+        for needed in spec.requires:
+            assert needed in seed_engine.HOPS, f"{key} requires unknown hop {needed}"
+
+
+def test_only_the_requested_hops_run(tmp_path, fixture_file, offline, monkeypatch):
+    """AC-02. `--hops ingest,transform` must not start an Athena query."""
+    monkeypatch.setattr(seed_engine, "_aws", _fake_aws_factory())
+    result = seed_engine.prove_pipeline(str(tmp_path), fixture_file, execute=True,
+                                        hops=("ingest", "transform"))
+
+    assert [h["name"] for h in result["hops"]] == ["bronze_ingestion", "spark_glue_etl"]
+    assert result["ok"] is True
+
+
+def test_unselected_hops_are_reported_as_not_run_never_as_passed(
+        tmp_path, fixture_file, offline, monkeypatch):
+    """The report is signed. A hop that never executed must not be indistinguishable from
+    one that passed, or the signature attests to coverage that does not exist."""
+    monkeypatch.setattr(seed_engine, "_aws", _fake_aws_factory())
+    result = seed_engine.prove_pipeline(str(tmp_path), fixture_file, execute=True,
+                                        hops=("ingest",))
+
+    statuses = {h["name"]: h["status"] for h in result["coverage"]}
+    assert statuses["bronze_ingestion"] == "PASS"
+    assert statuses["athena_serving_query"] == "NOT_RUN"
+    assert all(s in ("PASS", "FAIL", "NOT_RUN") for s in statuses.values())
+
+
+def test_an_unknown_hop_name_is_refused_before_anything_runs(
+        tmp_path, fixture_file, offline, monkeypatch):
+    monkeypatch.setattr(seed_engine, "_aws", _fake_aws_factory())
+    result = seed_engine.prove_pipeline(str(tmp_path), fixture_file, execute=True,
+                                        hops=("ingest", "teleport"))
+
+    assert result["status"] == "REFUSED"
+    assert "teleport" in result["error"]
+    assert result["hops"] == []
+
+
+def test_quarantine_without_query_is_refused_not_silently_wrong(
+        tmp_path, fixture_file, offline, monkeypatch):
+    """The trap this closes: quarantine reconciles injected == gold + quarantined, and it
+    reads the Gold count from the query hop. With query unselected the count defaults to 0
+    and the hop reports `1000 injected, 0 reached Gold, N unaccounted for` -- a confident
+    FALSE failure. Refusing the selection is the only honest answer."""
+    monkeypatch.setattr(seed_engine, "_aws", _fake_aws_factory())
+    result = seed_engine.prove_pipeline(str(tmp_path), fixture_file, execute=True,
+                                        hops=("ingest", "quarantine"))
+
+    assert result["status"] == "REFUSED"
+    assert "query" in result["error"]
+
+
+def test_a_non_blocking_hop_failing_does_not_stop_the_rest(
+        tmp_path, fixture_file, offline, monkeypatch):
+    """latency_sla is advisory: a slow pipeline is not a broken one. A blocking hop failing
+    still short-circuits, because querying Gold after a failed transform returns stale data
+    that reads as success."""
+    assert seed_engine.HOPS["ingest"].blocking is True
+    assert seed_engine.HOPS["transform"].blocking is True
+    assert seed_engine.HOPS["latency_sla"].blocking is False
+
+
+def test_default_still_runs_the_full_five_hop_proof(
+        tmp_path, fixture_file, offline, monkeypatch):
+    """Backward compatibility: no --hops means exactly what it meant before."""
+    monkeypatch.setattr(seed_engine, "_aws", _fake_aws_factory())
+    result = seed_engine.prove_pipeline(str(tmp_path), fixture_file, execute=True)
+
+    assert [h["name"] for h in result["hops"]] == list(seed_engine.HOP_NAMES)
+    assert result["ok"] is True
+
+
+def test_seed_three_hop_contract_is_untouched():
+    """seed.py's own docstring: TWO ENTRY POINTS, ONE SET OF HOPS. `seed()` must not grow
+    a hops argument or change shape."""
+    import inspect
+    assert "hops" not in inspect.signature(seed_engine.seed).parameters
+
+
+def test_a_partial_selection_only_needs_the_outputs_those_hops_use(
+        tmp_path, fixture_file, monkeypatch):
+    """The point of --hops is proving what you CAN on the stack you have. A three-hop stack
+    has no dq_job_name, and demanding one before running `ingest,transform` would refuse a
+    selection that needs nothing from the data-quality module."""
+    three_hop = {k: v for k, v in FIVE_HOP_OUTPUTS.items()
+                 if k not in ("dq_job_name", "dq_results_bucket", "quarantine_bucket")}
+    monkeypatch.setattr(seed_engine, "read_outputs", lambda _dir: three_hop)
+    monkeypatch.setattr(seed_engine.approval, "request_approval", lambda *a, **k: True)
+    monkeypatch.setattr(seed_engine.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(seed_engine, "_aws", _fake_aws_factory())
+
+    result = seed_engine.prove_pipeline(str(tmp_path), fixture_file, execute=True,
+                                        hops=("ingest", "transform"))
+
+    assert result["status"] == "PASS", result["error"]
+    assert [h["name"] for h in result["hops"]] == ["bronze_ingestion", "spark_glue_etl"]
+
+
+def test_a_three_hop_stack_still_refuses_the_full_five_hop_default(
+        tmp_path, fixture_file, monkeypatch):
+    """The original guard is unchanged: asking for the full proof on a stack that cannot
+    support it is still refused by name, never silently reduced."""
+    three_hop = {k: v for k, v in FIVE_HOP_OUTPUTS.items()
+                 if k not in ("dq_job_name", "dq_results_bucket", "quarantine_bucket")}
+    monkeypatch.setattr(seed_engine, "read_outputs", lambda _dir: three_hop)
+
+    result = seed_engine.prove_pipeline(str(tmp_path), fixture_file, execute=True)
+
+    assert result["status"] == "REFUSED"
+    assert "dq_job_name" in result["error"]
+
+
+def test_the_hops_flag_reaches_the_harness(tmp_path, monkeypatch):
+    """A flag the CLI accepts but drops is a flag that does not exist."""
+    import minusctl
+    _patch_runs(tmp_path, monkeypatch)
+    run = _synthesized_run(blueprint="demo", request="hops flag")
+    seen = {}
+
+    def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        return {"ok": True, "status": "PASS", "hops": [], "coverage": [],
+                "executed": True, "plan": {}, "total_latency_seconds": 0.0,
+                "report_path": None, "error": None}
+
+    monkeypatch.setattr(seed_engine, "prove_pipeline", _spy)
+    monkeypatch.setattr(seed_engine, "format_proof", lambda _r: "")
+    _capture_cli(minusctl, ["prove", "--run", run["run_id"], "--execute",
+                            "--hops", "ingest,transform"])
+
+    assert seen["hops"] == ["ingest", "transform"]
+
+
+def test_no_hops_flag_passes_none_so_the_default_is_the_harness_default(tmp_path, monkeypatch):
+    import minusctl
+    _patch_runs(tmp_path, monkeypatch)
+    run = _synthesized_run(blueprint="demo", request="no hops flag")
+    seen = {}
+
+    def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        return {"ok": True, "status": "PASS", "hops": [], "coverage": [],
+                "executed": True, "plan": {}, "total_latency_seconds": 0.0,
+                "report_path": None, "error": None}
+
+    monkeypatch.setattr(seed_engine, "prove_pipeline", _spy)
+    monkeypatch.setattr(seed_engine, "format_proof", lambda _r: "")
+    _capture_cli(minusctl, ["prove", "--run", run["run_id"], "--execute"])
+
+    assert seen["hops"] is None

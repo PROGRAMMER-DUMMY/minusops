@@ -18,7 +18,7 @@ This document provides an exhaustive, architectural, and operational reference f
 - [`core/reporting/reporter.py`](./reporter.py) — Core reporting engine generating versioned, plan-hash-keyed report bundles containing `manifest.json`, `plan.json`, `architecture.svg`, `dataflow.svg`, `plan.pdf`, `cost.pdf`, and `inspect.pdf`.
 - [`core/reporting/runs.py`](./runs.py) — Run workspace manager managing isolated run directories under `runs/<run-id>/`, plus the central registry (`runs/index.json`, `runs/INDEX.md`).
 - [`core/reporting/export.py`](./export.py) — Packages a run into a domain repository: copies the four deployable directories and, on request, a per-pipeline GitHub Actions workflow.
-- [`core/reporting/incident_diagnostics.py`](./incident_diagnostics.py) — Turns a raw failure into the four-part resolution report: evidence, root cause, evaluated alternatives, next command.
+- [`core/reporting/incident_diagnostics.py`](./incident_diagnostics.py) — Turns a raw failure into the four-part resolution report: evidence, root cause, evaluated alternatives, next command, and an impact-driven severity with the routing it implies (PRD v11 FR-05).
 - [`core/reporting/serving.py`](./serving.py) — Concrete serving endpoints for the four consumption archetypes, emitted only for infrastructure the stack actually provisioned.
 - [`core/reporting/toolpath.py`](./toolpath.py) — Cross-platform discovery utility for external CLIs (`terraform`, `aws`, headless browsers) without hardcoding user home paths.
 - [`core/reporting/cli_diagnostics.py`](./cli_diagnostics.py) — Agent-facing failure formatting: fuzzy run-id resolution, lifecycle stage interception, and the three-part `WHAT FAILED / WHY IT FAILED / ACTION REQUIRED` error (MINUS-157..160).
@@ -264,6 +264,24 @@ This document provides an exhaustive, architectural, and operational reference f
   behind `minusctl seed`; [`prove_pipeline()`](./seed.py) (PRD-ARCH-2026-007, FR-01) runs all five
   behind `minusctl prove --execute`. Both call the same `_upload` / `_run_job` / `_query`
   primitives, so each hop has one implementation.
+- **The hop registry (PRD v11 FR-03):** [`HOPS`](./seed.py) is a dict of `_HopSpec` records --
+  a lookup table, not an abstract base class with eight subclasses. The hops were already
+  functions; composability needs a registry, and `core/` stays standard-library-only.
+  `minusctl prove --hops ingest,transform` runs a subset.
+  - **`blocking`** answers the failure-strategy question. A blocking hop failing stops the
+    rest, because querying Gold after a failed transform returns stale data that reads as
+    success. `latency_sla` is non-blocking: a pipeline over budget is slow, not wrong.
+  - **`requires`** exists because `quarantine` genuinely consumes `query`'s output -- it
+    reconciles injected == gold + quarantined. Selected without `query` the Gold count would
+    be absent and the hop would report "1000 injected, 0 reached Gold, 1000 unaccounted for",
+    a confident FALSE failure. That selection is refused instead.
+  - **Required terraform outputs follow the SELECTION**, not the catalog
+    ([`_HOP_OUTPUTS`](./seed.py)): demanding `dq_job_name` before running `ingest,transform`
+    would refuse a proof that touches nothing in the data-quality module. The default is
+    still all five, so a three-hop stack is refused for the full proof exactly as before.
+  - **[`coverage`](./seed.py) is signed alongside the hops.** Every catalog entry appears with
+    `PASS`, `FAIL` or `NOT_RUN`. Without it a two-hop run reads like a five-hop one, and the
+    signature would attest to coverage the proof never had.
 - **The five hops, in the order they break:**
   1. `bronze_ingestion` -- Bronze is empty, so nothing downstream can be true.
   2. `spark_glue_etl` -- the job exits on missing arguments, or 403s when it writes.
@@ -318,6 +336,23 @@ This document provides an exhaustive, architectural, and operational reference f
   assertion failure are three opaque stack traces that all end with an engineer guessing.
   This turns each into evidence, root cause, alternatives with trade-offs, and the exact next
   command.
+- **Severity is computed, never looked up (PRD v11 FR-05).** The rejected design mapped the
+  alert's SOURCE to a fixed level and channel -- outage P1, data quality P2, FinOps P3. Two of
+  this module's own rules break under it: `DQ-QUARANTINE-01` is silent, unrecoverable data loss
+  that the mapping caps at a Teams message, and `TF-IAM-CONSISTENCY-01` is a self-healing retry
+  that it pages someone for at 3am. Over-paging and under-reacting from one table.
+  [`assess_severity()`](./incident_diagnostics.py) instead applies, in order: a regulated-data
+  override to P1, the run's declared asset tier as the baseline, one level worse for a silent
+  failure (wrong-but-plausible output has already been acted on), and one level better for a
+  transient one. [`ROUTES`](./incident_diagnostics.py) is keyed on the computed severity, so a
+  P1 cost anomaly pages exactly like a P1 outage.
+  - **An undeclared tier yields `UNCLASSIFIED`, not a default.** Same doctrine as the
+    unmatched-error path: business impact cannot be established, and a severity nobody can
+    justify from declared facts is worse than none because it looks authoritative enough to act
+    on. The tier comes from the run record's `tier` field; nothing infers one from a run's shape.
+  - **Severity is assessed even when no rule matched.** "We do not know what broke" and "we do
+    not know how much it matters" are separate questions, and a PII exposure is a P1 whether or
+    not a signature recognised the stack trace.
 - **Declarative rule table** ([`FAILURE_RULES`](./incident_diagnostics.py)), per Matt's ruling
   of 2026-08-22: a list of frozen `FailureRule` dataclasses rather than an if/elif chain, so
   adding a signature is a data edit and each rule is independently testable. Order matters --

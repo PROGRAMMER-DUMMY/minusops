@@ -968,6 +968,17 @@ def main(argv=None):
     diagnose_cmd.add_argument("--with-telemetry", action="store_true",
                               help="ask CloudTrail/Glue about the failing resource "
                                    "(read-only, fail-open)")
+    diagnose_cmd.add_argument(
+        "--tier", choices=("0", "1", "2", "3"), default=None,
+        help="asset criticality tier of the affected data (0=mission critical). "
+             "Defaults to the run's declared tier; without either, severity is "
+             "reported UNCLASSIFIED rather than guessed")
+    diagnose_cmd.add_argument(
+        "--pii", action="store_true",
+        help="regulated data or its masking controls are involved (forces P1)")
+    diagnose_cmd.add_argument(
+        "--stakeholder-detected", action="store_true",
+        help="a stakeholder noticed before the monitors did (raises severity)")
     diagnose_cmd.add_argument("--json", action="store_true")
 
     policy = sub.add_parser("policy", help="inspect or promote policy rules")
@@ -1060,6 +1071,10 @@ def main(argv=None):
                            help="run the live 5-hop data proof against the applied stack "
                                 "(mutating; routes through approval.py)")
     prove_cmd.add_argument("--fixture", default=None, help="synthetic records to inject")
+    prove_cmd.add_argument(
+        "--hops",
+        help="comma-separated subset of the hop catalog (default: the full five-hop "
+             "proof). Available: " + ", ".join(sorted(seed_engine.HOPS)))
     prove_cmd.add_argument("--table", default="customer_gold")
     prove_cmd.add_argument("--records", type=int, default=1000,
                            help="records the fixture injects; hop 4 proves none were lost")
@@ -1236,15 +1251,22 @@ def main(argv=None):
 
     if args.cmd == "diagnose":
         run_root = None
+        tier = args.tier
         if args.run:
-            run_root = _run_by_id_or_latest(args.run, command="diagnose")["root"]
+            record = _run_by_id_or_latest(args.run, command="diagnose")
+            run_root = record["root"]
+            # FR-05: the run's DECLARED tier drives severity. --tier overrides it for a
+            # one-off triage, but nothing infers a tier from the run's shape -- an
+            # undeclared tier yields UNCLASSIFIED rather than a guess.
+            tier = tier if tier is not None else record.get("tier")
         telemetry = None
         if args.with_telemetry:
             import cloud_drift
             telemetry = cloud_drift.aws_telemetry
         result = incident_diagnostics.diagnose(
             args.error, telemetry=telemetry, address=args.address,
-            resource_type=args.resource_type, run_root=run_root)
+            resource_type=args.resource_type, run_root=run_root, tier=tier,
+            has_pii=args.pii, stakeholder_detected=args.stakeholder_detected)
         _json_or_text(result, args.json, incident_diagnostics.format_report(result))
         # Non-zero when nothing matched, so a CI step can tell "diagnosed" from "still
         # unknown" without parsing the report.
@@ -1400,7 +1422,8 @@ def main(argv=None):
                 run["terraform_dir"], fixture, table=args.table, execute=True,
                 approval_mode=args.approval_mode, records=args.records,
                 malformed=args.malformed, run_name=run["run_id"],
-                plan_hash=args.plan_hash, reports_dir=run["reports_dir"])
+                plan_hash=args.plan_hash, reports_dir=run["reports_dir"],
+                hops=[h for h in args.hops.split(",")] if args.hops else None)
         except seed_engine.SeedError as exc:
             raise SystemExit(str(exc))
         _json_or_text(result, args.json, seed_engine.format_proof(result))

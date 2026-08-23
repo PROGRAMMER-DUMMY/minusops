@@ -378,3 +378,97 @@ def test_next_is_unchanged_for_a_run_with_no_failure(tmp_path, monkeypatch):
         minusctl.main(["next", "--run", run["run_id"]])
 
     assert "minusctl diagnose" not in out.getvalue()
+
+
+# --- PRD v11 Step 4 (FR-05): impact-driven severity ------------------------------------
+#
+# The rejected design bound severity to the alert SOURCE -- outage=P1, data quality=P2,
+# FinOps=P3 -- each pinned to a fixed channel. Two things break under it, both visible in
+# the rules this module already ships:
+#
+#   DQ-QUARANTINE-01 is "Quarantine Threshold / Data Loss". Silent, unrecoverable, and on a
+#   Tier 0 billing table it is a P1 -- the source-based mapping caps it at a Teams message.
+#
+#   TF-IAM-CONSISTENCY-01 is a transient eventual-consistency retry. The source-based
+#   mapping pages someone at 3am for something that resolves itself.
+#
+# So severity is computed per incident from asset tier, whether the failure is silent, and
+# whether regulated data is exposed -- and routing follows the computed severity, never the
+# tool that raised it.
+
+import incident_diagnostics as diag
+
+
+def test_severity_is_not_a_function_of_category_alone():
+    """The same signal on a Tier 0 asset and a Tier 3 sandbox must not land on one level."""
+    tier0 = diag.assess_severity(diag.find_rule("Glue job OutOfMemoryError"), tier="0")
+    tier3 = diag.assess_severity(diag.find_rule("Glue job OutOfMemoryError"), tier="3")
+
+    assert tier0["severity"] != tier3["severity"]
+    assert diag.SEVERITIES.index(tier0["severity"]) < diag.SEVERITIES.index(tier3["severity"])
+
+
+def test_pii_exposure_is_p1_whatever_the_tier_says():
+    """The override the framework puts above every other factor: a small regulated-data
+    exposure outranks a large low-risk outage."""
+    assessed = diag.assess_severity(None, tier="3", has_pii=True)
+
+    assert assessed["severity"] == "P1"
+    assert "pii" in assessed["reason"].lower() or "regulated" in assessed["reason"].lower()
+
+
+def test_a_silent_failure_is_bumped_above_a_visible_one():
+    """Wrong-but-plausible data is more dangerous than an obviously broken job, because it
+    has already been acted on by the time anyone looks."""
+    rule = diag.find_rule("Great Expectations expectation suite failed")
+    silent = diag.assess_severity(rule, tier="1", silent_override=True)
+    visible = diag.assess_severity(rule, tier="1", silent_override=False)
+
+    assert diag.SEVERITIES.index(silent["severity"]) < diag.SEVERITIES.index(visible["severity"])
+
+
+def test_undeclared_tier_refuses_to_guess():
+    """Same doctrine as the unmatched-error path: a severity nobody can justify from
+    declared facts is worse than none, because it looks authoritative."""
+    assessed = diag.assess_severity(diag.find_rule("Glue job OutOfMemoryError"), tier=None)
+
+    assert assessed["severity"] == diag.UNCLASSIFIED
+    assert assessed["route"] == diag.ROUTES[diag.UNCLASSIFIED]
+    assert "tier" in assessed["reason"].lower()
+
+
+def test_routing_is_keyed_on_severity_not_on_the_tool_that_fired():
+    """A P1 cost anomaly pages exactly like a P1 outage. Capping FinOps at an email digest
+    regardless of severity is the specific failure this replaces."""
+    assert set(diag.ROUTES) == set(diag.SEVERITIES) | {diag.UNCLASSIFIED}
+    assert "pagerduty" in diag.ROUTES["P1"].lower()
+    assert "log" in diag.ROUTES["P4"].lower()
+
+    quota = diag.assess_severity(diag.find_rule("has exceeded the service quota"), tier="0")
+    oom = diag.assess_severity(diag.find_rule("Glue job OutOfMemoryError"), tier="0")
+    assert quota["route"] == diag.ROUTES[quota["severity"]]
+    assert oom["route"] == diag.ROUTES[oom["severity"]]
+
+
+def test_a_transient_retry_does_not_page_a_human_at_three_am():
+    """TF-IAM-CONSISTENCY-01 resolves itself. Paging for it is how on-call learns to ignore
+    the pager, which is the expensive failure."""
+    rule = diag.find_rule(
+        "InvalidInputException: Glue could not assume role arn:aws:iam::1234:role/etl")
+
+    assert rule is not None and rule.rule_id == "TF-IAM-CONSISTENCY-01"
+    assessed = diag.assess_severity(rule, tier="2")
+    assert assessed["severity"] in ("P3", "P4")
+
+
+def test_every_rule_declares_whether_it_is_silent():
+    """`silent` drives a severity bump, so an un-set default silently suppresses it."""
+    for rule in diag.FAILURE_RULES:
+        assert isinstance(rule.silent, bool), rule.rule_id
+
+
+def test_diagnose_carries_the_assessment_when_a_tier_is_known():
+    result = diag.diagnose("Glue job failed with OutOfMemoryError", tier="0")
+
+    assert result["severity"] == "P1"
+    assert result["route"] == diag.ROUTES["P1"]
