@@ -47,7 +47,7 @@ The UI is organized into a fixed masthead and five core tabs:
   - Monthly Spend Panel (`monthly_spend_panel`): Plotly bar chart (`trend_line`) of trailing monthly AWS spend from Cost Explorer.
   - Spend by Service Panel (`spend_service_panel`): Horizontal bar chart (`spend_bar`) highlighting top service spenders.
   - Reference Conformance Panel (`conformance_panel`): Displays 6-layer analytics model coverage chips and Well-Architected gap findings.
-  - Plan Composition Donut Chart (`plan_action_donut`): Interactive pie/donut chart of plan actions.
+  - Plan Composition Bar (`plan_action_bar`): one horizontal stacked bar of plan actions. Replaced a donut, which rendered as a featureless ring whenever a plan was all creates -- the common case for a first apply.
   - Spend Anomalies Ledger (`anomaly_panel`, `ledger`): Cost Anomaly Detection list showing impact amount, severity, and tagged owner.
 - **Control Tab**:
   - Artifact Editor Panel (`control_editor_panel`): Form interface to view gate statuses (`requirements`, `decision`, `terraform`, `report`) and edit `architecture_decision.json` fields (architecture name, summary, selected modules, official doc sources, assumptions, risks, **validation**, **rollback**, **failure modes**, alternatives). `validation` and `rollback` are required by the decision gate, so the editor cannot produce a complete record without them; a failure-mode id outside `FM-01..FM-05` is rejected with a `ValueError` surfaced in the action status.
@@ -64,6 +64,26 @@ The UI is organized into a fixed masthead and five core tabs:
   - Readiness Cards (`run_readiness_card`): Tabbed selector displaying run blockers, warnings, score breakdowns, and package artifact links.
 
 #### 6. Visual Design System
-- **Palette**: Warm dark mode theme defined in `C` (`bg: #14110f`, `bg_elev: #1c1714`, `panel: rgba(40, 33, 30, 0.62)`, `terracotta: #d95d39`, `sand: #d4a373`, `sage: #8da189`, `text: #fbf7f4`, `muted: #b09c93`).
-- **Typography**: Google Fonts loaded via CDN: `Outfit` (Headings/Display), `Inter` (Body text), `JetBrains Mono` (Code/Metrics).
+- **System**: Monad, per [`DESIGN.md`](../DESIGN.md) -- an editorial tech journal on warm
+  parchment. Tokens live in `C` (`bg: #f6f3f1` Parchment, `bg_elev: #cfdaf5` Periwinkle Mist,
+  `line: #cecac8` Ash, `terracotta: #2b59d1` Lake Blue, `text: #242424` Off-Black,
+  `muted: #4e4d4d` Graphite, `faint: #797776` Smoke). Role keys were kept through the
+  restyle so every call site stayed valid; only the values moved.
+- **Typography**: `Instrument Serif` for anything that announces (headings, KPI numerals,
+  card titles) at weight 400 only -- the face ships one weight, which enforces DESIGN.md's
+  hardest rule mechanically. `JetBrains Mono` for everything that instructs: body, nav,
+  buttons, tags, tables. The serif/mono pairing IS the identity; a sans body would lose it.
+- **Two documented departures from the brief**, both in the `C` docstring:
+  1. *Density.* DESIGN.md specifies a marketing site (80px hero, 40px card padding, 64px
+     gaps). This is an operator console, so the token language is kept exactly and the
+     scale steps down one rung -- 24px padding, 32px gaps, type topping out at 40px.
+  2. *Chart colour.* The brief has no data-viz guidance and calls its pastels
+     decorative-only. Measured on parchment they are unusable as data (Coral/Crimson sit at
+     deltaE 8.7 in NORMAL vision; every pastel is under 3:1 contrast), so magnitude charts
+     carry no chroma -- ink for the emphasised value, ash for the rest. The one data colour
+     is `ACTION_RAMP`, and it is ordinal (create < update < replace < delete by
+     destructiveness) rather than categorical, so it is one hue stepped by lightness.
+- **No shadows anywhere.** Elevation is surface colour plus a 1px Ash hairline. Exactly one
+  Lake Blue fill per screen (`.control-button.primary`); state and severity ride 3px left
+  rules and hairline status pills instead.
 - **Security & Port Binding**: Pure Python WSGI application via Werkzeug. Checks socket availability (`_port_in_use`) and enforces authentication (`_enforce_dashboard_auth`, `_persist_dashboard_token`) when bound to external network interfaces.
