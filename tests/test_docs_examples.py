@@ -61,6 +61,33 @@ def _linkable(text):
     return re.sub(r"`[^`\n]*`", lambda m: " " * len(m.group(0)), text)
 
 
+def _is_in_repo(abs_path):
+    """True if the path is tracked by git (a file, or a directory holding tracked files).
+
+    Directories are matched by prefix because a link may point at a folder, and git tracks
+    files rather than folders.
+    """
+    try:
+        rel = os.path.relpath(abs_path, ROOT).replace(os.sep, "/")
+    except ValueError:
+        return False
+    if rel.startswith(".."):
+        return False
+    tracked = _tracked_set()
+    return rel in tracked or any(t.startswith(rel.rstrip("/") + "/") for t in tracked)
+
+
+_TRACKED_CACHE = None
+
+
+def _tracked_set():
+    global _TRACKED_CACHE
+    if _TRACKED_CACHE is None:
+        out = subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True)
+        _TRACKED_CACHE = {line for line in out.splitlines() if line}
+    return _TRACKED_CACHE
+
+
 def _tracked(*suffixes):
     """Git-tracked files with these suffixes, excluding the user's own .claude/ tooling."""
     out = subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True).split()
@@ -260,7 +287,12 @@ def test_local_markdown_links_resolve_on_disk(scope):
                     continue
                 root = ROOT if frag.startswith("/") else base
                 resolved = os.path.normpath(os.path.join(root, frag.lstrip("/")))
-                if not os.path.exists(resolved):
+                # Resolved against what git TRACKS, not against this disk. Checking
+                # os.path.exists let a link to docs/REPO_MAP.md pass here and fail in CI:
+                # the file sits in .gitignore, so it is present for whoever generated it
+                # and absent in every clone. A docs linter that only sees the author's
+                # filesystem cannot catch the one bug it exists to catch.
+                if not _is_in_repo(resolved):
                     broken.append(f"{os.path.relpath(path, ROOT)}:{lineno} -> {target}")
 
     assert not broken, f"{len(broken)} broken links in {scope}: " + "; ".join(broken)

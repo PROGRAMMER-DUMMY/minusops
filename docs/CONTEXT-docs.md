@@ -45,7 +45,10 @@ This document provides exhaustive context for all documentation, architecture sp
 - [`docs/PROGRESS.md`](./PROGRESS.md): Live progress tracker recording completed features and test suite status.
 - [`docs/project_plan.md`](./project_plan.md): Comprehensive project implementation plan and component roadmap.
 - [`docs/REMAINING_WORK.md`](./REMAINING_WORK.md): Remaining task backlog and future feature roadmap.
-- [`docs/REPO_MAP.md`](./REPO_MAP.md): Detailed repository layout map explaining module responsibilities.
+- `docs/REPO_MAP.md`: Detailed repository layout map explaining module responsibilities. Not
+  linked, and not in the repository: it is a generated point-in-time snapshot that
+  `.gitignore` deliberately keeps local because it goes stale in source control. Regenerate
+  it on demand rather than following a link that resolves only on the machine that made it.
 - [`docs/walkthrough.md`](./walkthrough.md): User walkthrough guide covering CLI workflows and Plotly Dash control plane UI.
 
 ---
