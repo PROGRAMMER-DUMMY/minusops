@@ -79,8 +79,10 @@ def _run_record(run_id=None):
     """
     if run_id:
         return runs_engine.get_run(run_id)
-    listing = runs_engine.list_runs()
-    return listing[-1] if listing else None
+    # `list_runs()` sorts newest-first, so [-1] was the OLDEST run in the workspace -- the
+    # console opened on the first run ever made and every view honestly reported that it
+    # held nothing.
+    return runs_engine.latest_run()
 
 
 def _load_json(path):
@@ -185,7 +187,7 @@ def view_topology(state):
     return html.Div([
         html.Div(className="view-actions", children=[
             html.A("Open in diagrams.net", href=url, target="_blank",
-                   className="btn primary"),
+                   className="btn dark"),
             html.Span(f"{len(plan.get('resource_changes', []))} planned resources",
                       className="muted"),
         ]),
@@ -346,9 +348,11 @@ def view_vault(state):
                       className="muted"),
         ]),
         html.Div(id="vault-status", className="muted"),
+        _document_table(documents, (state.get("run") or {}).get("run_id", "")),
+        # The preview sits BELOW the list. Above it, the first thing on the view was an
+        # empty box asking to be filled by a control further down the page.
         html.Div(id="vault-preview", className="inspector",
                  children=html.P("Select a document to preview it.", className="muted")),
-        _document_table(documents, (state.get("run") or {}).get("run_id", "")),
     ])
 
 
@@ -733,131 +737,260 @@ app.index_string = """<!DOCTYPE html>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    :root{--bg:#f6f3f1;--elev:#cfdaf5;--line:#cecac8;--accent:#2b59d1;--ink:#242424;
-      --graphite:#4e4d4d;--smoke:#797776;--good:#2f6b4f;--warn:#8a6516;--crit:#8f2d18;
-      --serif:'Instrument Serif',Georgia,serif;--mono:'JetBrains Mono',ui-monospace,monospace}
+    /* ----------------------------------------------------------------------------------
+       Monad design tokens, transcribed from DESIGN.md. Every rule below reads from these
+       and nothing else, so the design file stays the source of truth instead of something
+       paraphrased once into hardcoded values.
+       ---------------------------------------------------------------------------------- */
+    :root{
+      --color-parchment:#f6f3f1;--color-lake-blue:#2b59d1;--color-periwinkle-mist:#cfdaf5;
+      --color-sky-blue:#a0b5eb;--color-mint:#a7fccd;--color-coral:#ff9473;
+      --color-gold:#ecda98;--color-crimson:#f37a0a;--color-off-black:#242424;
+      --color-ink:#000000;--color-graphite:#4e4d4d;--color-smoke:#797776;--color-ash:#cecac8;
+
+      /* Licensed faces first: an operator who has them gets them. The substitutes are the
+         ones DESIGN.md names, with Instrument Serif standing in for Untitled Serif -- it
+         carries the same stroke contrast at weight 400, which Georgia does not. */
+      --font-mono:'ABC Diatype Mono','JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,
+        Consolas,monospace;
+      --font-serif:'Untitled Serif','Instrument Serif',Georgia,Cambria,'Times New Roman',serif;
+
+      --text-caption:12px;--tracking-caption:-0.4px;
+      --text-body-sm:14px;--tracking-body-sm:-0.28px;
+      --text-body:16px;--tracking-body:-0.4px;
+      --text-label:18px;--tracking-label:-0.4px;
+      --text-body-lg:20px;--tracking-body-lg:-0.4px;
+      --text-subheading:24px;--tracking-subheading:-0.48px;
+      --text-heading-sm:32px;--tracking-heading-sm:-0.64px;
+      --text-heading:40px;--tracking-heading:-0.8px;
+      --leading-tight:1.2;--leading-body:1.35;
+
+      --spacing-8:8px;--spacing-16:16px;--spacing-24:24px;--spacing-32:32px;
+      --spacing-40:40px;--spacing-64:64px;--spacing-80:80px;
+
+      --radius-2xl:16px;--radius-cards:40px;--radius-buttons:100px;--radius-pills:9999px;
+
+      --page-max-width:1432px;--section-gap:64px;--card-padding:40px;--element-gap:16px;
+
+      --surface-parchment:#f6f3f1;--surface-periwinkle-mist:#cfdaf5;
+      --surface-off-black:#242424;--surface-ink:#000000;
+      /* --shadow-md exists in the token file and is deliberately unused: the Don't list
+         forbids drop shadows on cards. Elevation here is surface plus hairline only. */
+      --shadow-md:rgba(0,0,0,0.1) 0px 0px 10px 0px;
+
+      /* Verdict ink. NOT from the token file, and deliberately not from the pastels --
+         Coral, Mint and Gold are declared decorative-only, so borrowing them for pass/fail
+         would put brand decoration on a governance judgement. These are dark, desaturated
+         neighbours chosen to clear contrast on parchment without reading as accents. */
+      --good:#2f6b4f;--warn:#8a6516;--crit:#8f2d18;
+    }
     *{box-sizing:border-box;margin:0;padding:0}
-    body{background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:14px;
-      line-height:1.4;letter-spacing:-0.28px;-webkit-font-smoothing:antialiased}
-    :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-    .page{max-width:1432px;margin:0 auto;padding:24px 32px 64px}
+    body{background:var(--surface-parchment);color:var(--color-off-black);
+      font-family:var(--font-mono);font-size:var(--text-body);line-height:var(--leading-body);
+      letter-spacing:var(--tracking-body);-webkit-font-smoothing:antialiased}
+    h1,h2,h3,h4{font-family:var(--font-serif);font-weight:400;line-height:var(--leading-tight)}
+    :focus-visible{outline:2px solid var(--color-lake-blue);outline-offset:3px}
+
+    .page{max-width:var(--page-max-width);margin:0 auto;padding:var(--spacing-32)
+      var(--spacing-40) var(--spacing-80)}
+
+    /* Masthead ------------------------------------------------------------------------ */
     .masthead{display:flex;align-items:center;justify-content:space-between;
-      padding-bottom:20px;border-bottom:1px solid var(--line)}
-    .brand{display:flex;align-items:center;gap:14px}
-    .dot{width:12px;height:12px;border-radius:9999px;background:var(--accent)}
-    .brand h1{font-family:var(--serif);font-weight:400;font-size:28px;letter-spacing:-0.56px}
-    .brand small{color:var(--smoke);font-size:12px;letter-spacing:0.08em}
-    .run-header{padding:24px 0 16px}
-    .run-id{font-family:var(--serif);font-size:32px;letter-spacing:-0.64px}
-    .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
-    .chip{display:inline-flex;flex-direction:column;gap:2px;border:1px solid var(--line);
-      border-radius:9999px;padding:8px 20px}
-    .chip small{font-size:11px;color:var(--smoke);text-transform:uppercase;letter-spacing:0.08em}
-    .chip strong{font-weight:500}
-    .drawer{border:1px solid var(--line);border-radius:24px;padding:16px 24px;margin-bottom:24px}
-    .drawer summary{cursor:pointer;font-size:12px;text-transform:uppercase;
-      letter-spacing:0.08em;color:var(--graphite)}
-    .drawer-body{padding-top:16px}
-    .drawer-lead{font-family:var(--serif);font-size:20px;margin-bottom:16px}
-    .drawer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
-    .drawer-grid h4{font-family:var(--serif);font-weight:400;font-size:18px;margin-bottom:8px}
-    .drawer-grid li{margin-left:18px;color:var(--graphite)}
-    .views .tab-container{display:flex;gap:4px;border-bottom:1px solid var(--line)!important}
-    .view-tab{font-family:var(--mono)!important;font-size:13px!important;
-      text-transform:uppercase!important;letter-spacing:0.05em!important;
-      color:var(--smoke)!important;background:transparent!important;border:0!important;
-      border-bottom:1px solid transparent!important;padding:12px 18px!important}
-    .view-tab.selected{color:var(--ink)!important;font-weight:500!important;
-      border-bottom:1px solid var(--ink)!important}
-    .view-body{padding-top:24px}
-    .view-actions{display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap}
-    .btn{font-family:var(--mono);font-size:12px;text-transform:uppercase;letter-spacing:0.06em;
-      border:1px solid var(--ink);border-radius:100px;padding:12px 24px;background:transparent;
-      color:var(--ink);cursor:pointer;text-decoration:none;display:inline-block}
-    .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-    .muted{color:var(--graphite)}
-    .panel{border:1px solid var(--line);border-radius:24px;padding:24px;margin-top:24px}
-    .panel h4{font-family:var(--serif);font-weight:400;font-size:20px;margin-bottom:12px}
-    .ledger,.code{border:1px solid var(--line);border-radius:16px;padding:16px;
-      background:var(--bg);font-size:12px;white-space:pre-wrap;overflow-x:auto;
-      color:var(--graphite)}
-    .table{width:100%;border-collapse:collapse;margin-top:16px;font-size:13px}
-    .table th{text-align:left;font-weight:400;font-size:11px;text-transform:uppercase;
-      letter-spacing:0.08em;color:var(--smoke);padding:8px 10px;border-bottom:1px solid var(--line)}
-    .table td{padding:10px;border-bottom:1px solid var(--line);color:var(--graphite)}
-    .table tr.absent td{color:var(--smoke)}
-    .lineage{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin-bottom:24px}
-    .hop{display:flex;flex-direction:column;gap:4px;border:1px solid var(--line);
-      border-radius:9999px;padding:12px 24px;min-width:170px}
-    .hop small{font-size:10px;letter-spacing:0.1em;color:var(--smoke)}
-    .hop strong{font-family:var(--serif);font-weight:400;font-size:18px}
-    .hop span{font-size:11px}
+      padding-bottom:var(--spacing-24);border-bottom:1px solid var(--color-ash)}
+    .brand{display:flex;align-items:center;gap:var(--element-gap)}
+    .dot{width:12px;height:12px;border-radius:var(--radius-pills);
+      background:var(--color-lake-blue)}
+    .brand h1{font-size:var(--text-subheading);letter-spacing:var(--tracking-subheading)}
+    .brand small,.masthead>span{font-size:var(--text-caption);
+      letter-spacing:var(--tracking-caption);text-transform:uppercase;color:var(--color-smoke)}
+
+    /* Run header ---------------------------------------------------------------------- */
+    .run-header{padding:var(--spacing-40) 0 var(--spacing-24)}
+    .run-id{font-family:var(--font-serif);font-weight:400;font-size:var(--text-heading);
+      line-height:var(--leading-tight);letter-spacing:var(--tracking-heading)}
+    .chips{display:flex;flex-wrap:wrap;gap:var(--spacing-8);margin-top:var(--spacing-24)}
+    .chip{display:inline-flex;flex-direction:column;gap:2px;border:1px solid var(--color-ash);
+      border-radius:var(--radius-pills);padding:12px 20px}
+    .chip small{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
+      text-transform:uppercase;color:var(--color-smoke)}
+    .chip strong{font-weight:500;font-size:var(--text-body-sm);
+      letter-spacing:var(--tracking-body-sm)}
+
+    /* Cards: 40px radius, 40px padding, 1px ash, no shadow ---------------------------- */
+    .drawer,.panel,.inspector,.stage,.empty,.review-modal{
+      border:1px solid var(--color-ash);border-radius:var(--radius-cards);
+      padding:var(--card-padding)}
+    .drawer{margin-bottom:var(--spacing-32)}
+    .drawer:not([open]){padding:var(--spacing-24) var(--card-padding)}
+    .panel,.inspector{margin-top:var(--spacing-32)}
+    .drawer summary{cursor:pointer;font-size:var(--text-caption);text-transform:uppercase;
+      letter-spacing:var(--tracking-caption);color:var(--color-graphite);list-style:none}
+    .drawer summary::-webkit-details-marker{display:none}
+    .drawer summary::before{content:"+ ";color:var(--color-smoke)}
+    .drawer[open] summary::before{content:"- "}
+    .drawer-body{padding-top:var(--spacing-24)}
+    .drawer-lead{font-family:var(--font-serif);font-size:var(--text-body-lg);
+      margin-bottom:var(--spacing-16);color:var(--color-graphite)}
+    .drawer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:var(--spacing-40)}
+    .drawer-grid h4{font-size:var(--text-subheading);
+      letter-spacing:var(--tracking-subheading);margin-bottom:var(--spacing-8)}
+    .drawer-grid li{margin-left:18px;color:var(--color-graphite);font-size:var(--text-body-sm);
+      letter-spacing:var(--tracking-body-sm)}
+    .panel h4,.inspector h4{font-size:var(--text-subheading);
+      letter-spacing:var(--tracking-subheading);margin-bottom:var(--spacing-16)}
+
+    /* Navigation: 18px uppercase mono ------------------------------------------------- */
+    .views .tab-container{display:flex;gap:var(--spacing-32);flex-wrap:wrap;
+      border-bottom:1px solid var(--color-ash)!important}
+    .view-tab{flex:0 0 auto!important;width:auto!important;
+      font-family:var(--font-mono)!important;font-size:var(--text-label)!important;
+      letter-spacing:var(--tracking-label)!important;text-transform:uppercase!important;
+      color:var(--color-smoke)!important;background:transparent!important;border:0!important;
+      border-bottom:1px solid transparent!important;
+      padding:var(--spacing-16) var(--spacing-24)!important}
+    .view-tab.selected{color:var(--color-off-black)!important;font-weight:500!important;
+      border-bottom:1px solid var(--color-off-black)!important}
+    .view-body{padding-top:var(--section-gap)}
+    .view-actions{display:flex;align-items:center;gap:var(--spacing-24);
+      margin-bottom:var(--spacing-40);flex-wrap:wrap}
+
+    /* Pill buttons: 100px radius, 16px 32px padding, 14px uppercase ------------------- */
+    .btn{font-family:var(--font-mono);font-size:var(--text-body-sm);
+      letter-spacing:var(--tracking-body-sm);text-transform:uppercase;
+      border:1px solid var(--color-off-black);border-radius:var(--radius-buttons);
+      padding:var(--element-gap) var(--spacing-32);background:transparent;
+      color:var(--color-off-black);cursor:pointer;text-decoration:none;display:inline-block;
+      line-height:var(--leading-tight);transition:background-color .15s ease,color .15s ease}
+    .btn:hover{background:var(--color-off-black);color:var(--surface-parchment)}
+    /* Lake Blue is the single primary action per screen. Off-Black carries every other
+       filled button -- scattering the accent is what drains it of meaning. */
+    .btn.primary{background:var(--color-lake-blue);border-color:var(--color-lake-blue);
+      color:#fff}
+    .btn.primary:hover{background:#2247a8;border-color:#2247a8;color:#fff}
+    .btn.dark{background:var(--surface-off-black);border-color:var(--surface-off-black);
+      color:var(--surface-parchment)}
+    .btn.dark:hover{background:var(--color-ink);border-color:var(--color-ink)}
+
+    .muted{color:var(--color-graphite);font-size:var(--text-body-sm);
+      letter-spacing:var(--tracking-body-sm)}
+    p.muted{margin:var(--element-gap) 0}
+
+    /* Data surfaces ------------------------------------------------------------------- */
+    .ledger,.code{border:1px solid var(--color-ash);border-radius:var(--radius-2xl);
+      padding:var(--spacing-24);background:var(--surface-parchment);
+      font-size:var(--text-caption);line-height:1.6;white-space:pre-wrap;overflow-x:auto;
+      color:var(--color-graphite)}
+    .table{width:100%;border-collapse:collapse;margin-top:var(--spacing-24);
+      font-size:var(--text-body-sm);letter-spacing:var(--tracking-body-sm)}
+    .table th{text-align:left;font-weight:400;font-size:var(--text-caption);
+      text-transform:uppercase;letter-spacing:var(--tracking-caption);color:var(--color-smoke);
+      padding:var(--spacing-8) 12px;border-bottom:1px solid var(--color-ash)}
+    .table td{padding:14px 12px;border-bottom:1px solid var(--color-ash);
+      color:var(--color-graphite)}
+    .table tr.absent td{color:var(--color-smoke)}
+    .table tr.reject td{color:var(--warn)}
+
+    /* Lineage: pipeline node tags joined by connectors -------------------------------- */
+    .canvas{width:100%;height:560px;border:1px solid var(--color-ash);
+      border-radius:var(--radius-cards);background:var(--surface-parchment);display:block;
+      margin-bottom:var(--spacing-40)}
+    .lineage{display:flex;flex-wrap:wrap;gap:var(--spacing-8);align-items:center;
+      margin-bottom:var(--spacing-40)}
+    .hop{display:flex;flex-direction:column;gap:2px;background:var(--surface-parchment);
+      border:1px solid var(--color-ash);border-radius:var(--radius-pills);
+      padding:12px 20px;min-width:180px;cursor:pointer;text-align:left;
+      font-family:var(--font-mono);transition:border-color .15s ease}
+    .hop:hover{border-color:var(--color-off-black)}
+    .hop small{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
+      text-transform:uppercase;color:var(--color-smoke)}
+    .hop strong{font-family:var(--font-serif);font-weight:400;
+      font-size:var(--text-body-lg);line-height:var(--leading-tight)}
+    .hop span{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
+      color:var(--color-graphite)}
     .hop-quality{border-color:var(--warn)}
     .hop-gold{border-color:var(--good)}
-    .timeline{display:flex;flex-direction:column;gap:12px;margin-top:24px}
-    .stage{border:1px solid var(--line);border-left:3px solid var(--line);
-      border-radius:24px;padding:20px 24px}
-    .stage.ran{border-left-color:var(--good)}
-    .stage.pending{border-left-color:var(--line)}
-    .stage-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
-    .stage-head strong{font-family:var(--serif);font-weight:400;font-size:20px}
-    .stage-status{font-size:11px;letter-spacing:0.08em;color:var(--smoke)}
-    .stage small{display:block;color:var(--smoke);font-size:11px;margin-top:4px}
-    .stage .audit{color:var(--graphite)}
-    /* Lineage flow, document links, embedded canvas */
-    .canvas{width:100%;height:520px;border:1px solid var(--line);border-radius:24px;
-      background:var(--bg);display:block;margin-bottom:24px}
-    .lineage{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:24px}
-    .hop{cursor:pointer;text-align:left;transition:border-color .15s ease}
-    .hop:hover{border-color:var(--ink)}
-    .hop-link{color:var(--smoke);font-size:13px;letter-spacing:0.04em;user-select:none}
+    .hop-link{color:var(--color-smoke);font-size:var(--text-body-sm);user-select:none}
     .hop-link.branch{color:var(--warn)}
-    .inspector{border:1px solid var(--line);border-radius:24px;padding:24px;margin-top:24px}
-    .inspector h4{font-family:var(--serif);font-weight:400;font-size:20px;margin-bottom:12px}
-    .table tr.reject td{color:var(--warn)}
-    /* A document name is a control, not a browser button -- default chrome looked like a
-       1998 form control against everything else here. */
-    .link-button{background:none;border:0;padding:0;font-family:var(--mono);font-size:13px;
-      color:var(--ink);cursor:pointer;text-decoration:underline;
-      text-underline-offset:3px;text-decoration-color:var(--line)}
-    .link-button:hover{text-decoration-color:var(--ink)}
-    .absent-list{margin-left:18px;color:var(--smoke);font-size:13px;columns:2;gap:24px}
-    .absent-list li{margin-bottom:4px}
-    .preview-head{display:flex;justify-content:space-between;align-items:center;gap:16px;
-      margin-bottom:16px}
-    .preview-frame{width:100%;height:420px;border:1px solid var(--line);border-radius:16px;
-      background:var(--bg)}
-    /* Reconciliation form and review modal (FR-05) */
-    .reconcile-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;
-      margin:16px 0}
-    .field{display:flex;flex-direction:column;gap:6px}
-    .field small{font-size:11px;letter-spacing:0.08em;text-transform:uppercase;
-      color:var(--smoke)}
-    .control-input{width:100%;border:1px solid var(--line);border-radius:16px;
-      background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:13px;
-      padding:10px 16px;outline:none}
-    .control-input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(43,89,209,.15)}
-    /* The modal is the gate. Periwinkle is the one elevated surface in the system, and this
-       is the one moment the console asks for a decision rather than reporting one. */
-    .review-modal{border:1px solid var(--line);border-radius:24px;padding:24px;
-      background:var(--elev);margin-top:20px}
-    .review-modal h4{font-family:var(--serif);font-weight:400;font-size:24px;
-      margin-bottom:12px}
-    .review-meta{display:flex;flex-wrap:wrap;gap:16px;font-size:11px;color:var(--graphite);
-      text-transform:uppercase;letter-spacing:0.06em;margin-bottom:16px}
-    .review-summary{font-family:var(--serif);font-size:20px;line-height:1.35;
-      margin-bottom:16px}
-    .review-warnings{margin:0 0 16px 18px;font-size:13px;color:var(--graphite)}
-    .review-warnings li{margin-bottom:6px}
-    .review-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:20px}
-    .status-good,.status-warn,.status-bad{border:1px solid var(--line);border-radius:16px;
-      padding:16px;margin-top:16px}
+
+    /* Timeline ------------------------------------------------------------------------ */
+    .timeline{display:flex;flex-direction:column;gap:var(--element-gap);
+      margin-top:var(--spacing-40)}
+    .stage{border-left:3px solid var(--color-ash);
+      padding:var(--spacing-32) var(--card-padding)}
+    .stage.ran{border-left-color:var(--good)}
+    .stage-head{display:flex;justify-content:space-between;align-items:baseline;
+      gap:var(--element-gap)}
+    .stage-head strong{font-family:var(--font-serif);font-weight:400;
+      font-size:var(--text-subheading);letter-spacing:var(--tracking-subheading)}
+    .stage-status{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
+      text-transform:uppercase;color:var(--color-smoke)}
+    .stage small{display:block;color:var(--color-smoke);font-size:var(--text-caption);
+      margin-top:var(--spacing-8)}
+    .stage .audit{color:var(--color-graphite)}
+
+    /* Vault --------------------------------------------------------------------------- */
+    .link-button{background:none;border:0;padding:0;font-family:var(--font-mono);
+      font-size:var(--text-body-sm);letter-spacing:var(--tracking-body-sm);
+      color:var(--color-off-black);cursor:pointer;text-decoration:underline;
+      text-underline-offset:3px;text-decoration-color:var(--color-ash)}
+    .link-button:hover{text-decoration-color:var(--color-off-black)}
+    .absent-list{margin-left:18px;color:var(--color-smoke);font-size:var(--text-body-sm);
+      columns:2;gap:var(--spacing-40)}
+    .absent-list li{margin-bottom:var(--spacing-8)}
+    .preview-head{display:flex;justify-content:space-between;align-items:center;
+      gap:var(--spacing-24);margin-bottom:var(--spacing-24)}
+    .preview-frame{width:100%;height:440px;border:1px solid var(--color-ash);
+      border-radius:var(--radius-2xl);background:var(--surface-parchment)}
+
+    /* Reconciliation ------------------------------------------------------------------ */
+    .reconcile-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:var(--spacing-24);margin:var(--spacing-24) 0 var(--spacing-32)}
+    .field{display:flex;flex-direction:column;gap:var(--spacing-8)}
+    .field small{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
+      text-transform:uppercase;color:var(--color-smoke)}
+    .control-input{width:100%;border:1px solid var(--color-ash);
+      border-radius:var(--radius-buttons);background:var(--surface-parchment);
+      color:var(--color-off-black);font-family:var(--font-mono);font-size:var(--text-body-sm);
+      letter-spacing:var(--tracking-body-sm);padding:14px 24px;outline:none}
+    .control-input:focus{border-color:var(--color-lake-blue)}
+    /* Periwinkle is the one elevated surface in the system, spent here because this is the
+       one moment the console asks for a decision instead of reporting one. */
+    .review-modal{background:var(--surface-periwinkle-mist);border-color:transparent;
+      margin-top:var(--spacing-24)}
+    .review-modal h4{font-size:var(--text-subheading);
+      letter-spacing:var(--tracking-subheading);margin-bottom:var(--spacing-16)}
+    .review-modal .ledger{background:transparent;border-color:rgba(36,36,36,.18)}
+    .review-meta{display:flex;flex-wrap:wrap;gap:var(--spacing-24);
+      font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
+      color:var(--color-graphite);text-transform:uppercase;margin-bottom:var(--spacing-24)}
+    .review-summary{font-family:var(--font-serif);font-size:var(--text-subheading);
+      line-height:var(--leading-tight);letter-spacing:var(--tracking-subheading);
+      margin-bottom:var(--spacing-24)}
+    .review-warnings{margin:0 0 var(--spacing-24) 18px;font-size:var(--text-body-sm);
+      letter-spacing:var(--tracking-body-sm);color:var(--color-graphite)}
+    .review-warnings li{margin-bottom:var(--spacing-8)}
+    .review-actions{display:flex;gap:var(--element-gap);flex-wrap:wrap;
+      margin-top:var(--spacing-32)}
+
+    /* Verdicts ------------------------------------------------------------------------ */
+    .status-good,.status-warn,.status-bad{border:1px solid var(--color-ash);
+      border-radius:var(--radius-2xl);padding:var(--spacing-24);margin-top:var(--spacing-24)}
     .status-good{border-left:3px solid var(--good)}
     .status-warn{border-left:3px solid var(--warn)}
     .status-bad{border-left:3px solid var(--crit)}
-    .empty{border:1px solid var(--line);border-radius:24px;padding:64px 24px;text-align:center}
-    .empty h3{font-family:var(--serif);font-weight:400;font-size:24px}
-    @media (max-width:900px){.drawer-grid{grid-template-columns:1fr}.page{padding:16px 20px 48px}}
+
+    .empty{padding:var(--spacing-80) var(--card-padding);text-align:center}
+    .empty h3{font-size:var(--text-heading-sm);letter-spacing:var(--tracking-heading-sm);
+      margin-bottom:var(--spacing-16)}
+
+    @media (max-width:900px){
+      .drawer-grid,.reconcile-form{grid-template-columns:1fr}
+      .page{padding:var(--spacing-24) var(--spacing-24) var(--spacing-64)}
+      .run-id{font-size:var(--text-heading-sm);letter-spacing:var(--tracking-heading-sm)}
+      .drawer,.panel,.inspector,.stage,.review-modal{padding:var(--spacing-24)}
+      .absent-list{columns:1}
+    }
     @media (prefers-reduced-motion:reduce){*{transition:none!important}}
   </style>
 </head>

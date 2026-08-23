@@ -454,3 +454,19 @@ def test_previewable_documents_render_in_a_viewer(tmp_path):
     rendered = json.dumps(console_app.view_vault(state), default=str)
 
     assert "vault-preview" in rendered, "FR-06.1 asks for an in-browser previewer"
+
+
+def test_the_console_opens_on_the_newest_run_not_the_oldest(monkeypatch):
+    """`list_runs()` returns newest-first, and the console indexed it with [-1].
+
+    That is the OLDEST run in the workspace. An operator who opens the console after a run
+    finishes is shown the first run they ever made -- which in a workspace of twenty-five
+    synthesized runs is an empty one, so every view reads "not planned" / "0 of 15
+    documents" and the console looks broken when the data is fine.
+    """
+    newest = {"run_id": "20260823-newest", "created_at": "2026-08-23T10:00:00"}
+    oldest = {"run_id": "20260101-oldest", "created_at": "2026-01-01T10:00:00"}
+    monkeypatch.setattr(console_app.runs_engine, "list_runs", lambda: [newest, oldest])
+    monkeypatch.setattr(console_app.runs_engine, "latest_run", lambda: newest)
+
+    assert console_app._run_record()["run_id"] == "20260823-newest"
