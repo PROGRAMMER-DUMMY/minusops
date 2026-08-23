@@ -203,3 +203,23 @@ def test_doctor_skill_manifest_exists_and_names_the_command():
     assert "minusctl.py doctor --json" in skill
     # The manifest must not promise a check the code does not make.
     assert "configs/teams.yaml" in skill and "no such file" in skill.lower()
+
+
+def test_the_opa_check_says_the_rego_tests_skip_without_it():
+    """The old remediation said the gate "degrades to warn-only". True, and not the fact
+    that costs time: `tests/test_rego_gate.py` carries a module-level skipif on the opa
+    binary, so without it the whole G6 suite silently skips. Two real catalog failures sat
+    in CI for four commits because every local run reported green while skipping them."""
+    checks = {c["name"]: c for c in doctor.diagnose()["checks"]}
+
+    assert "opa" in checks
+    remediation = checks["opa"]["fix"].lower()
+    assert "skip" in remediation, "the remediation must name the silent-skip consequence"
+    assert "rego" in remediation or "test_rego_gate" in remediation
+
+
+def test_the_opa_check_pins_the_version_ci_uses():
+    """A local opa that disagrees with CI's produces findings that do not reproduce."""
+    checks = {c["name"]: c for c in doctor.diagnose()["checks"]}
+
+    assert "1.18" in checks["opa"]["fix"]

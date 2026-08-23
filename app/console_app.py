@@ -157,6 +157,17 @@ def requirements_drawer(state):
 
 # --- View 1: topology -------------------------------------------------------------------
 
+def _viewer_url(edit_url):
+    """The read-only diagrams.net viewer for the same deflated payload as the edit link.
+
+    `viewer.diagrams.net` renders with pan, zoom and layer controls and never writes; the
+    edit link stays a separate, explicit action. Same `#R<payload>` on both sides.
+    """
+    payload = edit_url.split("#R", 1)[1] if "#R" in edit_url else ""
+    return ("https://viewer.diagrams.net/?lightbox=0&nav=1&layers=1&edit=_blank"
+            "#R" + payload)
+
+
 def view_topology(state):
     plan = state.get("plan") or {}
     if not plan:
@@ -178,7 +189,13 @@ def view_topology(state):
             html.Span(f"{len(plan.get('resource_changes', []))} planned resources",
                       className="muted"),
         ]),
+        # FR-02.1. The embed and the button are built from the SAME payload, deliberately:
+        # two encodings of one plan that drift apart mean the operator reviews the canvas
+        # and opens a link showing a different architecture.
+        html.Iframe(src=_viewer_url(url), className="canvas",
+                    title="Architecture topology"),
         _ledger_table(ledger),
+        _reconcile_panel(state),
         html.Details(className="drawer", children=[
             html.Summary("Draw.io XML (canvas source)"),
             html.Pre(xml[:4000], className="code"),
@@ -187,6 +204,32 @@ def view_topology(state):
 
 
 # --- View 2: lineage --------------------------------------------------------------------
+
+def inspect_lineage_node(node_id, graph):
+    """FR-03.3. The facts a reviewer asks for about one dataset hop.
+
+    Absent facts are named as absent rather than rendered blank: an empty retention row on
+    a governance surface reads as "no retention", which is a different claim from "this
+    stack did not declare one".
+    """
+    node = lineage_graph.find_node(graph or {}, node_id) if node_id else None
+    if not node:
+        return html.P("Select a hop above to inspect its schema, partitioning and retention.",
+                      className="muted")
+    rows = [
+        ("Layer", node.get("layer", "-")),
+        ("Table format", node.get("table_format") or "not applicable to this hop"),
+        ("Partitioning", node.get("partitioning") or "not declared"),
+        ("Retention", node.get("retention") or "not declared"),
+        ("Encryption", node.get("encryption") or "not declared"),
+        ("Detail", node.get("detail") or "-"),
+    ]
+    return html.Div([
+        html.H4(node["label"]),
+        html.Table(className="table", children=[html.Tbody([
+            html.Tr([html.Td(label), html.Td(value)]) for label, value in rows])]),
+    ])
+
 
 def view_lineage(state):
     graph = state.get("lineage") or {"nodes": [], "edges": [], "masking": {}}
@@ -197,12 +240,15 @@ def view_lineage(state):
     masking = graph.get("masking") or {}
     return html.Div([
         html.Div(className="lineage", children=[
-            html.Div(className=f"hop hop-{node['layer']}", children=[
+            html.Button(id={"kind": "hop", "node": node["id"]},
+                        n_clicks=0, className=f"hop hop-{node['layer']}", children=[
                 html.Small(node["layer"].upper()),
                 html.Strong(node["label"]),
                 html.Span(node.get("table_format") or node.get("detail") or "",
                           className="muted"),
             ]) for node in graph["nodes"]]),
+        html.Div(id="lineage-inspector", className="inspector",
+                 children=inspect_lineage_node(None, graph)),
         html.Pre(lineage_graph.as_markdown(graph), className="ledger"),
         html.Div(className="panel", children=[
             html.H4("Lake Formation column masking"),
@@ -257,20 +303,28 @@ def view_vault(state):
     documents = state.get("documents") or []
     return html.Div([
         html.Div(className="view-actions", children=[
-            html.Button("Export compliance bundle", id="vault-bundle", n_clicks=0,
-                        className="btn primary"),
+            html.A("Export compliance bundle", className="btn primary",
+                   href=f"/runs/{(state.get('run') or {}).get('run_id', '')}/vault/bundle"),
             html.Span(f"{stats.get('present', 0)} of {stats.get('total', 0)} documents present",
                       className="muted"),
         ]),
         html.Div(id="vault-status", className="muted"),
+        html.Div(id="vault-preview", className="inspector",
+                 children=html.P("Select a document to preview it.", className="muted")),
         html.Table(className="table", children=[
             html.Thead(html.Tr([html.Th("Document"), html.Th("Category"),
                                 html.Th("State"), html.Th("Size")])),
             html.Tbody([
                 html.Tr(className="present" if d["present"] else "absent", children=[
-                    html.Td(d["name"]), html.Td(d["category_title"]),
+                    html.Td(html.Button(d["name"], id={"kind": "doc", "name": d["name"]},
+                                        n_clicks=0, className="link-button")
+                            if d["present"] else d["name"]),
+                    html.Td(d["category_title"]),
                     html.Td("present" if d["present"] else "not produced"),
-                    html.Td(f"{d['size_bytes']:,} B" if d["present"] else "-"),
+                    html.Td(html.A("download", className="link-button",
+                                   href=f"/runs/{(state.get('run') or {}).get('run_id', '')}"
+                                        f"/vault/download/{d['name']}")
+                            if d["present"] else "-"),
                 ]) for d in documents]),
         ]),
     ])
@@ -294,6 +348,171 @@ def _ledger_table(ledger):
     ])
 
 
+# --- FR-05: governed visual reconciliation ----------------------------------------------
+
+def _reconcile_panel(state):
+    """Where a topological correction enters the system.
+
+    FR-05.1 says the console intercepts a canvas connection edit. The embedded viewer is a
+    VIEWER -- diagrams.net does not post edit events back to an embedding page -- so the
+    intake is an explicit change form rather than a drag. That is a smaller claim than the
+    PRD's wording and it is the honest one: what FR-05 actually protects is that a proposed
+    edit cannot reach main.tf without the review modal, and that property does not depend on
+    whether a mouse or a form produced the proposal.
+    """
+    return html.Details(className="drawer", children=[
+        html.Summary("Propose an architecture change"),
+        html.Div(className="drawer-body", children=[
+            html.P("Re-route a reference in the generated Terraform. Nothing is written "
+                   "until you confirm the review.", className="muted"),
+            html.Div(className="reconcile-form", children=[
+                _field("Resource", "reconcile-target", "aws_glue_job.etl"),
+                _field("Attribute", "reconcile-attribute", "--source_path"),
+                _field("From", "reconcile-from", "module.storage.gold_bucket_arn"),
+                _field("To", "reconcile-to", "module.storage.bronze_bucket_arn"),
+            ]),
+            html.Button("Review change", id="reconcile-review", n_clicks=0,
+                        className="btn"),
+            html.Div(id="reconcile-modal"),
+            html.Div(id="reconcile-result", className="muted"),
+        ]),
+    ])
+
+
+def _field(label, element_id, placeholder):
+    return html.Label(className="field", children=[
+        html.Small(label),
+        dcc.Input(id=element_id, type="text", placeholder=placeholder,
+                  className="control-input", debounce=True),
+    ])
+
+
+def _change_spec(target, attribute, from_ref, to_ref):
+    return {"kind": "reconnect", "target": (target or "").strip(),
+            "attribute": (attribute or "").strip(),
+            "from": (from_ref or "").strip(), "to": (to_ref or "").strip()}
+
+
+def reconcile_preview(n_clicks, target, attribute, from_ref, to_ref, run_id):
+    """FR-05.2. Compute what the edit would do and render the review modal. Writes nothing.
+
+    Returns (modal_children, stored_spec). `stored_spec` is None whenever the change cannot
+    be applied, so there is nothing for a confirm click to act on.
+    """
+    if not n_clicks:
+        return None, None
+    change = _change_spec(target, attribute, from_ref, to_ref)
+    if not change["from"] or not change["to"]:
+        return html.Div("Enter both a From and a To reference.", className="status-warn"), None
+
+    state = assemble(run_id)
+    run_root = state.get("root")
+    if not run_root:
+        return html.Div("No run selected.", className="status-warn"), None
+
+    proposal = reconciler.propose(run_root, change)
+    if not proposal["applicable"]:
+        return (html.Div(className="status-bad", children=[
+            html.Strong("Change refused"),
+            html.P(proposal["reason"], className="muted"),
+        ]), None)
+
+    modal = html.Div(className="review-modal", children=[
+        html.H4("Architecture change review"),
+        html.Div(className="review-meta", children=[
+            html.Span(f"Author: {proposal['author']}"),
+            html.Span(f"At: {proposal['at']}"),
+        ]),
+        html.P(proposal["summary"], className="review-summary"),
+        html.Ul([html.Li(w) for w in proposal["warnings"]], className="review-warnings"),
+        html.Pre(proposal["diff"], className="ledger"),
+        html.Div(className="review-actions", children=[
+            html.Button("Confirm and rewrite main.tf", id="reconcile-confirm",
+                        n_clicks=0, className="btn primary"),
+            html.Button("Cancel", id="reconcile-cancel", n_clicks=0, className="btn"),
+        ]),
+    ])
+    # The store round-trips through the browser, so it carries the change SPEC and the run
+    # only. Putting `updated_hcl` in here would let a tampered payload be written to main.tf
+    # verbatim -- an arbitrary-file-write endpoint wearing a governance modal. On confirm the
+    # proposal is recomputed server-side from these same inputs.
+    return modal, {"change": change, "run_id": run_id}
+
+
+def reconcile_apply(confirm_clicks, cancel_clicks, stored):
+    """FR-05.3. Apply a reviewed change, but only on an explicit confirm click."""
+    if cancel_clicks and not confirm_clicks:
+        return html.Div("Change cancelled. Nothing was written.", className="muted"), None
+    if not confirm_clicks:
+        return None, dash.no_update
+    if not stored:
+        return html.Div("Nothing to confirm.", className="status-warn"), None
+
+    state = assemble(stored.get("run_id"))
+    run_root = state.get("root")
+    if not run_root:
+        return html.Div("No run selected.", className="status-warn"), None
+
+    # Recomputed here, never taken from the client.
+    proposal = reconciler.propose(run_root, stored["change"])
+    result = reconciler.confirm(proposal, confirmed=True)
+    if not result["applied"]:
+        return html.Div(f"Not applied: {result['reason']}", className="status-bad"), None
+
+    return (html.Div(className="status-good", children=[
+        html.Strong(f"Applied. Run is now {result['status']}."),
+        html.P(f"Approvals revoked: {result['approvals_revoked']}", className="muted"),
+        html.P(f"Next: {result['next_command']}", className="muted"),
+    ]), None)
+
+
+# --- FR-06.1 / FR-06.2: preview and download --------------------------------------------
+#
+# The export used to write a zip and print a path on the SERVER. For anyone not sitting at
+# that machine that is not an export, so both of these are real HTTP routes the browser can
+# follow.
+#
+# THE GUARD IS AN ALLOWLIST, NOT A SANITISER. The requested name is matched against the
+# vault catalog for that run and the file is served from the path the catalog resolved.
+# Nothing from the URL is ever joined onto a directory, so `..`, an absolute path and a
+# symlink name all fail the same way: they are not in the catalog.
+
+def _catalogued_document(run_id, name):
+    state = assemble(run_id)
+    root = state.get("root")
+    if not root:
+        return None
+    for document in vault.catalog(root):
+        if document["present"] and document["name"] == name:
+            return document
+    return None
+
+
+def preview_document(name, run_id):
+    """Render a document inline where that is meaningful, or offer it for download."""
+    document = _catalogued_document(run_id, name)
+    if not document:
+        return html.P("Select a document to preview it.", className="muted")
+
+    run = (assemble(run_id).get("run") or {}).get("run_id", "")
+    href = f"/runs/{run}/vault/download/{document['name']}"
+    header = html.Div(className="preview-head", children=[
+        html.H4(document["name"]),
+        html.A("Download", href=href, className="btn"),
+    ])
+    if document["preview"] == "inline":
+        return html.Div([header, html.Iframe(src=href, className="preview-frame",
+                                             title=document["name"])])
+    if document["preview"] == "text":
+        try:
+            with open(document["path"], encoding="utf-8", errors="replace") as handle:
+                body = handle.read(20000)
+        except OSError as exc:
+            return html.Div([header, html.P(f"Could not read it: {exc}", className="muted")])
+        return html.Div([header, html.Pre(body, className="ledger")])
+    return html.Div([header, html.P("Binary document; use Download.", className="muted")])
+
+
 def _empty(title, detail):
     return html.Div(className="empty", children=[
         html.H3(title), html.P(detail, className="muted")])
@@ -315,6 +534,7 @@ app.config.suppress_callback_exceptions = True
 
 app.layout = html.Div(className="page", children=[
     dcc.Store(id="run-id"),
+    dcc.Store(id="reconcile-proposal"),
     html.Header(className="masthead", children=[
         html.Div(className="brand", children=[
             html.Span(className="dot"),
@@ -364,6 +584,81 @@ def _bundle(_clicks, run_id):
     if not result["ok"]:
         return f"Refused: {result['reason']}"
     return f"Wrote {result['document_count']} documents to {out}"
+
+
+@app.callback(
+    Output("reconcile-modal", "children"),
+    Output("reconcile-proposal", "data"),
+    Input("reconcile-review", "n_clicks"),
+    State("reconcile-target", "value"),
+    State("reconcile-attribute", "value"),
+    State("reconcile-from", "value"),
+    State("reconcile-to", "value"),
+    State("run-id", "data"),
+    prevent_initial_call=True,
+)
+def _reconcile_preview_cb(n_clicks, target, attribute, from_ref, to_ref, run_id):
+    return reconcile_preview(n_clicks, target, attribute, from_ref, to_ref, run_id)
+
+
+@app.callback(
+    Output("reconcile-result", "children"),
+    Output("reconcile-modal", "children", allow_duplicate=True),
+    Input("reconcile-confirm", "n_clicks"),
+    Input("reconcile-cancel", "n_clicks"),
+    State("reconcile-proposal", "data"),
+    prevent_initial_call=True,
+)
+def _reconcile_apply_cb(confirm_clicks, cancel_clicks, stored):
+    return reconcile_apply(confirm_clicks, cancel_clicks, stored)
+
+
+@app.callback(
+    Output("lineage-inspector", "children"),
+    Input({"kind": "hop", "node": dash.ALL}, "n_clicks"),
+    State("run-id", "data"),
+    prevent_initial_call=True,
+)
+def _inspect_hop_cb(_clicks, run_id):
+    """FR-03.3. Which hop was clicked comes from the triggering component id."""
+    triggered = dash.callback_context.triggered_id
+    node_id = triggered.get("node") if isinstance(triggered, dict) else None
+    return inspect_lineage_node(node_id, assemble(run_id).get("lineage") or {})
+
+
+@app.callback(
+    Output("vault-preview", "children"),
+    Input({"kind": "doc", "name": dash.ALL}, "n_clicks"),
+    State("run-id", "data"),
+    prevent_initial_call=True,
+)
+def _preview_document_cb(_clicks, run_id):
+    triggered = dash.callback_context.triggered_id
+    name = triggered.get("name") if isinstance(triggered, dict) else None
+    return preview_document(name, run_id)
+
+
+@app.server.route("/runs/<run_id>/vault/download/<path:name>")
+def _vault_download(run_id, name):
+    from flask import abort, send_file
+    document = _catalogued_document(run_id, os.path.basename(name))
+    if not document or os.path.basename(name) != name:
+        abort(404)
+    return send_file(document["path"], as_attachment=True,
+                     download_name=document["name"])
+
+
+@app.server.route("/runs/<run_id>/vault/bundle")
+def _vault_bundle_download(run_id):
+    from flask import abort, send_file
+    root = assemble(run_id).get("root")
+    if not root:
+        abort(404)
+    out = os.path.join(root, "reports", "compliance-bundle.zip")
+    result = vault.bundle(root, out)
+    if not result["ok"]:
+        abort(404, result["reason"])
+    return send_file(out, as_attachment=True, download_name="compliance-bundle.zip")
 
 
 app.index_string = """<!DOCTYPE html>
@@ -445,6 +740,34 @@ app.index_string = """<!DOCTYPE html>
     .stage-status{font-size:11px;letter-spacing:0.08em;color:var(--smoke)}
     .stage small{display:block;color:var(--smoke);font-size:11px;margin-top:4px}
     .stage .audit{color:var(--graphite)}
+    /* Reconciliation form and review modal (FR-05) */
+    .reconcile-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;
+      margin:16px 0}
+    .field{display:flex;flex-direction:column;gap:6px}
+    .field small{font-size:11px;letter-spacing:0.08em;text-transform:uppercase;
+      color:var(--smoke)}
+    .control-input{width:100%;border:1px solid var(--line);border-radius:16px;
+      background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:13px;
+      padding:10px 16px;outline:none}
+    .control-input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(43,89,209,.15)}
+    /* The modal is the gate. Periwinkle is the one elevated surface in the system, and this
+       is the one moment the console asks for a decision rather than reporting one. */
+    .review-modal{border:1px solid var(--line);border-radius:24px;padding:24px;
+      background:var(--elev);margin-top:20px}
+    .review-modal h4{font-family:var(--serif);font-weight:400;font-size:24px;
+      margin-bottom:12px}
+    .review-meta{display:flex;flex-wrap:wrap;gap:16px;font-size:11px;color:var(--graphite);
+      text-transform:uppercase;letter-spacing:0.06em;margin-bottom:16px}
+    .review-summary{font-family:var(--serif);font-size:20px;line-height:1.35;
+      margin-bottom:16px}
+    .review-warnings{margin:0 0 16px 18px;font-size:13px;color:var(--graphite)}
+    .review-warnings li{margin-bottom:6px}
+    .review-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:20px}
+    .status-good,.status-warn,.status-bad{border:1px solid var(--line);border-radius:16px;
+      padding:16px;margin-top:16px}
+    .status-good{border-left:3px solid var(--good)}
+    .status-warn{border-left:3px solid var(--warn)}
+    .status-bad{border-left:3px solid var(--crit)}
     .empty{border:1px solid var(--line);border-radius:24px;padding:64px 24px;text-align:center}
     .empty h3{font-family:var(--serif);font-weight:400;font-size:24px}
     @media (max-width:900px){.drawer-grid{grid-template-columns:1fr}.page{padding:16px 20px 48px}}

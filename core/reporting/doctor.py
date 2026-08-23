@@ -355,8 +355,15 @@ def diagnose():
                    "Install the AWS CLI v2 (winget install Amazon.AWSCLI / brew install awscli).",
                    min_version=(2,)),
         _credentials_check(),
+        # The consequence people actually need told: tests/test_rego_gate.py carries a
+        # module-level skipif on this binary, so without opa the entire G6 suite SKIPS.
+        # Two real catalog failures sat in CI for four commits while every local run
+        # reported green, because green and skipped look identical in a summary line.
+        # Version pinned to CI's so a local finding reproduces there.
         _cli_check("opa", "opa", ("version",), False,
-                   "Install OPA to enable the Rego plan gate; it degrades to warn-only without it."),
+                   "Install OPA 1.18.2 (the version ci.yml pins). Without it the Rego plan "
+                   "gate degrades to warn-only AND every test in tests/test_rego_gate.py "
+                   "silently skips -- 88 gate tests that will still run in CI."),
         _cli_check("tflint", "tflint", ("--version",), False,
                    "Install TFLint for provider-level lint findings in optimize_analyzer; "
                    "run `tflint --init` in a Terraform dir to add the AWS ruleset."),
