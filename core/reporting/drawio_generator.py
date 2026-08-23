@@ -7,6 +7,8 @@ import re
 import os
 import sys
 
+import architecture_model  # noqa: E402  cross-subpackage, as in minusctl.py
+
 def resolve_stencil(resource_type):
     if not resource_type:
         return "shape=mxgraph.aws4.resource;"
@@ -28,7 +30,8 @@ def resolve_stencil(resource_type):
     elif resource_type.startswith("aws_iam"):
         return "shape=mxgraph.aws4.iam;"
     elif resource_type.startswith("aws_kms"):
-        return "shape=mxgraph.aws4.key;"
+        # 'mxgraph.aws4.key' is not a stencil name; it fell through to an empty white box.
+        return "shape=mxgraph.aws4.key_management_service;fillColor=#DD344C;"
     elif resource_type.startswith("azurerm_storage"):
         return "shape=mxgraph.azure2.storage;"
     elif resource_type == "azurerm_function_app":
@@ -216,6 +219,51 @@ def _create_mxgraph_xml():
     ET.SubElement(root, 'mxCell', {'id': '1', 'parent': '0'})
     return mxGraphModel, root
 
+# The canvas is laid out by canonical layer -- one column per layer, in the order data
+# actually moves through the reference architecture. The previous layout put every resource
+# at x=100 and stepped y by 150, so a ten-resource plan was an 80x1500 thread: fitted into
+# the viewer, the labels were sub-pixel and the architecture was unreadable. Classification
+# comes from architecture_model, the same six-layer model that drives conformance, rather
+# than a second table here that could disagree with it.
+_LAYER_ORDER = list(architecture_model.CANONICAL_LAYERS) + ["other"]
+_COLUMN_WIDTH = 280
+_ROW_HEIGHT = 150
+
+# Labels sit UNDER the stencil and wrap inside the column. Centred on an 80px shape with no
+# wrapping, a 45-character address ran straight through its neighbours in both directions.
+_LABEL_STYLE = ("verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;"
+                "whiteSpace=wrap;fontSize=10;fontColor=#4e4d4d;")
+
+
+def node_label(address):
+    """`module.storage.aws_s3_bucket.bronze` -> `aws_s3_bucket / bronze`.
+
+    The module prefix is what the column already says, so it is the part worth dropping. The
+    full address is kept on the cell as a tooltip -- shortening a label is presentation, and
+    losing the address would make the canvas unciteable against the plan.
+    """
+    parts = (address or "").split(".")
+    return "<br>".join(parts[-2:]) if len(parts) > 2 else (address or "")
+
+
+def layout_positions(resources):
+    """Return {address: (x, y)} and the column headers, keyed by canonical layer."""
+    columns = {}
+    for res in resources:
+        role = architecture_model.classify_role(
+            res.get("type", ""), "", res.get("name", ""))
+        layer = architecture_model.layer_of(role)
+        columns.setdefault(layer, []).append(res.get("address"))
+
+    positions, headers = {}, []
+    for index, layer in enumerate([l for l in _LAYER_ORDER if l in columns]):
+        x = 60 + index * _COLUMN_WIDTH
+        headers.append((layer, x))
+        for row, address in enumerate(columns[layer]):
+            positions[address] = (x, 90 + row * _ROW_HEIGHT)
+    return positions, headers
+
+
 def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
     mxGraphModel, root = _create_mxgraph_xml()
     
@@ -223,36 +271,46 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
     edges = discover_flow_edges(plan_json)
     
     # Process resources
-    y_offset = 50
-    resources = plan_json.get("resource_changes", []) if plan_json else []
+    resources = [r for r in (plan_json.get("resource_changes", []) if plan_json else [])
+                 if r.get("mode") == "managed"]
+    positions, headers = layout_positions(resources)
     node_map = {}
-    
+
+    for layer, x in headers:
+        header = ET.SubElement(root, 'mxCell', {
+            'id': f"layer_{layer}",
+            'value': layer.upper(),
+            'style': ('text;html=1;align=left;verticalAlign=middle;fontSize=13;'
+                      'fontColor=#797776;letterSpacing=1;'),
+            'vertex': '1',
+            'parent': '1'
+        })
+        ET.SubElement(header, 'mxGeometry', {
+            'x': str(x), 'y': '30', 'width': str(_COLUMN_WIDTH - 40), 'height': '24',
+            'as': 'geometry'
+        })
+
     for i, res in enumerate(resources):
-        if res.get("mode") != "managed":
-            continue
-            
         addr = res.get("address")
-        rtype = res.get("type")
-        stencil = resolve_stencil(rtype)
-        
+        x, y = positions[addr]
         node_id = f"node_{i}"
         node_map[addr] = node_id
-        
+
         cell = ET.SubElement(root, 'mxCell', {
             'id': node_id,
-            'value': addr,
-            'style': stencil,
+            'value': node_label(addr),
+            'tooltip': addr,
+            'style': resolve_stencil(res.get("type")) + _LABEL_STYLE,
             'vertex': '1',
             'parent': '1'
         })
         ET.SubElement(cell, 'mxGeometry', {
-            'x': '100',
-            'y': str(y_offset),
+            'x': str(x),
+            'y': str(y),
             'width': '80',
             'height': '80',
             'as': 'geometry'
         })
-        y_offset += 150
         
     # Process edges
     for i, edge in enumerate(edges):

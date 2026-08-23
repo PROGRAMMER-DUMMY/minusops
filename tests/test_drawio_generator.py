@@ -84,7 +84,12 @@ def test_no_external_dependencies():
     with open("core/reporting/drawio_generator.py", "r") as f:
         tree = ast.parse(f.read())
         
-    allowed_imports = {"xml.etree.ElementTree", "zlib", "base64", "urllib.parse", "json", "re", "os", "sys"}
+    # `architecture_model` is a first-party sibling, not a dependency: the invariant this
+    # test guards is "no third-party packages", and it reaches only stdlib itself (json, os,
+    # re, sys, plus plan_reader, which imports nothing). The generator uses it so resource
+    # classification on the canvas cannot drift from the model that drives conformance.
+    allowed_imports = {"xml.etree.ElementTree", "zlib", "base64", "urllib.parse", "json",
+                       "re", "os", "sys", "architecture_model"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -265,3 +270,81 @@ def test_the_decoder_still_round_trips_with_the_standard_alphabet():
     xml = '<mxGraphModel><root><mxCell value="a b 50% c-d_e"/></root></mxGraphModel>'
 
     assert drawio_generator.decode_drawio_url(drawio_generator.encode_drawio_url(xml)) == xml
+
+
+# --- The canvas has to be readable, which is a property of the layout -------------------
+
+def _layered_plan():
+    """Storage, processing and consumption resources -- three canonical layers."""
+    def rc(address, rtype):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": {}}}
+    return {"resource_changes": [
+        rc("module.storage.aws_s3_bucket.bronze", "aws_s3_bucket"),
+        rc("module.storage.aws_s3_bucket.gold", "aws_s3_bucket"),
+        rc("module.compute.aws_glue_job.etl", "aws_glue_job"),
+        rc("module.query.aws_athena_workgroup.analysts", "aws_athena_workgroup"),
+    ]}
+
+
+def _node_positions(xml_text):
+    import xml.etree.ElementTree as ET
+    positions = {}
+    for cell in ET.fromstring(xml_text).iter("mxCell"):
+        # The column headers are vertices too; they are labels, not resources.
+        if cell.get("vertex") != "1" or (cell.get("id") or "").startswith("layer_"):
+            continue
+        geom = cell.find("mxGeometry")
+        # Keyed by the full address, which lives on the tooltip -- the visible label is
+        # deliberately shortened to the last two segments.
+        positions[cell.get("tooltip")] = (float(geom.get("x")), float(geom.get("y")))
+    return positions
+
+
+def test_the_canvas_lays_resources_out_by_layer_not_in_one_tall_column():
+    """Every resource was placed at x=100 with y stepping 150, so a ten-resource stack was
+    80px wide and 1500px tall. Fitted into a viewer that is a vertical thread: the labels
+    are sub-pixel and the architecture is unreadable, which is the whole point of the view.
+    """
+    xml_text = drawio_generator.generate_drawio_from_plan(_layered_plan())["xml"]
+
+    positions = _node_positions(xml_text)
+    assert len(positions) == 4
+    columns = {x for x, _ in positions.values()}
+    assert len(columns) > 1, "every resource is still in one column"
+
+    width = max(x for x, _ in positions.values()) - min(x for x, _ in positions.values())
+    height = max(y for _, y in positions.values()) - min(y for _, y in positions.values())
+    assert width > height, f"the diagram is still taller than it is wide ({width}x{height})"
+
+
+def test_resources_in_the_same_layer_share_a_column():
+    positions = _node_positions(
+        drawio_generator.generate_drawio_from_plan(_layered_plan())["xml"])
+
+    bronze = positions["module.storage.aws_s3_bucket.bronze"]
+    gold = positions["module.storage.aws_s3_bucket.gold"]
+    etl = positions["module.compute.aws_glue_job.etl"]
+
+    assert bronze[0] == gold[0], "two storage buckets landed in different columns"
+    assert bronze[1] != gold[1], "two storage buckets landed on top of each other"
+    assert etl[0] != bronze[0], "processing and storage share a column"
+
+
+def test_node_labels_are_short_enough_not_to_run_into_the_next_column():
+    """A node is 80px wide and a full address is ~45 characters. Rendered centred on the
+    shape with no wrapping, every label ran straight through its neighbours -- five columns
+    of overlapping text. The full address stays reachable as the tooltip."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_layered_plan())["xml"]
+
+    import xml.etree.ElementTree as ET
+    nodes = [c for c in ET.fromstring(xml_text).iter("mxCell")
+             if c.get("vertex") == "1" and not (c.get("id") or "").startswith("layer_")]
+
+    assert nodes
+    for cell in nodes:
+        assert cell.get("tooltip", "").startswith("module."), "full address was dropped"
+        assert "module." not in cell.get("value", ""), cell.get("value")
+        assert "whiteSpace=wrap" in cell.get("style", "")
+        assert "verticalLabelPosition=bottom" in cell.get("style", "")
