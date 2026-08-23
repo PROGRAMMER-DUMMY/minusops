@@ -124,7 +124,11 @@ def encode_drawio_url(xml_text):
     quoted = urllib.parse.quote(xml_text, safe=_URI_SAFE)     # == encodeURIComponent
     compressor = zlib.compressobj(level=9, method=zlib.DEFLATED, wbits=-15)
     compressed = compressor.compress(quoted.encode('utf-8')) + compressor.flush()
-    encoded = base64.urlsafe_b64encode(compressed).decode('utf-8').rstrip('=')
+    # STANDARD alphabet, not urlsafe. diagrams.net decodes the fragment with atob(),
+    # which rejects '-' and '_' outright -- a real three-resource plan contains both,
+    # so a urlsafe payload threw InvalidCharacterError and rendered nothing. The '+'
+    # and '/' it produces are legal in a URL fragment and are what draw.io expects.
+    encoded = base64.b64encode(compressed).decode('utf-8').rstrip('=')
     return f"https://app.diagrams.net/#R{encoded}"
 
 
@@ -136,7 +140,7 @@ def decode_drawio_url(url):
     """
     payload = url.split("#R", 1)[1] if "#R" in url else url
     payload += "=" * (-len(payload) % 4)                       # padding was stripped
-    inflated = zlib.decompress(base64.urlsafe_b64decode(payload), -15).decode('utf-8')
+    inflated = zlib.decompress(base64.b64decode(payload), -15).decode('utf-8')
     return urllib.parse.unquote(inflated)
 
 # Per-hop transport facts, keyed on the CONSUMING resource. Every hop previously reported
@@ -201,7 +205,11 @@ def _create_mxgraph_xml():
         'dx': '1000', 'dy': '1000', 'grid': '1', 'gridSize': '10',
         'guides': '1', 'tooltips': '1', 'connect': '1', 'arrows': '1',
         'fold': '1', 'page': '1', 'pageScale': '1', 'pageWidth': '827',
-        'pageHeight': '1169', 'math': '0', 'shadow': '0'
+        'pageHeight': '1169', 'math': '0', 'shadow': '0',
+        # Parchment, so the embedded canvas sits on the page instead of punching a white
+        # slab through it. It travels with the .drawio file, so a diagram opened standalone
+        # in diagrams.net carries the same surface as the console it came from.
+        'background': '#f6f3f1',
     })
     root = ET.SubElement(mxGraphModel, 'root')
     ET.SubElement(root, 'mxCell', {'id': '0'})

@@ -231,6 +231,50 @@ def inspect_lineage_node(node_id, graph):
     ])
 
 
+def _hop_chain(graph):
+    """The medallion hops with connectors, so the row reads as a flow.
+
+    The quarantine hop is marked as a branch rather than another link in the chain: it is
+    where rejected records LEAVE the pipeline, and drawing it inline would say they carry on
+    to Gold.
+    """
+    children = []
+    for index, node in enumerate(graph["nodes"]):
+        if index:
+            branch = node["id"] == "quarantine"
+            children.append(html.Span("|" if branch else "->",
+                                      className="hop-link branch" if branch else "hop-link"))
+        children.append(html.Button(
+            id={"kind": "hop", "node": node["id"]}, n_clicks=0,
+            className=f"hop hop-{node['layer']}", children=[
+                html.Small(node["layer"].upper()),
+                html.Strong(node["label"]),
+                html.Span(node.get("table_format") or node.get("detail") or "",
+                          className="muted"),
+            ]))
+    return children
+
+
+def _flow_table(graph):
+    """The hop ledger as a table. This used to render `lineage_graph.as_markdown()` inside a
+    <pre>, which put raw pipe-and-dash markdown source on the page -- the export format
+    printed where the rendered thing belonged."""
+    rows = graph.get("edges") or []
+    if not rows:
+        return html.P("No dataset flow to trace for this stack.", className="muted")
+    labels = {n["id"]: n["label"] for n in graph["nodes"]}
+    return html.Table(className="table", children=[
+        html.Thead(html.Tr([html.Th("Hop"), html.Th("From"), html.Th("To"), html.Th("Branch")])),
+        html.Tbody([
+            html.Tr(className="reject" if e.get("branch") == "reject" else "", children=[
+                html.Td(e["label"]),
+                html.Td(labels.get(e["from"], e["from"])),
+                html.Td(labels.get(e["to"], e["to"])),
+                html.Td(e.get("branch") or "-"),
+            ]) for e in rows]),
+    ])
+
+
 def view_lineage(state):
     graph = state.get("lineage") or {"nodes": [], "edges": [], "masking": {}}
     if not graph["nodes"]:
@@ -239,17 +283,10 @@ def view_lineage(state):
                       "to trace.")
     masking = graph.get("masking") or {}
     return html.Div([
-        html.Div(className="lineage", children=[
-            html.Button(id={"kind": "hop", "node": node["id"]},
-                        n_clicks=0, className=f"hop hop-{node['layer']}", children=[
-                html.Small(node["layer"].upper()),
-                html.Strong(node["label"]),
-                html.Span(node.get("table_format") or node.get("detail") or "",
-                          className="muted"),
-            ]) for node in graph["nodes"]]),
+        html.Div(className="lineage", children=_hop_chain(graph)),
         html.Div(id="lineage-inspector", className="inspector",
                  children=inspect_lineage_node(None, graph)),
-        html.Pre(lineage_graph.as_markdown(graph), className="ledger"),
+        _flow_table(graph),
         html.Div(className="panel", children=[
             html.H4("Lake Formation column masking"),
             html.P(masking.get("reason", ""), className="muted"),
@@ -311,23 +348,50 @@ def view_vault(state):
         html.Div(id="vault-status", className="muted"),
         html.Div(id="vault-preview", className="inspector",
                  children=html.P("Select a document to preview it.", className="muted")),
-        html.Table(className="table", children=[
-            html.Thead(html.Tr([html.Th("Document"), html.Th("Category"),
-                                html.Th("State"), html.Th("Size")])),
-            html.Tbody([
-                html.Tr(className="present" if d["present"] else "absent", children=[
-                    html.Td(html.Button(d["name"], id={"kind": "doc", "name": d["name"]},
-                                        n_clicks=0, className="link-button")
-                            if d["present"] else d["name"]),
-                    html.Td(d["category_title"]),
-                    html.Td("present" if d["present"] else "not produced"),
-                    html.Td(html.A("download", className="link-button",
-                                   href=f"/runs/{(state.get('run') or {}).get('run_id', '')}"
-                                        f"/vault/download/{d['name']}")
-                            if d["present"] else "-"),
-                ]) for d in documents]),
-        ]),
+        _document_table(documents, (state.get("run") or {}).get("run_id", "")),
     ])
+
+
+def _document_table(documents, run_id):
+    """Present documents first, absent ones folded away.
+
+    Listing all fifteen inline made the vault a wall of "not produced" -- the two documents
+    that exist were outnumbered six to one, which buries the evidence the view is for. The
+    absent ones still appear, because a category that vanishes when empty hides the fact
+    that the evidence was never produced; they are just not the headline.
+    """
+    present = [d for d in documents if d["present"]]
+    absent = [d for d in documents if not d["present"]]
+
+    def _row(document):
+        href = f"/runs/{run_id}/vault/download/{document['name']}"
+        return html.Tr(children=[
+            html.Td(html.Button(document["name"],
+                                id={"kind": "doc", "name": document["name"]},
+                                n_clicks=0, className="link-button")),
+            html.Td(document["category_title"]),
+            html.Td(f"{document['size_bytes']:,} B"),
+            html.Td(html.A("Download", href=href, className="link-button")),
+        ])
+
+    blocks = []
+    if present:
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Document"), html.Th("Category"),
+                                html.Th("Size"), html.Th("")])),
+            html.Tbody([_row(d) for d in present]),
+        ]))
+    else:
+        blocks.append(html.P("No deliverables have been produced for this run yet.",
+                             className="muted"))
+    if absent:
+        blocks.append(html.Details(className="drawer", children=[
+            html.Summary(f"{len(absent)} not produced"),
+            html.Div(className="drawer-body", children=[
+                html.Ul([html.Li(f"{d['name']} -- {d['category_title']}") for d in absent],
+                        className="absent-list")]),
+        ]))
+    return html.Div(blocks)
 
 
 def _ledger_table(ledger):
@@ -740,6 +804,29 @@ app.index_string = """<!DOCTYPE html>
     .stage-status{font-size:11px;letter-spacing:0.08em;color:var(--smoke)}
     .stage small{display:block;color:var(--smoke);font-size:11px;margin-top:4px}
     .stage .audit{color:var(--graphite)}
+    /* Lineage flow, document links, embedded canvas */
+    .canvas{width:100%;height:520px;border:1px solid var(--line);border-radius:24px;
+      background:var(--bg);display:block;margin-bottom:24px}
+    .lineage{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:24px}
+    .hop{cursor:pointer;text-align:left;transition:border-color .15s ease}
+    .hop:hover{border-color:var(--ink)}
+    .hop-link{color:var(--smoke);font-size:13px;letter-spacing:0.04em;user-select:none}
+    .hop-link.branch{color:var(--warn)}
+    .inspector{border:1px solid var(--line);border-radius:24px;padding:24px;margin-top:24px}
+    .inspector h4{font-family:var(--serif);font-weight:400;font-size:20px;margin-bottom:12px}
+    .table tr.reject td{color:var(--warn)}
+    /* A document name is a control, not a browser button -- default chrome looked like a
+       1998 form control against everything else here. */
+    .link-button{background:none;border:0;padding:0;font-family:var(--mono);font-size:13px;
+      color:var(--ink);cursor:pointer;text-decoration:underline;
+      text-underline-offset:3px;text-decoration-color:var(--line)}
+    .link-button:hover{text-decoration-color:var(--ink)}
+    .absent-list{margin-left:18px;color:var(--smoke);font-size:13px;columns:2;gap:24px}
+    .absent-list li{margin-bottom:4px}
+    .preview-head{display:flex;justify-content:space-between;align-items:center;gap:16px;
+      margin-bottom:16px}
+    .preview-frame{width:100%;height:420px;border:1px solid var(--line);border-radius:16px;
+      background:var(--bg)}
     /* Reconciliation form and review modal (FR-05) */
     .reconcile-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;
       margin:16px 0}

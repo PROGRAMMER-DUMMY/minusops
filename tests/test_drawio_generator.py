@@ -234,3 +234,34 @@ def test_no_node_title_is_hardcoded_across_three_diverse_plans(name, plan):
 def test_every_diagram_is_well_formed_xml(name, plan):
     """A diagram that does not parse cannot open, and string assertions never notice."""
     ET.fromstring(drawio_generator.generate_drawio_from_plan(plan, title=name)["xml"])
+
+
+def test_the_payload_uses_the_alphabet_atob_can_actually_decode():
+    """The bug the browser found and three green tests did not.
+
+    diagrams.net decodes a #R payload with atob(), which accepts ONLY the standard base64
+    alphabet. The encoder used urlsafe_b64encode, so any payload containing '-' or '_' --
+    a real three-resource plan contains both -- died with "Failed to execute 'atob' on
+    'Window'" and rendered nothing. Every test passed because they all decoded with
+    urlsafe_b64decode: self-consistent, and self-consistently wrong.
+    """
+    import re
+    plan = {"resource_changes": [
+        {"address": "module.storage.aws_s3_bucket.bronze", "type": "aws_s3_bucket",
+         "mode": "managed", "change": {"actions": ["create"], "after": {}}},
+        {"address": "module.compute.aws_glue_job.etl", "type": "aws_glue_job",
+         "mode": "managed", "change": {"actions": ["create"], "after": {}}},
+        {"address": "module.query.aws_athena_workgroup.wg", "type": "aws_athena_workgroup",
+         "mode": "managed", "change": {"actions": ["create"], "after": {}}}]}
+
+    payload = drawio_generator.generate_drawio_from_plan(plan, title="t")["url"].split("#R", 1)[1]
+
+    assert not re.search(r"[-_]", payload), "urlsafe base64 cannot be decoded by atob()"
+    # And it must still be valid base64 in the standard alphabet.
+    base64.b64decode(payload + "=" * (-len(payload) % 4))
+
+
+def test_the_decoder_still_round_trips_with_the_standard_alphabet():
+    xml = '<mxGraphModel><root><mxCell value="a b 50% c-d_e"/></root></mxGraphModel>'
+
+    assert drawio_generator.decode_drawio_url(drawio_generator.encode_drawio_url(xml)) == xml
