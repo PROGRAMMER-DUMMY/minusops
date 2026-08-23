@@ -51,6 +51,13 @@ All 11 milestone PRDs are delivered, certified with automated tests, and archive
   ├──────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
   │ PRD v11.0│ Dual-engine CI/CD (`core/generation/cicd.py`), JFrog Artifactory & ECR artifact staging,│
   │          │ pluggable proving registry in `seed.py`, dynamic asset-tier driven incident triage.      │
+  ├──────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+  │ PRD v12.0│ Dynamic Draw.io architecture diagram generator (`core/reporting/drawio_generator.py`),   │
+  │          │ universal stencil mapper, 1-click deflated URLs, CLI `minusctl diagram`, and agent skill.│
+  ├──────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+  │ PRD v13.0│ Enterprise Visual Governance Console (`app/console_app.py`), multi-agent execution      │
+  │          │ tracing (`agent_tracer.py`), 5-hop data lineage (`lineage_graph.py`), bi-directional      │
+  │          │ visual reconciliation (`reconciler.py`), and unified deliverables vault (`vault.py`).   │
   └──────────┴──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
