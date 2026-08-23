@@ -38,6 +38,7 @@ import architecture_decision as archdec  # noqa: E402
 import architecture_model  # noqa: E402
 import accelerators  # noqa: E402
 import audit_chain  # noqa: E402
+import cicd as cicd_engine  # noqa: E402
 import cli_diagnostics  # noqa: E402
 import incident_diagnostics  # noqa: E402
 import adopt as adopt_engine  # noqa: E402
@@ -945,6 +946,8 @@ def main(argv=None):
     export_cmd.add_argument("--dest-dir", help="e.g. pipelines/clickstream")
     export_cmd.add_argument("--pipeline-name", help="defaults to the last segment of --dest-dir")
     export_cmd.add_argument("--generate-workflow", action="store_true")
+    export_cmd.add_argument("--artifact-repo", choices=cicd_engine.ARTIFACT_REPOS,
+                            help="publish an immutable commit-tagged artifact before apply")
     export_cmd.add_argument("--region", default="us-east-1")
     export_cmd.add_argument("--json", action="store_true")
 
@@ -1223,7 +1226,8 @@ def main(argv=None):
             manifest = export_engine.export_run(
                 run["root"], args.target_repo, dest_dir=args.dest_dir,
                 generate_workflow=args.generate_workflow,
-                pipeline_name=args.pipeline_name, region=args.region)
+                pipeline_name=args.pipeline_name, region=args.region,
+                artifact_repo=args.artifact_repo)
         except ValueError as exc:
             print(f"[ERR] {exc}", file=sys.stderr)
             return 1

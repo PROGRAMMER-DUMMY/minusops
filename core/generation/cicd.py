@@ -30,6 +30,7 @@ Used by: nothing yet -- CLI entry point; wire into `minusctl` when the engine ch
 """
 import argparse
 import os
+import re
 import sys
 
 GITHUB = "github"
@@ -331,6 +332,7 @@ pipeline {
             }
         }
 
+__ARTIFACT_STAGE__
         stage('Deploy to dev') {
             when { branch 'develop' }
             steps {
@@ -376,10 +378,43 @@ pipeline {
 
 # --- Rendering ------------------------------------------------------------------------
 
+_TOKEN = re.compile(r"__([A-Z][A-Z0-9_]*)__")
+
+# A pipeline name becomes a directory, a workflow filename, a YAML `name:` value and -- the
+# one that matters -- the `paths:` filter deciding which subtree the workflow deploys
+# (FR-01.3). DNS-label shape: lowercase, digits, hyphens, 63 max.
+_PIPELINE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+
+def _valid_name(value):
+    """Return `value` if it is a safe pipeline name, else raise.
+
+    Refuses rather than sanitises. Silently rewriting `My Pipeline` to `my-pipeline` would
+    put the workflow on a path the caller did not ask for, and `paths:` filters are how a
+    monorepo keeps one pipeline's deploy from firing on another's commits.
+    """
+    if not isinstance(value, str) or not _PIPELINE_NAME.match(value):
+        raise ValueError(
+            f"unsafe pipeline name: {value!r} -- must match {_PIPELINE_NAME.pattern} "
+            "(lowercase letters, digits and hyphens, starting alphanumeric, 63 max)")
+    return value
+
+
 def _fill(template, **tokens):
-    for key, value in tokens.items():
-        template = template.replace("__%s__" % key.upper(), str(value))
-    return template
+    """Substitute `__TOKEN__` placeholders in ONE pass.
+
+    Single-pass because the previous sequential `str.replace` fed each replacement back in
+    as input to the next: a value containing `__REGION__` was rewritten by the later region
+    pass. One regex sweep means a replacement is output and never input again.
+
+    `__TOKEN__` is kept over `string.Template` deliberately. These templates already carry
+    two dollar dialects -- GitHub's `${{ ... }}` (20 occurrences) and shell `$TF_DIR` /
+    `$result` -- and `string.Template` would make every `$` significant, adding a third that
+    is distinguished from the other two only by brace count and case. `__TOKEN__` shares no
+    syntax with either, which is why no rendered output has ever collided.
+    """
+    values = {key.upper(): str(value) for key, value in tokens.items()}
+    return _TOKEN.sub(lambda m: values.get(m.group(1), m.group(0)), template)
 
 
 def render_pr_workflow(tf_dir=DEFAULT_TF_DIR, region=DEFAULT_REGION):
@@ -404,9 +439,18 @@ def render_feed_example(feed_id="payer-reconciliation-01", tf_dir=DEFAULT_TF_DIR
 def render_jenkinsfile(tf_dir=DEFAULT_TF_DIR, region=DEFAULT_REGION,
                        agent_label="aws-data-engineer-runner",
                        staging_approvers="bi-analysts,domain-leads",
-                       prod_approvers="platform-lead,secops-approvers"):
+                       prod_approvers="platform-lead,secops-approvers",
+                       artifact_repo=None):
+    """The declarative Jenkins pipeline. `artifact_repo` (FR-02) adds one publish stage.
+
+    Artifactory's steps are plugin-provided, so they are emitted only when asked for --
+    see the comment inside `_JENKINS_ARTIFACT[ARTIFACTORY]`.
+    """
+    _check_repo(artifact_repo)
+    stage = _JENKINS_ARTIFACT[artifact_repo] if artifact_repo else ""
     return _fill(_JENKINSFILE, tf_dir=tf_dir, region=region, agent_label=agent_label,
-                 staging_approvers=staging_approvers, prod_approvers=prod_approvers)
+                 staging_approvers=staging_approvers, prod_approvers=prod_approvers,
+                 artifact_stage=stage)
 
 
 # --- Exported per-pipeline deploy workflow (PRD-ARCH-2026-005, FR-04) ------------------
@@ -466,6 +510,7 @@ jobs:
           role-session-name: "__PIPELINE__-deploy"
           aws-region: "${{ env.AWS_REGION }}"
 
+__ARTIFACT_STAGE__
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "__TF_VERSION__"
@@ -479,7 +524,7 @@ jobs:
         working-directory: "${{ env.TF_DIR }}"
 
       - name: terraform plan
-        run: terraform plan -input=false -lock-timeout=5m -out=tfplan
+        run: terraform plan -input=false -lock-timeout=5m -out=tfplan__TF_ARTIFACT_VAR__
         working-directory: "${{ env.TF_DIR }}"
 
       # Apply on push only. A pull_request from a fork runs HCL the fork author wrote;
@@ -491,12 +536,160 @@ jobs:
 """
 
 
+# --- Immutable artifact staging (PRD v11 FR-02) ----------------------------------------
+#
+# "Build once, deploy many" only holds if the thing deployed to prod is byte-identical to
+# the thing proven in UAT. That means the tag is the git SHA and never `latest`, and the
+# resulting URI is passed INTO Terraform rather than resolved again at apply time -- a tag
+# resolved twice can resolve to two different images.
+#
+# Publishing is credential-free in every variant: GitHub uses the OIDC session already
+# assumed above, and Jenkins uses the controller's configured `rtServer` / instance profile.
+# A repo needing a static token is a repo we do not emit.
+
+ARTIFACTORY, ECR, CODEARTIFACT, S3 = "artifactory", "ecr", "codeartifact", "s3"
+ARTIFACT_REPOS = (ARTIFACTORY, ECR, CODEARTIFACT, S3)
+
+_GH_ARTIFACT_COMMON = """
+      - name: Build the immutable artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ -f pyproject.toml ]; then python -m build --wheel --outdir dist; fi
+          if [ -f src/dbt/dbt_project.yml ]; then tar -czf "dist/dbt-${GITHUB_SHA}.tar.gz" src/dbt; fi
+          ls -1 dist
+      - name: Record the artifact digest
+        id: digest
+        run: |
+          set -euo pipefail
+          # sha256 of every built file, so the published metadata names exactly what shipped.
+          sha256sum dist/* | tee dist/SHA256SUMS
+          echo "sha256=$(sha256sum dist/* | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+"""
+
+_GH_ARTIFACT_PUBLISH = {
+    ARTIFACTORY: """      - name: Publish to JFrog Artifactory
+        run: |
+          set -euo pipefail
+          jf rt upload "dist/*" "__PIPELINE__-generic/__PIPELINE__/${GITHUB_SHA}/"
+          jf rt build-publish "__PIPELINE__" "${GITHUB_RUN_NUMBER}"
+          echo "ARTIFACT_URI=__PIPELINE__-generic/__PIPELINE__/${GITHUB_SHA}/" >> "$GITHUB_ENV"
+""",
+    ECR: """      - name: Publish to Amazon ECR
+        run: |
+          set -euo pipefail
+          REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "$REGISTRY"
+          docker build -t "$REGISTRY/__PIPELINE__:${GITHUB_SHA}" .
+          docker push "$REGISTRY/__PIPELINE__:${GITHUB_SHA}"
+          echo "ARTIFACT_URI=$REGISTRY/__PIPELINE__:${GITHUB_SHA}" >> "$GITHUB_ENV"
+""",
+    CODEARTIFACT: """      - name: Publish to AWS CodeArtifact
+        run: |
+          set -euo pipefail
+          aws codeartifact login --tool twine --domain "${CODEARTIFACT_DOMAIN}" --repository "${CODEARTIFACT_REPO}"
+          twine upload --repository codeartifact dist/*
+          echo "ARTIFACT_URI=codeartifact://${CODEARTIFACT_DOMAIN}/__PIPELINE__/${GITHUB_SHA}" >> "$GITHUB_ENV"
+""",
+    S3: """      - name: Publish to the versioned S3 artifact bucket
+        run: |
+          set -euo pipefail
+          aws s3 cp dist/ "s3://${ARTIFACT_BUCKET}/__PIPELINE__/${GITHUB_SHA}/" --recursive
+          echo "ARTIFACT_URI=s3://${ARTIFACT_BUCKET}/__PIPELINE__/${GITHUB_SHA}/" >> "$GITHUB_ENV"
+""",
+}
+
+_JENKINS_ARTIFACT = {
+    ARTIFACTORY: """        stage('Publish artifact (Artifactory)') {
+            steps {
+                script {
+                    // rtUpload/rtPublishBuildInfo come from the Jenkins Artifactory plugin.
+                    // They are emitted ONLY for --artifact-repo artifactory: on a controller
+                    // without that plugin they are a pipeline parse error, not a skipped step.
+                    def server = Artifactory.server 'minusops-artifactory'
+                    def buildInfo = Artifactory.newBuildInfo()
+                    rtUpload(
+                        serverId: 'minusops-artifactory',
+                        spec: '''{"files":[{"pattern":"dist/*","target":"generic-local/${JOB_NAME}/${GIT_COMMIT}/"}]}''',
+                        buildName: env.JOB_NAME, buildNumber: env.BUILD_NUMBER)
+                    rtPublishBuildInfo(serverId: 'minusops-artifactory',
+                        buildName: env.JOB_NAME, buildNumber: env.BUILD_NUMBER)
+                }
+            }
+        }
+""",
+    ECR: """        stage('Publish artifact (Amazon ECR)') {
+            steps {
+                sh '''
+                  set -euo pipefail
+                  REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
+                  aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "$REGISTRY"
+                  docker build -t "$REGISTRY/${JOB_NAME}:${GIT_COMMIT}" .
+                  docker push "$REGISTRY/${JOB_NAME}:${GIT_COMMIT}"
+                  sha256sum dist/* > dist/SHA256SUMS || true
+                '''
+            }
+        }
+""",
+    CODEARTIFACT: """        stage('Publish artifact (CodeArtifact)') {
+            steps {
+                sh '''
+                  set -euo pipefail
+                  aws codeartifact login --tool twine --domain "${CODEARTIFACT_DOMAIN}" --repository "${CODEARTIFACT_REPO}"
+                  twine upload --repository codeartifact dist/*
+                  sha256sum dist/* > dist/SHA256SUMS
+                '''
+            }
+        }
+""",
+    S3: """        stage('Publish artifact (versioned S3)') {
+            steps {
+                sh '''
+                  set -euo pipefail
+                  sha256sum dist/* > dist/SHA256SUMS
+                  aws s3 cp dist/ "s3://${ARTIFACT_BUCKET}/${JOB_NAME}/${GIT_COMMIT}/" --recursive
+                '''
+            }
+        }
+""",
+}
+
+
+def _check_repo(artifact_repo):
+    if artifact_repo is not None and artifact_repo not in ARTIFACT_REPOS:
+        raise ValueError(
+            f"unsupported artifact repository: {artifact_repo!r} "
+            f"(expected one of {', '.join(ARTIFACT_REPOS)})")
+    return artifact_repo
+
+
+def _github_artifact_stage(artifact_repo):
+    if not artifact_repo:
+        return ""
+    return _GH_ARTIFACT_COMMON + _GH_ARTIFACT_PUBLISH[artifact_repo]
+
+
 def render_pipeline_workflow(pipeline_name, dest_dir=None, region=DEFAULT_REGION,
-                             tf_version=DEFAULT_TF_VERSION):
-    """One domain-repo GitHub Actions workflow, scoped to a single exported pipeline."""
+                             tf_version=DEFAULT_TF_VERSION, artifact_repo=None):
+    """One domain-repo GitHub Actions workflow, scoped to a single exported pipeline.
+
+    `artifact_repo` (PRD v11 FR-02) adds a build-and-publish stage ahead of Terraform and
+    passes the resulting immutable URI into the plan as `-var artifact_uri=...`.
+    """
+    pipeline_name = _valid_name(pipeline_name)
+    _check_repo(artifact_repo)
     dest_dir = (dest_dir or f"pipelines/{pipeline_name}").replace("\\", "/").strip("/")
+    # dest_dir may carry separators, so it cannot use _valid_name -- but it lands in the same
+    # `paths:` filter, so each segment gets the same treatment.
+    for segment in dest_dir.split("/"):
+        _valid_name(segment)
+    # Terraform consumes the URI the build stage published (FR-02.3) rather than resolving
+    # the tag itself: a tag resolved twice can resolve to two different images.
+    tf_var = ' -var "artifact_uri=${{ env.ARTIFACT_URI }}"' if artifact_repo else ""
     return _fill(_PIPELINE_WORKFLOW, pipeline=pipeline_name, dest_dir=dest_dir,
-                 region=region, tf_version=tf_version)
+                 region=region, tf_version=tf_version,
+                 artifact_stage=_github_artifact_stage(artifact_repo),
+                 tf_artifact_var=tf_var)
 
 
 # --- Feed config parsing --------------------------------------------------------------

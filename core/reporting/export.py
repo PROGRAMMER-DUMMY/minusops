@@ -86,7 +86,7 @@ def _copy_tree(src, dest):
 
 
 def export_run(run_root, target_repo, dest_dir=None, generate_workflow=False,
-               pipeline_name=None, region=cicd.DEFAULT_REGION):
+               pipeline_name=None, region=cicd.DEFAULT_REGION, artifact_repo=None):
     """
     Copy a run's deployable directories into a domain repository.
 
@@ -129,7 +129,8 @@ def export_run(run_root, target_repo, dest_dir=None, generate_workflow=False,
         workflow_path = os.path.join(workflows, f"{pipeline_name}-deploy.yml")
         with open(workflow_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(cicd.render_pipeline_workflow(
-                pipeline_name, dest_dir=rel_dest.replace(os.sep, "/"), region=region))
+                pipeline_name, dest_dir=rel_dest.replace(os.sep, "/"), region=region,
+                artifact_repo=artifact_repo))
 
     manifest = {
         "run": run_root,

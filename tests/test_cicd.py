@@ -159,3 +159,134 @@ def test_unknown_engine_is_refused(tmp_path):
         assert "gitlab" in str(exc)
     else:
         raise AssertionError("an unsupported engine must fail closed, not emit nothing")
+
+
+# --- PRD v11 Step 1: name validation and single-pass substitution ----------------------
+#
+# `_fill` replaced each token sequentially with str.replace, over values nobody validated.
+# Two consequences, both demonstrated before this was fixed:
+#   render_pipeline_workflow("__REGION__")     -> the NAME became "us-east-1", because the
+#                                                 later `region` pass rewrote text the
+#                                                 earlier `pipeline` pass had injected.
+#   render_pipeline_workflow('evil"\nname: x') -> a second top-level `name:` key in the YAML.
+#
+# The second matters most under FR-01.3: `paths:` filters decide which subtree a workflow
+# deploys, so a forged one is the monorepo crosstalk that requirement exists to prevent.
+
+import pytest
+
+
+def test_pipeline_name_must_be_a_safe_slug():
+    for bad in ('a"b', "a\nname: hijacked", "../../evil", "Upper", "under_score",
+                "dot.ted", "-leading", "", "x" * 64, "sp ace"):
+        with pytest.raises(ValueError):
+            cicd.render_pipeline_workflow(bad)
+
+
+def test_pipeline_name_accepts_the_names_people_actually_use():
+    for good in ("clickstream", "payer-reconciliation-01", "a", "x" * 63):
+        assert cicd.render_pipeline_workflow(good)
+
+
+def test_a_value_naming_another_token_is_not_re_substituted():
+    """Single-pass: a token's replacement text is output, never input to a later pass.
+
+    Asserted against `_fill` rather than the public renderer on purpose. The name validator
+    now refuses `__REGION__` before it can reach the template, so a test at the public
+    surface would pass whether or not the substitution itself was fixed -- it would be
+    proving the validator twice and the mechanism never. These are two independent
+    defences and each needs its own test.
+    """
+    out = cicd._fill("[__PIPELINE__] in __REGION__", pipeline="__REGION__",
+                     region="eu-west-1")
+
+    assert out == "[__REGION__] in eu-west-1"
+
+
+def test_substitution_leaves_github_and_shell_expressions_intact():
+    """The templates carry three dollar dialects -- `${{ actions }}`, `$SHELL`, and none of
+    ours. A substitution change that ate any of them would produce a workflow that runs and
+    silently does the wrong thing."""
+    pr = cicd.render_pr_workflow()
+    jenkins = cicd.render_jenkinsfile()
+
+    assert pr.count("${{") == 6
+    assert "$result" in pr
+    assert '"$TF_DIR"' in jenkins
+
+
+def test_no_unsubstituted_tokens_survive_any_render():
+    import re
+    for text in (cicd.render_pr_workflow(), cicd.render_jenkinsfile(),
+                 cicd.render_feed_factory(), cicd.render_feed_dispatch(),
+                 cicd.render_pipeline_workflow("clickstream")):
+        assert not re.findall(r"__[A-Z][A-Z0-9_]*__", text)
+
+
+# --- PRD v11 Step 2 (FR-02): immutable artifact staging --------------------------------
+
+def test_artifact_repo_must_be_one_we_can_actually_emit():
+    with pytest.raises(ValueError):
+        cicd.render_pipeline_workflow("clickstream", artifact_repo="nexus")
+    with pytest.raises(ValueError):
+        cicd.render_jenkinsfile(artifact_repo="nexus")
+
+
+def test_no_artifact_repo_means_no_artifact_stage():
+    """Default stays exactly what it was. An artifact stage nobody asked for is a build
+    step that fails on a repo with nothing to package."""
+    assert "__ARTIFACT" not in cicd.render_pipeline_workflow("clickstream")
+    assert "rtUpload" not in cicd.render_jenkinsfile()
+
+
+def test_jfrog_steps_appear_only_for_artifactory():
+    """rtUpload/rtPublishBuildInfo are Artifactory-PLUGIN steps. On a controller without
+    that plugin they are a parse error, so emitting them unconditionally would break every
+    Jenkins user who does not run Artifactory."""
+    artifactory = cicd.render_jenkinsfile(artifact_repo="artifactory")
+    ecr = cicd.render_jenkinsfile(artifact_repo="ecr")
+
+    assert "rtUpload" in artifactory and "rtPublishBuildInfo" in artifactory
+    assert "rtUpload" not in ecr and "rtPublishBuildInfo" not in ecr
+
+
+def test_every_artifact_repo_publishes_an_immutable_commit_tagged_uri():
+    """FR-02.1/02.3: the tag is the git SHA, and the resulting URI is handed to Terraform.
+    A `latest` tag would make 'build once, deploy many' a lie."""
+    for repo in cicd.ARTIFACT_REPOS:
+        gh = cicd.render_pipeline_workflow("clickstream", artifact_repo=repo)
+        assert "ARTIFACT_URI" in gh, repo
+        assert ":latest" not in gh, repo
+        assert "sha256" in gh.lower(), repo
+
+
+def test_artifact_stages_never_carry_a_static_credential():
+    """NFR-04. The whole point of OIDC is undone by one hardcoded key."""
+    def _directives(text):
+        # Comments are stripped first: both templates EXPLAIN why AKIA keys are refused,
+        # and a naive search trips over the rationale rather than a real credential.
+        return "\n".join(line for line in text.splitlines()
+                         if not line.lstrip().startswith(("#", "//")))
+
+    for repo in cicd.ARTIFACT_REPOS:
+        for text in (cicd.render_pipeline_workflow("clickstream", artifact_repo=repo),
+                     cicd.render_jenkinsfile(artifact_repo=repo)):
+            lowered = _directives(text).lower()
+            assert "aws_secret_access_key" not in lowered, repo
+            assert "akia" not in lowered, repo
+            assert "aws_access_key_id" not in lowered, repo
+
+
+def test_rendered_github_workflows_are_valid_yaml():
+    """AC-01. String assertions cannot prove a workflow parses -- this is the same gap that
+    let 46 green tests pass over unparseable HCL in v8."""
+    yaml = pytest.importorskip("yaml")
+
+    docs = [cicd.render_pr_workflow(), cicd.render_feed_factory(),
+            cicd.render_feed_dispatch(), cicd.render_pipeline_workflow("clickstream")]
+    docs += [cicd.render_pipeline_workflow("clickstream", artifact_repo=r)
+             for r in cicd.ARTIFACT_REPOS]
+
+    for text in docs:
+        loaded = yaml.safe_load(text)
+        assert isinstance(loaded, dict) and "jobs" in loaded
