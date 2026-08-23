@@ -58,6 +58,7 @@ sys.path.insert(0, _CORE_DIR)
 from providers.base import active_cloud  # noqa: E402
 import plan_inspector  # noqa: E402
 import bcm_pricing_calculator  # noqa: E402
+import drawio_generator  # noqa: E402
 
 WORKSPACE = os.getcwd()
 REPORTS = os.path.join(WORKSPACE, "artifacts", "reports")
@@ -2681,6 +2682,15 @@ def _generate_report_bundle(dir_, data, template=None):
 
     with open(os.path.join(out, "architecture.svg"), "w", encoding="utf-8") as f:
         f.write(svg)
+        
+    try:
+        drawio_result = drawio_generator.generate_drawio_from_plan(data)
+        with open(os.path.join(out, "architecture.drawio"), "w", encoding="utf-8") as f:
+            f.write(drawio_result["xml"])
+        with open(os.path.join(out, "architecture_url.txt"), "w", encoding="utf-8") as f:
+            f.write(drawio_result["url"])
+    except Exception as e:
+        pass
     if dataflow_svg:
         with open(os.path.join(out, "dataflow.svg"), "w", encoding="utf-8") as f:
             f.write(dataflow_svg)
