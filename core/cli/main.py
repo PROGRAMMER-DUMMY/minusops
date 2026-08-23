@@ -40,11 +40,12 @@ for _path in (_CORE_DIR, os.path.dirname(_CORE_DIR)):
         sys.path.insert(0, _path)
 
 from . import theme  # noqa: E402
-from .commands import cost, gate, source, use, diagram  # noqa: E402
+from .commands import console, cost, gate, source, use, diagram  # noqa: E402
 from .commands import runs as runs_cmd  # noqa: E402
 
 # Owned by this package. Everything else is delegated.
 NATIVE = {
+    "console": console,
     "use": use,
     "runs": runs_cmd,
     "gate": gate,
@@ -92,6 +93,7 @@ COMMAND_HELP = {
     "doctor": "Diagnose the local environment: tools, credentials, container runtime.",
     "adopt": "Inventory existing Terraform and scan it before adopting it.",
     "reports": "Explore plan reports: services, resources, IAM roles, diffs.",
+    "console": "Serve the visual governance console: topology, lineage, trace, vault.",
     "diagram": "Generate Draw.io architecture diagrams from Terraform plan.",
 }
 
@@ -100,7 +102,7 @@ COMMAND_HELP = {
 # the grouping and `known_commands()` stay in step, so adding a command without placing it
 # fails rather than silently vanishing from the help.
 COMMAND_GROUPS = (
-    ("Workspace and lifecycle", ("create", "use", "runs", "next")),
+    ("Workspace and lifecycle", ("create", "use", "runs", "next", "console")),
     ("Deploy gate and governance",
      ("gate", "source", "guard", "policy", "decision", "conformance", "readiness", "audit")),
     ("Cost and verification", ("cost", "prove", "seed", "diagnose", "validate")),
@@ -159,7 +161,7 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="minusctl", usage=USAGE, add_help=False)
     parser.add_argument("-h", "--help", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
-    for module in (use, runs_cmd, gate, cost, source, diagram):
+    for module in (use, runs_cmd, gate, cost, source, diagram, console):
         module.add_parser(sub)
     for name in sorted(DELEGATED):
         sub.add_parser(name, help=COMMAND_HELP.get(name, ""), add_help=False)

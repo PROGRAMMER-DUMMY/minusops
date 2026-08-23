@@ -23,6 +23,7 @@ This document provides an exhaustive, architectural, and operational reference f
 - [`core/reporting/toolpath.py`](./toolpath.py) — Cross-platform discovery utility for external CLIs (`terraform`, `aws`, headless browsers) without hardcoding user home paths.
 - [`core/reporting/cli_diagnostics.py`](./cli_diagnostics.py) — Agent-facing failure formatting: fuzzy run-id resolution, lifecycle stage interception, and the three-part `WHAT FAILED / WHY IT FAILED / ACTION REQUIRED` error (MINUS-157..160).
 - [`core/reporting/excel_finops_generator.py`](./excel_finops_generator.py) — Dual-tier FinOps `.xlsx` writer (executive summary + engineering ledger) built on stdlib `zipfile` + OpenXML, no third-party dependency.
+- [`core/reporting/drawio_generator.py`](./drawio_generator.py) — Dynamic Draw.io architecture diagram generator producing native editable XML (<mxGraphModel>), 1-click deflated browser URLs, and in-canvas execution ledgers (PRD v12.0).
 
 ---
 

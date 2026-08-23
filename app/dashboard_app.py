@@ -1,4 +1,15 @@
 """
+DEPRECATED (PRD v13). Superseded by `app/console_app.py`, served via `minusctl console`.
+
+Kept, not deleted, on purpose. This module still serves 13 HTTP routes that
+`core/reporting/minusctl.py` and `core/reporting/reporter.py` link into -- deployment
+reports, the click-to-code architecture viewer, report diff/inspect/services/resources,
+and run file downloads -- and nine tests bind to them. Deleting it in the same change that
+introduces the console would break those links and tests at once, for no gain: the console
+replaces the five-tab UI, and porting the report routes is its own piece of work.
+
+New views belong in `console_app.py`. Nothing new should be added here.
+
 MinusOps Console — governed data-pipeline delivery (Plotly Dash).
 
 The overview leads with the pipeline itself: run readiness, reference-architecture

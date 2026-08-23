@@ -1,5 +1,35 @@
 # CONTEXT-app.md — Control Plane Console Context
 
+## `console_app.py` -- the Visual Governance Console (PRD v13)
+
+`minusctl console`. Four views scoped to ONE run, replacing the five-tab dashboard that
+mixed FinOps charts, CLI execution and report viewers for three different audiences:
+
+1. **Architecture topology** -- Draw.io canvas from [`drawio_generator.py`](../core/reporting/drawio_generator.py), with the 1-click diagrams.net URL.
+2. **Data lineage** -- medallion dataset flow from [`lineage_graph.py`](../core/reporting/lineage_graph.py), quarantine fork and Lake Formation masking.
+3. **Execution trace** -- what actually ran, from [`agent_tracer.py`](../core/governance/agent_tracer.py), each stage bound to its audit hash.
+4. **Deliverables vault** -- evidence catalog and signed bundle from [`vault.py`](../core/reporting/vault.py).
+
+**The view layer owns no logic.** Every fact comes from an engine tested independently, which
+is why the console may use Dash while those engines stay standard-library-only -- PRD v13
+invariant 4 binds the engines, not the presentation.
+
+**The canvas proposes; Git decides.** A connection edit never writes HCL directly. It routes
+through [`reconciler.py`](../core/architecture/reconciler.py), which splits the operation in
+two: `propose()` is inert and returns a diff, `confirm()` writes and only when `confirmed is
+True` -- an identity check, because `confirmed="no"` is truthy and would turn a dismissed
+modal into an infrastructure edit. Confirming deletes the standing approval records, so
+`plan_gate.gate_status()` reports `approved: False`. That reuses the gate's own answer
+rather than adding a second staleness flag that could disagree with it.
+
+Two bugs in this module were found by running it, not by testing it: a callback targeting
+an on-demand view errored on page load until `suppress_callback_exceptions` was set, and
+`_run_record` called a `runs` function that does not exist inside a blanket `except
+Exception`, so the console rendered "No runs found" over twenty-five runs. Both now have
+tests.
+
+---
+
 ## Overview
 `app/` contains the web application control plane for **MinusOps**, implemented in [`app/dashboard_app.py`](./dashboard_app.py) using **Plotly Dash** and Flask. It serves as a unified, fixed-screen operator console for multi-cloud data pipeline delivery, governance, FinOps monitoring, and architectural verification.
 
