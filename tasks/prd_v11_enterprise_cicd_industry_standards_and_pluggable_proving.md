@@ -67,10 +67,24 @@ This specification upgrades the MinusOps CI/CD synthesis engine (`core/generatio
 * **FR-04.5 (Plan-Hash Bound Apply):** Production apply refuses execution if the active plan hash diverges from the verified UAT plan hash.
 
 ### FR-05: Incident Classification & Telemetry Routing
-* **FR-05.1:** Automatically categorize operational failures via `incident_diagnostics.py`:
-  * **P1 (Critical Outage):** Hard job failure, KMS access denied, S3 403, out-of-band drift -> Routes to **PagerDuty + Slack**.
-  * **P2 (Data Quality / SLA):** Great Expectations failure, quarantine spike > 2% -> Routes to **Microsoft Teams / Slack**.
-  * **P3 (FinOps Anomaly):** Spend anomaly > 20%, unpinned deprecation -> Routes to **Outlook (.xlsx email)**.
+### FR-05: Impact & Asset-Tier Driven Incident Severity Triage (`core/reporting/incident_diagnostics.py`)
+* **FR-05.1 (Core Principle):** Severity is a function of business impact and urgency evaluated per-incident, **NOT** a fixed label assigned by alert source category.
+* **FR-05.2 (Asset Criticality Tiers):** Classify target assets into pre-defined tiers:
+  * **Tier 0 (Mission Critical):** Regulatory reporting, financial ledger, live production ML, billing pipelines.
+  * **Tier 1 (Business Critical):** Executive KPI dashboards, Core Customer 360 tables.
+  * **Tier 2 (Important):** Departmental/team analytics with available workarounds.
+  * **Tier 3 (Low Criticality):** Exploratory sandbox, ad-hoc exports.
+* **FR-05.3 (Triage Decision Engine):** Evaluate severity based on:
+  1. *Regulatory / Security Exposure Override:* PII/PHI leak, compliance breach, or unauthorized access -> **Immediate P1 override**.
+  2. *Asset Tier Baseline:* Tier 0 (lean P1/P2), Tier 1 (lean P2/P3), Tier 2/3 (lean P3/P4).
+  3. *Silent vs Visible Failure:* Silent corruption (wrong but plausible numbers) -> **+1 severity level bump**.
+  4. *Workaround Availability:* No workaround -> **+1 severity level bump**.
+  5. *Detection Confidence:* Stakeholder caught before monitor -> **+1 severity level bump**.
+* **FR-05.4 (Severity-Driven Routing):**
+  * **P1 (Critical):** Immediate Page via **PagerDuty / Opsgenie** + Slack/Teams incident war room.
+  * **P2 (High):** Secondary on-call page / Business-hours alert to **Slack / Teams** `#data-quality`.
+  * **P3 (Moderate):** Jira ticket creation + async team notification.
+  * **P4 (Low / Informational):** Metrics and operational log only.
 
 ---
 
@@ -98,9 +112,9 @@ This specification upgrades the MinusOps CI/CD synthesis engine (`core/generatio
 - [ ] **Task 2.3:** Add `--hops` and `--config` arguments to `minusctl prove` command handler (`core/cli/commands/prove.py`).
 - [ ] **Task 2.4:** Ensure `proving_report.json` captures per-hop execution status, runtime duration, and cryptographic output digests.
 
-### Phase 3: Telemetry & Incident Severity Triage
-- [ ] **Task 3.1:** Extend `core/reporting/incident_diagnostics.py` to return structured `IncidentSeverity` (`P1`, `P2`, `P3`) and recommended notification target.
-- [ ] **Task 3.2:** Wire automated routing logic into notification hooks (`core/integrations/`).
+### Phase 3: Telemetry & Impact-Driven Incident Severity Triage
+- [ ] **Task 3.1:** Refactor `core/reporting/incident_diagnostics.py` to implement the `IncidentSeverityEvaluator` based on Asset Tier (0-3), silent-vs-visible corruption, and regulatory override checks.
+- [ ] **Task 3.2:** Wire severity-driven routing logic into `core/integrations/` (P1 -> PagerDuty, P2 -> Teams/Slack on-call, P3 -> Jira/Outlook).
 
 ### Phase 4: Test Suite & Verification
 - [ ] **Task 4.1:** Author comprehensive unit tests in `tests/test_cicd_synthesis.py` verifying GitHub Actions and Jenkinsfile generation.
