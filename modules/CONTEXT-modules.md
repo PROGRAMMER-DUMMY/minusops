@@ -326,6 +326,9 @@
   - `aws_iam_role.mwaa`: MWAA execution role assumed by `airflow.amazonaws.com` and `airflow-env.amazonaws.com`.
   - `aws_iam_role_policy.mwaa`: IAM policy granting read access to DAG S3 bucket and CloudWatch log management.
   - `aws_mwaa_environment.this`: MWAA environment (`mw1.small` default, Airflow 2.8.1) configured with private subnets, security groups, DAG path (`dags`), and task/DAG processing logging enabled.
+  - `aws_s3_bucket.dags` (+ `_versioning`, `_public_access_block`, `_server_side_encryption_configuration`, `_lifecycle_configuration`): the dedicated DAG bucket, created when `create_dag_bucket` is true.
+    - **Versioning is mandatory, not a preference**: MWAA resolves DAG updates by object version, and a supplied bucket without it fails environment creation with a message that does not say so.
+    - **That is exactly why the lifecycle rule is not optional either.** Every DAG edit leaves a noncurrent version behind; with versioning forced on and no expiry, a small file edited often accumulates for the life of the environment. G6's `COST-01` fired on this bucket for real, and it was a true finding rather than a false positive -- the rule was right and the module was missing the control.
 - **Inputs**:
   - `name_prefix` (string, required): Resource name prefix.
   - `tags` (map(string), default `{}`): Tag map.
@@ -334,6 +337,7 @@
   - `security_group_ids` (list(string), required): Security group IDs.
   - `airflow_version` (string, default `"2.8.1"`): Airflow runtime version.
   - `environment_class` (string, default `"mw1.small"`): MWAA instance class size.
+  - `dag_noncurrent_version_retention_days` (number, default `30`): how long a superseded DAG version is kept before expiry. Validated `>= 1`: zero would expire the version a rollback needs.
 - **Outputs**:
   - `airflow_environment`: Name of created MWAA environment.
   - `execution_role_arn`: Execution role ARN.

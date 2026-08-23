@@ -39,11 +39,13 @@ import json
 import html
 import hashlib
 import argparse
+import contextlib
 import datetime
 import subprocess
 import base64
 import pathlib
 import secrets
+import shutil
 import socket
 import struct
 import tempfile
@@ -2465,14 +2467,39 @@ def _ws_connect(ws_url):
     return sock
 
 
+@contextlib.contextmanager
+def _browser_profile_dir():
+    """A throwaway Chrome profile directory that cleans up without ever raising.
+
+    NOT `TemporaryDirectory(ignore_cleanup_errors=True)`. That flag exists from 3.10, but on
+    3.10/3.11 it does not actually suppress this case: Chrome keeps a handle open on
+    `Default/Shared Dictionary/cache/index-dir` for a few milliseconds after the process
+    exits, `shutil.rmtree` hits WinError 32, and the error surfaces out of the context
+    manager and fails the caller. Observed in CI on Windows/py3.10 -- a PDF that rendered
+    perfectly well, reported as a failure by its own cleanup.
+
+    Retry briefly, then give up and leave the directory. It is under the system temp root
+    and a few kilobytes; the OS reclaims it. Losing a report because a browser was slow to
+    release a cache file is the worse outcome.
+    """
+    path = tempfile.mkdtemp(prefix="minus-report-browser-")
+    try:
+        yield path
+    finally:
+        for attempt in range(5):
+            try:
+                shutil.rmtree(path)
+                return
+            except OSError:
+                if attempt == 4:
+                    return          # deliberate: cleanup failure is not the caller's problem
+                time.sleep(0.1)
+
+
 def _cdp_print_pdf(browser, html_path, pdf_path):
     file_url = pathlib.Path(html_path).resolve().as_uri()
     port = _free_local_port()
-    try:
-        temp_ctx = tempfile.TemporaryDirectory(prefix="minus-report-browser-", ignore_cleanup_errors=True)
-    except TypeError:
-        temp_ctx = tempfile.TemporaryDirectory(prefix="minus-report-browser-")
-    with temp_ctx as user_data_dir:
+    with _browser_profile_dir() as user_data_dir:
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         proc = subprocess.Popen(
             [

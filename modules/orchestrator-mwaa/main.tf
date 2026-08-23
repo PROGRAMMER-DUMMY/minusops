@@ -18,6 +18,17 @@ variable "create_dag_bucket" {
   description = "Create a dedicated, versioned DAG bucket instead of taking one. MWAA REQUIRES versioning on the source bucket -- it resolves DAG updates by object version -- so a bucket supplied from elsewhere without it fails at environment creation with a message that does not say so."
 }
 
+variable "dag_noncurrent_version_retention_days" {
+  type        = number
+  default     = 30
+  description = "How long a superseded DAG version is kept before expiry. Versioning is mandatory for MWAA, so without this every edit accumulates a noncurrent version forever. 30 days leaves a rollback window well past the point anyone would notice a bad DAG, and expires the rest."
+
+  validation {
+    condition     = var.dag_noncurrent_version_retention_days >= 1
+    error_message = "Retention must be at least 1 day; 0 would expire the version that a rollback needs."
+  }
+}
+
 variable "kms_key_arn" {
   type        = string
   default     = ""
@@ -110,6 +121,31 @@ resource "aws_s3_bucket_public_access_block" "dags" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+# Versioning above is mandatory, not a preference -- MWAA identifies DAG updates by object
+# version -- and that is exactly what makes a lifecycle rule non-optional here. Every DAG
+# edit leaves a noncurrent version behind, and without an expiry those accumulate for the
+# life of the environment: a small file, edited often, forever. Current versions are never
+# touched, because MWAA reads them.
+resource "aws_s3_bucket_lifecycle_configuration" "dags" {
+  count  = var.create_dag_bucket ? 1 : 0
+  bucket = aws_s3_bucket.dags[0].id
+
+  rule {
+    id     = "expire-noncurrent-dag-versions"
+    status = "Enabled"
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.dag_noncurrent_version_retention_days
+    }
+
+    # A multipart upload that failed partway still bills for its parts until aborted.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "dags" {

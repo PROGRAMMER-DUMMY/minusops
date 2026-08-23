@@ -547,6 +547,27 @@ def _placeholder_for_type(type_expr):
     return '"placeholder"'
 
 
+# ARN shapes by what the variable name says the ARN is FOR. The provider validates the
+# service and the resource part, not just the "arn:" prefix -- an S3 bucket ARN in an IAM
+# admins list is rejected the same way a bare string is.
+_ARN_BY_HINT = (
+    ("iam_role", "arn:aws:iam::123456789012:role/placeholder-{n}"),
+    ("role",     "arn:aws:iam::123456789012:role/placeholder-{n}"),
+    ("kms",      "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-00000000000{n}"),
+    ("key",      "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-00000000000{n}"),
+    ("topic",    "arn:aws:sns:us-east-1:123456789012:placeholder-{n}"),
+    ("queue",    "arn:aws:sqs:us-east-1:123456789012:placeholder-{n}"),
+)
+_ARN_DEFAULT = "arn:aws:s3:::placeholder-bucket-{n}"
+
+
+def _arn_for(name, index):
+    for hint, template in _ARN_BY_HINT:
+        if hint in name:
+            return template.format(n=index)
+    return _ARN_DEFAULT.format(n=index)
+
+
 def _placeholder_for_variable(name, type_expr):
     """Name-based override, checked before the generic type-based placeholder: a generic
     string satisfies Terraform's own type system but not a provider's attribute-level format
@@ -554,10 +575,31 @@ def _placeholder_for_variable(name, type_expr):
     (real provider-side check, confirmed live: "invalid ARN: arn: invalid prefix" against a
     plain "placeholder" value) -- unrelated to HANDOFF's synthesizer-wiring gap for this same
     variable name, which lives in synthesizer.py's cross-module composition and is never
-    exercised by this standalone-module test. Scoped narrowly to *_arn-suffixed variables so
-    this stays a fixture-format fix, not a broad placeholder-quality rewrite."""
-    if name.endswith("_arn") and "string" in (type_expr or ""):
-        return '"arn:aws:s3:::placeholder-bucket"'
+    exercised by this standalone-module test. Scoped narrowly to ARN-suffixed variables so
+    this stays a fixture-format fix, not a broad placeholder-quality rewrite.
+
+    Covers LISTS of ARNs as well as single ones. `governance-lakeformation` declares
+    `admin_iam_role_arns` as list(string), which matched the generic list rule and got
+    ["placeholder-a", "placeholder-b"] -- rejected by the provider with "is an invalid ARN:
+    arn: invalid prefix". The ARN shape follows the variable name because the provider
+    validates the service too: an S3 ARN in an IAM admins list fails just as hard.
+
+    Two distinct entries, not one repeated: min-item constraints want two, and a list of
+    identical principals is rejected by some resources as a duplicate.
+    """
+    is_arn = name.endswith("_arn") or name.endswith("_arns")
+    if is_arn:
+        expr = type_expr or ""
+        if re.search(r"(list|set)\s*\(", expr):
+            return '["{0}", "{1}"]'.format(_arn_for(name, 1), _arn_for(name, 2))
+        # `map(string)` CONTAINS the substring "string". Checking for it first sent
+        # storage-medallion-s3's `replication_destination_bucket_arns` -- a map -- down the
+        # single-ARN branch and handed a plain string to a map-typed variable. Matching the
+        # constructor before the element type is what keeps that straight.
+        if re.search(r"(map|object)\s*\(", expr):
+            return _placeholder_for_type(expr)
+        if "string" in expr:
+            return '"{0}"'.format(_arn_for(name, 1))
     return _placeholder_for_type(type_expr)
 
 
