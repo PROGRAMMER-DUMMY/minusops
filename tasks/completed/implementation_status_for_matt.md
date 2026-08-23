@@ -42,7 +42,7 @@ All three source documents have been read in full.
 | **FR-05** | Cryptographic plan binding | **Already implemented** — `plan_gate` SHA-256 over `resource_changes` + `output_changes` |
 | **FR-06** | Privilege escalation prevention | **Not done.** Requires the §13 boundary deployed in AWS. The §13 JSON is defective as written — see §6. |
 | **FR-07** | Two-person rule | **Already implemented** — `plan_gate._enforce_production_approval` |
-| **FR-08** | FinOps circuit breakers | **Done.** Athena `bytes_scanned_cutoff` ✅, Glacier lifecycle ✅, and `aws_glue_job` now sets `timeout = var.timeout_minutes` (default 120, validated against AWS's 2880 ceiling) ✅. Previously absent, so AWS applied its 48-hour default. Pinned by [`tests/test_finops_circuit_breakers.py`](../../tests/test_finops_circuit_breakers.py) and mutation-checked. |
+| **FR-08** | FinOps circuit breakers | **Done.** Athena `bytes_scanned_cutoff` [OK], Glacier lifecycle [OK], and `aws_glue_job` now sets `timeout = var.timeout_minutes` (default 120, validated against AWS's 2880 ceiling) [OK]. Previously absent, so AWS applied its 48-hour default. Pinned by [`tests/test_finops_circuit_breakers.py`](../../tests/test_finops_circuit_breakers.py) and mutation-checked. |
 | **FR-09** | Runtime dependency pinning | **Not done, and contradicts §6.6.** See §6. |
 
 **Six of nine already existed before this work began.** The PRD documents them as requirements without marking them as shipped, which makes the remaining scope look larger than it is.

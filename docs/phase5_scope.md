@@ -311,9 +311,9 @@ after which both gauntlets ran to completion cleanly.
 
 | Type | MiniStack positive | MiniStack negative | Floci positive | Floci negative |
 |---|---|---|---|---|
-| `aws_iam_role` (trust-policy principal ARN) | ✅ applies cleanly | ❌ **accepted** a malformed principal ARN (`arn:aws:iam::12:root`, a 2-digit non-account-ID) real AWS is documented to reject | ✅ applies cleanly | ❌ **accepted** the same malformed ARN |
-| `aws_kms_key` (key policy) | ✅ applies cleanly | ❌ **accepted** a key policy with no root/admin grant statement at all — real AWS rejects this with "the new key policy will not allow you to update the key policy in the future" | ✅ applies cleanly | ❌ **accepted** the same policy |
-| `aws_s3_bucket_policy` | ✅ applies cleanly | ❌ **accepted** a bucket policy whose `Resource` ARN names a *different* bucket than the one it's attached to — real AWS rejects this as an invalid resource | ✅ applies cleanly | ❌ **accepted** the same mismatched policy |
+| `aws_iam_role` (trust-policy principal ARN) | [OK] applies cleanly | [FAIL] **accepted** a malformed principal ARN (`arn:aws:iam::12:root`, a 2-digit non-account-ID) real AWS is documented to reject | [OK] applies cleanly | [FAIL] **accepted** the same malformed ARN |
+| `aws_kms_key` (key policy) | [OK] applies cleanly | [FAIL] **accepted** a key policy with no root/admin grant statement at all — real AWS rejects this with "the new key policy will not allow you to update the key policy in the future" | [OK] applies cleanly | [FAIL] **accepted** the same policy |
+| `aws_s3_bucket_policy` | [OK] applies cleanly | [FAIL] **accepted** a bucket policy whose `Resource` ARN names a *different* bucket than the one it's attached to — real AWS rejects this as an invalid resource | [OK] applies cleanly | [FAIL] **accepted** the same mismatched policy |
 
 **Net result: as of this session, NEITHER free emulator passes the mandatory negative-fidelity
 bar for any of the three security-critical types this repo's modules actually use.** Per

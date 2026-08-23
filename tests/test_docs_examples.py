@@ -22,6 +22,7 @@ Used by: nothing (pytest entry point)
 import ast
 import os
 import re
+import subprocess
 import urllib.parse
 
 import pytest
@@ -58,6 +59,12 @@ def _linkable(text):
     """
     text = re.sub(r"```.*?```", lambda m: " " * len(m.group(0)), text, flags=re.DOTALL)
     return re.sub(r"`[^`\n]*`", lambda m: " " * len(m.group(0)), text)
+
+
+def _tracked(*suffixes):
+    """Git-tracked files with these suffixes, excluding the user's own .claude/ tooling."""
+    out = subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True).split()
+    return [f for f in out if f and f.endswith(suffixes) and not f.startswith(".claude/")]
 
 
 def _example_under(path, heading):
@@ -261,18 +268,25 @@ def test_local_markdown_links_resolve_on_disk(scope):
 
 # --- NFR-01 -----------------------------------------------------------------------------
 
-def test_no_emoji_in_python_sources():
-    """Excel renders emoji; a terminal, a CI log and a ticket paste do not, and the same
-    strings are read back by operators in all four places."""
-    offenders = []
-    for dirpath, subdirs, files in os.walk(os.path.join(ROOT, "core")):
-        subdirs[:] = [d for d in subdirs if d != "__pycache__"]
-        for name in files:
-            if not name.endswith(".py"):
-                continue
-            path = os.path.join(dirpath, name)
-            for lineno, line in enumerate(_read(path).splitlines(), 1):
-                if EMOJI.search(line):
-                    offenders.append(f"{os.path.relpath(path, ROOT)}:{lineno}")
+@pytest.mark.parametrize("suffix", [".py", ".md", ".yml", ".yaml"])
+def test_no_emoji_in_tracked_sources(suffix):
+    """NFR-01, repo-wide.
 
-    assert not offenders, "emoji in Python sources: " + ", ".join(offenders)
+    An emoji renders in exactly one of the places these strings are read. A terminal on
+    Windows raises UnicodeEncodeError on cp1252 rather than degrading, a CI log shows boxes,
+    a `grep` result shows mojibake, and a ticket paste carries whatever the clipboard did to
+    it. Status carried by colour and shape is also invisible to a screen reader: `[FAIL]`
+    survives all of those and a red circle survives none.
+
+    Box drawing is deliberately allowed -- see the EMOJI pattern above.
+    """
+    offenders = []
+    for rel in _tracked(suffix):
+        for lineno, line in enumerate(_read(os.path.join(ROOT, rel)).splitlines(), 1):
+            found = EMOJI.findall(line)
+            if found:
+                names = " ".join(f"U+{ord(c):04X}" for c in dict.fromkeys(found))
+                offenders.append(f"{rel}:{lineno} ({names})")
+
+    assert not offenders, (
+        f"{len(offenders)} lines carry emoji in {suffix} files: " + "; ".join(offenders))

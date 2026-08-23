@@ -15,7 +15,7 @@ This handoff ledger records the current state of the workspace, recent architect
 
 ---
 
-## 📍 Current State & Recent Milestones
+## Current State & Recent Milestones
 
 ### 0. Enterprise Next-Gen Upgrade — Branch `feat/minusops-enterprise-nextgen-v2` (2026-08-19)
 
@@ -50,7 +50,7 @@ The workspace is maintained with **14 dedicated, non-monolithic `CONTEXT-[folder
 
 ---
 
-## 🗂️ Workspace Context Directory Map
+## Workspace Context Directory Map
 
 | Directory | Context File | Description |
 | :--- | :--- | :--- |
@@ -73,7 +73,7 @@ The workspace is maintained with **14 dedicated, non-monolithic `CONTEXT-[folder
 
 ---
 
-## ⚡ Quick Start & Common Workflows
+## Quick Start & Common Workflows
 
 ### 1. Diagnostics & Pre-Flight Check
 ```bash

@@ -133,12 +133,14 @@ marked `slow` and deselected by default. CI runs them with `pytest -m slow`.
 python -m pytest          # no flags needed; pyproject sets --basetemp and -m 'not slow'
 ```
 
-⚠️ Module provider constraints still float, so a new AWS provider release makes the `slow`
-suite download ~700 MB before it can run. Pinning in each module's `versions.tf` would fix
-it. `module_provenance.py` already records a `provider_version` to pin against.
+> [!WARNING]
+> Module provider constraints still float, so a new AWS provider release makes the `slow`
+> suite download ~700 MB before it can run. Pinning in each module's `versions.tf` would fix
+> it. `module_provenance.py` already records a `provider_version` to pin against.
 
-⚠️ `tests/test_query_athena_module.py` exited 1 once during a sequential per-file scan but
-passes standalone. Suspected contention, not a real failure — worth watching.
+> [!WARNING]
+> `tests/test_query_athena_module.py` exited 1 once during a sequential per-file scan but
+> passes standalone. Suspected contention, not a real failure — worth watching.
 
 ---
 

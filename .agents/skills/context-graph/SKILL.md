@@ -54,7 +54,15 @@ For each modified file, verify and update:
 ### Step 4: Validate Links & Format Invariants
 * Ensure all links are repo-relative and resolve to valid paths on disk. `pytest
   tests/test_docs_examples.py` enforces both and is the fastest way to check.
-* Confirm strictly **zero emojis** are present.
+* Confirm strictly **zero emojis** are present, in `.py`, `.md`, `.yml` and `.yaml` alike.
+  Use `[OK]`, `[WARN]`, `[FAIL]`, `[PASS]` for status, `->` for arrows, and GitHub alerts
+  (`> [!NOTE]`, `> [!IMPORTANT]`, `> [!WARNING]`, `> [!TIP]`) for callouts. Status carried by
+  colour or shape alone is invisible to a screen reader, and a terminal on Windows raises
+  `UnicodeEncodeError` on cp1252 rather than degrading.
+* **Box drawing is not an emoji** and stays: the directory trees in `CONTEXT-MAP.md` and
+  `AGENTS.md` depend on it. When editing a box diagram, keep every `|` on the column its
+  border sets -- padding by character count is wrong for any glyph the terminal draws wider
+  than one cell.
 * Use clean ASCII tables and GitHub-style code fences.
 
 ### Step 5: Update Master `CONTEXT-MAP.md` (If New Directory)

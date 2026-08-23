@@ -18,12 +18,12 @@
 In complex global enterprises (e.g., healthcare, life sciences, finance), cloud operations span multiple business domains, each managing dedicated Git repositories for specific functional projects, with each project operating dozens of specialized data pipelines.
 
 Standard AI assistants and naive DevOps tooling suffer from two fatal enterprise flaws:
-1. **Flat / Static Budget Blindness:** Naive systems set flat dollar thresholds (e.g. "$500 cap"). Senior leadership (CFO, VP, Directors) cannot use this—they require **Month-over-Month (MoM) Variance Analysis** (e.g. `Last Month: $1,679` ➔ `Current Month: $2,405`, `+$726 / +43.2% rise`), root-cause cost driver breakdowns, and clear command-chain ownership attribution.
+1. **Flat / Static Budget Blindness:** Naive systems set flat dollar thresholds (e.g. "$500 cap"). Senior leadership (CFO, VP, Directors) cannot use this—they require **Month-over-Month (MoM) Variance Analysis** (e.g. `Last Month: $1,679` -> `Current Month: $2,405`, `+$726 / +43.2% rise`), root-cause cost driver breakdowns, and clear command-chain ownership attribution.
 2. **Probabilistic Security & Cross-Repo Blast Radius:** Prompts (`AGENTS.md`) alone cannot prevent AI agents with shell execution from executing destructive teardowns, escalating IAM privileges, or cross-contaminating state across isolated project repositories.
 
 ### 1.2 The Solution
 MinusOps establishes a **Zero-Trust, Multi-Project Control Plane** delivering:
-* **Deterministic 4-Tier Guardrails:** Prompt rules ➔ Python AST gate ➔ Terraform `prevent_destroy` ➔ AWS IAM Permissions Boundary that physically blocks unapproved teardowns and privilege escalation.
+* **Deterministic 4-Tier Guardrails:** Prompt rules -> Python AST gate -> Terraform `prevent_destroy` -> AWS IAM Permissions Boundary that physically blocks unapproved teardowns and privilege escalation.
 * **Hierarchical State Isolation:** Partitioning infrastructure per Domain, Project, and Pipeline.
 * **Dual-Workbook FinOps Intelligence:** Automated MoM variance ledgers, percentage rise analytics, and executive spreadsheets (1 single row per project) for leadership reviews.
 * **The 7-Pillar Enterprise Grilling Engine:** Interrogating Day-2 architectural requirements (schema drift, idempotency, consumer personas, compute sizing, compliance) before generating IaC.
@@ -169,7 +169,7 @@ Before generating any IaC, MinusOps interviews the architect across **7 fundamen
 ### 6.1 Dynamic Python Library Discovery (No Hardcoding)
 MinusOps never hardcodes a fixed library set. It interactively queries the engineer's stack requirements (`polars`, `duckdb`, `pandas`, `openpyxl`, `dbt`) and automatically validates that wheels match the target runtime (`AWS Glue 4.0 / Python 3.10` or `EMR 7.0 / Python 3.11`) using `doctor.py` ABI bytecode checks before S3 upload.
 
-### 6.2 3-Tier Environment Lifecycle (`dev` ➔ `staging` ➔ `prod`)
+### 6.2 3-Tier Environment Lifecycle (`dev` -> `staging` -> `prod`)
 MinusOps aligns with the enterprise 3-tier lifecycle:
 * **Dev (Sandbox):** Data engineers rapid experimentation with synthetic data; single-operator self-approval allowed.
 * **Staging (QA / UAT):** Automated integration tests + downstream business analyst acceptance on masked data.
@@ -183,11 +183,11 @@ Every infrastructure change follows a deterministic 5-stage lifecycle producing 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ STAGE 1: REQUIREMENTS DISCOVERY ➔ runs/<run-id>/requirements.json           │
-│ STAGE 2: ARCHITECTURE DECISION  ➔ runs/<run-id>/architecture_decision.json   │
-│ STAGE 3: HCL SYNTHESIS & SCAN   ➔ runs/<run-id>/terraform/ + scan_report.md │
-│ STAGE 4: PLAN-BOUND DEPLOY GATE ➔ runs/<run-id>/plan_hash.json + approval.json│
-│ STAGE 5: POST-DEPLOY FINOPS     ➔ executive_project_summary.xlsx + audit.jsonl│
+│ STAGE 1: REQUIREMENTS DISCOVERY -> runs/<run-id>/requirements.json          │
+│ STAGE 2: ARCHITECTURE DECISION  -> runs/<run-id>/architecture_decision.json │
+│ STAGE 3: HCL SYNTHESIS & SCAN  -> runs/<run-id>/terraform/ + scan_report.md │
+│ STAGE 4: PLAN-BOUND DEPLOY GATE -> runs/<run-id>/plan_hash.json + approval.json│
+│ STAGE 5: POST-DEPLOY FINOPS  -> executive_project_summary.xlsx + audit.jsonl│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -211,7 +211,7 @@ Standard S3 Object Lock `COMPLIANCE` mode makes deletion impossible for anyone i
 │ GDPR ERASURE EXECUTION (Crypto-Shredding):                                  │
 │ 1. Silver / Gold Iceberg: Execute row delete: `DELETE FROM tbl_gold ...`    │
 │ 2. Bronze WORM: Destroy the specific KMS encryption key in AWS KMS.         │
-│ ➔ The Bronze ciphertext becomes mathematically unrecoverable white noise,   │
+│ -> The Bronze ciphertext becomes mathematically unrecoverable white noise,  │
 │   satisfying both SEC 17a-4 immutability and GDPR Art. 17 erasure laws!     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -268,8 +268,8 @@ owner_role: "payer-reconciliation-lead"
 ```
 
 ### 10.3 The 3 Incident Remediation Pathways
-1. **Standard / Structural Fix:** `dev` ➔ `staging (UAT validation)` ➔ `prod`.
-2. **Fast-Track Staging Hotfix:** Branch `hotfix/*` ➔ validate query/script in `staging` with end-users ➔ promote to `prod` with Lead approval.
+1. **Standard / Structural Fix:** `dev` -> `staging (UAT validation)` -> `prod`.
+2. **Fast-Track Staging Hotfix:** Branch `hotfix/*` -> validate query/script in `staging` with end-users -> promote to `prod` with Lead approval.
 3. **Zero-Downtime Table Rollback:** Apache Iceberg Time-Travel snapshot rollback (`CALL system.rollback_to_snapshot('gold_table', snapshot_id)`).
 
 ---
@@ -278,7 +278,7 @@ owner_role: "payer-reconciliation-lead"
 
 * **Athena Query Guard:** `BytesScannedCutoffPerQuery = 10737418240` (10 GiB = ~$0.05 cutoff per query).
 * **Glue Job Worker Cap:** `max_capacity = 4`, `Timeout = 120` minutes.
-* **S3 Lifecycle Tiering:** Transition Standard ➔ Glacier Instant Retrieval at 30 days ➔ Deep Archive at 90 days ($0.00099/GB-mo).
+* **S3 Lifecycle Tiering:** Transition Standard -> Glacier Instant Retrieval at 30 days -> Deep Archive at 90 days ($0.00099/GB-mo).
 
 ---
 

@@ -79,7 +79,7 @@ The data model directly dictates the compute worker class, partition keys, and s
 
 | Data Modeling Requirement | Glue Worker Class | Partition Strategy (`aws_glue_catalog_table`) | S3 Storage Lifecycle |
 | :--- | :--- | :--- | :--- |
-| **Append-Only Event Stream** | `G.1X` (4 vCPU, 16GB) | `year/month/day/hour` | Bronze ➔ Glacier IR at 30d ➔ Deep Archive at 90d |
+| **Append-Only Event Stream** | `G.1X` (4 vCPU, 16GB) | `year/month/day/hour` | Bronze -> Glacier IR at 30d -> Deep Archive at 90d |
 | **SCD Type 1 Overwrite** | `G.1X` (4 vCPU, 16GB) | `domain/entity_id` | Standard storage |
 | **SCD Type 2 Historical Mart** | `G.2X` (8 vCPU, 32GB) | `valid_from_year/valid_from_month` | Fact: Glacier at 30d; Dim: Standard storage |
 | **High-Volume CDC Merge** | `G.2X` + DynamoDB Lock | `table_name/date` | Daily compaction; Iceberg snapshot expiry at 7d |

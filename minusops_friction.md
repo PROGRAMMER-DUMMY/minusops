@@ -130,7 +130,7 @@ This document catalogs known architectural friction points, potential contract m
 
 ### 5.2 Zero-Row False Green Prevention (`seed.py`)
 * **Location**: [`core/reporting/seed.py`](./core/reporting/seed.py) (`_query`, `seed_pipeline`)
-* **The Conflict**: `seed.py` validates end-to-end data flow (Bronze upload ➔ Glue job run ➔ Athena query).
+* **The Conflict**: `seed.py` validates end-to-end data flow (Bronze upload -> Glue job run -> Athena query).
 * **Friction Mode**: If the transform finishes without errors but writes zero rows to the Gold table, `seed.py` treats it as a hard failure (`Query returned 0 rows`), preventing false green pipeline approvals.
 * **Workaround**: Ensure sample data fixtures under `tests/fixtures/sample.json` satisfy schema contracts and filter criteria.
 

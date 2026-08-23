@@ -7,7 +7,7 @@
 
 ---
 
-## 📑 Master Table of Contents
+## Master Table of Contents
 1. [Executive Summary & Proof of Execution](#1-executive-summary--proof-of-execution)
 2. [Visual Architecture Evolution: Before vs. After](#2-visual-architecture-evolution-before-vs-after)
 3. [The Complete 23-Ticket Engineering Ledger (MINUS-101 to MINUS-137)](#3-the-complete-23-ticket-engineering-ledger)
@@ -51,41 +51,41 @@ The platform executed the full operational lifecycle:
 
 ## 2. Visual Architecture Evolution: Before vs. After
 
-### ❌ BEFORE: The Naive Initial Run (What Ran in Test 1)
+### [FAIL] BEFORE: The Naive Initial Run (What Ran in Test 1)
 ```
 ┌─────────────────────────┐
-│ ❓ Upstream Source      │  (UNKNOWN / EMPTY - No Ingestion Bridge)
+│ [?] Upstream Source     │  (UNKNOWN / EMPTY - No Ingestion Bridge)
 └────────────┬────────────┘
-             │ ❌ Nothing lands in Bronze
+             │ [FAIL] Nothing lands in Bronze
              ▼
 ┌─────────────────────────┐
-│ 📦 S3 Bronze Bucket     │  (Empty Bucket)
+│ S3 Bronze Bucket        │  (Empty Bucket)
 └────────────┬────────────┘
-             │ ❌ Missing --source_path / --target_path
-             │ ❌ Glue IAM Role missing s3:PutObject on Silver
+             │ [FAIL] Missing --source_path / --target_path
+             │ [FAIL] Glue IAM Role missing s3:PutObject on Silver
              ▼
 ┌─────────────────────────┐
-│ ⚙️ AWS Glue PySpark     │  💥 RUNTIME CRASH:
+│ AWS Glue PySpark        │  RUNTIME CRASH:
 │    (etl.py script)      │     • SystemExit (missing arguments)
 └────────────┬────────────┘     • 403 AccessDenied (IAM write permissions)
              │
              ▼
 ┌─────────────────────────┐
-│ 📦 S3 Silver & Gold     │  (Empty Buckets)
+│ S3 Silver & Gold        │  (Empty Buckets)
 └────────────┬────────────┘
-             │ ❌ No Glue Catalog Database or Tables
+             │ [FAIL] No Glue Catalog Database or Tables
              ▼
 ┌─────────────────────────┐
-│ 📊 Athena Workgroup     │  (No Tables to Query)
+│ Athena Workgroup        │  (No Tables to Query)
 └─────────────────────────┘
 ```
 
-### ✅ AFTER: The Complete Enterprise Data Platform
+### [OK] AFTER: The Complete Enterprise Data Platform
 ```
 ========================================================================================
                       1. UPSTREAM INGESTION GATEWAYS
 ========================================================================================
-   [🗄️ PostgreSQL / MySQL]     [☁️ Salesforce / Stripe]     [📁 External SFTP Partner]
+   [PostgreSQL / MySQL]     [Salesforce / Stripe]     [External SFTP Partner]
               │                            │                            │
    (AWS DMS CDC Task)             (AWS AppFlow Flow)           (AWS Transfer Family)
               │                            │                            │
@@ -96,7 +96,7 @@ The platform executed the full operational lifecycle:
                       2. S3 MEDALLION LAKE & QUARANTINE (KMS CMK)
 ========================================================================================
                       ┌─────────────────────────────────────────┐
-                      │ 🥉 BRONZE S3 (s3://...-bronze/raw/)     │
+                      │ BRONZE S3 (s3://...-bronze/raw/)        │
                       │    Raw JSON / CSV / Event Payloads      │
                       └────────────────────┬────────────────────┘
                                            │
@@ -105,7 +105,7 @@ The platform executed the full operational lifecycle:
                  3. SERVERLESS WORKFLOW ORCHESTRATION (AWS Step Functions)
 ========================================================================================
                       ┌─────────────────────────────────────────┐
-                      │ 🔄 Step Functions State Machine         │
+                      │ Step Functions State Machine            │
                       │    (src/orchestration/workflow.json)    │
                       │    • Automated Retries & Catchers       │
                       │    • Coordinates Quality & Transforms   │
@@ -116,14 +116,14 @@ The platform executed the full operational lifecycle:
                  4. TRANSFORMATION & QUALITY GATES (src/compute/ & src/dbt/)
 ========================================================================================
                       ┌─────────────────────────────────────────┐
-                      │ 🛡️ Great Expectations / Glue DQ Gate    │
+                      │ Great Expectations / Glue DQ Gate       │
                       │    • Asserts not_null, valid schema     │
                       └────────────┬───────────────────────┬────┘
                                    │                       │
            (Passed Clean Rows)     │                       │ (Failed / Malformed Rows)
                                    ▼                       ▼
             ┌──────────────────────────────┐    ┌──────────────────────────────┐
-            │ ⚡ dbt-Athena / Glue PySpark │    │ 🛑 QUARANTINE S3 ZONE        │
+            │ dbt-Athena / Glue PySpark    │    │ QUARANTINE S3 ZONE           │
             │    (src/compute/etl.py)      │    │    (s3://...-quarantine/)    │
             │    • Auto-wired S3 paths     │    │    • Bad rows isolated       │
             │    • KMS Encrypted Writes    │    │    • Pipeline never crashes! │
@@ -131,22 +131,22 @@ The platform executed the full operational lifecycle:
                            │                                   │
                            ▼                                   │
             ┌──────────────────────────────┐                   │
-            │ 🥈 SILVER S3 (Clean Parquet) │                   │
+            │ SILVER S3 (Clean Parquet)    │                   │
             └──────────────┬───────────────┘                   │
                            │                                   │
                            ▼ (dbt Business Mart Aggregations)  │
             ┌──────────────────────────────┐                   │
-            │ 🥇 GOLD S3 (Iceberg Tables)  │                   │
+            │ GOLD S3 (Iceberg Tables)     │                   │
             └──────────────┬───────────────┘                   │
                            │                                   │
                            ▼                                   ▼
 ========================================================================================
                   5. SERVING LAYER & 6. 3-TIER INCIDENT ROUTING
 ========================================================================================
-  [📊 Athena SQL & BI Dashboards]             [🚨 3-Tier Alert Routing Hub]
-  • AWS Glue Catalog: `customer_gold`         • 🔴 Tier 1 (Crash): Slack #data-ops / PagerDuty
-  • Partitioned Iceberg Table Schemas         • 🟡 Tier 2 (DQ Fail): Slack #data-quality-log
-  • 10 GB per-query cost limit cutoff         • 🟢 Tier 3 (Budget): Email to Budget Owner
+  [Athena SQL & BI Dashboards]             [3-Tier Alert Routing Hub]
+  • AWS Glue Catalog: `customer_gold`         • Tier 1 (Crash): Slack #data-ops / PagerDuty
+  • Partitioned Iceberg Table Schemas         • Tier 2 (DQ Fail): Slack #data-quality-log
+  • 10 GB per-query cost limit cutoff         • Tier 3 (Budget): Email to Budget Owner
 ========================================================================================
 ```
 
@@ -360,7 +360,7 @@ The platform executed the full operational lifecycle:
 #### [MINUS-132] Disaster Recovery (S3 CRR + KMS Replica) & Mandatory Tag Policy
 * **Priority:** P1 (High) | **Component:** `modules/storage-medallion-s3/main.tf`
 * **Problem:** Regional AWS outages cause total data loss; missing FinOps tags prevent cost allocation.
-* **Fix:** Provision S3 Cross-Region Replication (`us-east-1` ➔ `us-west-2`), Multi-Region KMS keys, and enforce 5 mandatory tags (`CostCenter`, `Environment`, `Owner`, `Workload`, `DataClassification`).
+* **Fix:** Provision S3 Cross-Region Replication (`us-east-1` -> `us-west-2`), Multi-Region KMS keys, and enforce 5 mandatory tags (`CostCenter`, `Environment`, `Owner`, `Workload`, `DataClassification`).
 
 #### [MINUS-133] GitHub-Native DevOps Suite (PR Bot, Environments & Secret Protection)
 * **Priority:** P1 (High) | **Component:** `.github/workflows/deploy.yml`
