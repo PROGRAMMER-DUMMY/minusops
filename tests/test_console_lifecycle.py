@@ -146,3 +146,35 @@ def test_the_lifecycle_module_carries_no_emoji():
                         "core", "cli", "commands", "console.py")
 
     assert all(ord(ch) < 128 for ch in open(path, encoding="utf-8").read())
+
+
+# --- Container assets must launch something that exists ----------------------------------
+
+def _repo(relative):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return open(os.path.join(root, relative), encoding="utf-8").read()
+
+
+def test_no_container_asset_launches_the_retired_dashboard():
+    """deploy/k8s/deployment.yaml ran `python app/dashboard_app.py` after that file was
+    deleted. Nothing in the test suite noticed, because the suite never reads the manifests
+    -- the failure mode was a CrashLoopBackOff in a cluster, not a red test."""
+    for relative in ("Dockerfile", "deploy/k8s/deployment.yaml"):
+        assert "dashboard_app" not in _repo(relative), relative
+
+
+def test_the_container_healthcheck_reads_the_port_the_console_actually_uses():
+    """The console reads CONSOLE_PORT. A healthcheck probing DASH_PORT falls back to 8050
+    and happens to work -- until someone moves the port, at which point the check silently
+    probes the wrong one and reports a healthy container that serves nothing."""
+    dockerfile = _repo("Dockerfile")
+
+    assert "CONSOLE_PORT" in dockerfile
+    assert "DASH_PORT" not in dockerfile
+
+
+def test_the_deployment_passes_the_console_its_own_environment_variables():
+    manifest = _repo("deploy/k8s/deployment.yaml")
+
+    assert "CONSOLE_HOST" in manifest and "CONSOLE_PORT" in manifest
+    assert "MINUS_DASH_TOKEN" in manifest, "a non-loopback bind needs the token"

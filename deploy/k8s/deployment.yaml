@@ -47,19 +47,20 @@ spec:
           # replicas can silently run different code after a push.
           image: <account-id>.dkr.ecr.<region>.amazonaws.com/minusops:0.1.0
           imagePullPolicy: IfNotPresent
-          command: ["python"]
-          args: ["app/dashboard_app.py"]
+          command: ["minusctl"]
+          args: ["console", "--host", "0.0.0.0", "--port", "8050"]
           ports:
             - name: http
               containerPort: 8050
               protocol: TCP
           env:
-            - name: DASH_HOST
+            - name: CONSOLE_HOST
               value: "0.0.0.0"           # reachable from the service, not just localhost
-            - name: DASH_PORT
+            - name: CONSOLE_PORT
               value: "8050"
-            # dashboard_app refuses to start on a non-loopback host unless this is set, so
-            # an unauthenticated console cannot be exposed by forgetting a variable.
+            # The console REFUSES to start on a non-loopback host unless this is set, and
+            # exits non-zero rather than serving. So a missing variable fails the rollout
+            # loudly instead of publishing account evidence to the cluster network.
             # From a Secret, never a literal: a value here lands in git and in
             # `kubectl get deployment -o yaml` for anyone with read access.
             - name: MINUS_DASH_TOKEN

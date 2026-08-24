@@ -78,11 +78,17 @@ EXPOSE 8050
 # Kubernetes ignores this and uses the probes in deploy/k8s/deployment.yaml instead. A
 # one-shot CI run exits well inside --start-period, so it never reports unhealthy.
 # urllib, not curl: curl is removed from the final image above.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3   CMD python -c "import urllib.request,os,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('DASH_PORT','8050')+'/', timeout=4).status < 500 else 1)"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3   CMD python -c "import urllib.request,os,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('CONSOLE_PORT','8050')+'/', timeout=4).status < 500 else 1)"
 
-# Mode 2 (CI gate) is the default. Mode 3 overrides the entrypoint:
-#   command: ["python"], args: ["app/dashboard_app.py"]
-# dashboard_app refuses a non-loopback bind without MINUS_DASH_TOKEN, so an unauthenticated
-# console cannot be exposed by forgetting a variable.
+# Mode 2 (CI gate) is the default. Mode 3 serves the console:
+#   docker run -p 8050:8050 -v "$PWD/runs:/app/runs" minusops console
+# The console refuses a non-loopback bind without MINUS_DASH_TOKEN and exits non-zero, so an
+# unauthenticated console cannot be exposed by forgetting a variable.
+#
+# Mode 4 -- agent sandbox. This is the containment agent_guardrails.py explicitly says it is
+# NOT: a blacklist stops a mistake, a container stops the command from being able to land.
+#   docker run --rm --network none #     --read-only --tmpfs /tmp #     -v "$PWD:/app:ro" -v "$PWD/runs/<run-id>:/app/runs/<run-id>:rw" #     minusops <command>
+# Read-only root with one writable run directory, and no network unless a plan needs one.
+# Credentials are passed only for the step that needs them, never baked in.
 ENTRYPOINT ["minusctl"]
 CMD ["--help"]
