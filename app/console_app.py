@@ -48,12 +48,14 @@ import dash  # noqa: E402
 from dash import dcc, html, Input, Output, State  # noqa: E402
 
 import access_model  # noqa: E402
+import agent_cost_calculator  # noqa: E402
 import agent_flow_graph  # noqa: E402
 import agent_tracer  # noqa: E402
 import drawio_generator  # noqa: E402
 import lineage_graph  # noqa: E402
 import reconciler  # noqa: E402
 import runs as runs_engine  # noqa: E402
+import team_resolver  # noqa: E402
 import vault  # noqa: E402
 
 
@@ -569,13 +571,8 @@ def view_flow(state, tab="data", selected=None):
             else (f"Filtered to {selected} -- click again to clear" if selected
                   else "Select any step to filter everything below to it"))
     return html.Div([
-        html.Div(className="switch", role="tablist", children=[
-            html.Button("Data flow", id={"kind": "flowtab", "tab": "data"}, n_clicks=0,
-                        className="on" if tab == "data" else "", role="tab"),
-            html.Button("Delivery flow", id={"kind": "flowtab", "tab": "delivery"},
-                        n_clicks=0, className="" if tab == "data" else "on", role="tab"),
-            html.Span(hint, className="lab"),
-        ]),
+        html.Div(className="switch", role="tablist", children=(
+            _flow_switch(tab).children + [html.Span(hint, className="lab")])),
         html.Div(hidden=tab != "data", children=[
             html.Div(flow_chain(graph, selected), className="chain"),
             html.Div(flow_node_detail(graph, selected), className="detail"),
@@ -1133,17 +1130,317 @@ def view_access(state):
     return html.Div(blocks)
 
 
+def _bcm(root, name):
+    return _load_json(os.path.join(root or "", "reports", name))
+
+
 def view_cost(state):
-    """04 Cost. BCM forecast, per-service breakdown, scale curve and the assumptions."""
-    return _empty("No cost evidence for this run",
-                  "Run `minusctl cost estimate` to produce a BCM forecast.")
+    """04 Cost. BCM forecast and the assumptions behind it.
+
+    Nothing here is estimated by the console. If the BCM stage has not run, the view says
+    which command produces the figures rather than showing a plausible number.
+    """
+    root = state.get("root") or ""
+    estimate = _bcm(root, "bcm-estimate.json")
+    assumptions = _bcm(root, "bcm-assumptions.json")
+    usage = _bcm(root, "bcm-usage.json")
+    record = state.get("run") or {}
+    declared = record.get("estimated_monthly_cost")
+
+    if not (estimate or assumptions or usage or declared):
+        return _empty("No cost evidence for this run",
+                      "Run `minusctl cost estimate` to produce a BCM forecast, or "
+                      "`minusctl cost actuals` to read Cost Explorer.")
+
+    total = estimate.get("total_monthly_usd") or declared
+    actuals = _bcm(root, "bcm-actuals.json")
+    blocks = [html.Div(className="cells c4", children=[
+        html.Div([html.Span("Monthly forecast", className="lab"),
+                  html.B(f"${total:,}" if total else "not priced",
+                         className="" if total else "absent"),
+                  html.Div(html.Span("BCM forecast", className="src forecast")
+                           if total else "no estimate written", className="sub")]),
+        html.Div([html.Span("Last month actual", className="lab"),
+                  html.B(f"${actuals.get('total_usd'):,}" if actuals.get("total_usd")
+                         else "not connected",
+                         className="" if actuals.get("total_usd") else "absent"),
+                  html.Div("Cost Explorer not linked for this account"
+                           if not actuals.get("total_usd") else
+                           html.Span("Cost Explorer actual", className="src actual"),
+                           className="sub")]),
+        html.Div([html.Span("Rate type", className="lab"),
+                  html.B(assumptions.get("rate_type") or "not recorded",
+                         className="" if assumptions.get("rate_type") else "absent"),
+                  html.Div("how the forecast was priced", className="sub")]),
+        html.Div([html.Span("Region", className="lab"),
+                  html.B(assumptions.get("region") or "not recorded",
+                         className="" if assumptions.get("region") else "absent"),
+                  html.Div("prices are regional", className="sub")]),
+    ])]
+
+    services = estimate.get("by_service") or []
+    blocks.append(html.H2("Where the money goes"))
+    if services:
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Service"), html.Th("Driver"),
+                                html.Th("Monthly", className="right"),
+                                html.Th("Source")])),
+            html.Tbody([html.Tr([
+                html.Td(row.get("service", "-")),
+                html.Td(row.get("driver") or html.Span("not recorded", className="absent")),
+                html.Td(f"${row.get('monthly_usd', 0):,}", className="right"),
+                html.Td(html.Span("BCM forecast", className="src forecast")),
+            ]) for row in services])]))
+    else:
+        blocks.append(html.P("No per-service breakdown was written. `bcm-estimate.json` "
+                             "carries the total only.", className="muted"))
+
+    rows = sorted((assumptions or {}).items())
+    blocks.append(html.H2("What the forecast assumes"))
+    if rows:
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Assumption"), html.Th("Value")])),
+            html.Tbody([html.Tr([html.Td(str(key).replace("_", " ")), html.Td(str(value))])
+                        for key, value in rows])]))
+        blocks.append(html.P("Change any assumption and the forecast changes. This table "
+                             "exists so a number on this page is never mistaken for a bill.",
+                             className="hint"))
+    else:
+        blocks.append(html.P("No assumptions document was written, so the forecast above "
+                             "cannot be audited. That is a reason to distrust it.",
+                             className="muted"))
+    return html.Div(blocks)
+
+
+_CONNECTORS = (
+    ("Slack", "slack_hook", "channel"),
+    ("Microsoft Teams", "teams_hook", "webhook"),
+    ("Confluence", "confluence_hook", "space"),
+    ("Jira", "jira_hook", "project"),
+    ("Outlook", "outlook_hook", "mailbox"),
+)
 
 
 def view_settings(state):
     """Workspace scope: teams and connectors, which outlive any single run."""
-    return _empty("Settings not wired yet",
-                  "Teams come from configs/teams.yaml via team_resolver; connectors from "
-                  "core/integrations.")
+    directory = team_resolver.load_directory()
+    blocks = [
+        html.H2("Teams"),
+        html.P(["A team id becomes the Terraform state-key segment ",
+                html.B("teams/<id>/<workload>/terraform.tfstate"),
+                " and the deploy-role suffix. It is locked once a run exists: renaming a "
+                "team after an apply orphans its state."], className="hint"),
+    ]
+    if directory:
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Team"), html.Th("Lead"),
+                                html.Th("Distribution list"), html.Th("Channel"),
+                                html.Th("Cost centre")])),
+            html.Tbody([html.Tr([
+                html.Td([team_id, html.Span("id locked", className="locked")]),
+                html.Td(fields.get("lead_email")
+                        or html.Span("not set", className="absent")),
+                html.Td(fields.get("team_dl") or html.Span("not set", className="absent")),
+                html.Td(fields.get("slack_channel")
+                        or html.Span("not set", className="absent")),
+                html.Td(fields.get("cost_center")
+                        or html.Span("not set", className="absent")),
+            ]) for team_id, fields in sorted(directory.items())])]))
+    else:
+        blocks.append(html.P("No team directory is configured. With no configs/teams.yaml, "
+                             "`--owner acme-data` still resolves to a team of that id with "
+                             "no metadata -- the directory adds routing and attribution, it "
+                             "is not a gate.", className="muted"))
+
+    blocks.append(html.H2("Connectors"))
+    rows = []
+    for label, module_name, target_kind in _CONNECTORS:
+        installed = os.path.exists(os.path.join(
+            ROOT, "core", "integrations", module_name + ".py"))
+        rows.append(html.Tr([
+            html.Td(label),
+            html.Td(html.Span("Available", className="ok") if installed
+                    else html.Span("not installed", className="absent")),
+            html.Td(html.Span(f"no {target_kind} configured", className="absent")),
+            html.Td(html.Span("not configured", className="absent")),
+        ]))
+    blocks.append(html.Table(className="table", children=[
+        html.Thead(html.Tr([html.Th("Connector"), html.Th("Hook"), html.Th("Target"),
+                            html.Th("Credential")])),
+        html.Tbody(rows)]))
+    blocks.append(html.Div(className="notice", children=[
+        html.Span("Why the credential column is empty", className="lab"),
+        html.P("A webhook URL is a credential -- anyone holding it can post as your bot. "
+               "Connector targets and secret references live in the team directory and in "
+               "Secrets Manager; this console reads them and will never hold the value. "
+               "Editing them from here is not built yet, so the column reports what is "
+               "configured rather than offering a field that would store a secret."),
+    ]))
+    return html.Div(blocks)
+
+
+def _flow_switch(active):
+    """The sub-switch inside 02 Flow. Three flows, one grammar."""
+    tabs = (("data", "Data flow"), ("delivery", "Delivery flow"), ("agent", "Agent flow"))
+    return html.Div(className="switch", role="tablist", children=[
+        html.Button(label, id={"kind": "flowtab", "tab": key}, n_clicks=0, role="tab",
+                    className="on" if key == active else "") for key, label in tabs])
+
+
+def _cost_switch(active):
+    """04 Cost carries cloud spend and agent inference spend. They are both money and they
+    are not the same money, so they get one switch and never one total."""
+    tabs = (("cloud", "Cloud cost"), ("agents", "Agents cost"))
+    return html.Div(className="switch", role="tablist", children=[
+        html.Button(label, id={"kind": "flowtab", "tab": key}, n_clicks=0, role="tab",
+                    className="on" if key == active else "") for key, label in tabs])
+
+
+def _transcript_path(root):
+    """Where PRD v14 says a run's agent transcript lives, relative to the run workspace."""
+    return os.path.join(root or "", ".system_generated", "logs", "transcript.jsonl")
+
+
+def view_agents_cost(state):
+    """COST -> AGENTS COST (FR-01, FR-02). Token economics for the agents that built a run."""
+    analysis = agent_cost_calculator.analyse_run(_transcript_path(state.get("root")))
+    if not analysis.get("available"):
+        return _empty("No agent telemetry for this run",
+                      analysis.get("reason")
+                      or "No transcript was written, so nothing measured what these agents "
+                         "cost. That is not the same as costing nothing.")
+
+    summary = analysis["summary"]
+
+    def _tokens(value):
+        return f"{value:,}" if value is not None else None
+
+    fraction = summary.get("peak_context_fraction")
+    cells = [
+        ("Total agent cost",
+         f"${summary['total_usd']:.4f}" if summary.get("total_usd") is not None else None,
+         f"{summary.get('steps_priced', 0)} of {summary.get('steps_total', 0)} steps priced"),
+        ("Total latency",
+         (f"{summary['total_latency_seconds']:.1f}s"
+          if summary.get("total_latency_seconds") is not None else None),
+         "sum of measured step gaps"),
+        ("Input / output tokens",
+         (f"{_tokens(summary.get('total_prompt_tokens'))} / "
+          f"{_tokens(summary.get('total_completion_tokens'))}"
+          if summary.get("total_prompt_tokens") is not None else None),
+         f"{_tokens(summary.get('total_cached_tokens')) or 'no'} cached"),
+        ("Peak context",
+         (f"{fraction * 100:.1f}%" if fraction is not None else None),
+         (f"{_tokens(summary.get('peak_context_tokens'))} of "
+          f"{_tokens(summary.get('peak_context_ceiling'))}"
+          + (" -- over the alert threshold" if summary.get("context_alert") else ""))),
+    ]
+
+    rows = []
+    for step in analysis["steps"]:
+        cost = step.get("cost") or {}
+        usage = step.get("token_usage") or {}
+        rows.append(html.Tr(className="docrow", children=[
+            html.Td(str(step.get("step_index", "-"))),
+            html.Td(step.get("model") or html.Span("not recorded", className="absent")),
+            html.Td(step.get("tier") or "-"),
+            html.Td((f"{usage.get('prompt_tokens', 0):,} in / "
+                     f"{usage.get('completion_tokens', 0):,} out") if usage.get("present")
+                    else html.Span("not reported", className="absent")),
+            html.Td((f"{step['latency_seconds']:.1f}s"
+                     if step.get("latency_seconds") is not None
+                     else html.Span("-", className="absent")), className="right"),
+            html.Td((f"${cost['total_usd']:.4f}" if cost.get("available")
+                     else html.Span(cost.get("reason") or "not priced", className="absent")),
+                    className="right"),
+        ]))
+
+    counters = [
+        ("steps missing usage", summary.get("steps_missing_usage", 0)),
+        ("steps on an unpriced model", summary.get("steps_unpriced_model", 0)),
+        ("malformed transcript lines", summary.get("malformed_lines", 0)),
+    ]
+    unaccounted = [f"{count} {label}" for label, count in counters if count]
+
+    blocks = [
+        html.Div(className="cells c4", children=[
+            html.Div([html.Span(title, className="lab"),
+                      html.B(value) if value
+                      else html.B("not measured", className="absent"),
+                      html.Div(detail, className="sub")])
+            for title, value, detail in cells]),
+        html.H2("Agent execution cost ledger"),
+        html.P("One row per step. A step with no reported usage is not a free step -- it is "
+               "a step nothing measured, and it is counted separately below.",
+               className="hint"),
+        html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Step"), html.Th("Model"), html.Th("Tier"),
+                                html.Th("Tokens"), html.Th("Latency", className="right"),
+                                html.Th("Cost", className="right")])),
+            html.Tbody(rows)]),
+    ]
+    if unaccounted:
+        blocks.append(html.Div(className="notice", children=[
+            html.Span("Not included in the total", className="lab"),
+            html.P("The figures above exclude " + ", ".join(unaccounted) +
+                   ". They are excluded rather than estimated, so the total is a floor on "
+                   "what this run cost and never a ceiling."),
+        ]))
+    return html.Div(blocks)
+
+
+def view_agent_flow(state):
+    """FLOW -> AGENT FLOW (FR-04, FR-05). The agent handoff DAG and its integrity seal."""
+    chain = agent_tracer.verify_chain(
+        os.path.join(state.get("root") or "", ".agents", "logs", "audit.jsonl"))
+    order = [spec["key"] for spec in agent_tracer.STAGES]
+    graph = agent_flow_graph.build_flow(
+        state.get("trace") or {}, chain=chain,
+        active=agent_tracer.active_agents(state.get("root")),
+        decision=agent_tracer.decision_branches(state.get("root")), order=order)
+
+    label, tone, detail = _chain_cell(graph["chain"])
+    children = []
+    for index, node in enumerate(graph["nodes"]):
+        if index:
+            children.append(html.Span("->", className="link"))
+        children.append(html.Button(
+            id={"kind": "step", "step": node["id"]}, n_clicks=0,
+            className=f"node {'sel' if node['status'] == agent_flow_graph.RUNNING else ''}",
+            children=[
+                html.Span(_status_label(node["status"]), className="lab"),
+                html.Span(node["label"], className="nlabel"),
+                html.Span(node["model_tier"], className="nkind"),
+            ]))
+
+    return html.Div([
+        html.Div(className="cells c4", children=[
+            html.Div([html.Span("Audit trail integrity", className="lab"),
+                      html.B(label, className="ok" if tone == "ok" else ""),
+                      html.Div(detail, className="sub")]),
+            html.Div([html.Span("Stages", className="lab"),
+                      html.B(str(len(graph["nodes"]))),
+                      html.Div("declared in the pipeline", className="sub")]),
+            html.Div([html.Span("Recorded", className="lab"),
+                      html.B(str(sum(1 for n in graph["nodes"]
+                                     if n["status"] == agent_flow_graph.COMPLETED))),
+                      html.Div("stages carrying an audit seal", className="sub")]),
+            html.Div([html.Span("Blocked", className="lab"),
+                      html.B(str(sum(1 for n in graph["nodes"]
+                                     if n["status"] == agent_flow_graph.BLOCKED))),
+                      html.Div("gates that refused", className="sub")]),
+        ]),
+        html.H2("Agent handoffs"),
+        html.P("Click any agent for its persona, decision branch, handoffs and the "
+               "cryptographic seal behind it.", className="hint"),
+        html.Div(children, className="chain"),
+        html.Div(className="notice", children=[
+            html.Span("What a seal proves and what it does not", className="lab"),
+            html.P("A seal proves the record was written and has not been altered since. "
+                   "It does not prove the agent did what the record says -- that is the "
+                   "reflector's job, and its verdict is a separate stage on this graph."),
+        ]),
+    ])
 
 
 RENDERERS = {"topology": view_topology, "flow": view_flow, "access": view_access,
@@ -1228,7 +1525,13 @@ def _render(view, run_id, flow_tab, flow_node):
     # and connectors belong to that run.
     band = html.Div() if view == "settings" else run_band(state)
     if view == "flow":
+        if flow_tab == "agent":
+            return bar, band, html.Div([_flow_switch("agent"), view_agent_flow(state)])
         return bar, band, view_flow(state, flow_tab or "data", flow_node)
+    if view == "cost":
+        if flow_tab == "agents":
+            return bar, band, html.Div([_cost_switch("agents"), view_agents_cost(state)])
+        return bar, band, html.Div([_cost_switch("cloud"), view_cost(state)])
     renderer = RENDERERS.get(view, view_topology)
     return bar, band, renderer(state)
 
@@ -1748,6 +2051,9 @@ details ul{padding:0 0 16px 16px;color:var(--smoke);font-size:12px;columns:3}
       font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;
       color:#8d8d8b;transition:color .12s ease}
     .bar .util .utilbtn:hover{color:var(--paper)}
+    /* An empty-state message following an explanatory hint read as one run-on block. */
+    p.muted{margin:14px 0}
+    .hint + p.muted{margin-top:16px}
     .runpick{min-width:330px}
     .runpick .Select-control,.runpick .Select-menu-outer,.runpick .Select-value,
     .runpick .Select-placeholder,.runpick .Select-input{background:transparent!important;

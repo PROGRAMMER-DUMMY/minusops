@@ -722,3 +722,104 @@ def test_access_says_plainly_which_facts_it_does_not_derive_yet():
 
     assert "Lake Formation" in rendered
     assert "not extracted yet" in rendered
+
+
+# --- 04 Cost and Settings read from disk, and say so when there is nothing --------------
+
+def test_cost_names_the_command_that_produces_the_figures(tmp_path):
+    """A run with no BCM output must not show a plausible number. Naming the command is
+    the difference between "this costs nothing" and "nobody has priced this"."""
+    rendered = json.dumps(console_app.view_cost(
+        {"root": str(tmp_path), "run": {}}), default=str)
+
+    assert "minusctl cost estimate" in rendered
+
+
+def test_every_cost_figure_carries_where_it_came_from(tmp_path):
+    """A BCM forecast and a Cost Explorer actual are different claims. Sharing a typeface
+    with no label invites a forecast to be read as a bill."""
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "bcm-estimate.json").write_text(json.dumps({
+        "total_monthly_usd": 1842,
+        "by_service": [{"service": "AWS Glue", "driver": "420 DPU-hours",
+                        "monthly_usd": 792}]}), encoding="utf-8")
+
+    rendered = json.dumps(console_app.view_cost(
+        {"root": str(tmp_path), "run": {}}), default=str)
+
+    assert "BCM forecast" in rendered
+    assert "not connected" in rendered, "an unlinked Cost Explorer must say so"
+
+
+def test_cost_distrusts_a_forecast_with_no_assumptions_document(tmp_path):
+    """A forecast rests entirely on its inputs. One that cannot be audited is worth less,
+    and the view says which."""
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "bcm-estimate.json").write_text(json.dumps({"total_monthly_usd": 10}),
+                                               encoding="utf-8")
+
+    rendered = json.dumps(console_app.view_cost(
+        {"root": str(tmp_path), "run": {}}), default=str)
+
+    assert "cannot be audited" in rendered
+
+
+def test_settings_never_offers_a_field_that_would_store_a_secret():
+    """A webhook URL is a credential; anyone holding it can post as your bot. The console
+    reads references and holds no values."""
+    rendered = json.dumps(console_app.view_settings({}), default=str)
+
+    assert "credential" in rendered.lower()
+    for leak in ("hooks.slack.com", "webhook_url", "Bearer "):
+        assert leak not in rendered
+
+
+# --- PRD v14 sub-sections ---------------------------------------------------------------
+
+def test_agents_cost_says_nothing_measured_rather_than_zero(tmp_path):
+    """A run with no transcript did not cost nothing -- nothing measured what it cost. On a
+    spend screen those are opposite claims and the second is the one an operator needs."""
+    rendered = json.dumps(console_app.view_agents_cost({"root": str(tmp_path)}), default=str)
+
+    assert "No agent telemetry" in rendered
+    assert "$0" not in rendered, "an unmeasured run must not render a dollar figure"
+
+
+def test_agents_cost_totals_exclude_unpriced_steps_and_say_so(tmp_path):
+    """The total must be a floor on what a run cost, never a ceiling, and the reader has to
+    be told which steps are missing from it."""
+    logs = tmp_path / ".system_generated" / "logs"
+    logs.mkdir(parents=True)
+    logs.joinpath("transcript.jsonl").write_text("\n".join([
+        json.dumps({"step_index": 1, "created_at": "2026-08-24T10:00:00Z", "model": "pro",
+                    "token_usage": {"prompt_tokens": 1000, "completion_tokens": 100,
+                                    "cached_tokens": 0}}),
+        json.dumps({"step_index": 2, "created_at": "2026-08-24T10:00:04Z",
+                    "model": "some-unknown-model",
+                    "token_usage": {"prompt_tokens": 500, "completion_tokens": 50,
+                                    "cached_tokens": 0}}),
+    ]), encoding="utf-8")
+
+    rendered = json.dumps(console_app.view_agents_cost({"root": str(tmp_path)}), default=str)
+
+    assert "Not included in the total" in rendered
+    assert "unpriced model" in rendered
+
+
+def test_agent_flow_never_shows_a_seal_as_proof_the_agent_was_right():
+    """A hash proves a record was written and not altered. It says nothing about whether
+    the agent did what the record claims."""
+    rendered = json.dumps(console_app.view_agent_flow(
+        {"root": "", "trace": {"stages": []}}), default=str)
+
+    assert "does not prove" in rendered
+    assert "reflector" in rendered
+
+
+def test_cloud_spend_and_agent_spend_never_share_a_total():
+    """Both are money and they are not the same money. One switch, two views, no sum."""
+    switch = json.dumps(console_app._cost_switch("cloud"), default=str)
+
+    assert "Cloud cost" in switch and "Agents cost" in switch
