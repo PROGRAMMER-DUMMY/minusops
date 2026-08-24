@@ -293,6 +293,54 @@ def _change_sentence(change):
     return [f"Removed {change['what']}"]
 
 
+# --- Canvas change -> reconciler proposal (FR-05.2, FR-05.3) ------------------------------
+
+# Which argument on a resource type carries an upstream reference. A diagram cannot supply
+# this: a line between two boxes says a relationship exists, never which attribute encodes
+# it. Anything absent here is refused by name; guessing would re-point a different argument
+# than the one the operator read in the review.
+_REFERENCE_ATTRIBUTE = {
+    "aws_glue_job": "--source_path",
+    "aws_glue_crawler": "s3_target",
+    "aws_athena_workgroup": "result_configuration",
+    "aws_lambda_function": "environment",
+    "aws_mwaa_environment": "dag_s3_path",
+}
+
+
+def _type_of(address, plan):
+    for change in (plan or {}).get("resource_changes") or []:
+        if change.get("address") == address:
+            return change.get("type")
+    return None
+
+
+def canvas_change_spec(change, plan):
+    """Turn one intercepted canvas change into a reconciler change spec, or refuse it.
+
+    Returns (spec, refusal). Exactly one is ever set.
+    """
+    if change.get("kind") != "reroute":
+        return None, (
+            f"MinusOps can only rewrite a re-routed connection today. A "
+            f"'{change.get('kind')}' edit changes which resources exist, which is a "
+            f"generation concern rather than a reconnection.")
+
+    target = change.get("target")
+    resource_type = _type_of(target, plan)
+    if not resource_type:
+        return None, (f"{target} is not in this plan, so its type is unknown and no "
+                      f"argument can be resolved.")
+    attribute = _REFERENCE_ATTRIBUTE.get(resource_type)
+    if not attribute:
+        return None, (f"MinusOps does not know which argument on {resource_type} carries "
+                      f"this reference. The diagram shows that a relationship changed, not "
+                      f"which attribute encodes it, and writing the wrong one would "
+                      f"re-point a different part of the stack.")
+    return ({"kind": "reconnect", "target": target, "attribute": attribute,
+             "from": change.get("was"), "to": change.get("now")}, None)
+
+
 def canvas_intercept_panel(changes):
     """FR-05.1. What the canvas edit means, before any HCL is written."""
     if not changes:
@@ -905,122 +953,6 @@ def _ledger_table(ledger):
 
 # --- FR-05: governed visual reconciliation ----------------------------------------------
 
-def _reconcile_panel(state):
-    """Where a topological correction enters the system.
-
-    FR-05.1 says the console intercepts a canvas connection edit. The embedded viewer is a
-    VIEWER -- diagrams.net does not post edit events back to an embedding page -- so the
-    intake is an explicit change form rather than a drag. That is a smaller claim than the
-    PRD's wording and it is the honest one: what FR-05 actually protects is that a proposed
-    edit cannot reach main.tf without the review modal, and that property does not depend on
-    whether a mouse or a form produced the proposal.
-    """
-    return html.Details(className="drawer", children=[
-        html.Summary("Propose an architecture change"),
-        html.Div(className="drawer-body", children=[
-            html.P("Re-route a reference in the generated Terraform. Nothing is written "
-                   "until you confirm the review.", className="muted"),
-            html.Div(className="reconcile-form", children=[
-                _field("Resource", "reconcile-target", "aws_glue_job.etl"),
-                _field("Attribute", "reconcile-attribute", "--source_path"),
-                _field("From", "reconcile-from", "module.storage.gold_bucket_arn"),
-                _field("To", "reconcile-to", "module.storage.bronze_bucket_arn"),
-            ]),
-            html.Button("Review change", id="reconcile-review", n_clicks=0,
-                        className="btn"),
-            html.Div(id="reconcile-modal"),
-            html.Div(id="reconcile-result", className="muted"),
-        ]),
-    ])
-
-
-def _field(label, element_id, placeholder):
-    return html.Label(className="field", children=[
-        html.Small(label),
-        dcc.Input(id=element_id, type="text", placeholder=placeholder,
-                  className="control-input", debounce=True),
-    ])
-
-
-def _change_spec(target, attribute, from_ref, to_ref):
-    return {"kind": "reconnect", "target": (target or "").strip(),
-            "attribute": (attribute or "").strip(),
-            "from": (from_ref or "").strip(), "to": (to_ref or "").strip()}
-
-
-def reconcile_preview(n_clicks, target, attribute, from_ref, to_ref, run_id):
-    """FR-05.2. Compute what the edit would do and render the review modal. Writes nothing.
-
-    Returns (modal_children, stored_spec). `stored_spec` is None whenever the change cannot
-    be applied, so there is nothing for a confirm click to act on.
-    """
-    if not n_clicks:
-        return None, None
-    change = _change_spec(target, attribute, from_ref, to_ref)
-    if not change["from"] or not change["to"]:
-        return html.Div("Enter both a From and a To reference.", className="status-warn"), None
-
-    state = assemble(run_id)
-    run_root = state.get("root")
-    if not run_root:
-        return html.Div("No run selected.", className="status-warn"), None
-
-    proposal = reconciler.propose(run_root, change)
-    if not proposal["applicable"]:
-        return (html.Div(className="status-bad", children=[
-            html.Strong("Change refused"),
-            html.P(proposal["reason"], className="muted"),
-        ]), None)
-
-    modal = html.Div(className="review-modal", children=[
-        html.H4("Architecture change review"),
-        html.Div(className="review-meta", children=[
-            html.Span(f"Author: {proposal['author']}"),
-            html.Span(f"At: {proposal['at']}"),
-        ]),
-        html.P(proposal["summary"], className="review-summary"),
-        html.Ul([html.Li(w) for w in proposal["warnings"]], className="review-warnings"),
-        html.Pre(proposal["diff"], className="ledger"),
-        html.Div(className="review-actions", children=[
-            html.Button("Confirm and rewrite main.tf", id="reconcile-confirm",
-                        n_clicks=0, className="btn primary"),
-            html.Button("Cancel", id="reconcile-cancel", n_clicks=0, className="btn"),
-        ]),
-    ])
-    # The store round-trips through the browser, so it carries the change SPEC and the run
-    # only. Putting `updated_hcl` in here would let a tampered payload be written to main.tf
-    # verbatim -- an arbitrary-file-write endpoint wearing a governance modal. On confirm the
-    # proposal is recomputed server-side from these same inputs.
-    return modal, {"change": change, "run_id": run_id}
-
-
-def reconcile_apply(confirm_clicks, cancel_clicks, stored):
-    """FR-05.3. Apply a reviewed change, but only on an explicit confirm click."""
-    if cancel_clicks and not confirm_clicks:
-        return html.Div("Change cancelled. Nothing was written.", className="muted"), None
-    if not confirm_clicks:
-        return None, dash.no_update
-    if not stored:
-        return html.Div("Nothing to confirm.", className="status-warn"), None
-
-    state = assemble(stored.get("run_id"))
-    run_root = state.get("root")
-    if not run_root:
-        return html.Div("No run selected.", className="status-warn"), None
-
-    # Recomputed here, never taken from the client.
-    proposal = reconciler.propose(run_root, stored["change"])
-    result = reconciler.confirm(proposal, confirmed=True)
-    if not result["applied"]:
-        return html.Div(f"Not applied: {result['reason']}", className="status-bad"), None
-
-    return (html.Div(className="status-good", children=[
-        html.Strong(f"Applied. Run is now {result['status']}."),
-        html.P(f"Approvals revoked: {result['approvals_revoked']}", className="muted"),
-        html.P(f"Next: {result['next_command']}", className="muted"),
-    ]), None)
-
-
 # --- FR-06.1 / FR-06.2: preview and download --------------------------------------------
 #
 # The export used to write a zip and print a path on the SERVER. For anyone not sitting at
@@ -1553,33 +1485,6 @@ def _bundle(_clicks, run_id):
     if not result["ok"]:
         return f"Refused: {result['reason']}"
     return f"Wrote {result['document_count']} documents to {out}"
-
-
-@app.callback(
-    Output("reconcile-modal", "children"),
-    Output("reconcile-proposal", "data"),
-    Input("reconcile-review", "n_clicks"),
-    State("reconcile-target", "value"),
-    State("reconcile-attribute", "value"),
-    State("reconcile-from", "value"),
-    State("reconcile-to", "value"),
-    State("run-id", "data"),
-    prevent_initial_call=True,
-)
-def _reconcile_preview_cb(n_clicks, target, attribute, from_ref, to_ref, run_id):
-    return reconcile_preview(n_clicks, target, attribute, from_ref, to_ref, run_id)
-
-
-@app.callback(
-    Output("reconcile-result", "children"),
-    Output("reconcile-modal", "children", allow_duplicate=True),
-    Input("reconcile-confirm", "n_clicks"),
-    Input("reconcile-cancel", "n_clicks"),
-    State("reconcile-proposal", "data"),
-    prevent_initial_call=True,
-)
-def _reconcile_apply_cb(confirm_clicks, cancel_clicks, stored):
-    return reconcile_apply(confirm_clicks, cancel_clicks, stored)
 
 
 @app.callback(
@@ -2249,6 +2154,67 @@ def _review_canvas(n_clicks, edited_xml, original_xml, run_id):
         ]),
     ])
     return "overlay open", "Architecture change review", "Unbypassable", body
+
+
+
+@app.callback(
+    Output("sheet-body", "children", allow_duplicate=True),
+    Input("canvas-confirm", "n_clicks"),
+    State("canvas-edited", "data"),
+    State("canvas-xml", "data"),
+    State("run-id", "data"),
+    prevent_initial_call=True,
+)
+def _confirm_canvas(n_clicks, edited_xml, original_xml, run_id):
+    """FR-05.3. The only path in this console that writes infrastructure code.
+
+    `confirmed=True` is passed as a literal, never a truthy value carried from the browser:
+    reconciler.confirm() does an identity check precisely so a tampered payload cannot make
+    a dismissed modal look like consent.
+    """
+    if not n_clicks:
+        return dash.no_update
+    state = assemble(run_id)
+    root = state.get("root")
+    # Regenerated here rather than read from the Store: the Store round-trips through the
+    # browser, and the diff decides what gets written.
+    generated = drawio_generator.generate_drawio_from_plan(
+        state.get("plan") or {}, title="Architecture Blueprint")["xml"]
+    changes = canvas_changes(generated, edited_xml or "")
+    if not root or not changes:
+        return html.P("Nothing to apply.", className="muted")
+
+    applied, refused = [], []
+    for change in changes:
+        spec, refusal = canvas_change_spec(change, state.get("plan") or {})
+        if refusal:
+            refused.append(refusal)
+            continue
+        proposal = reconciler.propose(root, spec)
+        if not proposal.get("applicable"):
+            refused.append(proposal.get("reason") or "the reconciler refused this change")
+            continue
+        result = reconciler.confirm(proposal, confirmed=True)
+        if result.get("applied"):
+            applied.append(result)
+        else:
+            refused.append(result.get("reason") or "not applied")
+
+    body = []
+    if applied:
+        revoked = sum(r.get("approvals_revoked", 0) for r in applied)
+        body.append(html.Div(className="status-good", children=[
+            html.Strong(f"{len(applied)} change written to main.tf"),
+            html.P(f"{revoked} standing approval(s) revoked. This run is now "
+                   f"{reconciler.STALE_PLAN}. Run `{reconciler.NEXT_COMMAND}` before any "
+                   f"apply.", className="muted"),
+        ]))
+    for reason in refused:
+        body.append(html.Div(className="status-warn", children=[
+            html.Strong("Change refused"), html.P(reason, className="muted")]))
+    if not body:
+        body.append(html.P("Nothing was written.", className="muted"))
+    return html.Div(body)
 
 
 def main(argv=None):

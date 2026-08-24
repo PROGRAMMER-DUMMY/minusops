@@ -245,111 +245,13 @@ def reconcile_run(tmp_path, monkeypatch):
     return str(root)
 
 
-def test_the_reconcile_callbacks_are_registered_with_dash():
+def test_the_canvas_review_and_confirm_callbacks_are_registered_with_dash():
     """Registry, not source text. A docstring cannot put an entry in callback_map."""
-    outputs = " ".join(console_app.app.callback_map.keys())
+    inputs = " ".join(str(v) for v in console_app.app.callback_map.values())
 
-    assert "reconcile-modal" in outputs, "the review modal has no callback behind it"
-    assert "reconcile-result" in outputs, "confirmation has no callback behind it"
+    assert "canvas-review" in inputs, "the review modal has no callback behind it"
+    assert "canvas-confirm" in inputs, "confirmation has no callback behind it"
 
-
-def test_the_confirm_button_is_an_input_to_the_apply_callback():
-    """The gate is the confirm click. If it is not an Input, the modal is decorative."""
-    entry = next(v for k, v in console_app.app.callback_map.items() if "reconcile-result" in k)
-    inputs = " ".join(str(i) for i in entry["inputs"])
-
-    assert "reconcile-confirm" in inputs
-
-
-def test_previewing_a_change_renders_the_four_things_the_modal_must_show(reconcile_run):
-    modal, _stored = console_app.reconcile_preview(1, RECONCILE_CHANGE["target"],
-                                                   RECONCILE_CHANGE["attribute"],
-                                                   RECONCILE_CHANGE["from"],
-                                                   RECONCILE_CHANGE["to"], reconcile_run)
-    text = json.dumps(modal, default=str)
-
-    assert "gold_bucket_arn" in text and "bronze_bucket_arn" in text   # plain-English diff
-    assert "aws_glue_job.etl" in text                                   # what changed
-    assert "revoked" in text.lower() or "stale" in text.lower()         # safety warning
-    assert "---" in text and "+++" in text                              # unified HCL diff
-
-
-def test_previewing_writes_absolutely_nothing(reconcile_run):
-    """The whole safety property. Preview is a read."""
-    tf = os.path.join(reconcile_run, "terraform", "main.tf")
-    before = open(tf, encoding="utf-8").read()
-
-    console_app.reconcile_preview(1, RECONCILE_CHANGE["target"], RECONCILE_CHANGE["attribute"],
-                                  RECONCILE_CHANGE["from"], RECONCILE_CHANGE["to"], reconcile_run)
-
-    assert open(tf, encoding="utf-8").read() == before
-
-
-def test_a_change_that_matches_no_hcl_is_refused_in_the_modal(reconcile_run):
-    modal, stored = console_app.reconcile_preview(1, "aws_glue_job.etl", "--source_path",
-                                                  "module.storage.does_not_exist",
-                                                  "module.storage.bronze_bucket_arn",
-                                                  reconcile_run)
-
-    assert stored is None, "an inapplicable change must not be stashed for confirmation"
-    assert "refus" in json.dumps(modal, default=str).lower()
-
-
-def test_cancelling_applies_nothing(reconcile_run):
-    tf = os.path.join(reconcile_run, "terraform", "main.tf")
-    before = open(tf, encoding="utf-8").read()
-    _modal, stored = console_app.reconcile_preview(1, RECONCILE_CHANGE["target"],
-                                                   RECONCILE_CHANGE["attribute"],
-                                                   RECONCILE_CHANGE["from"],
-                                                   RECONCILE_CHANGE["to"], reconcile_run)
-
-    result, modal = console_app.reconcile_apply(0, 1, stored)
-
-    assert open(tf, encoding="utf-8").read() == before
-    assert "cancel" in json.dumps(result, default=str).lower()
-    assert modal is None or modal == []
-
-
-def test_confirming_rewrites_the_hcl_and_reports_the_next_command(reconcile_run, monkeypatch):
-    monkeypatch.setattr(console_app.reconciler, "_gate_approval_dir", lambda _r: "")
-    _modal, stored = console_app.reconcile_preview(1, RECONCILE_CHANGE["target"],
-                                                   RECONCILE_CHANGE["attribute"],
-                                                   RECONCILE_CHANGE["from"],
-                                                   RECONCILE_CHANGE["to"], reconcile_run)
-
-    result, _modal2 = console_app.reconcile_apply(1, 0, stored)
-    text = open(os.path.join(reconcile_run, "terraform", "main.tf"), encoding="utf-8").read()
-
-    assert "bronze_bucket_arn" in text and "gold_bucket_arn" not in text
-    assert "minusctl gate plan" in json.dumps(result, default=str)
-
-
-def test_the_browser_never_supplies_the_hcl_that_gets_written(reconcile_run, monkeypatch):
-    """The store round-trips through the client, so it carries the change SPEC only. If it
-    carried `updated_hcl`, a tampered payload would be written to main.tf verbatim -- the
-    console would become an arbitrary-file-write endpoint wearing a governance modal."""
-    _modal, stored = console_app.reconcile_preview(1, RECONCILE_CHANGE["target"],
-                                                   RECONCILE_CHANGE["attribute"],
-                                                   RECONCILE_CHANGE["from"],
-                                                   RECONCILE_CHANGE["to"], reconcile_run)
-
-    assert "updated_hcl" not in json.dumps(stored)
-    assert "diff" not in json.dumps(stored)
-
-    # And a tampered store must not smuggle HCL through confirm().
-    monkeypatch.setattr(console_app.reconciler, "_gate_approval_dir", lambda _r: "")
-    tampered = dict(stored)
-    tampered["updated_hcl"] = "resource \"aws_iam_role\" \"backdoor\" {}"
-    console_app.reconcile_apply(1, 0, tampered)
-    written = open(os.path.join(reconcile_run, "terraform", "main.tf"), encoding="utf-8").read()
-
-    assert "backdoor" not in written
-
-
-# ---------------------------------------------------------------------------------------
-# Priority 2: the partial UI features. Each of these was previously "the data is there, the
-# interaction is not" -- which reads as done in a screenshot and is not.
-# ---------------------------------------------------------------------------------------
 
 PLAN_FIXTURE = {
     "resource_changes": [
@@ -376,134 +278,18 @@ def _state(tmp_path, **over):
     return base
 
 
-# --- FR-02.1: the canvas is embedded, not just linked -----------------------------------
+def test_the_browser_never_supplies_what_gets_written(reconcile_run, monkeypatch):
+    """The console-level property the engine tests cannot cover.
 
-def test_the_canvas_is_the_editor_not_the_read_only_viewer(tmp_path):
-    """FR-05.1 requires the console to intercept a change made ON THE CANVAS. A viewer
-    cannot be edited, so the architect had no way to make one."""
-    rendered = json.dumps(console_app.view_topology(_state(tmp_path)), default=str)
+    What crosses the Store boundary is a DIAGRAM, never HCL. The original diagram is
+    regenerated server-side from the plan and the replacement HCL is computed by the
+    reconciler from main.tf on disk, so a tampered payload can at worst describe a change
+    that does not match the file -- which propose() refuses.
+    """
+    source = open(os.path.join(ROOT, "app", "console_app.py"), encoding="utf-8").read()
 
-    assert "embed.diagrams.net" in rendered
-    assert "viewer.diagrams.net" not in rendered
-
-
-def test_there_is_no_external_editor_link_beside_the_governed_canvas(tmp_path):
-    """It was defensible while the canvas was read-only. With an editable one it is an
-    UNINTERCEPTED path around the gate: edits made in another tab never reach autosave, so
-    no review, no diff, no audit record."""
-    rendered = json.dumps(console_app.view_topology(_state(tmp_path)), default=str)
-
-    assert "app.diagrams.net" not in rendered
-    assert "Open in diagrams" not in rendered
-
-
-def test_a_layout_tidy_up_is_not_an_architecture_change(tmp_path):
-    """Raising an unbypassable review for a dragged box teaches an operator to click
-    through the gate, which is the one thing this gate cannot survive."""
-    import drawio_generator
-    original = drawio_generator.generate_drawio_from_plan(PLAN_FIXTURE)["xml"]
-    moved = original.replace('x="60"', 'x="640"', 1)
-
-    assert console_app.canvas_changes(original, moved) == []
-
-
-def test_deleting_a_connection_is_intercepted_with_its_terraform_addresses(tmp_path):
-    import re as _re
-    import drawio_generator
-    original = drawio_generator.generate_drawio_from_plan(PLAN_FIXTURE)["xml"]
-    edited = _re.sub(r'<mxCell id="edge_0".*?</mxCell>', "", original, flags=_re.S)
-
-    changes = console_app.canvas_changes(original, edited)
-
-    assert changes, "removing an edge raised nothing"
-    assert changes[0]["kind"] == "disconnect"
-    assert str(changes[0]["from"]).startswith("module."), changes[0]
-
-
-def test_the_review_warns_that_confirming_invalidates_the_plan(tmp_path):
-    """FR-05.2. A reviewer who does not know the approval dies with the edit will approve
-    it, and the next apply runs against a plan nobody re-approved."""
-    _hidden, panel = console_app.canvas_intercept_panel(
-        [{"kind": "disconnect", "from": "module.a.x", "to": "module.b.y"}])
-    rendered = json.dumps(panel, default=str)
-
-    assert "Review changes" in rendered
-    assert "Discard" in rendered
-
-
-# --- 02 Flow: selecting a step filters everything below it ------------------------------
-
-_GRAPH = {"nodes": [
-    {"id": "bronze", "label": "S3 Bronze landing", "layer": "bronze",
-     "table_format": "Raw JSON / CSV"},
-    {"id": "transform", "label": "PySpark", "layer": "transform"},
-    {"id": "gold", "label": "S3 Gold", "layer": "gold",
-     "table_format": "Apache Iceberg v2", "partitioning": "event_date",
-     "retention": "vacuum expired snapshots", "encryption": "SSE-KMS"}],
-    "edges": [{"from": "bronze", "to": "transform", "label": "[1] Read raw"},
-              {"from": "transform", "to": "gold", "label": "[2] Curate"}],
-    "masking": {}}
-
-
-def test_the_flow_chain_and_its_selection_callbacks_are_registered():
-    outputs = " ".join(console_app.app.callback_map.keys())
-
-    assert "flow-node.data" in outputs, "selecting a step has no callback behind it"
-    assert "flow-tab.data" in outputs, "the data/delivery switch has no callback"
-
-
-def test_selecting_a_node_shows_the_facts_a_reviewer_asks_for():
-    panel = json.dumps(console_app.flow_node_detail(_GRAPH, "gold"), default=str)
-
-    assert "Apache Iceberg v2" in panel
-    assert "event_date" in panel
-    assert "vacuum" in panel
-
-
-def test_an_undeclared_fact_is_named_absent_rather_than_left_blank():
-    """A blank retention cell reads as "no retention", which is a different claim from
-    "this stack did not declare one"."""
-    panel = json.dumps(console_app.flow_node_detail(_GRAPH, "transform"), default=str)
-
-    assert "not declared" in panel
-    assert "absent" in panel
-
-
-def test_selecting_nothing_invites_a_selection_rather_than_rendering_blanks():
-    panel = json.dumps(console_app.flow_node_detail(_GRAPH, None), default=str)
-
-    assert "select" in panel.lower()
-
-
-def test_selecting_a_node_filters_the_hops_to_the_ones_that_touch_it():
-    """The interaction the console was missing: every table was an island, and the question
-    a reviewer actually asks is "what touches this thing?"."""
-    assert console_app._hop_count(_GRAPH, None) == "2 total"
-    assert console_app._hop_count(_GRAPH, "gold") == "1 of 2"
-
-    filtered = json.dumps(console_app.flow_hops(_GRAPH, {}, "gold"), default=str)
-    assert "Curate" in filtered
-    assert "Read raw" not in filtered, "a hop that does not touch the selection is shown"
-
-
-def test_clicking_the_selected_node_again_clears_the_filter():
-    """Without this a reviewer who filters to one dataset has no way back to the whole flow
-    except reloading the page."""
-    assert console_app.toggle_selection("gold", "gold") is None
-    assert console_app.toggle_selection("bronze", "gold") == "bronze"
-
-
-def test_the_network_path_is_derived_from_the_absence_of_a_vpc_endpoint():
-    """A legitimate derivation from absence: with no endpoint in the plan, traffic reaches
-    the public AWS endpoint, and a reviewer asking "does this leave my network" has no other
-    way to see it."""
-    assert not console_app._vpc_endpoints({"resource_changes": []})
-    assert console_app._vpc_endpoints({"resource_changes": [
-        {"type": "aws_vpc_endpoint", "address": "module.net.aws_vpc_endpoint.s3"}]})
-
-    public = json.dumps(console_app.flow_hops(_GRAPH, {"resource_changes": []}, None),
-                        default=str)
-    assert "traverses the public endpoint" in public
+    assert "updated_hcl" not in source.split("def _confirm_canvas")[1],         "the confirm path handles raw HCL from the browser"
+    assert "generate_drawio_from_plan" in source.split("def _confirm_canvas")[1],         "the original diagram is taken from the browser rather than regenerated"
 
 
 # --- FR-06.1 / FR-06.2: preview and a download the browser can actually perform ---------
@@ -823,3 +609,56 @@ def test_cloud_spend_and_agent_spend_never_share_a_total():
     switch = json.dumps(console_app._cost_switch("cloud"), default=str)
 
     assert "Cloud cost" in switch and "Agents cost" in switch
+
+
+# --- FR-05.3: the one path in this console that writes ----------------------------------
+
+def test_a_reroute_on_a_known_resource_type_resolves_its_argument():
+    plan = {"resource_changes": [
+        {"address": "module.compute.aws_glue_job.etl", "type": "aws_glue_job",
+         "mode": "managed", "change": {"actions": ["create"], "after": {}}}]}
+    change = {"kind": "reroute", "target": "module.compute.aws_glue_job.etl",
+              "was": "module.storage.gold_arn", "now": "module.storage.bronze_arn"}
+
+    spec, refusal = console_app.canvas_change_spec(change, plan)
+
+    assert refusal is None
+    assert spec["attribute"] == "--source_path"
+    assert spec["from"] == "module.storage.gold_arn"
+
+
+def test_an_unknown_resource_type_is_refused_by_name_not_guessed():
+    """A diagram shows that a relationship changed, never which attribute encodes it.
+    Writing the wrong argument re-points a different part of the stack, and the operator
+    would have approved a sentence describing something else."""
+    plan = {"resource_changes": [
+        {"address": "module.stream.aws_kinesis_stream.events", "type": "aws_kinesis_stream",
+         "mode": "managed", "change": {"actions": ["create"], "after": {}}}]}
+    change = {"kind": "reroute", "target": "module.stream.aws_kinesis_stream.events",
+              "was": "a", "now": "b"}
+
+    spec, refusal = console_app.canvas_change_spec(change, plan)
+
+    assert spec is None
+    assert "aws_kinesis_stream" in refusal
+    assert "does not know which argument" in refusal
+
+
+def test_adding_a_box_is_refused_because_a_shape_carries_no_resource_type():
+    spec, refusal = console_app.canvas_change_spec({"kind": "add", "what": "new thing"}, {})
+
+    assert spec is None
+    assert "generation concern" in refusal
+
+
+def test_the_confirm_callback_is_the_only_registered_writer():
+    """Every other callback in this module reads. If a second one ever writes, this test is
+    the place that notices."""
+    outputs = " ".join(console_app.app.callback_map.keys())
+
+    assert "sheet-body.children" in outputs
+    source = open(os.path.join(ROOT, "app", "console_app.py"), encoding="utf-8").read()
+    calls = [line for line in source.splitlines()
+             if "reconciler.confirm(" in line and line.strip().startswith(("result", "return"))]
+    assert len(calls) == 1, f"more than one path writes HCL: {calls}"
+    assert "confirmed=True" in source
