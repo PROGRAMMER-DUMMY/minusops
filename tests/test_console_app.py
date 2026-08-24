@@ -483,7 +483,9 @@ def test_the_download_route_refuses_a_path_outside_the_run(tmp_path, monkeypatch
     assert resp.status_code in (400, 404), resp.status_code
 
 
-def test_previewable_documents_render_in_a_viewer(tmp_path):
+def test_a_present_document_opens_in_the_reader(tmp_path):
+    """FR-06.1. The side pane became a full-screen reader: a governance document is the
+    thing you came to read, so it gets the screen rather than a 440px column."""
     (tmp_path / "reports").mkdir()
     (tmp_path / "reports" / "report.html").write_text("<h1>x</h1>", encoding="utf-8")
     import vault
@@ -491,8 +493,28 @@ def test_previewable_documents_render_in_a_viewer(tmp_path):
                    vault=vault.summary(str(tmp_path)))
 
     rendered = json.dumps(console_app.view_vault(state), default=str)
+    assert "report.html" in rendered
+    assert "'doc'" in rendered or '"doc"' in rendered, "the name is not a control"
 
-    assert "vault-preview" in rendered, "FR-06.1 asks for an in-browser previewer"
+    outputs = " ".join(console_app.app.callback_map.keys())
+    assert "sheet-body.children" in outputs, "nothing renders into the reader"
+
+
+def test_the_evidence_list_says_which_section_each_document_prints():
+    """The list was a pile of filenames. Naming the section turns it into a map of the
+    console, and makes a missing document read as a section with no export."""
+    assert console_app._DOCUMENT_SECTION["cost.pdf"] == "04 Cost"
+    assert console_app._DOCUMENT_SECTION["inspect.pdf"] == "03 Access"
+
+
+def test_a_document_with_no_browser_reader_says_so_rather_than_embedding_junk(tmp_path):
+    """A workbook rendered as text is mojibake, which a reviewer reads as a corrupt file."""
+    (tmp_path / "reports").mkdir()
+    (tmp_path / "reports" / "executive_project_summary.xlsx").write_bytes(b"PKjunk")
+    import vault
+    documents = vault.catalog(str(tmp_path))
+    assert any(d["name"] == "executive_project_summary.xlsx" and d["present"]
+               for d in documents)
 
 
 def test_the_console_opens_on_the_newest_run_not_the_oldest(monkeypatch):
@@ -610,3 +632,48 @@ def test_settings_renders_without_a_run_identity_above_it():
     assert bar is not None
     rendered = json.dumps(band, default=str)
     assert "run-band" not in rendered and "chip" not in rendered
+
+
+def test_the_delivery_flow_claims_no_provenance_the_run_does_not_record():
+    """A run workspace records no commit, branch or pull request. Stating that a run "was
+    created locally, not from a branch" is an invention dressed as a status -- the fact we
+    hold is that nothing was recorded."""
+    rendered = json.dumps(console_app.delivery_steps(
+        {"root": "", "plan": {}, "trace": {}}), default=str)
+
+    assert "created locally" not in rendered
+    assert "Not recorded" in rendered
+    for invented in ("from a branch,", "pull request #", "merged by"):
+        assert invented not in rendered
+
+
+# --- 03 Access: what the plan does not settle must reach the screen ---------------------
+
+def test_access_reports_an_unresolved_trust_policy_rather_than_no_principals():
+    """An assume_role_policy computed at apply time grants real permissions that this plan
+    cannot show. Rendering it as "no principals" under-reports access, which on this screen
+    is the dangerous direction to be wrong in."""
+    plan = {"resource_changes": [{
+        "address": "module.sec.aws_iam_role.partner", "type": "aws_iam_role",
+        "mode": "managed", "name": "partner",
+        "change": {"actions": ["create"], "after": {"name": "partner"},
+                   "after_unknown": {"assume_role_policy": True}}}]}
+
+    rendered = json.dumps(console_app.view_access({"plan": plan}), default=str)
+
+    assert "not determinable" in rendered or "unresolved" in rendered.lower()
+    assert "does not settle" in rendered
+
+
+def test_access_says_plainly_which_facts_it_does_not_derive_yet():
+    """The mockup showed dataset reachability and Lake Formation grants. Neither is
+    extracted, so the view names them as absent instead of leaving a reviewer to assume the
+    blank means none."""
+    plan = {"resource_changes": [{
+        "address": "module.sec.aws_iam_role.etl", "type": "aws_iam_role", "mode": "managed",
+        "name": "etl", "change": {"actions": ["create"], "after": {"name": "etl"}}}]}
+
+    rendered = json.dumps(console_app.view_access({"plan": plan}), default=str)
+
+    assert "Lake Formation" in rendered
+    assert "not extracted yet" in rendered

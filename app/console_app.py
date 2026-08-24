@@ -45,6 +45,8 @@ for _path in (os.path.join(ROOT, "core"), ROOT):
 import dash  # noqa: E402
 from dash import dcc, html, Input, Output, State  # noqa: E402
 
+import access_model  # noqa: E402
+import agent_flow_graph  # noqa: E402
 import agent_tracer  # noqa: E402
 import drawio_generator  # noqa: E402
 import lineage_graph  # noqa: E402
@@ -431,20 +433,26 @@ def delivery_steps(state):
                               html.Span(runs, className="sub")])
         for number, name, runs, _detail in _LANES])
 
+    # A run workspace records no commit, branch or pull request -- see runs.py's registry
+    # fields. So these two steps report that nothing was recorded, which is the fact we have.
+    # Saying "created locally, not from a branch" would be inventing a provenance.
     steps = [
-        ("Commit", "Change pushed to a branch", "skipped",
-         "This run was created locally with minusctl, not from a branch.", (), None),
-        ("Pull request", "Pull request opened", "skipped",
-         "No pull request is associated with this run.", (), None),
+        ("Commit", "Change pushed to a branch", "absent",
+         "Not recorded. Nothing in this run's metadata names a commit or branch.",
+         (), None),
+        ("Pull request", "Pull request opened", "absent",
+         "Not recorded. Nothing in this run's metadata names a pull request.", (), None),
         ("Validation", "Four lanes run in parallel",
          "absent" if not generated else "done",
          ("No pipeline has been generated into this workspace, so no lane has ever "
           "executed. The lanes below are what WOULD run." if not generated
           else "Pipeline files are present in this run."), (), lanes),
-        ("Merge gate", "All four lanes must pass", "absent", "Not reached.",
+        ("Merge gate", "All four lanes must pass", "absent",
+         "No evidence this was reached.",
          ("`needs` already fails this job if any lane fails",
           "The explicit check exists so a skipped lane can never read as a pass"), None),
-        ("Merge", "Merged to main", "absent", "Not reached.", (), None),
+        ("Merge", "Merged to main", "absent", "No evidence this was reached.",
+         (), None),
         ("Plan", "terraform plan, bound to a hash",
          "done" if plan_hash else "absent",
          (f"{len(plan.get('resource_changes') or [])} resource changes."
@@ -532,95 +540,281 @@ def _hop_count(graph, selected):
     return f"{shown} of {total}"
 
 
-# --- View 3: execution trace ------------------------------------------------------------
+# --- View 5: what ran ---------------------------------------------------------------------
+
+_CHAIN_COPY = {
+    agent_tracer.CHAIN_VERIFIED: ("Verified", "ok"),
+    agent_tracer.CHAIN_BROKEN: ("Broken", "bad"),
+    agent_tracer.CHAIN_ABSENT: ("No chain present", "absent"),
+}
+
+
+def _chain_cell(chain):
+    """FR-06. Three states, kept three, because "cannot verify" is not "tampered" and
+    neither is "verified"."""
+    state = (chain or {}).get("state")
+    label, tone = _CHAIN_COPY.get(state, ("Not checked", "absent"))
+    checked = (chain or {}).get("checked") or 0
+    broken_at = (chain or {}).get("broken_at")
+    if state == agent_tracer.CHAIN_BROKEN and broken_at:
+        detail = f"first mismatch at record {broken_at} of {checked}"
+    elif state == agent_tracer.CHAIN_VERIFIED:
+        detail = f"{checked} records, each linked to the one before"
+    elif state == agent_tracer.CHAIN_ABSENT:
+        detail = "no audit log has been written for this run"
+    else:
+        detail = "the chain was not examined"
+    return label, tone, detail
+
+
+def _headline_cells(state, chain):
+    label, tone, detail = _chain_cell(chain)
+    stages = {s["key"]: s for s in (state.get("trace") or {}).get("stages") or []}
+
+    approval = stages.get("approval") or {}
+    approved = approval.get("status") == agent_tracer.RECORDED
+    plan_hash = (state.get("plan") or {}).get("plan_hash")
+
+    reflection = stages.get("reflection") or {}
+    reflected = reflection.get("status") == agent_tracer.RECORDED
+
+    # The destructive classifier is a separate engine and is not run from the console, so
+    # this cell reports what the plan carries rather than re-deriving a verdict here.
+    plan = state.get("plan") or {}
+    destructive = [c for c in plan.get("resource_changes") or []
+                   if "delete" in (c.get("change") or {}).get("actions", [])]
+    if not plan:
+        change_class, change_detail = None, "no plan has been generated"
+    elif destructive:
+        change_class = f"{len(destructive)} destructive"
+        change_detail = "routes to the staged, guarded path"
+    else:
+        change_class, change_detail = "Non-destructive", "eligible for ship-on-green"
+
+    cells = [
+        ("Audit chain", label, tone, detail),
+        ("Change class", change_class, "ok" if change_class == "Non-destructive" else "warn",
+         change_detail),
+        ("Human approval", "recorded" if approved else None, "ok",
+         (f"bound to hash {plan_hash[:16]}" if plan_hash
+          else "no plan hash to approve yet")),
+        ("Independent review", "recorded" if reflected else None, "ok",
+         "reflector verdict" if reflected else "reflector produced no verdict"),
+    ]
+    return html.Div(className="cells c4", children=[
+        html.Div([
+            html.Span(title, className="lab"),
+            html.B(value, className="ok" if tone == "ok" else "")
+            if value else html.B("none recorded", className="absent"),
+            html.Div(detail_text, className="sub"),
+        ]) for title, value, tone, detail_text in cells])
+
 
 def view_trace(state):
+    chain = agent_tracer.verify_chain(
+        os.path.join(state.get("root") or "", ".agents", "logs", "audit.jsonl"))
     result = state.get("trace") or {}
-    stages = result.get("stages", [])
+    stages = result.get("stages") or []
     active = agent_tracer.active_agents(state.get("root"))
+    order = [spec["key"] for spec in agent_tracer.STAGES]
+    graph = agent_flow_graph.build_flow(
+        result, chain=chain, active=active,
+        decision=agent_tracer.decision_branches(state.get("root")), order=order)
+
     return html.Div([
-        html.Div(className="panel", children=[
-            html.H4("Live agent monitor"),
-            html.P("No subagent supervisor is running; nothing to report."
-                   if not active else f"{len(active)} active", className="muted"),
+        _headline_cells(state, chain),
+        html.H2("The machine, start to end"),
+        html.P(f"{len(stages)} stages. Click any one for what it was asked, what it did, "
+               f"what it touched and the audit record behind it.", className="hint"),
+        html.Div(className="machine", children=[
+            html.Button(id={"kind": "step", "step": node["id"]}, n_clicks=0,
+                        className=("step ran" if node["status"] == agent_flow_graph.COMPLETED
+                                   else "step"),
+                        children=[
+                            html.Span(className="pdot" if False else "dot"),
+                            html.Span(node["label"], className="who"),
+                            html.Span(node["summary"] or "", className="what"),
+                            html.Span(_status_label(node["status"]), className="st"),
+                        ]) for node in graph["nodes"]]),
+        html.Div(className="notice", children=[
+            html.Span("Where this stops short", className="lab"),
+            html.P("Stage status is inferred from artifacts on disk and lines in the audit "
+                   "chain, not from instrumentation at the call site. So this is an honest "
+                   "record of what was produced, and not yet a trace of every tool "
+                   "invocation. Per-step timings, inputs and tool calls are the work that "
+                   "would make it one."),
         ]),
-        html.Div(className="timeline", children=[
-            html.Div(className=f"stage {'ran' if s['status'] == agent_tracer.RECORDED else 'pending'}",
-                     children=[
-                         html.Div(className="stage-head", children=[
-                             html.Strong(s["agent"]),
-                             html.Span(s["status"], className="stage-status"),
-                         ]),
-                         html.P(s["summary"], className="muted"),
-                         html.Small(f"artifact: {s['artifact']} "
-                                    f"({'present' if s['artifact_present'] else 'not produced'})"),
-                         html.Small(f"audit {s['audit_hash'][:16]}" if s["audit_hash"]
-                                    else "no audit evidence", className="audit"),
-                     ]) for s in stages]),
     ])
 
 
-# --- View 4: vault ----------------------------------------------------------------------
+_STATUS_LABELS = {
+    agent_flow_graph.COMPLETED: "Ran",
+    agent_flow_graph.BLOCKED: "Blocked",
+    agent_flow_graph.WAITING_ON_HUMAN: "Awaiting human",
+    agent_flow_graph.RUNNING: "Running",
+    agent_flow_graph.NOT_RUN: "Not run",
+}
+
+
+def _status_label(status):
+    return _STATUS_LABELS.get(status, "Not run")
+
+
+def trace_step_record(state, step_id):
+    """FR-05. What one step was asked, what it did, and the seal behind it.
+
+    An absent stage is described as absent rather than given an empty record: "no audit
+    record; this stage did not run" and "this stage ran but wrote no hash" are different
+    failures and a reviewer needs to tell them apart.
+    """
+    chain = agent_tracer.verify_chain(
+        os.path.join(state.get("root") or "", ".agents", "logs", "audit.jsonl"))
+    order = [spec["key"] for spec in agent_tracer.STAGES]
+    graph = agent_flow_graph.build_flow(
+        state.get("trace") or {}, chain=chain,
+        decision=agent_tracer.decision_branches(state.get("root")), order=order)
+    node = agent_flow_graph.find_node(graph, step_id)
+    if not node:
+        return html.P("Select a stage above.", className="muted")
+
+    rows = [
+        ("What it was asked", node["summary"]),
+        ("Persona", node["persona"]),
+        ("Model tier", node["model_tier"]),
+        ("Artifact", (f"{node['artifact']} "
+                      f"({'present' if node['artifact_present'] else 'not produced'})")
+         if node["artifact"] else None),
+        ("Operator", node["operator"]),
+        ("At", node["at"]),
+        ("Latency", (f"{node['latency_seconds']}s"
+                     if node["latency_seconds"] is not None else None)),
+        ("Audit seal", node["audit_hash"]),
+    ]
+    body = [html.Div(className="dhead", children=[
+        html.B(node["label"]), html.Span(_status_label(node["status"]), className="lab")])]
+    for label, value in rows:
+        body.append(html.Div(className="k", children=label))
+        body.append(html.Div(className="v", children=(
+            value if value else html.Span(
+                "no audit record; this stage did not run" if label == "Audit seal"
+                else "not recorded", className="absent"))))
+    if node["decision"] and node["decision"].get("present"):
+        decision = node["decision"]
+        body.append(html.Div("Decision branch", className="k"))
+        body.append(html.Div(className="v", children=", ".join(
+            decision.get("chosen_modules") or []) or "no module recorded"))
+        rejected = decision.get("rejected_alternatives") or []
+        body.append(html.Div("Rejected alternatives", className="k"))
+        body.append(html.Div(className="v", children=(
+            ", ".join(str(a.get("name", a)) for a in rejected) if rejected
+            else html.Span("none recorded", className="absent"))))
+    return html.Div(body, className="trace")
+
+
+# --- View 6: evidence ---------------------------------------------------------------------
+
+# Which console section each deliverable is the print of. A document nothing renders is
+# marked "-" rather than guessed into a section, because a wrong mapping here sends a
+# reviewer to a screen that does not contain what they were promised.
+_DOCUMENT_SECTION = {
+    "plan.pdf": "01 Topology", "report.html": "01 Topology", "plan.json": "01 Topology",
+    "architecture.drawio": "01 Topology", "architecture.svg": "01 Topology",
+    "architecture_url.txt": "01 Topology",
+    "dataflow.svg": "02 Flow",
+    "inspect.pdf": "03 Access",
+    "cost.pdf": "04 Cost", "cost.html": "04 Cost",
+    "executive_project_summary.xlsx": "04 Cost",
+    "pipeline_detailed_ledger.xlsx": "04 Cost",
+    "proving_report.json": "05 What ran",
+    "manifest.json": "06 Evidence",
+}
+
 
 def view_vault(state):
     stats = state.get("vault") or {}
     documents = state.get("documents") or []
+    run_id = (state.get("run") or {}).get("run_id", "")
     return html.Div([
-        html.Div(className="view-actions", children=[
-            html.A("Export compliance bundle", className="btn primary",
-                   href=f"/runs/{(state.get('run') or {}).get('run_id', '')}/vault/bundle"),
-            html.Span(f"{stats.get('present', 0)} of {stats.get('total', 0)} documents present",
-                      className="muted"),
+        html.Div(className="actions", children=[
+            html.A("Export compliance bundle", className="btn pri",
+                   href=f"/runs/{run_id}/vault/bundle"),
+            html.Span(f"{stats.get('present', 0)} of {stats.get('total', 0)} documents "
+                      f"present", className="lab"),
+            html.Span(id="vault-status", className="lab"),
         ]),
-        html.Div(id="vault-status", className="muted"),
-        _document_table(documents, (state.get("run") or {}).get("run_id", "")),
-        # The preview sits BELOW the list. Above it, the first thing on the view was an
-        # empty box asking to be filled by a control further down the page.
-        html.Div(id="vault-preview", className="inspector",
-                 children=html.P("Select a document to preview it.", className="muted")),
+        _document_table(documents, run_id),
     ])
 
 
 def _document_table(documents, run_id):
     """Present documents first, absent ones folded away.
 
-    Listing all fifteen inline made the vault a wall of "not produced" -- the two documents
-    that exist were outnumbered six to one, which buries the evidence the view is for. The
-    absent ones still appear, because a category that vanishes when empty hides the fact
-    that the evidence was never produced; they are just not the headline.
+    Listing all fifteen inline made the vault a wall of "not produced" -- the documents that
+    exist were outnumbered, which buries the evidence the view is for. The absent ones still
+    appear, because a category that vanishes when empty hides that the evidence was never
+    produced; they are just not the headline.
     """
     present = [d for d in documents if d["present"]]
     absent = [d for d in documents if not d["present"]]
 
     def _row(document):
-        href = f"/runs/{run_id}/vault/download/{document['name']}"
-        return html.Tr(children=[
-            html.Td(html.Button(document["name"],
-                                id={"kind": "doc", "name": document["name"]},
-                                n_clicks=0, className="link-button")),
+        name = document["name"]
+        return html.Tr(className="docrow", children=[
+            html.Td(html.Button(name, id={"kind": "doc", "name": name}, n_clicks=0,
+                                className="link-button")),
+            html.Td(_DOCUMENT_SECTION.get(name, "-")),
             html.Td(document["category_title"]),
-            html.Td(f"{document['size_bytes']:,} B"),
-            html.Td(html.A("Download", href=href, className="link-button")),
+            html.Td(f"{document['size_bytes']:,} B", className="right"),
+            html.Td(html.A("Download", className="link-button",
+                           href=f"/runs/{run_id}/vault/download/{name}")),
         ])
 
-    blocks = []
-    if present:
-        blocks.append(html.Table(className="table", children=[
-            html.Thead(html.Tr([html.Th("Document"), html.Th("Category"),
-                                html.Th("Size"), html.Th("")])),
-            html.Tbody([_row(d) for d in present]),
-        ]))
-    else:
-        blocks.append(html.P("No deliverables have been produced for this run yet.",
-                             className="muted"))
+    blocks = [html.Table(className="table", children=[
+        html.Thead(html.Tr([html.Th("Document"), html.Th("Renders the section"),
+                            html.Th("Category"), html.Th("Size", className="right"),
+                            html.Th("")])),
+        html.Tbody([_row(d) for d in present]),
+    ])] if present else [
+        html.P("No deliverables have been produced for this run yet.", className="muted")]
+
     if absent:
-        blocks.append(html.Details(className="drawer", children=[
+        blocks.append(html.Details(children=[
             html.Summary(f"{len(absent)} not produced"),
-            html.Div(className="drawer-body", children=[
-                html.Ul([html.Li(f"{d['name']} -- {d['category_title']}") for d in absent],
-                        className="absent-list")]),
+            html.Div(className="body", children=[html.Ul(
+                [html.Li(f"{d['name']} -- {_DOCUMENT_SECTION.get(d['name'], '-')}")
+                 for d in absent])]),
         ]))
     return html.Div(blocks)
+
+
+def document_sheet(name, run_id):
+    """The body of the reader for one document.
+
+    Renders by type, and says plainly when there is no in-browser reader rather than showing
+    a broken embed: a workbook rendered as text is mojibake, which reads as a corrupt file.
+    """
+    document = _catalogued_document(run_id, name)
+    if not document:
+        return "document", "", html.P("That document is not in this run's catalog.",
+                                      className="muted")
+    href = f"/runs/{run_id}/vault/download/{document['name']}"
+    kind = {"inline": "Rendered", "text": "Text", "download": "Binary"}.get(
+        document["preview"], document["preview"])
+
+    if document["preview"] == "inline":
+        body = html.Iframe(src=href, title=document["name"])
+    elif document["preview"] == "text":
+        try:
+            with open(document["path"], encoding="utf-8", errors="replace") as handle:
+                body = html.Pre(handle.read(200000))
+        except OSError as exc:
+            body = html.P(f"Could not read it: {exc}", className="muted")
+    else:
+        body = html.Div(className="none", children=[
+            html.B(f"No in-browser reader for {document['name']}"),
+            "Download it, or read the same figures in the section it renders.",
+        ])
+    return document["name"], kind, body
 
 
 def _ledger_table(ledger):
@@ -781,47 +975,91 @@ def _catalogued_document(run_id, name):
     return None
 
 
-def preview_document(name, run_id):
-    """Render a document inline where that is meaningful, or offer it for download."""
-    document = _catalogued_document(run_id, name)
-    if not document:
-        return html.P("Select a document to preview it.", className="muted")
-
-    run = (assemble(run_id).get("run") or {}).get("run_id", "")
-    href = f"/runs/{run}/vault/download/{document['name']}"
-    header = html.Div(className="preview-head", children=[
-        html.H4(document["name"]),
-        html.A("Download", href=href, className="btn"),
-    ])
-    if document["preview"] == "inline":
-        return html.Div([header, html.Iframe(src=href, className="preview-frame",
-                                             title=document["name"])])
-    if document["preview"] == "text":
-        try:
-            with open(document["path"], encoding="utf-8", errors="replace") as handle:
-                body = handle.read(20000)
-        except OSError as exc:
-            return html.Div([header, html.P(f"Could not read it: {exc}", className="muted")])
-        return html.Div([header, html.Pre(body, className="ledger")])
-    return html.Div([header, html.P("Binary document; use Download.", className="muted")])
-
-
 def _empty(title, detail):
     return html.Div(className="empty", children=[
         html.H3(title), html.P(detail, className="muted")])
 
 
-def view_access(state):
-    """03 Access. Roles, cross-account trust and the policy findings against them.
+def _statement_count(entry):
+    """How many statements a document resolved to, or why it could not be read."""
+    document = entry.get("trust") or entry.get("document") or {}
+    if not document.get("resolved"):
+        return None, document.get("reason") or "not determinable from this plan"
+    return len(document.get("statements") or []), None
 
-    Deliberately not populated from a guess: the Rego findings are readable today, but
-    "which role can reach which dataset" needs IAM statements parsed out of the plan, and
-    that engine does not exist yet. Showing invented rows on an access-control screen is
-    worse than showing none.
-    """
-    return _empty("Access analysis not available",
-                  "The policy findings are readable, but the role-to-resource model "
-                  "(core/architecture/access_model.py) has not been built yet.")
+
+def view_access(state):
+    """03 Access. Roles, who may assume them, and what the plan could not resolve."""
+    plan = state.get("plan") or {}
+    if not plan:
+        return _empty("No plan analyzed",
+                      "Run `minusctl gate plan` to produce the plan this view reads.")
+
+    model = access_model.access_model(plan)
+    roles = model["roles"]
+    policies = model["policies"]
+    unresolved = model["unresolved"]
+
+    cells = [
+        ("IAM roles", len(roles) or None, "declared in this plan"),
+        ("Policies", len(policies) or None,
+         f"{sum(1 for p in policies if p.get('kind') == 'inline')} inline, "
+         f"{sum(1 for p in policies if p.get('kind') == 'attachment')} attached"),
+        ("Unresolved", len(unresolved) or None,
+         "documents this plan does not settle until apply"),
+        ("Malformed", model["malformed"] or None, "resource entries that could not be read"),
+    ]
+
+    blocks = [html.Div(className="cells c4", children=[
+        html.Div([html.Span(title, className="lab"),
+                  html.B(str(value)) if value else html.B("none", className="absent"),
+                  html.Div(detail, className="sub")])
+        for title, value, detail in cells])]
+
+    if roles:
+        rows = []
+        for role in roles:
+            count, reason = _statement_count(role)
+            principals = role.get("trusted_principals") or []
+            rows.append(html.Tr([
+                html.Td(role.get("name") or role["address"]),
+                html.Td(", ".join(principals) if principals
+                        else html.Span(reason or "none declared", className="absent")),
+                html.Td(str(count) if count is not None
+                        else html.Span("not determinable", className="absent")),
+                html.Td(", ".join(role.get("attached_policies") or [])
+                        or html.Span("none in this plan", className="absent")),
+                html.Td(role.get("module") or "-"),
+            ]))
+        blocks.append(html.H2("Roles and who may assume them"))
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Role"), html.Th("Trusted principals"),
+                                html.Th("Trust statements"), html.Th("Attached policies"),
+                                html.Th("Module")])),
+            html.Tbody(rows)]))
+    else:
+        blocks.append(html.H2("Roles and who may assume them"))
+        blocks.append(html.P("This plan declares no IAM roles.", className="muted"))
+
+    if unresolved:
+        blocks.append(html.H2("What this plan does not settle"))
+        blocks.append(html.P("These documents are computed at apply time. Their permissions "
+                             "are real but not visible here, and are reported rather than "
+                             "counted as zero.", className="hint"))
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Resource"), html.Th("Field"), html.Th("Reason")])),
+            html.Tbody([html.Tr([html.Td(item["address"]), html.Td(item["field"]),
+                                 html.Td(item["reason"])]) for item in unresolved])]))
+
+    blocks.append(html.Div(className="notice", children=[
+        html.Span("Not yet derived", className="lab"),
+        html.P("Which dataset each role can reach, and the Lake Formation grants over those "
+               "datasets, are not extracted yet. The policy findings from the G6 rule set "
+               "are not joined onto these roles either. Those cells are absent rather than "
+               "estimated: an access screen that under-reports is worse than one that says "
+               "it cannot see."),
+    ]))
+    return html.Div(blocks)
 
 
 def view_cost(state):
@@ -1003,15 +1241,34 @@ def toggle_selection(node_id, current):
 
 
 @app.callback(
-    Output("vault-preview", "children"),
+    Output("overlay", "className"),
+    Output("sheet-name", "children"),
+    Output("sheet-kind", "children"),
+    Output("sheet-body", "children"),
     Input({"kind": "doc", "name": dash.ALL}, "n_clicks"),
+    Input({"kind": "step", "step": dash.ALL}, "n_clicks"),
+    Input("sheet-close", "n_clicks"),
     State("run-id", "data"),
     prevent_initial_call=True,
 )
-def _preview_document_cb(_clicks, run_id):
+def _open_sheet(_docs, _steps, _close, run_id):
+    """One reader for both a document and a trace step.
+
+    Both are "open one thing and read it"; two modals would be two behaviours to keep in
+    step, and they would drift the first time only one of them learned to close on Escape.
+    """
     triggered = dash.callback_context.triggered_id
-    name = triggered.get("name") if isinstance(triggered, dict) else None
-    return preview_document(name, run_id)
+    closed = ("overlay", dash.no_update, dash.no_update, dash.no_update)
+    if not isinstance(triggered, dict):
+        return closed
+    if triggered.get("kind") == "doc":
+        name, kind, body = document_sheet(triggered.get("name"), run_id)
+        return "overlay open", name, kind, body
+    if triggered.get("kind") == "step":
+        step = triggered.get("step")
+        return ("overlay open", step, "Trace record",
+                trace_step_record(assemble(run_id), step))
+    return closed
 
 
 @app.server.route("/runs/<run_id>/vault/download/<path:name>")
