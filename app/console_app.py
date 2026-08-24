@@ -236,106 +236,300 @@ def view_topology(state):
     ])
 
 
-# --- View 2: lineage --------------------------------------------------------------------
+# --- View 2: flow (data + delivery) -------------------------------------------------------
 
-def inspect_lineage_node(node_id, graph):
-    """FR-03.3. The facts a reviewer asks for about one dataset hop.
-
-    Absent facts are named as absent rather than rendered blank: an empty retention row on
-    a governance surface reads as "no retention", which is a different claim from "this
-    stack did not declare one".
-    """
-    node = lineage_graph.find_node(graph or {}, node_id) if node_id else None
-    if not node:
-        return html.P("Select a hop above to inspect its schema, partitioning and retention.",
-                      className="muted")
-    rows = [
-        ("Layer", node.get("layer", "-")),
-        ("Table format", node.get("table_format") or "not applicable to this hop"),
-        ("Partitioning", node.get("partitioning") or "not declared"),
-        ("Retention", node.get("retention") or "not declared"),
-        ("Encryption", node.get("encryption") or "not declared"),
-        ("Detail", node.get("detail") or "-"),
-    ]
-    return html.Div([
-        html.H4(node["label"]),
-        html.Table(className="table", children=[html.Tbody([
-            html.Tr([html.Td(label), html.Td(value)]) for label, value in rows])]),
-    ])
+# Which kind of thing a lineage hop is, for the chain. The engine models hops by medallion
+# layer; the chain reads better as dataset / job / consumer, which is the same information
+# said the way an operator asks for it.
+_HOP_KIND = {"bronze": "dataset", "silver": "dataset", "gold": "dataset",
+             "transform": "job", "quality_gate": "job", "quarantine": "dataset",
+             "ingress": "job", "serving": "consumer"}
 
 
-def _hop_chain(graph):
-    """The medallion hops with connectors, so the row reads as a flow.
+def _kind_of(node):
+    return _HOP_KIND.get(node.get("layer") or node.get("id"), "dataset")
 
-    The quarantine hop is marked as a branch rather than another link in the chain: it is
-    where rejected records LEAVE the pipeline, and drawing it inline would say they carry on
-    to Gold.
-    """
+
+def flow_chain(graph, selected):
+    """The dataset chain. Selecting a node filters the hops and columns below it."""
     children = []
-    for index, node in enumerate(graph["nodes"]):
+    for index, node in enumerate(graph.get("nodes") or []):
         if index:
-            branch = node["id"] == "quarantine"
-            children.append(html.Span("|" if branch else "->",
-                                      className="hop-link branch" if branch else "hop-link"))
+            children.append(html.Span("->", className="link"))
+        classes = f"node {_kind_of(node)}" + (" sel" if node["id"] == selected else "")
         children.append(html.Button(
-            id={"kind": "hop", "node": node["id"]}, n_clicks=0,
-            className=f"hop hop-{node['layer']}", children=[
-                html.Small(node["layer"].upper()),
-                html.Strong(node["label"]),
-                html.Span(node.get("table_format") or node.get("detail") or "",
-                          className="muted"),
+            id={"kind": "flownode", "node": node["id"]}, n_clicks=0, className=classes,
+            children=[
+                html.Span(node.get("layer", "").replace("_", " "), className="lab"),
+                html.Span(node.get("label", node["id"]), className="nlabel"),
+                html.Span(_kind_of(node), className="nkind"),
             ]))
     return children
 
 
-def _flow_table(graph):
-    """The hop ledger as a table. This used to render `lineage_graph.as_markdown()` inside a
-    <pre>, which put raw pipe-and-dash markdown source on the page -- the export format
-    printed where the rendered thing belonged."""
-    rows = graph.get("edges") or []
-    if not rows:
-        return html.P("No dataset flow to trace for this stack.", className="muted")
-    labels = {n["id"]: n["label"] for n in graph["nodes"]}
-    return html.Table(className="table", children=[
-        html.Thead(html.Tr([html.Th("Hop"), html.Th("From"), html.Th("To"), html.Th("Branch")])),
-        html.Tbody([
-            html.Tr(className="reject" if e.get("branch") == "reject" else "", children=[
-                html.Td(e["label"]),
-                html.Td(labels.get(e["from"], e["from"])),
-                html.Td(labels.get(e["to"], e["to"])),
-                html.Td(e.get("branch") or "-"),
-            ]) for e in rows]),
+def flow_node_detail(graph, selected):
+    """Facts for one hop. Absent ones are named, never blank: an empty retention cell on a
+    governance surface reads as "no retention", which is a different claim from "this stack
+    did not declare one"."""
+    node = lineage_graph.find_node(graph or {}, selected) if selected else None
+    if not node:
+        return html.P("Select a dataset or job above. Everything below filters to it.",
+                      className="muted")
+    facts = [
+        ("Format", node.get("table_format")),
+        ("Partitioned by", node.get("partitioning")),
+        ("Retention", node.get("retention")),
+        ("Encryption", node.get("encryption")),
+        ("Detail", node.get("detail")),
+        ("Observed", None),
+    ]
+    return html.Div([
+        html.Div(className="dhead", children=[
+            html.B(node.get("label", node["id"])),
+            html.Span(_kind_of(node), className="lab"),
+            html.Span(node.get("layer", ""), className="addr"),
+        ]),
+        html.Div(className="facts", children=[
+            html.Div([html.Span(label, className="lab"),
+                      html.B(value) if value
+                      else html.B("not declared" if label != "Observed"
+                                  else "never -- no pipeline has run", className="absent")])
+            for label, value in facts]),
     ])
 
 
-def view_lineage(state):
-    graph = state.get("lineage") or {"nodes": [], "edges": [], "masking": {}}
-    if not graph["nodes"]:
-        return _empty("No lineage to draw",
-                      "This run provisions no medallion hops, so there is no dataset flow "
-                      "to trace.")
-    masking = graph.get("masking") or {}
+def _vpc_endpoints(plan):
+    """Whether the plan declares any VPC endpoint.
+
+    This is a derivation from ABSENCE, which is legitimate and useful: with no endpoint in
+    the plan, S3 and Glue traffic reaches the public AWS endpoint rather than staying on the
+    VPC, and a reviewer asking "does PII leave my network" has no other way to see it.
+    """
+    for change in (plan or {}).get("resource_changes") or []:
+        if str(change.get("type", "")).startswith("aws_vpc_endpoint"):
+            return True
+    return False
+
+
+def flow_hops(graph, plan, selected):
+    """The hop ledger, deep. Each hop expands into what carries the data and what protects
+    it -- the flat table said "SSE-KMS, public access blocked", which describes the bucket
+    and answers nothing about the traffic."""
+    edges = graph.get("edges") or []
+    if selected:
+        edges = [e for e in edges if e["from"] == selected or e["to"] == selected]
+    if not edges:
+        return html.P("No hop touches this step." if selected
+                      else "No dataset flow is declared for this stack.", className="muted")
+
+    labels = {n["id"]: n.get("label", n["id"]) for n in graph.get("nodes") or []}
+    encryption = {n["id"]: n.get("encryption") for n in graph.get("nodes") or []}
+    private = _vpc_endpoints(plan)
+
+    rows = []
+    for edge in edges:
+        source, target = edge["from"], edge["to"]
+        at_rest = encryption.get(target) or encryption.get(source)
+        rows.append(html.Details(children=[
+            html.Summary(children=[
+                html.Span(className="path", children=[
+                    html.B(labels.get(source, source)), " -> ",
+                    html.B(labels.get(target, target)), " . ", edge.get("label", "")]),
+                html.Span(edge.get("branch") or "primary path", className="tp"),
+                html.Span("never observed", className="st"),
+            ]),
+            html.Div(className="body", children=[
+                html.Div([html.Span("In transit", className="lab"),
+                          html.B("not declared by this plan", className="absent")]),
+                html.Div([html.Span("At rest", className="lab"),
+                          html.B(at_rest) if at_rest
+                          else html.B("not declared", className="absent")]),
+                html.Div(className="risk", children=[
+                    html.Span("Network path", className="lab"),
+                    html.B("VPC endpoint declared" if private
+                           else "no VPC endpoint declared -- traverses the public endpoint")]),
+                html.Div([html.Span("Identity", className="lab"),
+                          html.B("role model not built yet", className="absent")]),
+                html.Div([html.Span("Branch", className="lab"),
+                          html.B(edge.get("branch") or "primary")]),
+                html.Div([html.Span("Latency budget", className="lab"),
+                          html.B("not measured", className="absent")]),
+            ]),
+        ]))
+    return html.Div(rows, className="hops2")
+
+
+def flow_columns(graph, selected):
+    """Column-level policy. The engine knows which columns Lake Formation governs and for
+    whom; it does not know which upstream column each was derived from, so that cell says so
+    rather than guessing a passthrough."""
+    masking = (graph or {}).get("masking") or {}
+    columns = masking.get("columns") or []
+    if selected and columns:
+        # A column is governed at the gold hop; filtering to any other hop should not
+        # silently show all of them as though they applied there.
+        columns = columns if selected in {"gold", "serving"} else []
+    head = html.Thead(html.Tr([html.Th("Column"), html.Th("Derived from"),
+                               html.Th("Unmasked for"), html.Th("Masked for"),
+                               html.Th("Masked value")]))
+    if not columns:
+        reason = masking.get("reason") or "no column policy is declared for this stack"
+        return html.Div([
+            html.Table(className="table", children=[head]),
+            html.P(reason, className="muted"),
+        ])
+    return html.Table(className="table", children=[head, html.Tbody([
+        html.Tr([
+            html.Td(column.get("column", "")),
+            html.Td("not declared", className="absent"),
+            html.Td(", ".join(column.get("unmasked_for") or []) or "-"),
+            html.Td(", ".join(column.get("masked_for") or []) or "-"),
+            html.Td(column.get("masked_value", "-")),
+        ]) for column in columns])])
+
+
+# --- Delivery flow: the path a change takes to production ---------------------------------
+
+_LANES = (
+    ("Lane 1", "Migration", "schema and state moves",
+     ("Detects Terraform address churn that would destroy data",
+      "Runs on fork PRs -- needs no cloud credentials",
+      "Blocks merge on an unreviewed state move")),
+    ("Lane 2", "Contracts", "data contracts and schema lint",
+     ("Validates declared column contracts against the catalog schema",
+      "Runs on fork PRs", "Blocks merge on a breaking contract change")),
+    ("Lane 3", "Terraform", "fmt, validate, plan, policy",
+     ("fmt and validate run everywhere",
+      "plan needs cloud credentials, so fork PRs get the static half only",
+      "Rego policy gates (SEC-*, COST-*) evaluate the plan JSON")),
+    ("Lane 4", "Unit", "module and generator tests",
+     ("Full pytest suite for modules and generators", "Runs on fork PRs",
+      "Blocks merge on any failure")),
+)
+
+
+def _pipeline_generated(root):
+    return bool(root) and os.path.isdir(os.path.join(root, ".github", "workflows"))
+
+
+def delivery_steps(state):
+    """Where THIS run sits on the path to production.
+
+    The old delivery panel began at "four lanes" and ended at "merge gate" -- the middle of
+    the story, with no plan, approval or apply, which is exactly the half that ties delivery
+    to the rest of the console.
+    """
+    root = state.get("root") or ""
+    plan = state.get("plan") or {}
+    plan_hash = plan.get("plan_hash")
+    approved = bool((state.get("trace") or {}).get("approved"))
+    generated = _pipeline_generated(root)
+
+    lanes = html.Div(className="lanebox", children=[
+        html.Button(id={"kind": "lane", "lane": name}, n_clicks=0, className="lane",
+                    children=[html.Span(number, className="lab"), html.B(name),
+                              html.Span(runs, className="sub")])
+        for number, name, runs, _detail in _LANES])
+
+    steps = [
+        ("Commit", "Change pushed to a branch", "skipped",
+         "This run was created locally with minusctl, not from a branch.", (), None),
+        ("Pull request", "Pull request opened", "skipped",
+         "No pull request is associated with this run.", (), None),
+        ("Validation", "Four lanes run in parallel",
+         "absent" if not generated else "done",
+         ("No pipeline has been generated into this workspace, so no lane has ever "
+          "executed. The lanes below are what WOULD run." if not generated
+          else "Pipeline files are present in this run."), (), lanes),
+        ("Merge gate", "All four lanes must pass", "absent", "Not reached.",
+         ("`needs` already fails this job if any lane fails",
+          "The explicit check exists so a skipped lane can never read as a pass"), None),
+        ("Merge", "Merged to main", "absent", "Not reached.", (), None),
+        ("Plan", "terraform plan, bound to a hash",
+         "done" if plan_hash else "absent",
+         (f"{len(plan.get('resource_changes') or [])} resource changes."
+          if plan_hash else "No plan has been generated for this run."),
+         ((f"Plan hash {plan_hash[:16]}",) if plan_hash else ()), None),
+        ("Approval gate", "A human approves that exact hash",
+         "done" if approved else "blocked",
+         ("Approved." if approved else
+          (f"No approval record exists for hash {plan_hash[:16]}. An approval bound to any "
+           f"other hash would not count." if plan_hash
+           else "No plan hash to approve yet.")),
+         ("This is the same deploy-gate stage shown in 05 What ran",
+          "Editing the canvas revokes any standing approval and returns here"), None),
+        ("Apply", "terraform apply", "done" if approved else "blocked",
+         "Blocked: the approval gate above has not been satisfied." if not approved
+         else "Eligible.", (), None),
+    ]
+
+    labels = {"done": "Done", "blocked": "Blocked", "absent": "Never run",
+              "skipped": "Not applicable"}
+    rendered = []
+    for number, name, state_key, note, detail, extra in steps:
+        body = [html.Div(className="phead", children=[
+                    html.Span(number, className="lab"), html.B(name),
+                    html.Span(labels[state_key], className="pstate")]),
+                html.P(note, className="pnote")]
+        if detail:
+            body.append(html.Ul([html.Li(d) for d in detail]))
+        if extra is not None:
+            body.append(extra)
+            body.append(html.Div(id="lane-detail", className="lanedetail", children=[
+                html.Span("Select a lane to see what it runs and what it blocks",
+                          className="lab")]))
+        rendered.append(html.Div(className=f"pstep {state_key}", children=[
+            html.Span(className="pdot"), html.Div(body, className="pbody")]))
+    return html.Div(rendered, className="pipeline")
+
+
+def view_flow(state, tab="data", selected=None):
+    graph = state.get("lineage") or {}
+    plan = state.get("plan") or {}
+    hint = ("Select a lane to see what it runs and what it blocks" if tab != "data"
+            else (f"Filtered to {selected} -- click again to clear" if selected
+                  else "Select any step to filter everything below to it"))
     return html.Div([
-        html.Div(className="lineage", children=_hop_chain(graph)),
-        html.Div(id="lineage-inspector", className="inspector",
-                 children=inspect_lineage_node(None, graph)),
-        _flow_table(graph),
-        html.Div(className="panel", children=[
-            html.H4("Lake Formation column masking"),
-            html.P(masking.get("reason", ""), className="muted"),
-            html.Table(className="table", children=[
-                html.Thead(html.Tr([html.Th("Column"), html.Th("Unmasked for"),
-                                    html.Th("Masked for"), html.Th("Masked value")])),
-                html.Tbody([
-                    html.Tr([html.Td(c["column"]),
-                             html.Td(", ".join(c["unmasked_for"])),
-                             html.Td(", ".join(c["masked_for"])),
-                             html.Td(c["masked_example"])])
-                    for c in masking.get("columns", [])]),
-            ]) if masking.get("enforced") else html.P("No column-level controls enforced.",
-                                                      className="muted"),
+        html.Div(className="switch", role="tablist", children=[
+            html.Button("Data flow", id={"kind": "flowtab", "tab": "data"}, n_clicks=0,
+                        className="on" if tab == "data" else "", role="tab"),
+            html.Button("Delivery flow", id={"kind": "flowtab", "tab": "delivery"},
+                        n_clicks=0, className="" if tab == "data" else "on", role="tab"),
+            html.Span(hint, className="lab"),
+        ]),
+        html.Div(hidden=tab != "data", children=[
+            html.Div(flow_chain(graph, selected), className="chain"),
+            html.Div(flow_node_detail(graph, selected), className="detail"),
+            html.H2(["Hops ", html.Span(_hop_count(graph, selected), className="lab")]),
+            html.P("What carries the data between two steps, and what protects it. Expand a "
+                   "hop for transport, network path and account boundary.", className="hint"),
+            flow_hops(graph, plan, selected),
+            html.H2("Column lineage"),
+            flow_columns(graph, selected),
+            html.Div(className="notice", children=[
+                html.Span("These hops are declared, not proven", className="lab"),
+                html.P("Edges come from the plan's declared references. Whether data has "
+                       "ever moved along one, and how long it took, needs runtime events. "
+                       "Nothing is emitting OpenLineage into this workspace, so every hop "
+                       "reads never observed and no hop claims a measured latency."),
+            ]),
+        ]),
+        html.Div(hidden=tab == "data", children=[
+            html.P("Four lanes run in parallel and converge on one merge gate. Parallel on "
+                   "purpose: a reviewer who waits eleven minutes for lane 4 to reveal a lint "
+                   "error stops reading lanes.", className="hint"),
+            delivery_steps(state),
         ]),
     ])
+
+
+def _hop_count(graph, selected):
+    total = len(graph.get("edges") or [])
+    if not selected:
+        return f"{total} total"
+    shown = len([e for e in (graph.get("edges") or [])
+                 if e["from"] == selected or e["to"] == selected])
+    return f"{shown} of {total}"
 
 
 # --- View 3: execution trace ------------------------------------------------------------
@@ -643,7 +837,7 @@ def view_settings(state):
                   "core/integrations.")
 
 
-RENDERERS = {"topology": view_topology, "flow": view_lineage, "access": view_access,
+RENDERERS = {"topology": view_topology, "flow": view_flow, "access": view_access,
              "cost": view_cost, "trace": view_trace, "evidence": view_vault,
              "settings": view_settings}
 
@@ -661,6 +855,8 @@ app.config.suppress_callback_exceptions = True
 app.layout = html.Div(children=[
     dcc.Store(id="run-id"),
     dcc.Store(id="view", data="topology"),
+    dcc.Store(id="flow-tab", data="data"),
+    dcc.Store(id="flow-node"),
     dcc.Store(id="reconcile-proposal"),
     html.Div(id="bar-slot"),
     html.Div(className="wrap", children=[
@@ -709,8 +905,10 @@ def _select_run(run_id):
     Output("view-slot", "children"),
     Input("view", "data"),
     Input("run-id", "data"),
+    Input("flow-tab", "data"),
+    Input("flow-node", "data"),
 )
-def _render(view, run_id):
+def _render(view, run_id, flow_tab, flow_node):
     state = assemble(run_id)
     bar = top_bar(view, run_id)
     if not state.get("run"):
@@ -719,6 +917,8 @@ def _render(view, run_id):
     # Settings is workspace-scoped: showing a run identity above it would say these teams
     # and connectors belong to that run.
     band = html.Div() if view == "settings" else run_band(state)
+    if view == "flow":
+        return bar, band, view_flow(state, flow_tab or "data", flow_node)
     renderer = RENDERERS.get(view, view_topology)
     return bar, band, renderer(state)
 
@@ -770,16 +970,36 @@ def _reconcile_apply_cb(confirm_clicks, cancel_clicks, stored):
 
 
 @app.callback(
-    Output("lineage-inspector", "children"),
-    Input({"kind": "hop", "node": dash.ALL}, "n_clicks"),
-    State("run-id", "data"),
+    Output("flow-tab", "data"),
+    Input({"kind": "flowtab", "tab": dash.ALL}, "n_clicks"),
     prevent_initial_call=True,
 )
-def _inspect_hop_cb(_clicks, run_id):
-    """FR-03.3. Which hop was clicked comes from the triggering component id."""
+def _switch_flow_tab(_clicks):
     triggered = dash.callback_context.triggered_id
-    node_id = triggered.get("node") if isinstance(triggered, dict) else None
-    return inspect_lineage_node(node_id, assemble(run_id).get("lineage") or {})
+    return triggered.get("tab") if isinstance(triggered, dict) else dash.no_update
+
+
+@app.callback(
+    Output("flow-node", "data"),
+    Input({"kind": "flownode", "node": dash.ALL}, "n_clicks"),
+    State("flow-node", "data"),
+    prevent_initial_call=True,
+)
+def _select_flow_node(_clicks, current):
+    triggered = dash.callback_context.triggered_id
+    if not isinstance(triggered, dict):
+        return dash.no_update
+    return toggle_selection(triggered.get("node"), current)
+
+
+def toggle_selection(node_id, current):
+    """Clicking the selected node again clears the filter.
+
+    Kept out of the callback so it can be tested: `dash.callback_context` only exists inside
+    a live callback, and a decision that can only be exercised through the browser is a
+    decision with no test.
+    """
+    return None if node_id == current else node_id
 
 
 @app.callback(

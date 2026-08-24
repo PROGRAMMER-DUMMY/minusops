@@ -386,31 +386,79 @@ def test_the_embedded_viewer_and_the_button_point_at_the_same_diagram(tmp_path):
     assert payload in rendered
 
 
-# --- FR-03.3: click-to-inspect on a lineage node ----------------------------------------
+# --- 02 Flow: selecting a step filters everything below it ------------------------------
 
-def test_lineage_nodes_are_clickable_and_the_sidebar_callback_is_registered():
+_GRAPH = {"nodes": [
+    {"id": "bronze", "label": "S3 Bronze landing", "layer": "bronze",
+     "table_format": "Raw JSON / CSV"},
+    {"id": "transform", "label": "PySpark", "layer": "transform"},
+    {"id": "gold", "label": "S3 Gold", "layer": "gold",
+     "table_format": "Apache Iceberg v2", "partitioning": "event_date",
+     "retention": "vacuum expired snapshots", "encryption": "SSE-KMS"}],
+    "edges": [{"from": "bronze", "to": "transform", "label": "[1] Read raw"},
+              {"from": "transform", "to": "gold", "label": "[2] Curate"}],
+    "masking": {}}
+
+
+def test_the_flow_chain_and_its_selection_callbacks_are_registered():
     outputs = " ".join(console_app.app.callback_map.keys())
 
-    assert "lineage-inspector" in outputs, "click-to-inspect has no callback behind it"
+    assert "flow-node.data" in outputs, "selecting a step has no callback behind it"
+    assert "flow-tab.data" in outputs, "the data/delivery switch has no callback"
 
 
-def test_inspecting_a_node_returns_the_facts_the_prd_asks_for():
-    graph = {"nodes": [{"id": "gold", "label": "S3 Gold", "layer": "gold",
-                        "table_format": "Apache Iceberg v2", "partitioning": "event_date",
-                        "retention": "vacuum expired snapshots"}],
-             "edges": [], "masking": {}}
+def test_selecting_a_node_shows_the_facts_a_reviewer_asks_for():
+    panel = json.dumps(console_app.flow_node_detail(_GRAPH, "gold"), default=str)
 
-    panel = json.dumps(console_app.inspect_lineage_node("gold", graph), default=str)
-
-    assert "Apache Iceberg v2" in panel      # table format
-    assert "event_date" in panel             # partitioning
-    assert "vacuum" in panel                 # retention lifecycle
+    assert "Apache Iceberg v2" in panel
+    assert "event_date" in panel
+    assert "vacuum" in panel
 
 
-def test_inspecting_an_unknown_node_says_so_rather_than_rendering_blanks():
-    panel = json.dumps(console_app.inspect_lineage_node("nope", {"nodes": []}), default=str)
+def test_an_undeclared_fact_is_named_absent_rather_than_left_blank():
+    """A blank retention cell reads as "no retention", which is a different claim from
+    "this stack did not declare one"."""
+    panel = json.dumps(console_app.flow_node_detail(_GRAPH, "transform"), default=str)
 
-    assert "select" in panel.lower() or "not found" in panel.lower()
+    assert "not declared" in panel
+    assert "absent" in panel
+
+
+def test_selecting_nothing_invites_a_selection_rather_than_rendering_blanks():
+    panel = json.dumps(console_app.flow_node_detail(_GRAPH, None), default=str)
+
+    assert "select" in panel.lower()
+
+
+def test_selecting_a_node_filters_the_hops_to_the_ones_that_touch_it():
+    """The interaction the console was missing: every table was an island, and the question
+    a reviewer actually asks is "what touches this thing?"."""
+    assert console_app._hop_count(_GRAPH, None) == "2 total"
+    assert console_app._hop_count(_GRAPH, "gold") == "1 of 2"
+
+    filtered = json.dumps(console_app.flow_hops(_GRAPH, {}, "gold"), default=str)
+    assert "Curate" in filtered
+    assert "Read raw" not in filtered, "a hop that does not touch the selection is shown"
+
+
+def test_clicking_the_selected_node_again_clears_the_filter():
+    """Without this a reviewer who filters to one dataset has no way back to the whole flow
+    except reloading the page."""
+    assert console_app.toggle_selection("gold", "gold") is None
+    assert console_app.toggle_selection("bronze", "gold") == "bronze"
+
+
+def test_the_network_path_is_derived_from_the_absence_of_a_vpc_endpoint():
+    """A legitimate derivation from absence: with no endpoint in the plan, traffic reaches
+    the public AWS endpoint, and a reviewer asking "does this leave my network" has no other
+    way to see it."""
+    assert not console_app._vpc_endpoints({"resource_changes": []})
+    assert console_app._vpc_endpoints({"resource_changes": [
+        {"type": "aws_vpc_endpoint", "address": "module.net.aws_vpc_endpoint.s3"}]})
+
+    public = json.dumps(console_app.flow_hops(_GRAPH, {"resource_changes": []}, None),
+                        default=str)
+    assert "traverses the public endpoint" in public
 
 
 # --- FR-06.1 / FR-06.2: preview and a download the browser can actually perform ---------
@@ -557,7 +605,7 @@ def test_the_navigation_reads_the_view_from_the_triggering_button():
 def test_settings_renders_without_a_run_identity_above_it():
     """Settings is workspace-scoped. A run band above it would say these teams and
     connectors belong to that run."""
-    bar, band, _view = console_app._render("settings", None)
+    bar, band, _view = console_app._render("settings", None, "data", None)
 
     assert bar is not None
     rendered = json.dumps(band, default=str)

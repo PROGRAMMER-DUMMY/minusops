@@ -1,0 +1,246 @@
+"""
+Tests for the plan-derived access model that backs the console's Access view.
+
+The property under test throughout is that nothing is invented: a role, a grant or a
+cross-account trust appears only when the plan states it, and an unreadable policy
+document is reported as an explicit "not determinable" marker that a caller cannot
+mistake for "no permissions".
+"""
+import json
+
+import access_model as am
+
+
+# --- fixture builders (real `terraform show -json` shapes) ------------------
+def _rc(rtype, address, after=None, after_unknown=None, module_address=None,
+        actions=None, mode="managed", name=None):
+    change = {"actions": actions or ["create"], "after": after,
+              "after_unknown": after_unknown or {}}
+    rc = {"address": address, "mode": mode, "type": rtype,
+          "name": name if name is not None else address.split(".")[-1],
+          "change": change}
+    if module_address is not None:
+        rc["module_address"] = module_address
+    return rc
+
+
+def _plan(resource_changes=None, prior_state_resources=None):
+    plan = {"format_version": "1.2"}
+    if resource_changes is not None:
+        plan["resource_changes"] = resource_changes
+    if prior_state_resources is not None:
+        plan["prior_state"] = {"values": {"root_module": {"resources": prior_state_resources}}}
+    return plan
+
+
+def _trust(*statements):
+    """A jsonencode()'d trust policy resolves to a plain JSON string in after."""
+    return json.dumps({"Version": "2012-10-17", "Statement": list(statements)})
+
+
+SERVICE_TRUST = _trust({"Effect": "Allow", "Principal": {"Service": "glue.amazonaws.com"},
+                        "Action": "sts:AssumeRole"})
+
+
+# --- roles -----------------------------------------------------------------
+def test_role_carries_name_module_and_parsed_service_principal():
+    plan = _plan([_rc("aws_iam_role", "module.glue.aws_iam_role.this",
+                      after={"name": "glue-etl-role", "assume_role_policy": SERVICE_TRUST},
+                      module_address="module.glue")])
+    roles = am.access_model(plan)["roles"]
+    assert len(roles) == 1
+    role = roles[0]
+    assert role["address"] == "module.glue.aws_iam_role.this"
+    assert role["name"] == "glue-etl-role"
+    assert role["module"] == "module.glue"
+    assert role["trust"]["resolved"] is True
+    assert role["trusted_principals"] == [{
+        "statement_index": 0, "effect": "Allow", "type": "Service",
+        "identifier": "glue.amazonaws.com", "account_id": None,
+        "is_wildcard": False, "has_external_id": False,
+    }]
+
+
+def test_module_is_derived_from_the_address_when_module_address_is_absent():
+    plan = _plan([_rc("aws_iam_role", "module.a.module.b.aws_iam_role.this",
+                      after={"name": "r", "assume_role_policy": SERVICE_TRUST})])
+    assert am.access_model(plan)["roles"][0]["module"] == "module.a.module.b"
+
+
+def test_root_module_role_has_empty_module():
+    plan = _plan([_rc("aws_iam_role", "aws_iam_role.this",
+                      after={"name": "r", "assume_role_policy": SERVICE_TRUST})])
+    assert am.access_model(plan)["roles"][0]["module"] == ""
+
+
+# --- the central invariant: unresolved is not empty ------------------------
+def test_unknown_assume_role_policy_is_not_determinable_never_an_empty_list():
+    """The most important property in this module: an access screen must never render
+    'trusts nobody' for a trust policy that is simply not known until apply."""
+    plan = _plan([_rc("aws_iam_role", "aws_iam_role.computed",
+                      after={"name": "r"}, after_unknown={"assume_role_policy": True})])
+    model = am.access_model(plan)
+    role = model["roles"][0]
+    assert role["trust"]["resolved"] is False
+    assert role["trust"]["reason"] == am.UNKNOWN_UNTIL_APPLY
+    assert role["trust"]["statements"] is None
+    # Not [] -- an empty list would read as "trusted by nobody", which is a different fact.
+    assert role["trusted_principals"] is None
+    assert {"address": "aws_iam_role.computed", "field": "assume_role_policy",
+            "reason": am.UNKNOWN_UNTIL_APPLY} in model["unresolved"]
+
+
+def test_absent_assume_role_policy_is_distinguishable_from_unknown():
+    plan = _plan([_rc("aws_iam_role", "aws_iam_role.bare", after={"name": "r"})])
+    role = am.access_model(plan)["roles"][0]
+    assert role["trust"]["resolved"] is False
+    assert role["trust"]["reason"] == am.ABSENT
+    assert role["trusted_principals"] is None
+
+
+def test_unparseable_trust_policy_is_reported_as_invalid_json_not_dropped():
+    plan = _plan([_rc("aws_iam_role", "aws_iam_role.broken",
+                      after={"name": "r", "assume_role_policy": "{not json"})])
+    model = am.access_model(plan)
+    assert model["roles"][0]["trust"]["reason"] == am.INVALID_JSON
+    assert model["roles"][0]["trusted_principals"] is None
+    assert model["unresolved"][0]["reason"] == am.INVALID_JSON
+
+
+def test_a_resolved_trust_policy_with_no_statements_yields_an_empty_principal_list():
+    """The counterpart to the test above: genuinely-empty and unreadable must not collapse."""
+    plan = _plan([_rc("aws_iam_role", "aws_iam_role.empty",
+                      after={"name": "r", "assume_role_policy": _trust()})])
+    role = am.access_model(plan)["roles"][0]
+    assert role["trust"]["resolved"] is True
+    assert role["trusted_principals"] == []
+
+
+# --- policies and grants ---------------------------------------------------
+def _doc(*statements):
+    return json.dumps({"Version": "2012-10-17", "Statement": list(statements)})
+
+
+READ_BRONZE = {"Sid": "ReadBronze", "Effect": "Allow",
+               "Action": ["s3:GetObject", "s3:ListBucket"],
+               "Resource": ["arn:aws:s3:::lake-bronze", "arn:aws:s3:::lake-bronze/*"]}
+
+
+def test_inline_managed_and_attachment_policies_are_distinguished():
+    plan = _plan([
+        _rc("aws_iam_policy", "aws_iam_policy.standalone",
+            after={"name": "standalone", "policy": _doc(READ_BRONZE)}),
+        _rc("aws_iam_role_policy", "aws_iam_role_policy.inline",
+            after={"name": "inline", "role": "glue-etl-role", "policy": _doc(READ_BRONZE)}),
+        _rc("aws_iam_role_policy_attachment", "aws_iam_role_policy_attachment.attach",
+            after={"role": "glue-etl-role",
+                   "policy_arn": "arn:aws:iam::aws:policy/AmazonS3FullAccess"}),
+    ])
+    kinds = {p["address"]: p["attachment_kind"] for p in am.access_model(plan)["policies"]}
+    assert kinds == {
+        "aws_iam_policy.standalone": "managed",
+        "aws_iam_role_policy.inline": "inline",
+        "aws_iam_role_policy_attachment.attach": "attachment",
+    }
+
+
+def test_grants_are_reported_at_statement_granularity_with_actions_and_resource_arns():
+    plan = _plan([_rc("aws_iam_role_policy", "aws_iam_role_policy.inline",
+                      after={"name": "inline", "role": "glue-etl-role",
+                             "policy": _doc(READ_BRONZE)})])
+    policy = am.access_model(plan)["policies"][0]
+    assert policy["grants"] == [{
+        "index": 0, "sid": "ReadBronze", "effect": "Allow",
+        "actions": ["s3:GetObject", "s3:ListBucket"], "not_actions": [],
+        "resources": ["arn:aws:s3:::lake-bronze", "arn:aws:s3:::lake-bronze/*"],
+        "not_resources": [], "negated": False, "conditions": [],
+    }]
+
+
+def test_a_deny_statement_is_preserved_but_is_not_a_grant():
+    deny = {"Sid": "NoDelete", "Effect": "Deny", "Action": "s3:DeleteObject",
+            "Resource": "arn:aws:s3:::lake-bronze/*"}
+    plan = _plan([_rc("aws_iam_policy", "aws_iam_policy.mixed",
+                      after={"name": "mixed", "policy": _doc(READ_BRONZE, deny)})])
+    policy = am.access_model(plan)["policies"][0]
+    assert [s["effect"] for s in policy["statements"]] == ["Allow", "Deny"]
+    assert [g["sid"] for g in policy["grants"]] == ["ReadBronze"]
+
+
+def test_a_notaction_statement_is_flagged_negated_rather_than_reported_as_no_actions():
+    """NotAction allows everything EXCEPT the listed actions. Reporting actions=[] on its own
+    would understate the grant by the whole action namespace."""
+    plan = _plan([_rc("aws_iam_policy", "aws_iam_policy.broad",
+                      after={"name": "broad", "policy": _doc(
+                          {"Effect": "Allow", "NotAction": "iam:*", "Resource": "*"})})])
+    grant = am.access_model(plan)["policies"][0]["grants"][0]
+    assert grant["negated"] is True
+    assert grant["actions"] == []
+    assert grant["not_actions"] == ["iam:*"]
+    assert grant["resources"] == ["*"]
+
+
+def test_statement_conditions_are_reported():
+    plan = _plan([_rc("aws_iam_policy", "aws_iam_policy.conditional",
+                      after={"name": "conditional", "policy": _doc(
+                          {"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*",
+                           "Condition": {"StringEquals": {"aws:PrincipalOrgID": "o-abc"}}})})])
+    grants = am.access_model(plan)["policies"][0]["grants"]
+    assert grants[0]["conditions"] == ["aws:PrincipalOrgID"]
+
+
+def test_attachment_of_an_aws_managed_policy_is_not_determinable_from_this_plan():
+    """The document behind an attached managed-policy ARN is not in the plan at all. Rendering
+    it as zero grants would silently hide, for example, AmazonS3FullAccess."""
+    plan = _plan([_rc("aws_iam_role_policy_attachment", "aws_iam_role_policy_attachment.attach",
+                      after={"role": "glue-etl-role",
+                             "policy_arn": "arn:aws:iam::aws:policy/AmazonS3FullAccess"})])
+    model = am.access_model(plan)
+    policy = model["policies"][0]
+    assert policy["policy_arn"] == "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+    assert policy["document"]["resolved"] is False
+    assert policy["document"]["reason"] == am.MANAGED_POLICY_NOT_IN_PLAN
+    assert policy["grants"] is None
+    assert policy["statements"] is None
+    assert {"address": "aws_iam_role_policy_attachment.attach", "field": "policy_document",
+            "reason": am.MANAGED_POLICY_NOT_IN_PLAN} in model["unresolved"]
+
+
+def test_unknown_policy_document_is_not_determinable_never_an_empty_grant_list():
+    plan = _plan([_rc("aws_iam_policy", "aws_iam_policy.computed",
+                      after={"name": "computed"}, after_unknown={"policy": True})])
+    policy = am.access_model(plan)["policies"][0]
+    assert policy["document"]["reason"] == am.UNKNOWN_UNTIL_APPLY
+    assert policy["grants"] is None
+
+
+def test_policies_are_attached_to_the_role_they_name():
+    plan = _plan([
+        _rc("aws_iam_role", "aws_iam_role.glue",
+            after={"name": "glue-etl-role", "assume_role_policy": SERVICE_TRUST}),
+        _rc("aws_iam_role_policy", "aws_iam_role_policy.inline",
+            after={"name": "inline", "role": "glue-etl-role", "policy": _doc(READ_BRONZE)}),
+        _rc("aws_iam_role_policy_attachment", "aws_iam_role_policy_attachment.attach",
+            after={"role": "glue-etl-role", "policy_arn": "arn:aws:iam::aws:policy/S3"}),
+        _rc("aws_iam_role_policy", "aws_iam_role_policy.other",
+            after={"name": "other", "role": "some-other-role", "policy": _doc(READ_BRONZE)}),
+    ])
+    model = am.access_model(plan)
+    role = [r for r in model["roles"] if r["name"] == "glue-etl-role"][0]
+    assert role["attached_policies"] == ["aws_iam_role_policy.inline",
+                                         "aws_iam_role_policy_attachment.attach"]
+
+
+def test_a_policy_whose_role_is_unknown_is_not_attached_to_a_guess():
+    plan = _plan([
+        _rc("aws_iam_role", "aws_iam_role.glue",
+            after={"name": "glue-etl-role", "assume_role_policy": SERVICE_TRUST}),
+        _rc("aws_iam_role_policy", "aws_iam_role_policy.inline",
+            after={"name": "inline", "policy": _doc(READ_BRONZE)},
+            after_unknown={"role": True}),
+    ])
+    model = am.access_model(plan)
+    assert model["roles"][0]["attached_policies"] == []
+    assert model["policies"][0]["role"] is None
+    assert {"address": "aws_iam_role_policy.inline", "field": "role",
+            "reason": am.UNKNOWN_UNTIL_APPLY} in model["unresolved"]
