@@ -717,3 +717,53 @@ def test_an_explicitly_linked_transcript_is_used(tmp_path, monkeypatch):
     monkeypatch.setenv(console_app.TRANSCRIPT_ENV, str(tmp_path / "t.jsonl"))
 
     assert console_app._transcript_path("") == str(tmp_path / "t.jsonl")
+
+
+# --- Docs, Policies, About: read from disk, never transcribed ----------------------------
+
+def test_the_policy_page_lists_the_rules_that_actually_run():
+    """Parsed from policy/g6/rules.rego. A hand-maintained list drifts, and a drifted policy
+    page is worse than none: it tells a reviewer a rule exists that does not."""
+    rendered = json.dumps(console_app.view_policies({}), default=str)
+
+    for rule in ("SEC-01", "SEC-05", "COST-01"):
+        assert rule in rendered, rule
+
+
+def test_the_policy_page_says_what_a_clean_run_does_not_prove():
+    """A resource type no rule mentions is unexamined, not approved. Without that sentence a
+    findings-free report reads as a clean bill of health."""
+    rendered = json.dumps(console_app.view_policies({}), default=str)
+
+    assert "unexamined, not approved" in rendered
+
+
+def test_the_changelog_is_parsed_rather_than_transcribed():
+    rendered = json.dumps(console_app.view_docs({}), default=str)
+
+    assert "0.1.0" in rendered
+    assert "CHANGELOG.md" in rendered
+
+
+def test_the_docs_page_marks_a_document_missing_from_the_checkout(monkeypatch):
+    monkeypatch.setattr(console_app, "_DOC_PAGES",
+                        (("does/not/exist.md", "Ghost", "not here"),))
+
+    rendered = json.dumps(console_app.view_docs({}), default=str)
+
+    assert "not in this checkout" in rendered
+
+
+def test_about_states_what_the_console_will_not_do():
+    rendered = json.dumps(console_app.view_about({}), default=str)
+
+    assert "terraform apply" in rendered
+    assert "MINUS_DASH_TOKEN" in rendered
+
+
+def test_the_workspace_pages_carry_no_run_identity():
+    """Docs, Policies and About outlive any run. A run band above them would say these
+    documents belong to that run."""
+    for view in ("docs", "policies", "about", "settings"):
+        _bar, band, _content = console_app._render(view, None, "data", None)
+        assert "chip" not in json.dumps(band, default=str), view

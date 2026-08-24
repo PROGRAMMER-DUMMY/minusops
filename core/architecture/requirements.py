@@ -325,3 +325,48 @@ def main(argv=None):
 if __name__ == "__main__":
     import sys
     sys.exit(main())
+
+# --- PRD v15 FR-04: the lifecycle an operator is agreeing to ------------------------------
+#
+# Shown before grilling starts. An operator who cannot see the shape of the work cannot tell
+# which step they are being asked to approve, and the approval that matters is at step 7 --
+# seven screens after the one where they said yes to "build me a lakehouse".
+
+LIFECYCLE = (
+    (1, "Requirements grilling",
+     "Interrogate the data pillars, non-functional requirements and budget caps"),
+    (2, "Architecture decision",
+     "Select vetted modules and record why, plus what was rejected"),
+    (3, "Modular HCL synthesis",
+     "Generate Terraform into runs/<run-id>/terraform/"),
+    (4, "Visual topology",
+     "Compile the Draw.io canvas and the dataflow the plan declares"),
+    (5, "Reflector gates",
+     "An independent second look at the composition, before any plan"),
+    (6, "Plan gate and BCM pricing",
+     "Produce the binding plan hash and price it against live AWS rates"),
+    (7, "Human-in-the-loop gate",
+     "A named human approves that exact hash; only then can anything apply"),
+)
+
+
+def lifecycle_roadmap():
+    """The seven steps, as data, so a caller can render or check them."""
+    return [{"step": number, "title": title, "detail": detail}
+            for number, title, detail in LIFECYCLE]
+
+
+def format_roadmap(width=94):
+    """The roadmap as plain ASCII for a terminal.
+
+    ASCII rather than box-drawing characters: this prints into logs, CI output and Windows
+    consoles whose code page mangles anything else, and a roadmap that renders as mojibake
+    communicates less than no roadmap at all.
+    """
+    rule = "-" * width
+    lines = [rule, "MINUSOPS INFRASTRUCTURE LIFECYCLE".center(width), rule]
+    for number, title, detail in LIFECYCLE:
+        lines.append(f"  [{number}] {title:<28} {detail}")
+    lines.append(rule)
+    return "\n".join(lines)
+

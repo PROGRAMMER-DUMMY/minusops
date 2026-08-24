@@ -32,6 +32,7 @@ import getpass
 import hmac
 import json
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -147,10 +148,14 @@ def top_bar(active_view, run_id):
             for key, number, label in VIEW_LABELS]),
         html.Span(className="spacer"),
         html.Span(className="util", children=[
-            html.A("Docs", href="/docs"), html.A("Policies", href="/policies"),
+            html.Button("Docs", id={"kind": "nav", "view": "docs"}, n_clicks=0,
+                        className="utilbtn"),
+            html.Button("Policies", id={"kind": "nav", "view": "policies"}, n_clicks=0,
+                        className="utilbtn"),
             html.Button("Settings", id={"kind": "nav", "view": "settings"}, n_clicks=0,
                         className="utilbtn"),
-            html.A("About", href="/about"),
+            html.Button("About", id={"kind": "nav", "view": "about"}, n_clicks=0,
+                        className="utilbtn"),
         ]),
         html.Span(className="picker", children=[
             dcc.Dropdown(id="run-select", className="runpick", options=options,
@@ -1485,9 +1490,188 @@ def view_agent_flow(state):
     ])
 
 
+# --- Docs, Policies, About -----------------------------------------------------------------
+
+_DOC_PAGES = (
+    ("README.md", "Overview", "What MinusOps is and how a run flows through it"),
+    ("docs/OPERATOR_ONBOARDING_GUIDE.md", "Operator onboarding",
+     "Running your first governed pipeline end to end"),
+    ("AGENTS.md", "Agent reference", "The agents, their gates and what each one may do"),
+    ("DESIGN.md", "Design system", "The tokens this console is built from"),
+    ("SECURITY.md", "Security", "Reporting a vulnerability, and the boundaries we claim"),
+)
+
+
+def _read_repo_file(relative, limit=200000):
+    path = os.path.join(ROOT, relative)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read(limit)
+    except OSError:
+        return None
+
+
+def view_docs(state):
+    """The repository's own documentation, listed and readable in place."""
+    rows = []
+    for relative, title, blurb in _DOC_PAGES:
+        present = os.path.exists(os.path.join(ROOT, relative))
+        rows.append(html.Tr(className="docrow" if present else "", children=[
+            html.Td(html.Button(title, id={"kind": "docpage", "name": relative}, n_clicks=0,
+                                className="link-button") if present
+                    else html.Span(title, className="absent")),
+            html.Td(blurb),
+            html.Td(relative, className="secref"),
+            html.Td("" if present else html.Span("not in this checkout",
+                                                 className="absent")),
+        ]))
+    return html.Div([
+        html.H2("Documentation"),
+        html.P("Read from this checkout, not from a copy pasted into the console. A page "
+               "missing here is a page missing from the repository.", className="hint"),
+        html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Document"), html.Th("What it covers"),
+                                html.Th("Path"), html.Th("")])),
+            html.Tbody(rows)]),
+        html.H2("Changelog"),
+        html.P("The release history as recorded in CHANGELOG.md.", className="hint"),
+        _changelog_table(),
+    ])
+
+
+def _changelog_table():
+    """Version headings and their date, parsed out of CHANGELOG.md.
+
+    Parsed rather than duplicated: a changelog transcribed into the UI is a second copy that
+    goes stale the first time someone edits only one of them.
+    """
+    text = _read_repo_file("CHANGELOG.md")
+    if not text:
+        return html.P("No CHANGELOG.md in this checkout.", className="muted")
+
+    entries = []
+    for line in text.splitlines():
+        match = re.match(r"^##\s*\[?([^\]\s]+)\]?\s*[-\u2014]?\s*(.*)$", line.strip())
+        if match and match.group(1).lower() not in ("unreleased",) or (
+                match and match.group(1)):
+            entries.append((match.group(1), match.group(2).strip()))
+    if not entries:
+        return html.P("CHANGELOG.md carries no version headings.", className="muted")
+    return html.Div([
+        html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Version"), html.Th("Date")])),
+            html.Tbody([html.Tr([html.Td(version),
+                                 html.Td(date or html.Span("undated", className="absent"))])
+                        for version, date in entries])]),
+        html.Div(className="actions", style={"marginTop": "14px"}, children=[
+            html.Button("Read the full changelog",
+                        id={"kind": "docpage", "name": "CHANGELOG.md"}, n_clicks=0,
+                        className="btn ghost")]),
+    ])
+
+
+_RULE_LINE = re.compile(r'finding(?:_unresolved)?\(\s*"([A-Z]+-\d+)"\s*,\s*"([^"]+)"\s*,'
+                        r'\s*"([^"]+)"')
+
+
+def view_policies(state):
+    """The Rego rules that actually run, read from policy/g6/rules.rego.
+
+    A hand-maintained list drifts, and a drifted policy page is worse than none: it tells a
+    reviewer a rule exists that does not, or hides one that does.
+    """
+    source = _read_repo_file("policy/g6/rules.rego")
+    if not source:
+        return _empty("No policy set found",
+                      "policy/g6/rules.rego is not in this checkout.")
+
+    seen, rules = set(), []
+    for rule_id, category, title in _RULE_LINE.findall(source):
+        key = (rule_id, title)
+        if key in seen:
+            continue
+        seen.add(key)
+        rules.append((rule_id, category, title))
+    rules.sort()
+
+    return html.Div([
+        html.Div(className="cells c4", children=[
+            html.Div([html.Span("Rules", className="lab"), html.B(str(len(rules))),
+                      html.Div("evaluated against every plan", className="sub")]),
+            html.Div([html.Span("Security", className="lab"),
+                      html.B(str(sum(1 for r in rules if r[1] == "Security"))),
+                      html.Div("SEC-* findings", className="sub")]),
+            html.Div([html.Span("Cost", className="lab"),
+                      html.B(str(sum(1 for r in rules if r[1] == "Cost"))),
+                      html.Div("COST-* findings", className="sub")]),
+            html.Div([html.Span("Engine", className="lab"), html.B("OPA / Rego"),
+                      html.Div("policy/g6/rules.rego", className="sub")]),
+        ]),
+        html.H2("What the gate checks"),
+        html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Rule"), html.Th("Category"), html.Th("Finding")])),
+            html.Tbody([html.Tr([html.Td(rule_id), html.Td(category), html.Td(title)])
+                        for rule_id, category, title in rules])]),
+        html.Div(className="notice", children=[
+            html.Span("What a clean run does not prove", className="lab"),
+            html.P("These rules are what the gate KNOWS to look for. A plan with no findings "
+                   "has passed the rules above and nothing else -- a resource type no rule "
+                   "mentions is unexamined, not approved. 03 Access names the same limit for "
+                   "IAM."),
+        ]),
+        html.Div(className="actions", style={"marginTop": "14px"}, children=[
+            html.Button("Read rules.rego", id={"kind": "docpage", "name": "policy/g6/rules.rego"},
+                        n_clicks=0, className="btn ghost")]),
+    ])
+
+
+def view_about(state):
+    """What this console is, what it refuses to do, and how to reach it."""
+    version = "unknown"
+    text = _read_repo_file("CHANGELOG.md") or ""
+    match = re.search(r"^##\s*\[?([0-9][^\]\s]*)", text, re.M)
+    if match:
+        version = match.group(1)
+
+    return html.Div([
+        html.H2("MinusOps governance console"),
+        html.P("A plan-bound control plane for AWS data pipelines. It reads a run's evidence "
+               "and shows it; it does not invoke cloud mutations, and the one thing it "
+               "writes is a reviewed architecture change.", className="hint"),
+        html.Div(className="cells c4", children=[
+            html.Div([html.Span("Version", className="lab"), html.B(version),
+                      html.Div("latest entry in CHANGELOG.md", className="sub")]),
+            html.Div([html.Span("Bind", className="lab"), html.B("loopback"),
+                      html.Div("a remote bind requires MINUS_DASH_TOKEN", className="sub")]),
+            html.Div([html.Span("Cloud calls", className="lab"), html.B("none"),
+                      html.Div("this surface never mutates infrastructure", className="sub")]),
+            html.Div([html.Span("Writes", className="lab"), html.B("one path"),
+                      html.Div("a confirmed canvas change, via the reconciler",
+                               className="sub")]),
+        ]),
+        html.H2("What it will not do"),
+        html.Ul(className="review-warnings", children=[
+            html.Li("Apply infrastructure. The console has no path to `terraform apply`; "
+                    "approval is recorded here and executed by the CLI."),
+            html.Li("Show a number nothing produced. An absent fact is named as absent "
+                    "rather than rendered as zero."),
+            html.Li("Hold a credential. Connector secrets stay in Secrets Manager and this "
+                    "console reads only the reference."),
+            html.Li("Serve beyond localhost without a token. It refuses to start rather "
+                    "than exposing account evidence to the network."),
+        ]),
+        html.Div(className="notice", children=[
+            html.Span("Reporting a problem", className="lab"),
+            html.P("Security issues go through SECURITY.md rather than an issue tracker. "
+                   "Everything else belongs in the repository."),
+        ]),
+    ])
+
+
 RENDERERS = {"topology": view_topology, "flow": view_flow, "access": view_access,
              "cost": view_cost, "trace": view_trace, "evidence": view_vault,
-             "settings": view_settings}
+             "settings": view_settings, "docs": view_docs,
+             "policies": view_policies, "about": view_about}
 
 
 # --- App --------------------------------------------------------------------------------
@@ -1565,7 +1749,8 @@ def _render(view, run_id, flow_tab, flow_node):
             "No runs found", "Create one with `minusctl create`.")
     # Settings is workspace-scoped: showing a run identity above it would say these teams
     # and connectors belong to that run.
-    band = html.Div() if view == "settings" else run_band(state)
+    band = (html.Div() if view in ("settings", "docs", "policies", "about")
+            else run_band(state))
     if view == "flow":
         if flow_tab == "agent":
             return bar, band, html.Div([_flow_switch("agent"), view_agent_flow(state)])
@@ -1654,6 +1839,12 @@ def _open_sheet(_docs, _steps, _close, run_id):
     if triggered.get("kind") == "doc":
         name, kind, body = document_sheet(triggered.get("name"), run_id)
         return "overlay open", name, kind, body
+    if triggered.get("kind") == "docpage":
+        relative = triggered.get("name")
+        text = _read_repo_file(relative)
+        body = (html.Pre(text) if text
+                else html.P("That document is not in this checkout.", className="muted"))
+        return "overlay open", relative, "Repository document", body
     if triggered.get("kind") == "step":
         step = triggered.get("step")
         return ("overlay open", step, "Trace record",

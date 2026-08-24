@@ -38,6 +38,7 @@ for _sub in ("generation", "architecture", "governance", "cost", "reporting", "p
 sys.path.insert(0, _CORE_DIR)
 
 import architecture_decision as archdec
+import budget_alignment
 import team_resolver
 import audit_chain
 import modules as module_registry
@@ -1837,6 +1838,17 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     prefix = name_prefix or f"{module_registry._WORD.findall(owner.lower())[0] if owner else 'app'}-dev"
     daily_gb, volume_source = parse_daily_gb(spec)
     budget_usd, budget_source = parse_budget_usd(spec)
+    # PRD v15 FR-02. A guardrail below what the architecture costs alarms on the mismatch
+    # rather than on overspend -- that is the reported $500-against-$1,258 warning. Size it
+    # from the estimate when one exists, and CARRY the override in budget_source so the run
+    # records that an operator's stated cap was raised rather than silently replacing it.
+    _alignment = budget_alignment.align(
+        declared_usd=budget_usd,
+        estimated_usd=((spec or {}).get("non_functional") or {}).get("estimated_monthly_usd"))
+    if _alignment["aligned"] and _alignment["guardrail_usd"]:
+        budget_usd = _alignment["guardrail_usd"]
+        if _alignment["overridden"]:
+            budget_source = f"{budget_source} (aligned: {_alignment['reason']})"
     # Volume picks the engine, the SLA decides whether Glue may run on discounted
     # spare capacity. Recorded on the result so readiness can show WHY, not just what.
     tier = module_registry.compute_tier(

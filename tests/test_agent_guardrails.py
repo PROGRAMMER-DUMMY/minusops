@@ -222,3 +222,111 @@ def test_the_module_states_that_it_is_not_a_security_boundary():
     head = open(path, encoding="utf-8").read()[:4000].lower()
 
     assert "not a security boundary" in head or "not a sandbox" in head
+
+
+# --- PRD v15 WP-02: dynamic budget alignment ---------------------------------------------
+#
+# Kept here rather than in a new file because it is the same class of decision: a rule that
+# changes what an agent may do without a human in the room.
+
+import budget_alignment as budget
+
+
+def test_a_budget_above_the_estimate_is_left_alone():
+    """The operator's number stands when it already covers the architecture. Raising it
+    anyway would inflate every guardrail in the fleet."""
+    result = budget.align(declared_usd=2000, estimated_usd=1258.29)
+
+    assert result["guardrail_usd"] == 2000
+    assert result["overridden"] is False
+
+
+def test_a_budget_below_the_estimate_is_raised_with_headroom():
+    result = budget.align(declared_usd=500, estimated_usd=1258.29)
+
+    assert result["guardrail_usd"] == pytest.approx(1572.86, abs=0.01)
+    assert result["overridden"] is True
+
+
+def test_an_override_records_what_the_operator_actually_declared():
+    """Silently provisioning a 1,573 dollar alarm over a declared 500 dollar cap turns a
+    cost control into a rubber stamp. The alignment is allowed; hiding it is not."""
+    result = budget.align(declared_usd=500, estimated_usd=1258.29)
+
+    assert result["declared_usd"] == 500
+    assert "500" in result["reason"] and "1,258" in result["reason"]
+
+
+def test_no_declared_budget_still_sizes_from_the_estimate():
+    result = budget.align(declared_usd=0, estimated_usd=1258.29)
+
+    assert result["guardrail_usd"] == pytest.approx(1572.86, abs=0.01)
+    assert result["overridden"] is False, "there was no operator figure to override"
+
+
+def test_no_estimate_leaves_the_declared_budget_untouched():
+    """Without a BCM figure there is nothing to align to. Inventing headroom over a number
+    nobody computed would be fabrication."""
+    result = budget.align(declared_usd=500, estimated_usd=None)
+
+    assert result["guardrail_usd"] == 500
+    assert result["aligned"] is False
+
+
+def test_neither_a_budget_nor_an_estimate_yields_no_guardrail_not_a_default():
+    """A hardcoded 500 dollar default is what produced the 252 percent false positive in the
+    first place. Absent both inputs the answer is None, and the caller reports it."""
+    result = budget.align(declared_usd=0, estimated_usd=None)
+
+    assert result["guardrail_usd"] is None
+
+
+def test_the_headroom_multiplier_is_the_one_the_prd_states():
+    assert budget.HEADROOM == 1.25
+
+
+# --- PRD v15 WP-04: the upfront roadmap and the volume/budget contradiction --------------
+
+import requirements as reqs
+
+
+def test_the_seven_step_roadmap_is_available_to_open_a_build():
+    """FR-04. An operator who cannot see the shape of the work cannot tell which step they
+    are being asked to approve."""
+    roadmap = reqs.lifecycle_roadmap()
+
+    assert len(roadmap) == 7
+    assert roadmap[0]["step"] == 1
+    joined = " ".join(step["title"].lower() for step in roadmap)
+    for expected in ("grilling", "decision", "synthesis", "topology", "reflector",
+                     "plan gate", "human"):
+        assert expected in joined, expected
+
+
+def test_the_roadmap_renders_as_plain_ascii():
+    text = reqs.format_roadmap()
+
+    assert all(ord(ch) < 128 for ch in text)
+    assert "1" in text and "7" in text
+
+
+def test_a_volume_that_outruns_the_budget_is_raised_during_grilling():
+    """FR-02.2. Raising the guardrail silences the alarm; only this puts the choice back in
+    front of the operator while it can still be answered by changing the architecture."""
+    finding = budget.contradiction(declared_usd=500, estimated_usd=1258.29)
+
+    assert finding is not None
+    assert finding["over_by_pct"] == pytest.approx(251.7, abs=0.1)
+    assert "500" in finding["message"]
+    assert len(finding["options"]) >= 2
+
+
+def test_a_budget_that_covers_the_estimate_raises_nothing():
+    assert budget.contradiction(declared_usd=2000, estimated_usd=1258.29) is None
+
+
+def test_no_contradiction_is_claimed_without_both_numbers():
+    """An unstated budget is not a contradiction with an estimate, and an unpriced
+    architecture is not a contradiction with a budget."""
+    assert budget.contradiction(declared_usd=0, estimated_usd=1258.29) is None
+    assert budget.contradiction(declared_usd=500, estimated_usd=None) is None
