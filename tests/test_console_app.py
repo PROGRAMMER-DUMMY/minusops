@@ -497,16 +497,17 @@ def test_access_reports_an_unresolved_trust_policy_rather_than_no_principals():
 
 
 def test_access_says_plainly_which_facts_it_does_not_derive_yet():
-    """Lake Formation grants and cross-account trust ARE derived now. Dataset reachability
-    is not, so the view still names it rather than leaving a blank to be read as none."""
+    """Reach, cross-account trust and Lake Formation grants are all derived now. The G6
+    findings are not joined onto roles, so the view names that rather than leaving a
+    reviewer to read a clean-looking table as a clean result."""
     plan = {"resource_changes": [{
         "address": "module.sec.aws_iam_role.etl", "type": "aws_iam_role", "mode": "managed",
         "name": "etl", "change": {"actions": ["create"], "after": {"name": "etl"}}}]}
 
     rendered = json.dumps(console_app.view_access({"plan": plan}), default=str)
 
-    assert "not extracted" in rendered
-    assert "under-reports" in rendered
+    assert "not joined onto these roles yet" in rendered
+    assert "absent rather than estimated" in rendered
 
 
 def test_access_shows_a_cross_account_trust_and_flags_a_missing_external_id():
@@ -680,3 +681,20 @@ def test_the_confirm_callback_is_the_only_registered_writer():
              if "reconciler.confirm(" in line and line.strip().startswith(("result", "return"))]
     assert len(calls) == 1, f"more than one path writes HCL: {calls}"
     assert "confirmed=True" in source
+
+
+def test_access_reports_a_wildcard_grant_as_reaching_everything():
+    """A role with Resource "*" reaches every bucket. Rendering the narrow list its ARNs
+    imply would understate the broadest grant there is."""
+    policy = json.dumps({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": ["s3:*"], "Resource": ["*"]}]})
+    plan = {"resource_changes": [
+        {"address": "module.sec.aws_iam_role.etl", "type": "aws_iam_role", "mode": "managed",
+         "name": "etl", "change": {"actions": ["create"], "after": {"name": "etl"}}},
+        {"address": "module.sec.aws_iam_role_policy.p", "type": "aws_iam_role_policy",
+         "mode": "managed", "name": "p",
+         "change": {"actions": ["create"], "after": {"role": "etl", "policy": policy}}}]}
+
+    rendered = json.dumps(console_app.view_access({"plan": plan}), default=str)
+
+    assert "every bucket in the account" in rendered

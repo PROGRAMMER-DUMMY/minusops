@@ -355,3 +355,103 @@ def test_a_lake_formation_grant_whose_principal_is_unknown_says_so():
 
     assert grant["principal"] is None
     assert grant["determinable"] is False
+
+
+# --- Dataset reachability: which role can reach which bucket ----------------------------
+
+def _bucket(address, name=None, unknown=False):
+    change = {"actions": ["create"], "after": {"bucket": name} if name else {}}
+    if unknown:
+        change["after_unknown"] = {"bucket": True}
+    return {"address": address, "type": "aws_s3_bucket", "mode": "managed",
+            "name": address.split(".")[-1], "change": change}
+
+
+def _inline_policy(role, statements):
+    return {"address": "module.sec.aws_iam_role_policy.p", "type": "aws_iam_role_policy",
+            "mode": "managed", "name": "p",
+            "change": {"actions": ["create"], "after": {
+                "role": role,
+                "policy": json.dumps({"Version": "2012-10-17", "Statement": statements})}}}
+
+
+def _reach_plan(statements, buckets=None):
+    roles = [{"address": "module.sec.aws_iam_role.etl", "type": "aws_iam_role",
+              "mode": "managed", "name": "etl",
+              "change": {"actions": ["create"], "after": {"name": "etl"}}}]
+    return {"resource_changes": roles + [_inline_policy("etl", statements)]
+            + (buckets or [_bucket("module.storage.aws_s3_bucket.bronze", "acme-bronze")])}
+
+
+def test_a_role_reaches_the_bucket_its_policy_names():
+    plan = _reach_plan([{"Effect": "Allow", "Action": ["s3:GetObject"],
+                         "Resource": ["arn:aws:s3:::acme-bronze/*"]}])
+    model = am.access_model(plan)
+
+    reach = am.dataset_reachability(model, plan)
+
+    assert reach[0]["role"] == "etl"
+    assert reach[0]["datasets"][0]["address"] == "module.storage.aws_s3_bucket.bronze"
+    assert "s3:GetObject" in reach[0]["datasets"][0]["actions"]
+
+
+def test_a_deny_statement_is_not_reach():
+    """A Deny is a real fact about access, but it is not a grant. Counting it as reach
+    would report permissions the role does not have."""
+    plan = _reach_plan([{"Effect": "Deny", "Action": ["s3:GetObject"],
+                         "Resource": ["arn:aws:s3:::acme-bronze/*"]}])
+    model = am.access_model(plan)
+
+    assert am.dataset_reachability(model, plan)[0]["datasets"] == []
+
+
+def test_a_wildcard_resource_reaches_everything_and_says_so():
+    """`Resource: "*"` matches no bucket name, so a name-matching join would report the
+    broadest possible grant as reaching nothing."""
+    plan = _reach_plan([{"Effect": "Allow", "Action": ["s3:*"], "Resource": ["*"]}])
+    model = am.access_model(plan)
+
+    entry = am.dataset_reachability(model, plan)[0]
+
+    assert entry["reaches_everything"] is True
+
+
+def test_a_negated_statement_is_not_reported_as_a_narrow_grant():
+    """NotResource allows the whole namespace EXCEPT what it lists. Reading its `resources`
+    as the grant understates it enormously."""
+    plan = _reach_plan([{"Effect": "Allow", "Action": ["s3:*"],
+                         "NotResource": ["arn:aws:s3:::secret/*"]}])
+    model = am.access_model(plan)
+
+    entry = am.dataset_reachability(model, plan)[0]
+
+    assert entry["reaches_everything"] is True
+
+
+def test_an_unresolved_policy_makes_reach_undeterminable_not_empty():
+    plan = {"resource_changes": [
+        {"address": "module.sec.aws_iam_role.etl", "type": "aws_iam_role", "mode": "managed",
+         "name": "etl", "change": {"actions": ["create"], "after": {"name": "etl"}}},
+        {"address": "module.sec.aws_iam_role_policy.p", "type": "aws_iam_role_policy",
+         "mode": "managed", "name": "p",
+         "change": {"actions": ["create"], "after": {"role": "etl"},
+                    "after_unknown": {"policy": True}}},
+        _bucket("module.storage.aws_s3_bucket.bronze", "acme-bronze")]}
+    model = am.access_model(plan)
+
+    entry = am.dataset_reachability(model, plan)[0]
+
+    assert entry["determinable"] is False
+    assert entry["datasets"] == []
+
+
+def test_a_bucket_named_only_at_apply_time_cannot_be_matched_and_is_reported():
+    """The grant is real; the join is impossible. Silently reporting no reach hides it."""
+    plan = _reach_plan([{"Effect": "Allow", "Action": ["s3:GetObject"],
+                         "Resource": ["arn:aws:s3:::acme-bronze/*"]}],
+                       buckets=[_bucket("module.storage.aws_s3_bucket.bronze", unknown=True)])
+    model = am.access_model(plan)
+
+    entry = am.dataset_reachability(model, plan)[0]
+
+    assert entry["unmatched_resources"], "an ARN matching no known bucket must be reported"

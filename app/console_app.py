@@ -1107,13 +1107,43 @@ def view_access(state):
         blocks.append(html.P("This plan declares no Lake Formation permissions.",
                              className="muted"))
 
+    reach = access_model.dataset_reachability(model, plan)
+    blocks.append(html.H2("What each role can reach"))
+    if reach:
+        rows = []
+        for entry in reach:
+            if not entry["determinable"]:
+                target = html.Span("not determinable -- a policy is computed at apply time",
+                                   className="absent")
+            elif entry["reaches_everything"]:
+                target = html.Span("every bucket in the account", className="warn-text")
+            elif entry["datasets"]:
+                target = ", ".join(d["address"].split(".")[-1] for d in entry["datasets"])
+            else:
+                target = html.Span("no dataset in this plan", className="absent")
+            actions = sorted({a for d in entry["datasets"] for a in d["actions"]})
+            rows.append(html.Tr([
+                html.Td(entry["role"]),
+                html.Td(target),
+                html.Td(", ".join(actions) if actions
+                        else ("all S3 actions" if entry["reaches_everything"] else "-")),
+                html.Td(", ".join(entry["unmatched_resources"])
+                        if entry["unmatched_resources"] else "-"),
+            ]))
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Role"), html.Th("Reaches"), html.Th("Actions"),
+                                html.Th("ARNs this plan cannot resolve")])),
+            html.Tbody(rows)]))
+        blocks.append(html.P("Reach is read from each policy's own resource ARNs. A Deny is "
+                             "not counted as reach, and a wildcard or NotResource statement "
+                             "is reported as reaching everything rather than as the narrow "
+                             "grant its resource list would suggest.", className="hint"))
+
     blocks.append(html.Div(className="notice", children=[
         html.Span("Not yet derived", className="lab"),
-        html.P("Which dataset each role can reach is not extracted: that needs a statement's "
-               "resource ARNs joined to the datasets in 02 Flow. The G6 policy findings are "
-               "not joined onto these roles either. Those cells are absent rather than "
-               "estimated -- an access screen that under-reports is worse than one that says "
-               "it cannot see."),
+        html.P("The G6 policy findings are not joined onto these roles yet, so a role that "
+               "trips SEC-05 is not marked as such in the table above -- the finding appears "
+               "only in the cross-account view. That cell is absent rather than estimated."),
     ]))
     return html.Div(blocks)
 
@@ -2015,6 +2045,7 @@ details ul{padding:0 0 16px 16px;color:var(--smoke);font-size:12px;columns:3}
     /* An empty-state message following an explanatory hint read as one run-on block. */
     p.muted{margin:14px 0}
     .hint + p.muted{margin-top:16px}
+    .warn-text{color:var(--warn)}
     .runpick{min-width:330px}
     .runpick .Select-control,.runpick .Select-menu-outer,.runpick .Select-value,
     .runpick .Select-placeholder,.runpick .Select-input{background:transparent!important;

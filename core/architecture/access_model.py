@@ -393,3 +393,92 @@ def lake_formation_grants(plan):
         })
     return grants
 
+# An S3 ARN names a bucket between the fixed prefix and the first slash:
+#   arn:aws:s3:::acme-bronze/raw/*  ->  acme-bronze
+_S3_BUCKET_ARN = re.compile(r"^arn:aws[\w-]*:s3:::([^/]+)")
+
+
+def _bucket_names(plan):
+    """{bucket name: address} for every S3 bucket this plan names.
+
+    A bucket whose name is computed at apply time has no key here, which is why an ARN that
+    matches nothing is REPORTED rather than dropped -- the grant is real, only the join is
+    impossible.
+    """
+    raw_changes, _error = plan_reader.read_resource_changes(plan, treat_absent_as_error=False)
+    managed, _malformed = plan_reader.managed_only(raw_changes or [])
+    names = {}
+    for rc in managed:
+        if rc.get("type") != "aws_s3_bucket":
+            continue
+        change = rc.get("change") if isinstance(rc.get("change"), dict) else {}
+        after = change.get("after") if isinstance(change.get("after"), dict) else {}
+        name = after.get("bucket")
+        if name:
+            names[str(name)] = rc.get("address", "")
+    return names
+
+
+def dataset_reachability(model, plan):
+    """Which datasets each role can reach, from its policies' own resource ARNs.
+
+    Four outcomes are kept distinct, because collapsing any of them under-reports access:
+
+    - A DENY is not reach. It is a real fact about permissions and it is not a grant.
+    - A WILDCARD or NEGATED statement reaches everything. `Resource: "*"` matches no bucket
+      name, and `NotResource` allows the whole namespace EXCEPT what it lists, so reading
+      either one's `resources` as the grant would report the broadest possible access as
+      reaching nothing.
+    - An UNRESOLVED policy makes reach undeterminable, never empty.
+    - An ARN naming a bucket this plan does not name is reported as unmatched. The grant
+      exists; only the join failed.
+    """
+    buckets = _bucket_names(plan)
+    policies_by_role = {}
+    for policy in model.get("policies") or []:
+        policies_by_role.setdefault(policy.get("role"), []).append(policy)
+
+    entries = []
+    for role in model.get("roles") or []:
+        name = role.get("name")
+        attached = policies_by_role.get(name, [])
+        reached, unmatched = {}, []
+        determinable, everything = True, False
+
+        for policy in attached:
+            statements = _statements_of(policy.get("document") or {})
+            if statements is None:
+                determinable = False
+                continue
+            for statement in statements:
+                if str(statement.get("effect", "")).lower() != "allow":
+                    continue
+                if statement.get("negated"):
+                    everything = True
+                    continue
+                for resource in statement.get("resources") or []:
+                    if resource == "*":
+                        everything = True
+                        continue
+                    match = _S3_BUCKET_ARN.match(resource)
+                    bucket = match.group(1) if match else None
+                    if bucket == "*":
+                        everything = True
+                        continue
+                    address = buckets.get(bucket) if bucket else None
+                    if not address:
+                        unmatched.append(resource)
+                        continue
+                    reached.setdefault(address, set()).update(statement.get("actions") or [])
+
+        entries.append({
+            "role": name or role.get("address"),
+            "address": role.get("address"),
+            "determinable": determinable,
+            "reaches_everything": everything,
+            "datasets": [{"address": address, "actions": sorted(actions)}
+                         for address, actions in sorted(reached.items())],
+            "unmatched_resources": sorted(set(unmatched)),
+        })
+    return entries
+
