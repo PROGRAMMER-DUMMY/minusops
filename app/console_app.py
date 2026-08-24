@@ -52,12 +52,6 @@ import reconciler  # noqa: E402
 import runs as runs_engine  # noqa: E402
 import vault  # noqa: E402
 
-VIEWS = (
-    ("topology", "1. Architecture Topology"),
-    ("lineage", "2. Data Lineage & Governance"),
-    ("trace", "3. Multi-Agent Execution Trace"),
-    ("vault", "4. Deliverables & Compliance Vault"),
-)
 
 # Monad design tokens (DESIGN.md). Kept in one dict so the stylesheet below and any inline
 # style read the same values.
@@ -114,47 +108,83 @@ def assemble(run_id=None):
     }
 
 
-# --- Shared chrome ----------------------------------------------------------------------
+# --- Shared chrome ------------------------------------------------------------------------
 
-def run_header(state):
+VIEW_LABELS = (
+    ("topology", "01", "Topology"),
+    ("flow", "02", "Flow"),
+    ("access", "03", "Access"),
+    ("cost", "04", "Cost"),
+    ("trace", "05", "What ran"),
+    ("evidence", "06", "Evidence"),
+)
+
+
+def _run_options():
+    """Every run, newest first, for the picker in the bar.
+
+    The `run-id` store existed from the beginning and NOTHING ever wrote it, so the console
+    could only ever show whatever latest_run() returned and no other run was reachable.
+    """
+    return [{"label": r.get("run_id", ""), "value": r.get("run_id", "")}
+            for r in runs_engine.list_runs()]
+
+
+def top_bar(active_view, run_id):
+    options = _run_options()
+    return html.Header(className="bar", children=[
+        html.Span(className="brand", children=[html.Span(className="dot"), " MinusOps"]),
+        html.Nav(role="tablist", children=[
+            html.Button(id={"kind": "nav", "view": key}, n_clicks=0, role="tab",
+                        **{"aria-selected": "true" if key == active_view else "false"},
+                        children=[html.Span(number, className="n"), label])
+            for key, number, label in VIEW_LABELS]),
+        html.Span(className="spacer"),
+        html.Span(className="util", children=[
+            html.A("Docs", href="/docs"), html.A("Policies", href="/policies"),
+            html.Button("Settings", id={"kind": "nav", "view": "settings"}, n_clicks=0,
+                        className="utilbtn"),
+            html.A("About", href="/about"),
+        ]),
+        html.Span(className="picker", children=[
+            dcc.Dropdown(id="run-select", className="runpick", options=options,
+                         value=run_id or (options[0]["value"] if options else None),
+                         clearable=False, searchable=False),
+        ]),
+    ])
+
+
+def run_band(state):
     """FR-01.2. Every fact here is read, never derived -- an unproven plan hash on a
     governance header is exactly the claim this product exists to refuse."""
     record = state.get("run") or {}
     plan_hash = (state.get("plan") or {}).get("plan_hash") or record.get("plan_hash")
     cost = record.get("estimated_monthly_cost")
-    chips = [
-        ("Domain", record.get("domain") or "not declared"),
-        ("Tier", record.get("tier") or "UNCLASSIFIED"),
-        ("Plan hash", (plan_hash[:16] if plan_hash else "not planned")),
-        ("BCM cost", f"${cost}/mo" if cost else "not priced"),
-        ("Status", record.get("governance_status") or "GENERATED"),
+    vault_stats = state.get("vault") or {}
+    facts = [
+        ("Domain", record.get("domain"), "not declared"),
+        ("Tier", record.get("tier"), "unclassified"),
+        ("Resources", len((state.get("plan") or {}).get("resource_changes") or []) or None,
+         "not planned"),
+        ("Forecast", f"${cost}/mo" if cost else None, "not priced"),
+        ("Evidence", (f"{vault_stats.get('present', 0)} of {vault_stats.get('total', 0)}"
+                      if vault_stats.get("total") else None), "no catalog"),
     ]
-    return html.Div(className="run-header", children=[
-        html.Div(className="run-id", children=record.get("run_id", "no run selected")),
-        html.Div(className="chips", children=[
-            html.Span(className="chip", children=[
-                html.Small(label), html.Strong(value)]) for label, value in chips]),
-    ])
-
-
-def requirements_drawer(state):
-    """FR-01.3. Collapsed by default: it is reference material, not the working surface."""
-    decision = state.get("decision") or {}
-    modules = decision.get("selected_modules") or []
-    missing = decision.get("missing_requirements") or []
-    return html.Details(className="drawer", children=[
-        html.Summary("Requirements and architecture decision"),
-        html.Div(className="drawer-body", children=[
-            html.P(decision.get("architecture") or "No architecture decision recorded.",
-                   className="drawer-lead"),
-            html.Div(className="drawer-grid", children=[
-                html.Div([html.H4("Selected modules"),
-                          html.Ul([html.Li(m) for m in modules] or [html.Li("none")])]),
-                html.Div([html.H4("Missing or deferred"),
-                          html.Ul([html.Li(m) for m in missing]
-                                  or [html.Li("none recorded")])]),
-            ]),
+    status = (record.get("governance_status") or "").strip()
+    verdict = status or "unproven"
+    return html.Div(className="run", children=[
+        html.Span(record.get("run_id", "no run selected"), className="name"),
+        html.Span(className="hash", children=[
+            html.Span("Bound to plan", className="lab"),
+            plan_hash[:16] if plan_hash else html.Span("not planned", className="absent"),
         ]),
+        html.Span(className="facts", children=[
+            html.Div(children=[
+                html.Span(label, className="lab"),
+                html.B(str(value)) if value else html.B(absent, className="absent"),
+            ]) for label, value, absent in facts]),
+        html.Span(verdict, className="chip" if status.upper() == "PROVEN"
+                  else "chip unproven"),
     ])
 
 
@@ -587,8 +617,35 @@ def _empty(title, detail):
         html.H3(title), html.P(detail, className="muted")])
 
 
-RENDERERS = {"topology": view_topology, "lineage": view_lineage,
-             "trace": view_trace, "vault": view_vault}
+def view_access(state):
+    """03 Access. Roles, cross-account trust and the policy findings against them.
+
+    Deliberately not populated from a guess: the Rego findings are readable today, but
+    "which role can reach which dataset" needs IAM statements parsed out of the plan, and
+    that engine does not exist yet. Showing invented rows on an access-control screen is
+    worse than showing none.
+    """
+    return _empty("Access analysis not available",
+                  "The policy findings are readable, but the role-to-resource model "
+                  "(core/architecture/access_model.py) has not been built yet.")
+
+
+def view_cost(state):
+    """04 Cost. BCM forecast, per-service breakdown, scale curve and the assumptions."""
+    return _empty("No cost evidence for this run",
+                  "Run `minusctl cost estimate` to produce a BCM forecast.")
+
+
+def view_settings(state):
+    """Workspace scope: teams and connectors, which outlive any single run."""
+    return _empty("Settings not wired yet",
+                  "Teams come from configs/teams.yaml via team_resolver; connectors from "
+                  "core/integrations.")
+
+
+RENDERERS = {"topology": view_topology, "flow": view_lineage, "access": view_access,
+             "cost": view_cost, "trace": view_trace, "evidence": view_vault,
+             "settings": view_settings}
 
 
 # --- App --------------------------------------------------------------------------------
@@ -601,40 +658,70 @@ server = app.server
 # catch, because a structural check of the layout tree cannot see it. The browser did.
 app.config.suppress_callback_exceptions = True
 
-app.layout = html.Div(className="page", children=[
+app.layout = html.Div(children=[
     dcc.Store(id="run-id"),
+    dcc.Store(id="view", data="topology"),
     dcc.Store(id="reconcile-proposal"),
-    html.Header(className="masthead", children=[
-        html.Div(className="brand", children=[
-            html.Span(className="dot"),
-            html.Div([html.H1("MinusOps"),
-                      html.Small("VISUAL GOVERNANCE CONSOLE")]),
+    html.Div(id="bar-slot"),
+    html.Div(className="wrap", children=[
+        html.Div(id="band-slot"),
+        html.Div(id="view-slot", className="view on"),
+    ]),
+    html.Div(id="overlay", className="overlay", children=[
+        html.Div(className="sheet", role="dialog", children=[
+            html.Header(children=[
+                html.Span("document", className="name", id="sheet-name"),
+                html.Span("", className="lab", id="sheet-kind"),
+                html.Span(className="spacer"),
+                html.Button("Close (Esc)", id="sheet-close", n_clicks=0, className="btn"),
+            ]),
+            html.Div(id="sheet-body", className="body"),
         ]),
     ]),
-    html.Div(id="header-slot"),
-    html.Div(id="drawer-slot"),
-    dcc.Tabs(id="view", value="topology", className="views",
-             children=[dcc.Tab(label=label, value=key, className="view-tab",
-                               selected_className="view-tab selected")
-                       for key, label in VIEWS]),
-    dcc.Loading(html.Div(id="view-slot", className="view-body"), color=C["ink"]),
 ])
 
 
 @app.callback(
-    Output("header-slot", "children"),
-    Output("drawer-slot", "children"),
+    Output("view", "data"),
+    Input({"kind": "nav", "view": dash.ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def _switch_view(_clicks):
+    """Which view was asked for comes from the triggering component id, not from an index
+    into a list -- an index breaks the moment a nav item is added or reordered."""
+    triggered = dash.callback_context.triggered_id
+    if isinstance(triggered, dict) and triggered.get("view"):
+        return triggered["view"]
+    return dash.no_update
+
+
+@app.callback(
+    Output("run-id", "data"),
+    Input("run-select", "value"),
+)
+def _select_run(run_id):
+    return run_id
+
+
+@app.callback(
+    Output("bar-slot", "children"),
+    Output("band-slot", "children"),
     Output("view-slot", "children"),
-    Input("view", "value"),
-    State("run-id", "data"),
+    Input("view", "data"),
+    Input("run-id", "data"),
 )
 def _render(view, run_id):
     state = assemble(run_id)
+    bar = top_bar(view, run_id)
     if not state.get("run"):
-        return (html.Div(), html.Div(),
-                _empty("No runs found", "Create one with `minusctl create`."))
+        return bar, html.Div(), _empty(
+            "No runs found", "Create one with `minusctl create`.")
+    # Settings is workspace-scoped: showing a run identity above it would say these teams
+    # and connectors belong to that run.
+    band = html.Div() if view == "settings" else run_band(state)
     renderer = RENDERERS.get(view, view_topology)
-    return run_header(state), requirements_drawer(state), renderer(state)
+    return bar, band, renderer(state)
+
 
 
 @app.callback(
@@ -736,263 +823,403 @@ app.index_string = """<!DOCTYPE html>
   {%metas%}<title>{%title%}</title>{%favicon%}{%css%}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
-    /* ----------------------------------------------------------------------------------
-       Monad design tokens, transcribed from DESIGN.md. Every rule below reads from these
-       and nothing else, so the design file stays the source of truth instead of something
-       paraphrased once into hardcoded values.
-       ---------------------------------------------------------------------------------- */
-    :root{
-      --color-parchment:#f6f3f1;--color-lake-blue:#2b59d1;--color-periwinkle-mist:#cfdaf5;
-      --color-sky-blue:#a0b5eb;--color-mint:#a7fccd;--color-coral:#ff9473;
-      --color-gold:#ecda98;--color-crimson:#f37a0a;--color-off-black:#242424;
-      --color-ink:#000000;--color-graphite:#4e4d4d;--color-smoke:#797776;--color-ash:#cecac8;
 
-      /* Licensed faces first: an operator who has them gets them. The substitutes are the
-         ones DESIGN.md names, with Instrument Serif standing in for Untitled Serif -- it
-         carries the same stroke contrast at weight 400, which Georgia does not. */
-      --font-mono:'ABC Diatype Mono','JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,
-        Consolas,monospace;
-      --font-serif:'Untitled Serif','Instrument Serif',Georgia,Cambria,'Times New Roman',serif;
+:root{
+  --paper:#f6f3f1; --ink:#242424; --black:#000; --ash:#cecac8; --smoke:#797776;
+  --graphite:#4e4d4d; --blue:#2b59d1; --mist:#cfdaf5;
+  --good:#2f6b4f; --warn:#8a6516; --crit:#8f2d18;
+  --tint:rgba(43,89,209,.05);
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+  --serif:'Instrument Serif',Georgia,serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--paper);color:var(--ink);font-family:var(--mono);font-size:13px;
+  line-height:1.5;-webkit-font-smoothing:antialiased}
+body.locked{overflow:hidden}
+::selection{background:var(--mist);color:var(--ink)}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+a{color:inherit}
+.lab{font-size:9px;letter-spacing:2.5px;text-transform:uppercase;color:var(--smoke)}
 
-      --text-caption:12px;--tracking-caption:-0.4px;
-      --text-body-sm:14px;--tracking-body-sm:-0.28px;
-      --text-body:16px;--tracking-body:-0.4px;
-      --text-label:18px;--tracking-label:-0.4px;
-      --text-body-lg:20px;--tracking-body-lg:-0.4px;
-      --text-subheading:24px;--tracking-subheading:-0.48px;
-      --text-heading-sm:32px;--tracking-heading-sm:-0.64px;
-      --text-heading:40px;--tracking-heading:-0.8px;
-      --leading-tight:1.2;--leading-body:1.35;
+.bar{background:var(--black);color:var(--paper);height:46px;display:flex;align-items:stretch;
+  padding:0 18px;position:sticky;top:0;z-index:20}
+.bar .brand{display:flex;align-items:center;gap:9px;font-size:11px;letter-spacing:2.5px;
+  text-transform:uppercase;padding-right:22px;white-space:nowrap}
+.bar .dot{width:8px;height:8px;background:var(--blue)}
+.bar nav{display:flex;align-items:stretch}
+.bar nav button{background:none;border:0;border-bottom:2px solid transparent;cursor:pointer;
+  font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;
+  color:#8d8d8b;padding:0 13px;transition:color .12s ease,border-color .12s ease;white-space:nowrap}
+.bar nav button:hover{color:var(--paper)}
+.bar nav button .n{color:#4a4a48;margin-right:6px;transition:color .12s ease}
+.bar nav button[aria-selected="true"]{color:var(--paper);border-bottom-color:var(--blue)}
+.bar nav button[aria-selected="true"] .n{color:var(--blue)}
+.bar .spacer{flex:1}
+.bar .util{display:flex;align-items:center;gap:18px;padding-right:18px}
+.bar .util a{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#8d8d8b;
+  text-decoration:none;transition:color .12s ease}
+.bar .util a:hover,.bar .util a.on{color:var(--paper)}
+.picker select{appearance:none;background:transparent;border:1px solid #333331;color:var(--paper);
+  font-family:var(--mono);font-size:10px;padding:6px 24px 6px 9px;cursor:pointer;
+  transition:border-color .12s ease;
+  background-image:linear-gradient(45deg,transparent 50%,#8d8d8b 50%),
+    linear-gradient(135deg,#8d8d8b 50%,transparent 50%);
+  background-position:calc(100% - 12px) 50%,calc(100% - 7px) 50%;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+.picker{display:flex;align-items:center;align-self:center}
+.picker select:hover{border-color:#6a6a68}
 
-      --spacing-8:8px;--spacing-16:16px;--spacing-24:24px;--spacing-32:32px;
-      --spacing-40:40px;--spacing-64:64px;--spacing-80:80px;
+.wrap{max-width:1360px;margin:0 auto;padding:0 18px}
+.run{display:flex;align-items:center;gap:24px;padding:15px 0;border-bottom:1px solid var(--ash);
+  flex-wrap:wrap}
+.run .name{font-family:var(--serif);font-weight:400;font-size:22px;letter-spacing:-0.3px;
+  white-space:nowrap}
+.run .hash{font-size:12px;font-weight:500;color:var(--graphite);white-space:nowrap}
+.run .hash .lab{margin-right:8px}
+.facts{display:flex;gap:22px;flex-wrap:wrap;margin-left:auto}
+.facts b{font-weight:500;margin-left:7px;font-size:12px}
+.chip{border:1px solid var(--good);color:var(--good);padding:5px 13px;font-size:10px;
+  font-weight:700;letter-spacing:2px;text-transform:uppercase}
 
-      --radius-2xl:16px;--radius-cards:40px;--radius-buttons:100px;--radius-pills:9999px;
+.view{display:none;padding:22px 0 70px} .view.on{display:block}
+.actions{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap}
+.btn{font-family:var(--mono);font-size:10px;letter-spacing:2.2px;text-transform:uppercase;
+  border:1px solid var(--ink);background:transparent;color:var(--ink);padding:10px 18px;
+  cursor:pointer;text-decoration:none;display:inline-block;
+  transition:background-color .14s ease,color .14s ease,border-color .14s ease}
+.btn:hover{background:var(--ink);color:var(--paper)}
+.btn.pri{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn.pri:hover{background:#1f3f96;border-color:#1f3f96}
+.btn.ghost{border-color:var(--ash);color:var(--graphite)}
+.btn.ghost:hover{border-color:var(--ink);color:var(--ink);background:transparent}
 
-      --page-max-width:1432px;--section-gap:64px;--card-padding:40px;--element-gap:16px;
+h2{font-size:10px;letter-spacing:2.5px;text-transform:uppercase;font-weight:700;margin:30px 0 0}
+h2:first-child{margin-top:0}
+.hint{color:var(--smoke);font-size:11px;margin-top:6px}
 
-      --surface-parchment:#f6f3f1;--surface-periwinkle-mist:#cfdaf5;
-      --surface-off-black:#242424;--surface-ink:#000000;
-      /* --shadow-md exists in the token file and is deliberately unused: the Don't list
-         forbids drop shadows on cards. Elevation here is surface plus hairline only. */
-      --shadow-md:rgba(0,0,0,0.1) 0px 0px 10px 0px;
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:12px}
+th{text-align:left;font-weight:400;font-size:9px;letter-spacing:2.5px;text-transform:uppercase;
+  color:var(--smoke);padding:8px 12px 8px 10px;border-bottom:1px solid var(--ash)}
+td{padding:9px 12px 9px 10px;border-bottom:1px solid var(--ash);color:var(--graphite);
+  transition:background-color .12s ease}
+td:first-child{color:var(--ink);box-shadow:inset 2px 0 0 transparent;transition:box-shadow .12s ease}
+tbody tr:hover td{background:var(--tint)}
+tbody tr:hover td:first-child{box-shadow:inset 2px 0 0 var(--blue)}
+.num{color:var(--smoke)} .right{text-align:right}
+.absent{color:var(--smoke)}
+.absent::before{content:"";display:inline-block;width:10px;height:1px;background:var(--ash);
+  vertical-align:middle;margin-right:7px}
 
-      /* Verdict ink. NOT from the token file, and deliberately not from the pastels --
-         Coral, Mint and Gold are declared decorative-only, so borrowing them for pass/fail
-         would put brand decoration on a governance judgement. These are dark, desaturated
-         neighbours chosen to clear contrast on parchment without reading as accents. */
-      --good:#2f6b4f;--warn:#8a6516;--crit:#8f2d18;
-    }
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{background:var(--surface-parchment);color:var(--color-off-black);
-      font-family:var(--font-mono);font-size:var(--text-body);line-height:var(--leading-body);
-      letter-spacing:var(--tracking-body);-webkit-font-smoothing:antialiased}
-    h1,h2,h3,h4{font-family:var(--font-serif);font-weight:400;line-height:var(--leading-tight)}
-    :focus-visible{outline:2px solid var(--color-lake-blue);outline-offset:3px}
+/* Provenance tag. Every number says where it came from -- a BCM forecast and a Cost
+   Explorer actual are different claims and must never share a typeface with no label. */
+.src{font-size:9px;letter-spacing:1.6px;text-transform:uppercase;border:1px solid var(--ash);
+  padding:2px 6px;color:var(--smoke);white-space:nowrap}
+.src.actual{border-color:var(--good);color:var(--good)}
+.src.forecast{border-color:var(--blue);color:var(--blue)}
 
-    .page{max-width:var(--page-max-width);margin:0 auto;padding:var(--spacing-32)
-      var(--spacing-40) var(--spacing-80)}
+.sev{font-size:9px;letter-spacing:1.6px;text-transform:uppercase;font-weight:700}
+.sev.high{color:var(--crit)} .sev.med{color:var(--warn)} .sev.low{color:var(--smoke)}
 
-    /* Masthead ------------------------------------------------------------------------ */
-    .masthead{display:flex;align-items:center;justify-content:space-between;
-      padding-bottom:var(--spacing-24);border-bottom:1px solid var(--color-ash)}
-    .brand{display:flex;align-items:center;gap:var(--element-gap)}
-    .dot{width:12px;height:12px;border-radius:var(--radius-pills);
-      background:var(--color-lake-blue)}
-    .brand h1{font-size:var(--text-subheading);letter-spacing:var(--tracking-subheading)}
-    .brand small,.masthead>span{font-size:var(--text-caption);
-      letter-spacing:var(--tracking-caption);text-transform:uppercase;color:var(--color-smoke)}
+.cells{display:grid;gap:1px;background:var(--ash);border:1px solid var(--ash)}
+.cells.c4{grid-template-columns:repeat(4,1fr)}
+.cells.c5{grid-template-columns:repeat(5,1fr)}
+.cells>div{background:var(--paper);padding:13px 15px}
+.cells b{display:block;font-size:17px;font-weight:500;margin-top:5px}
+.cells .sub{font-size:10px;color:var(--smoke);margin-top:4px}
 
-    /* Run header ---------------------------------------------------------------------- */
-    .run-header{padding:var(--spacing-40) 0 var(--spacing-24)}
-    .run-id{font-family:var(--font-serif);font-weight:400;font-size:var(--text-heading);
-      line-height:var(--leading-tight);letter-spacing:var(--tracking-heading)}
-    .chips{display:flex;flex-wrap:wrap;gap:var(--spacing-8);margin-top:var(--spacing-24)}
-    .chip{display:inline-flex;flex-direction:column;gap:2px;border:1px solid var(--color-ash);
-      border-radius:var(--radius-pills);padding:12px 20px}
-    .chip small{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
-      text-transform:uppercase;color:var(--color-smoke)}
-    .chip strong{font-weight:500;font-size:var(--text-body-sm);
-      letter-spacing:var(--tracking-body-sm)}
+.canvas{width:100%;height:400px;border:1px solid var(--ash);display:block;background:var(--paper)}
+.hops{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--ash);
+  border:1px solid var(--ash);margin-top:12px}
+.hops button{background:var(--paper);border:0;border-top:2px solid transparent;text-align:left;
+  padding:13px 14px;cursor:pointer;font-family:var(--mono);
+  transition:border-color .14s ease,background-color .14s ease}
+.hops button:hover{border-top-color:var(--blue);background:var(--tint)}
+.hops .name{display:block;font-size:13px;margin:5px 0 3px;color:var(--ink)}
+.hops .sub{font-size:11px;color:var(--graphite)}
+.hops .gold{border-top-color:var(--good)}
 
-    /* Cards: 40px radius, 40px padding, 1px ash, no shadow ---------------------------- */
-    .drawer,.panel,.inspector,.stage,.empty,.review-modal{
-      border:1px solid var(--color-ash);border-radius:var(--radius-cards);
-      padding:var(--card-padding)}
-    .drawer{margin-bottom:var(--spacing-32)}
-    .drawer:not([open]){padding:var(--spacing-24) var(--card-padding)}
-    .panel,.inspector{margin-top:var(--spacing-32)}
-    .drawer summary{cursor:pointer;font-size:var(--text-caption);text-transform:uppercase;
-      letter-spacing:var(--tracking-caption);color:var(--color-graphite);list-style:none}
-    .drawer summary::-webkit-details-marker{display:none}
-    .drawer summary::before{content:"+ ";color:var(--color-smoke)}
-    .drawer[open] summary::before{content:"- "}
-    .drawer-body{padding-top:var(--spacing-24)}
-    .drawer-lead{font-family:var(--font-serif);font-size:var(--text-body-lg);
-      margin-bottom:var(--spacing-16);color:var(--color-graphite)}
-    .drawer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
-      gap:var(--spacing-40)}
-    .drawer-grid h4{font-size:var(--text-subheading);
-      letter-spacing:var(--tracking-subheading);margin-bottom:var(--spacing-8)}
-    .drawer-grid li{margin-left:18px;color:var(--color-graphite);font-size:var(--text-body-sm);
-      letter-spacing:var(--tracking-body-sm)}
-    .panel h4,.inspector h4{font-size:var(--text-subheading);
-      letter-spacing:var(--tracking-subheading);margin-bottom:var(--spacing-16)}
+.stages{border:1px solid var(--ash);border-bottom:0;margin-top:12px}
+.stage{display:grid;grid-template-columns:190px 1fr 110px;gap:18px;padding:11px 14px;
+  border-bottom:1px solid var(--ash);align-items:baseline;transition:background-color .12s ease}
+.stage:hover{background:var(--tint)}
+.stage .who{font-size:12px;font-weight:500}
+.stage .what{color:var(--graphite);font-size:12px}
+.stage .st{font-size:9px;letter-spacing:2.2px;text-transform:uppercase;color:var(--smoke);
+  text-align:right}
+.stage.ran{box-shadow:inset 2px 0 0 var(--good)}
 
-    /* Navigation: 18px uppercase mono ------------------------------------------------- */
-    .views .tab-container{display:flex;gap:var(--spacing-32);flex-wrap:wrap;
-      border-bottom:1px solid var(--color-ash)!important}
-    .view-tab{flex:0 0 auto!important;width:auto!important;
-      font-family:var(--font-mono)!important;font-size:var(--text-label)!important;
-      letter-spacing:var(--tracking-label)!important;text-transform:uppercase!important;
-      color:var(--color-smoke)!important;background:transparent!important;border:0!important;
-      border-bottom:1px solid transparent!important;
-      padding:var(--spacing-16) var(--spacing-24)!important}
-    .view-tab.selected{color:var(--color-off-black)!important;font-weight:500!important;
-      border-bottom:1px solid var(--color-off-black)!important}
-    .view-body{padding-top:var(--section-gap)}
-    .view-actions{display:flex;align-items:center;gap:var(--spacing-24);
-      margin-bottom:var(--spacing-40);flex-wrap:wrap}
+/* Scale curve: bars, not a chart library. Width is the only encoding and it is honest. */
+.curve{margin-top:12px;border:1px solid var(--ash)}
+.curve .row{display:grid;grid-template-columns:90px 1fr 120px;gap:14px;align-items:center;
+  padding:11px 14px;border-bottom:1px solid var(--ash)}
+.curve .row:last-child{border-bottom:0}
+/* display:block -- a percentage width is ignored on an inline span, so the fill was
+   invisible and every row looked identical. */
+.curve .track{display:block;height:10px;background:rgba(206,202,200,.35)}
+.curve .fill{display:block;height:10px;background:var(--blue)}
+.curve .amt{text-align:right;font-weight:500}
 
-    /* Pill buttons: 100px radius, 16px 32px padding, 14px uppercase ------------------- */
-    .btn{font-family:var(--font-mono);font-size:var(--text-body-sm);
-      letter-spacing:var(--tracking-body-sm);text-transform:uppercase;
-      border:1px solid var(--color-off-black);border-radius:var(--radius-buttons);
-      padding:var(--element-gap) var(--spacing-32);background:transparent;
-      color:var(--color-off-black);cursor:pointer;text-decoration:none;display:inline-block;
-      line-height:var(--leading-tight);transition:background-color .15s ease,color .15s ease}
-    .btn:hover{background:var(--color-off-black);color:var(--surface-parchment)}
-    /* Lake Blue is the single primary action per screen. Off-Black carries every other
-       filled button -- scattering the accent is what drains it of meaning. */
-    .btn.primary{background:var(--color-lake-blue);border-color:var(--color-lake-blue);
-      color:#fff}
-    .btn.primary:hover{background:#2247a8;border-color:#2247a8;color:#fff}
-    .btn.dark{background:var(--surface-off-black);border-color:var(--surface-off-black);
-      color:var(--surface-parchment)}
-    .btn.dark:hover{background:var(--color-ink);border-color:var(--color-ink)}
+details{border-top:1px solid var(--ash);margin-top:16px}
+summary{cursor:pointer;list-style:none;padding:12px 0;font-size:9px;letter-spacing:2.5px;
+  text-transform:uppercase;color:var(--smoke);transition:color .12s ease}
+summary:hover{color:var(--ink)}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"+ "}
+details[open] summary::before{content:"- "}
+details ul{padding:0 0 16px 16px;color:var(--smoke);font-size:12px;columns:3}
 
-    .muted{color:var(--color-graphite);font-size:var(--text-body-sm);
-      letter-spacing:var(--tracking-body-sm)}
-    p.muted{margin:var(--element-gap) 0}
+.docrow{cursor:pointer}
 
-    /* Data surfaces ------------------------------------------------------------------- */
-    .ledger,.code{border:1px solid var(--color-ash);border-radius:var(--radius-2xl);
-      padding:var(--spacing-24);background:var(--surface-parchment);
-      font-size:var(--text-caption);line-height:1.6;white-space:pre-wrap;overflow-x:auto;
-      color:var(--color-graphite)}
-    .table{width:100%;border-collapse:collapse;margin-top:var(--spacing-24);
-      font-size:var(--text-body-sm);letter-spacing:var(--tracking-body-sm)}
-    .table th{text-align:left;font-weight:400;font-size:var(--text-caption);
-      text-transform:uppercase;letter-spacing:var(--tracking-caption);color:var(--color-smoke);
-      padding:var(--spacing-8) 12px;border-bottom:1px solid var(--color-ash)}
-    .table td{padding:14px 12px;border-bottom:1px solid var(--color-ash);
-      color:var(--color-graphite)}
-    .table tr.absent td{color:var(--color-smoke)}
-    .table tr.reject td{color:var(--warn)}
+/* ---------------------------------------------------------------------------------------
+   Document viewer. A governance document is the thing you came to read, so it gets the
+   screen -- not a 440px column beside a list.
+   --------------------------------------------------------------------------------------- */
+.overlay{position:fixed;inset:0;background:rgba(36,36,36,.55);z-index:40;display:none;
+  padding:34px}
+.overlay[open]{display:block}
+.sheet{background:var(--paper);border:1px solid var(--ash);height:100%;display:flex;
+  flex-direction:column;max-width:1180px;margin:0 auto}
+.sheet header{display:flex;align-items:center;gap:16px;padding:14px 18px;
+  border-bottom:1px solid var(--ash)}
+.sheet header .name{font-size:13px;font-weight:500}
+.sheet header .spacer{flex:1}
+.sheet .body{flex:1;overflow:auto;padding:18px;min-height:0}
+.sheet .body pre{font-size:12px;line-height:1.7;white-space:pre;color:var(--graphite)}
+.sheet .body iframe,.sheet .body embed{width:100%;height:100%;border:1px solid var(--ash);
+  background:#fff}
+.sheet .body .none{color:var(--smoke);text-align:center;padding:70px 20px}
+.sheet .body .none b{display:block;color:var(--ink);font-weight:500;margin-bottom:8px}
 
-    /* Lineage: pipeline node tags joined by connectors -------------------------------- */
-    .canvas{width:100%;height:560px;border:1px solid var(--color-ash);
-      border-radius:var(--radius-cards);background:var(--surface-parchment);display:block;
-      margin-bottom:var(--spacing-40)}
-    .lineage{display:flex;flex-wrap:wrap;gap:var(--spacing-8);align-items:center;
-      margin-bottom:var(--spacing-40)}
-    .hop{display:flex;flex-direction:column;gap:2px;background:var(--surface-parchment);
-      border:1px solid var(--color-ash);border-radius:var(--radius-pills);
-      padding:12px 20px;min-width:180px;cursor:pointer;text-align:left;
-      font-family:var(--font-mono);transition:border-color .15s ease}
-    .hop:hover{border-color:var(--color-off-black)}
-    .hop small{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
-      text-transform:uppercase;color:var(--color-smoke)}
-    .hop strong{font-family:var(--font-serif);font-weight:400;
-      font-size:var(--text-body-lg);line-height:var(--leading-tight)}
-    .hop span{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
-      color:var(--color-graphite)}
-    .hop-quality{border-color:var(--warn)}
-    .hop-gold{border-color:var(--good)}
-    .hop-link{color:var(--color-smoke);font-size:var(--text-body-sm);user-select:none}
-    .hop-link.branch{color:var(--warn)}
+.chart{width:100%;height:auto;display:block;margin-top:14px;border:1px solid var(--ash);
+  padding:10px 6px;background:var(--paper)}
+.chart .ax{font-family:var(--mono);font-size:9px;fill:var(--smoke);letter-spacing:1.4px}
+/* paint-order:stroke draws a parchment halo behind the glyphs, so a series label sitting
+   on its own line stays readable without moving it off the data it names. */
+.chart .ser{font-family:var(--mono);font-size:10px;letter-spacing:0.6px;
+  paint-order:stroke;stroke:var(--paper);stroke-width:4px;stroke-linejoin:round}
+/* Canvas + interception ---------------------------------------------------------------- */
+.canvaswrap{border:1px solid var(--ash)}
+.canvaswrap .canvas{border:0;height:520px}
+.intercept{border-top:1px solid var(--ash);background:var(--mist)}
+.intercept-head{display:flex;align-items:center;gap:12px;padding:12px 14px}
+.intercept-head .spacer{flex:1}
+.changelist{list-style:none;padding:0 14px 14px;margin:0}
+.changelist li{font-size:12px;padding:7px 0;border-top:1px solid rgba(36,36,36,.14);
+  color:var(--ink)}
+.changelist li .lab{margin-right:10px}
+.changelist li b{font-weight:500}
+.changelist li .from{color:var(--crit)} .changelist li .to{color:var(--good)}
+.changelist .noop{color:var(--graphite)}
 
-    /* Timeline ------------------------------------------------------------------------ */
-    .timeline{display:flex;flex-direction:column;gap:var(--element-gap);
-      margin-top:var(--spacing-40)}
-    .stage{border-left:3px solid var(--color-ash);
-      padding:var(--spacing-32) var(--card-padding)}
-    .stage.ran{border-left-color:var(--good)}
-    .stage-head{display:flex;justify-content:space-between;align-items:baseline;
-      gap:var(--element-gap)}
-    .stage-head strong{font-family:var(--font-serif);font-weight:400;
-      font-size:var(--text-subheading);letter-spacing:var(--tracking-subheading)}
-    .stage-status{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
-      text-transform:uppercase;color:var(--color-smoke)}
-    .stage small{display:block;color:var(--color-smoke);font-size:var(--text-caption);
-      margin-top:var(--spacing-8)}
-    .stage .audit{color:var(--color-graphite)}
+/* Review modal: FR-05.2. Periwinkle is spent here, on the one screen that asks rather
+   than reports. */
+.review{background:var(--mist);border-color:transparent}
+.review h3{font-family:var(--serif);font-weight:400;font-size:22px;margin-bottom:4px}
+.review .meta{display:flex;gap:20px;flex-wrap:wrap;margin:10px 0 16px}
+.review .warn{border-left:2px solid var(--warn);padding:8px 0 8px 12px;margin-bottom:16px;
+  font-size:12px;color:var(--graphite)}
+.review pre{font-size:11px;line-height:1.7;white-space:pre;overflow:auto;
+  background:var(--paper);border:1px solid var(--ash);padding:12px;max-height:260px}
+.review pre .add{color:var(--good)} .review pre .del{color:var(--crit)}
+.review .foot{display:flex;gap:12px;margin-top:18px;flex-wrap:wrap;align-items:center}
+/* 02 Lineage rail: datasets and the jobs between them ---------------------------------- */
+.rail{margin-top:12px;border:1px solid var(--ash)}
+/* A dataset row has four children (label, name, meta, run state); three columns wrapped
+   the run state onto a second line under the label. */
+.rail .ds{padding:13px 15px;border-bottom:1px solid var(--ash);display:grid;
+  grid-template-columns:80px 300px 1fr auto;gap:14px;align-items:baseline}
+.rail .job{padding:13px 15px;border-bottom:1px solid var(--ash);display:grid;
+  grid-template-columns:80px auto 1fr;gap:14px;align-items:baseline}
+.rail>div:last-child{border-bottom:0}
+.rail .job{background:rgba(206,202,200,.16)}
+.rail .dsname{font-size:14px;color:var(--ink)}
+.rail .dsmeta,.rail .jobmeta{font-size:11px;color:var(--graphite)}
+.rail .job b{font-size:13px;font-weight:500;white-space:nowrap}
+.rail .dsrun{font-size:10px;letter-spacing:1.4px;text-transform:uppercase}
+.rail .ds.gold{box-shadow:inset 2px 0 0 var(--good)}
 
-    /* Vault --------------------------------------------------------------------------- */
-    .link-button{background:none;border:0;padding:0;font-family:var(--font-mono);
-      font-size:var(--text-body-sm);letter-spacing:var(--tracking-body-sm);
-      color:var(--color-off-black);cursor:pointer;text-decoration:underline;
-      text-underline-offset:3px;text-decoration-color:var(--color-ash)}
-    .link-button:hover{text-decoration-color:var(--color-off-black)}
-    .absent-list{margin-left:18px;color:var(--color-smoke);font-size:var(--text-body-sm);
-      columns:2;gap:var(--spacing-40)}
-    .absent-list li{margin-bottom:var(--spacing-8)}
-    .preview-head{display:flex;justify-content:space-between;align-items:center;
-      gap:var(--spacing-24);margin-bottom:var(--spacing-24)}
-    .preview-frame{width:100%;height:440px;border:1px solid var(--color-ash);
-      border-radius:var(--radius-2xl);background:var(--surface-parchment)}
+.notice{border:1px solid var(--ash);border-left:2px solid var(--warn);padding:13px 15px;
+  margin-top:18px;background:rgba(206,202,200,.12)}
+.notice p{font-size:12px;color:var(--graphite);margin-top:6px}
 
-    /* Reconciliation ------------------------------------------------------------------ */
-    .reconcile-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
-      gap:var(--spacing-24);margin:var(--spacing-24) 0 var(--spacing-32)}
-    .field{display:flex;flex-direction:column;gap:var(--spacing-8)}
-    .field small{font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
-      text-transform:uppercase;color:var(--color-smoke)}
-    .control-input{width:100%;border:1px solid var(--color-ash);
-      border-radius:var(--radius-buttons);background:var(--surface-parchment);
-      color:var(--color-off-black);font-family:var(--font-mono);font-size:var(--text-body-sm);
-      letter-spacing:var(--tracking-body-sm);padding:14px 24px;outline:none}
-    .control-input:focus{border-color:var(--color-lake-blue)}
-    /* Periwinkle is the one elevated surface in the system, spent here because this is the
-       one moment the console asks for a decision instead of reporting one. */
-    .review-modal{background:var(--surface-periwinkle-mist);border-color:transparent;
-      margin-top:var(--spacing-24)}
-    .review-modal h4{font-size:var(--text-subheading);
-      letter-spacing:var(--tracking-subheading);margin-bottom:var(--spacing-16)}
-    .review-modal .ledger{background:transparent;border-color:rgba(36,36,36,.18)}
-    .review-meta{display:flex;flex-wrap:wrap;gap:var(--spacing-24);
-      font-size:var(--text-caption);letter-spacing:var(--tracking-caption);
-      color:var(--color-graphite);text-transform:uppercase;margin-bottom:var(--spacing-24)}
-    .review-summary{font-family:var(--font-serif);font-size:var(--text-subheading);
-      line-height:var(--leading-tight);letter-spacing:var(--tracking-subheading);
-      margin-bottom:var(--spacing-24)}
-    .review-warnings{margin:0 0 var(--spacing-24) 18px;font-size:var(--text-body-sm);
-      letter-spacing:var(--tracking-body-sm);color:var(--color-graphite)}
-    .review-warnings li{margin-bottom:var(--spacing-8)}
-    .review-actions{display:flex;gap:var(--element-gap);flex-wrap:wrap;
-      margin-top:var(--spacing-32)}
+/* 05 The machine ------------------------------------------------------------------------ */
+.machine{margin-top:12px;border:1px solid var(--ash)}
+.machine .step{display:grid;grid-template-columns:22px 190px 1fr 90px;gap:14px;width:100%;
+  text-align:left;background:var(--paper);border:0;border-bottom:1px solid var(--ash);
+  padding:12px 14px;cursor:pointer;font-family:var(--mono);align-items:baseline;
+  transition:background-color .12s ease}
+.machine .step:last-child{border-bottom:0}
+.machine .step:hover{background:var(--tint)}
+.machine .dot{width:9px;height:9px;background:var(--ash);align-self:center;
+  box-shadow:0 0 0 3px var(--paper)}
+.machine .step.ran .dot{background:var(--good)}
+.machine .step .who{font-size:12px;font-weight:500;color:var(--ink)}
+.machine .step .what{font-size:12px;color:var(--graphite)}
+.machine .step .st{font-size:9px;letter-spacing:2.2px;text-transform:uppercase;
+  color:var(--smoke);text-align:right}
+.trace dl{margin-top:4px}
+.trace .k{font-size:9px;letter-spacing:2.5px;text-transform:uppercase;color:var(--smoke);
+  margin-top:16px}
+.trace .v{font-size:13px;margin-top:5px;color:var(--ink)}
 
-    /* Verdicts ------------------------------------------------------------------------ */
-    .status-good,.status-warn,.status-bad{border:1px solid var(--color-ash);
-      border-radius:var(--radius-2xl);padding:var(--spacing-24);margin-top:var(--spacing-24)}
-    .status-good{border-left:3px solid var(--good)}
-    .status-warn{border-left:3px solid var(--warn)}
-    .status-bad{border-left:3px solid var(--crit)}
+/* 06 Delivery lanes ---------------------------------------------------------------------- */
+.lanes{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--ash);
+  border:1px solid var(--ash);margin-top:12px}
+.lanes .lane{background:var(--paper);padding:14px 15px;border-top:2px solid var(--blue)}
+.lanes .lane b{display:block;font-size:14px;font-weight:500;margin:5px 0 3px}
+.lanes .lane .sub{font-size:11px;color:var(--graphite)}
+.converge{display:grid;grid-template-columns:repeat(4,1fr);height:20px}
+.converge span{border-right:1px solid var(--ash);border-bottom:1px solid var(--ash)}
+.converge span:last-child{border-right:0}
+.gate{border:1px solid var(--ink);padding:14px 16px;display:flex;gap:16px;align-items:baseline}
+.gate b{font-size:14px;font-weight:500}
+.gate .sub{font-size:11px;color:var(--graphite)}
 
-    .empty{padding:var(--spacing-80) var(--card-padding);text-align:center}
-    .empty h3{font-size:var(--text-heading-sm);letter-spacing:var(--tracking-heading-sm);
-      margin-bottom:var(--spacing-16)}
+/* Settings ------------------------------------------------------------------------------- */
+.btn.sm{padding:6px 12px;font-size:9px}
+.locked{font-size:9px;letter-spacing:1.6px;text-transform:uppercase;color:var(--smoke);
+  border:1px solid var(--ash);padding:1px 6px;margin-left:8px}
+.secref{font-size:11px;color:var(--graphite)}
+.ok{color:var(--good)}
+.cells b.ok{color:var(--good)} .cells b.absent{color:var(--smoke);font-weight:400}
+/* 02 Flow -------------------------------------------------------------------------------- */
+.switch{display:flex;align-items:center;gap:0;border-bottom:1px solid var(--ash);
+  margin-bottom:20px}
+.switch button{background:none;border:0;border-bottom:2px solid transparent;cursor:pointer;
+  font-family:var(--mono);font-size:10px;letter-spacing:2.2px;text-transform:uppercase;
+  color:var(--smoke);padding:10px 18px;margin-bottom:-1px;transition:color .12s ease}
+.switch button:hover{color:var(--ink)}
+.switch button.on{color:var(--ink);border-bottom-color:var(--ink)}
+.switch .lab{margin-left:auto}
 
-    @media (max-width:900px){
-      .drawer-grid,.reconcile-form{grid-template-columns:1fr}
-      .page{padding:var(--spacing-24) var(--spacing-24) var(--spacing-64)}
-      .run-id{font-size:var(--text-heading-sm);letter-spacing:var(--tracking-heading-sm)}
-      .drawer,.panel,.inspector,.stage,.review-modal{padding:var(--spacing-24)}
-      .absent-list{columns:1}
-    }
-    @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+.chain{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;margin-bottom:20px}
+.chain .link{align-self:center;color:var(--smoke);padding:0 10px;user-select:none}
+.chain .node,.chain .lane{background:var(--paper);border:1px solid var(--ash);
+  border-top:2px solid var(--ash);padding:12px 16px;cursor:pointer;font-family:var(--mono);
+  text-align:left;min-width:150px;transition:border-color .14s ease,background-color .14s ease}
+.chain .node:hover,.chain .lane:hover{border-top-color:var(--blue);background:var(--tint)}
+.chain .node.sel,.chain .lane.sel{border-top-color:var(--blue);background:var(--mist);
+  border-color:var(--blue)}
+.chain .nlabel{display:block;font-size:14px;color:var(--ink);margin:5px 0 3px}
+.chain .nkind{font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:var(--smoke)}
+.chain .node.job{background:rgba(206,202,200,.2)}
+.chain .node.job:hover{background:var(--tint)}
+.lanes2{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--ash);
+  border:1px solid var(--ash);margin-bottom:0}
+.lanes2 .lane{border:0;border-top:2px solid var(--blue);min-width:0}
+.lanes2 .lane b{display:block;font-size:14px;font-weight:500;margin:5px 0 3px}
+.lanes2 .lane .sub{font-size:11px;color:var(--graphite)}
+
+.detail{border:1px solid var(--ash);padding:16px 18px;margin-bottom:8px}
+.detail .dhead{display:flex;align-items:baseline;gap:14px;margin-bottom:12px}
+.detail .dhead b{font-size:15px;font-weight:500}
+.detail .dhead .addr{font-size:11px;color:var(--graphite)}
+.detail .facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;
+  background:var(--ash);border:1px solid var(--ash)}
+.detail .facts>div{background:var(--paper);padding:10px 12px}
+.detail .facts b{display:block;font-size:12px;font-weight:500;margin-top:4px}
+.detail ul{margin:6px 0 0 16px;font-size:12px;color:var(--graphite)}
+.detail li{margin-bottom:4px}
+
+.hops2{border:1px solid var(--ash)}
+.hops2 details{border:0;border-bottom:1px solid var(--ash);margin:0}
+.hops2 details:last-child{border-bottom:0}
+.hops2 summary{padding:11px 14px;font-size:12px;letter-spacing:0;text-transform:none;
+  color:var(--ink);display:grid;grid-template-columns:22px 1fr 170px 120px;gap:14px;
+  align-items:baseline}
+.hops2 summary::before{content:"+";color:var(--smoke)}
+.hops2 details[open] summary::before{content:"-"}
+.hops2 summary .path{color:var(--graphite)}
+.hops2 summary .tp{font-size:11px;color:var(--graphite)}
+.hops2 summary .st{font-size:9px;letter-spacing:2.2px;text-transform:uppercase;
+  color:var(--smoke);text-align:right}
+/* No padding: the grid gap paints in --ash, so padding on the container framed the whole
+   panel in grey. Margin positions it; the cells fill it edge to edge. */
+.hops2 .body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;
+  background:var(--ash);margin:0 14px 14px 50px;border:1px solid var(--ash)}
+.hops2 .body>div{background:var(--paper);padding:10px 12px}
+.hops2 .body b{display:block;font-size:12px;font-weight:400;color:var(--ink);margin-top:4px}
+.hops2 .body .risk b{color:var(--warn)}
+/* Delivery pipeline: a vertical spine ---------------------------------------------------- */
+.pipeline{margin-top:14px;border:1px solid var(--ash)}
+.pstep{display:grid;grid-template-columns:44px 1fr;border-bottom:1px solid var(--ash);
+  position:relative}
+.pstep:last-child{border-bottom:0}
+/* The spine: a hairline through the dot column, broken at the first and last step. */
+.pstep::before{content:"";position:absolute;left:21px;top:0;bottom:0;width:1px;
+  background:var(--ash)}
+.pstep:first-child::before{top:22px}
+.pstep:last-child::before{bottom:calc(100% - 22px)}
+.pdot{width:9px;height:9px;margin:18px auto 0;background:var(--ash);position:relative;z-index:1;
+  box-shadow:0 0 0 4px var(--paper)}
+.pstep.done .pdot{background:var(--good)}
+.pstep.blocked .pdot{background:var(--crit)}
+.pstep.absent .pdot{background:var(--ash)}
+.pstep.skipped .pdot{background:var(--paper);border:1px solid var(--ash)}
+.pbody{padding:13px 16px 15px 0}
+.phead{display:flex;align-items:baseline;gap:14px}
+.phead b{font-size:14px;font-weight:500}
+.phead .pstate{margin-left:auto;font-size:9px;letter-spacing:2.2px;text-transform:uppercase;
+  color:var(--smoke)}
+.pstep.done .phead .pstate{color:var(--good)}
+.pstep.blocked .phead .pstate{color:var(--crit)}
+.pnote{font-size:12px;color:var(--graphite);margin-top:5px;max-width:78ch}
+.pstep ul{margin:8px 0 0 16px;font-size:12px;color:var(--graphite)}
+.pstep li{margin-bottom:3px}
+.pstep.skipped .phead b,.pstep.skipped .pnote{color:var(--smoke)}
+/* The blocked step is where the run actually stands, so it gets the one strong mark. */
+.pstep.blocked{background:rgba(143,45,24,.04)}
+.pstep.blocked .pbody{box-shadow:inset 2px 0 0 var(--crit)}
+.pstep.blocked .pbody{padding-left:14px}
+
+.lanebox{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--ash);
+  border:1px solid var(--ash);margin-top:12px}
+.lanebox .lane{background:var(--paper);border:0;border-top:2px solid var(--blue);
+  padding:11px 13px;cursor:pointer;font-family:var(--mono);text-align:left;
+  transition:background-color .14s ease}
+.lanebox .lane:hover{background:var(--tint)}
+.lanebox .lane.sel{background:var(--mist)}
+.lanebox .lane b{display:block;font-size:13px;font-weight:500;margin:4px 0 2px}
+.lanebox .lane .sub{font-size:11px;color:var(--graphite)}
+.lanedetail{border:1px solid var(--ash);border-top:0;padding:12px 14px}
+.lanedetail ul{margin:6px 0 0 16px}
+@media (max-width:1000px){.cells.c4,.cells.c5{grid-template-columns:repeat(2,1fr)}
+  .hops{grid-template-columns:repeat(2,1fr)} .stage{grid-template-columns:1fr}
+  details ul{columns:1} .overlay{padding:12px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+    /* --- Dash-owned DOM ------------------------------------------------------------------
+       The run picker is a dcc.Dropdown, so its markup is react-select's rather than a bare
+       <select>. These rules exist only to make it look like the mockup's control; nothing
+       here changes the design. */
+    /* Settings is a control, not a link -- it switches a view rather than navigating --
+       but it has to read as one of the utility links, not as browser form chrome. */
+    .bar .util .utilbtn{background:none;border:0;padding:0;cursor:pointer;
+      font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;
+      color:#8d8d8b;transition:color .12s ease}
+    .bar .util .utilbtn:hover{color:var(--paper)}
+    .runpick{min-width:330px}
+    .runpick .Select-control,.runpick .Select-menu-outer,.runpick .Select-value,
+    .runpick .Select-placeholder,.runpick .Select-input{background:transparent!important;
+      border-radius:0!important;font-family:var(--mono)!important;font-size:10px!important;
+      color:var(--paper)!important}
+    .runpick .Select-control{border:1px solid #333331!important;height:28px!important;
+      cursor:pointer}
+    .runpick .Select-control:hover{border-color:#6a6a68!important}
+    .runpick .Select-value,.runpick .Select-placeholder{line-height:26px!important;
+      padding-left:9px!important}
+    .runpick .Select-value-label{color:var(--paper)!important}
+    .runpick .Select-arrow{border-top-color:#8d8d8b!important}
+    .runpick .Select-menu-outer{background:var(--black)!important;
+      border:1px solid #333331!important;margin-top:1px}
+    .runpick .Select-option{background:var(--black)!important;color:#8d8d8b!important;
+      font-size:10px!important;padding:8px 9px!important}
+    .runpick .Select-option.is-focused{background:#1a1a19!important;color:var(--paper)!important}
+    .runpick .Select-option.is-selected{color:var(--paper)!important}
+    /* Dash injects an update spinner; the console is not a live dashboard. */
+    ._dash-loading,._dash-undo-redo{display:none}
+
   </style>
 </head>
 <body>{%app_entry%}<footer>{%config%}{%scripts%}{%renderer%}</footer></body>

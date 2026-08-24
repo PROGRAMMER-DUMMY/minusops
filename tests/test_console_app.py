@@ -30,11 +30,15 @@ from app import console_app  # noqa: E402
 
 # --- The four views (FR-01.1) -----------------------------------------------------------
 
-def test_exactly_the_four_declared_views_are_registered():
-    keys = [key for key, _label in console_app.VIEWS]
+def test_every_navigable_view_has_a_renderer():
+    """PRD v13 declared four views; Flow absorbed lineage and delivery, and Access and Cost
+    were added, so the bar carries six. Settings is reachable but deliberately NOT numbered
+    -- it is workspace-scoped, not run-scoped."""
+    keys = [key for key, _number, _label in console_app.VIEW_LABELS]
 
-    assert keys == ["topology", "lineage", "trace", "vault"]
-    assert set(console_app.RENDERERS) == set(keys), "a view with no renderer is a blank tab"
+    assert keys == ["topology", "flow", "access", "cost", "trace", "evidence"]
+    for key in keys + ["settings"]:
+        assert key in console_app.RENDERERS, f"{key} is a nav item with no renderer"
 
 
 def test_every_view_renders_without_a_run_rather_than_raising():
@@ -47,15 +51,16 @@ def test_every_view_renders_without_a_run_rather_than_raising():
                                            "documents": []}) is not None
 
 
-def test_the_run_header_reports_absent_facts_as_absent(tmp_path):
+def test_the_run_band_reports_absent_facts_as_absent(tmp_path):
     """FR-01.2. An unpriced run must not show a dollar figure and an untiered one must not
-    show a tier -- this header is the governance summary."""
-    header = console_app.run_header({"run": {"run_id": "r1"}, "plan": {}})
-    text = json.dumps(header, default=str)
+    show a tier -- this band is the governance summary, and a blank cell reads as zero."""
+    band = console_app.run_band({"run": {"run_id": "r1"}, "plan": {}, "vault": {}})
+    text = json.dumps(band, default=str)
 
     assert "not priced" in text
-    assert "UNCLASSIFIED" in text
+    assert "unclassified" in text
     assert "not planned" in text
+    assert "absent" in text, "absent facts must carry the absence mark, not render blank"
 
 
 # --- The console is a reader (PRD v13 invariant 2) --------------------------------------
@@ -517,3 +522,43 @@ def test_with_no_token_configured_the_console_still_serves_locally(monkeypatch):
     client = console_app.app.server.test_client()
 
     assert client.get("/").status_code != 401
+
+
+# --- The run selector: the store that nothing ever wrote --------------------------------
+
+def test_the_bar_offers_every_run_not_just_the_newest(monkeypatch):
+    runs = [{"run_id": "b-newer", "created_at": "2"}, {"run_id": "a-older", "created_at": "1"}]
+    monkeypatch.setattr(console_app.runs_engine, "list_runs", lambda: runs)
+
+    options = console_app._run_options()
+
+    assert [o["value"] for o in options] == ["b-newer", "a-older"]
+
+
+def test_selecting_a_run_writes_the_store_that_scopes_every_view():
+    """`dcc.Store(id="run-id")` existed from the first version and no callback ever wrote
+    it, so assemble() always fell back to the latest run and no other run was reachable."""
+    outputs = " ".join(console_app.app.callback_map.keys())
+
+    assert "run-id.data" in outputs, "nothing writes the run scope"
+    assert console_app._select_run("20260101-chosen") == "20260101-chosen"
+
+
+def test_the_navigation_reads_the_view_from_the_triggering_button():
+    """Not from an index into a list -- an index silently retargets the moment a nav item
+    is added or reordered."""
+    outputs = " ".join(console_app.app.callback_map.keys())
+
+    assert "view.data" in outputs
+    assert {k for k, _n, _l in console_app.VIEW_LABELS} == {
+        "topology", "flow", "access", "cost", "trace", "evidence"}
+
+
+def test_settings_renders_without_a_run_identity_above_it():
+    """Settings is workspace-scoped. A run band above it would say these teams and
+    connectors belong to that run."""
+    bar, band, _view = console_app._render("settings", None)
+
+    assert bar is not None
+    rendered = json.dumps(band, default=str)
+    assert "run-band" not in rendered and "chip" not in rendered

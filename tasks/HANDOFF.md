@@ -58,6 +58,10 @@ All 11 milestone PRDs are delivered, certified with automated tests, and archive
   │ PRD v13.0│ Enterprise Visual Governance Console (`app/console_app.py`), multi-agent execution      │
   │          │ tracing (`agent_tracer.py`), 5-hop data lineage (`lineage_graph.py`), bi-directional      │
   │          │ visual reconciliation (`reconciler.py`), and unified deliverables vault (`vault.py`).   │
+  ├──────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+  │ PRD v14.0│ Agent Observability (`agent_tracer.py`), AI Token Economics & Context Pressure          │
+  │          │ (`agent_cost_calculator.py`), Interactive Agent Flow Lineage DAG (`agent_flow_graph.py`),│
+  │          │ and SOC2/HIPAA cryptographic audit linkage (`audit.jsonl`).                              │
   └──────────┴──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
