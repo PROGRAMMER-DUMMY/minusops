@@ -30,90 +30,47 @@ tests.
 
 ---
 
-## Overview
-`app/` contains the web application control plane for **MinusOps**, implemented in [`app/dashboard_app.py`](./dashboard_app.py) using **Plotly Dash** and Flask. It serves as a unified, fixed-screen operator console for multi-cloud data pipeline delivery, governance, FinOps monitoring, and architectural verification.
-
----
-
 ## Detailed File Breakdown
 
-### [`app/dashboard_app.py`](./dashboard_app.py)
+### [`app/console_app.py`](./console_app.py)
 
-#### 1. Architectural Role in MinusOps
-`dashboard_app.py` acts as the graphical control plane interface for operators, data architects, and FinOps engineers. It integrates directly with the governance engine in [`core/`](../core) to surface real-time readiness scores, reference architecture conformance (evaluated against the six-layer analytics model), cost anomaly alerts, source code drift analysis, and interactive architecture visualization.
+#### 1. Architectural role
+The console is the graphical surface over the governance engines in [`core/`](../core). It is
+scoped to ONE run at a time and owns no logic of its own: every fact it renders comes from an
+engine that is tested independently. It replaced `app/dashboard_app.py`, a five-tab console
+that mixed FinOps charts, CLI execution and report viewers for three different audiences.
 
-#### 2. Inputs & Environment Configuration
-The application reads configuration from environment variables and local project state:
-- **`DASH_PORT`**: Port to bind the dev server (default: `8050`).
-- **`DASH_HOST`**: Interface host binding (default: `127.0.0.1`). If set to a non-loopback host (e.g. `0.0.0.0`), token authentication is enforced.
-- **`MINUS_DASH_TOKEN`** / **`DASH_TOKEN`**: Shared bearer/cookie/query token required for non-local binds to enforce access control.
-- **`MINUS_DASH_DEFAULT_TAB`**: Default active UI tab upon initial load (`overview`, `control`, `optimization`, `reports`, or `readiness`; default: `overview`).
-- **Cloud Provider Resolution**: Accesses AWS identity, Cost Explorer, and pricing catalogs via [`core/providers/base.py`](../core/providers/base.py) (`AWSProvider`), utilizing ambient credentials (`aws configure`, IAM roles, or SSO).
+#### 2. Inputs and environment
+- **`CONSOLE_PORT`** -- port to bind (default `8050`), or `--port`.
+- **`CONSOLE_HOST`** -- interface to bind (default `127.0.0.1`), or `--host`.
+- **`MINUS_DASH_TOKEN`** / **`DASH_TOKEN`** -- shared bearer/query/cookie token. Required for
+  any non-loopback bind, and once set it is enforced on every request.
+- Run state is read from the run workspace on disk. The console never calls a cloud API and
+  never invokes a cloud mutation (PRD v13 invariant 2).
 
-#### 3. Outputs & HTTP Endpoints
-`dashboard_app.py` exposes the following HTTP endpoints via its underlying Flask server (`app.server`):
-- **`/`**: Main Dash interactive SPA dashboard.
-- **`/deployment-reports/<report_id>/<path:filename>`**: Serves plan artifacts (`plan.pdf`, `cost.pdf`, `inspect.pdf`, etc.) safely from registered report directories.
-- **`/deployment-reports/<report_id>/architecture`**: Interactive HTML/SVG viewer (`_ARCH_PAGE`) with pan/zoom controls, topology vs. data flow toggles, and click-to-code inspection of plan-bound HCL code and resource findings.
-- **`/deployment-reports/<report_id>/diff`**: Plaintext HCL diff endpoint showing source drift between the original plan baseline and current disk state.
-- **`/deployment-reports/<report_id>/inspect`**: Consolidated HTML review document rendered by [`core/reporting/reporter.py`](../core/reporting/reporter.py).
-- **`/deployment-reports/<report_id>/services`**, **`/resources`**, **`/roles`**, **`/files`**: Granular HTML tables detailing services, resource change actions (`create`, `update`, `delete`, `no-op`), IAM roles/policies, and generated report files.
-- **`/runs/<run_id>/<filename>`**: Serves run workspace artifacts ([`requirements.json`](../core/architecture/requirements.py), [`architecture_decision.json`](../core/architecture/architecture_decision.py), `enterprise-package.md`, `enterprise-package.json`).
-- **`/runs/<run_id>/reports/<report_id>/<filename>`**: Serves run-scoped report assets (`architecture.svg`, `dataflow.svg`, `report.html`, `bcm-assumptions.json`, etc.).
+#### 3. The bind and auth guard
+Two controls, ported from the retired dashboard when it was removed:
 
-#### 4. Data Assembly & Parallel Execution
-- **`_fetch()`**: Hits the active cloud provider via [`core/providers/base.py`](../core/providers/base.py) using a `ThreadPoolExecutor` (3 workers) to run `provider.identity()`, `provider.cost_by_service()`, and `provider.anomalies()` concurrently.
-- **`assemble()`**: Caches cloud fetch results for a 45-second TTL (`_TTL`) to prevent redundant AWS API calls during UI navigation.
-- **`report_inventory()`**: Discovers generated plan reports across `artifacts/reports`, `.agents/reports`, and `runs/<run_id>/reports`, inspecting `manifest.json` and checking HCL source status via [`core/reporting/plan_inspector.py`](../core/reporting/plan_inspector.py).
-- **`run_inventory()`**: Discovers run workspaces in `runs/`, validating requirements via [`core/architecture/requirements.py`](../core/architecture/requirements.py) and decision files via [`core/architecture/architecture_decision.py`](../core/architecture/architecture_decision.py), and calculating readiness via [`core/reporting/minusctl.py`](../core/reporting/minusctl.py).
-- **`collect_optimization_findings()`**: Invokes [`core/reporting/optimize_analyzer.py`](../core/reporting/optimize_analyzer.py) to scan Terraform HCL files in active runs for Security (`SEC-*`), Cost (`COST-*`), and Observability (`OBS-*`) issues.
+- **At bind time**, `main()` refuses to start on a non-loopback host unless a token is set,
+  and returns a non-zero exit code. Nothing listens at all.
+- **At request time**, a `before_request` hook rejects anything not presenting the token,
+  once one is configured. Comparison is `hmac.compare_digest`, never `==`.
 
-#### 5. Interface Layout & Component Architecture
-The UI is organized into a fixed masthead and five core tabs:
-- **Masthead**: Displays the MinusOps brand mark, global pipeline run selector dropdown (`#global-run-select`), masked account ID (`_redact_account`), refresh status, and manual refresh button (`#refresh-btn`).
-- **Overview Tab**:
-  - Selected Run Banner (`selected_run_banner`): Displays active run ID, user prompt, cloud provider, readiness score, and BCM cost status.
-  - KPI Strip (`kpi`): High-level cards for Readiness (`/100`), Reference Conformance (`/100`), Plan Changes (`+create ~update -delete`), and Cost Evidence (`$/mo`).
-  - Monthly Spend Panel (`monthly_spend_panel`): Plotly bar chart (`trend_line`) of trailing monthly AWS spend from Cost Explorer.
-  - Spend by Service Panel (`spend_service_panel`): Horizontal bar chart (`spend_bar`) highlighting top service spenders.
-  - Reference Conformance Panel (`conformance_panel`): Displays 6-layer analytics model coverage chips and Well-Architected gap findings.
-  - Plan Composition Bar (`plan_action_bar`): one horizontal stacked bar of plan actions. Replaced a donut, which rendered as a featureless ring whenever a plan was all creates -- the common case for a first apply.
-  - Spend Anomalies Ledger (`anomaly_panel`, `ledger`): Cost Anomaly Detection list showing impact amount, severity, and tagged owner.
-- **Control Tab**:
-  - Artifact Editor Panel (`control_editor_panel`): Form interface to view gate statuses (`requirements`, `decision`, `terraform`, `report`) and edit `architecture_decision.json` fields (architecture name, summary, selected modules, official doc sources, assumptions, risks, **validation**, **rollback**, **failure modes**, alternatives). `validation` and `rollback` are required by the decision gate, so the editor cannot produce a complete record without them; a failure-mode id outside `FM-01..FM-05` is rejected with a `ValueError` surfaced in the action status.
-  - Control Action Callback (`_control_action`): Supports saving decisions (`write_control_decision`) or generating starter lakehouse files via [`core/generation/accelerators.py`](../core/generation/accelerators.py).
-  - Run Cards (`control_run_card`): Lists recent runs with step-by-step CLI commands required to advance them through synthesis and deploy gating.
-- **Optimization Tab**:
-  - Findings Panels (`optimization_panels`): Grouped cards for Security, Cost, and Observability findings detected by [`core/reporting/optimize_analyzer.py`](../core/reporting/optimize_analyzer.py).
-  - What-If Scenarios Panel (`scenario_shortcuts_panel`): Scale curve results table (`_scale_curve_table`), one-click trigger buttons for AWS pricing scale curves and actuals fetch (`_whatif_action` calling [`core/cost/bcm_pricing_calculator.py`](../core/cost/bcm_pricing_calculator.py)), and terminal command references.
-- **Reports Tab**:
-  - Architecture Data Flow Panel (`architecture_panel`): Embedded SVG diagram (`dataflow.svg` / `architecture.svg`) with direct link to the interactive click-to-code viewer.
-  - Deployment Reports Inventory (`deployment_reports_panel`, `report_card`): List of generated plan reports with links to rendered PDFs (`plan.pdf`, `cost.pdf`, `inspect.pdf`).
-- **Readiness Tab**:
-  - Cross-Run Trend Table (`_run_trend_table`): Table comparing run readiness scores, conformance, volume tiers, monthly spend forecasts, and unit economics (`$/GB`).
-  - Readiness Cards (`run_readiness_card`): Tabbed selector displaying run blockers, warnings, score breakdowns, and package artifact links.
+`_request_authorized()` returns True when no token is configured. That branch is reachable
+only on a loopback bind, because the bind-time guard refuses the alternative; failing closed
+there instead would break plain `minusctl console` for everyone.
 
-#### 6. Visual Design System
-- **System**: Monad, per [`DESIGN.md`](../DESIGN.md) -- an editorial tech journal on warm
-  parchment. Tokens live in `C` (`bg: #f6f3f1` Parchment, `bg_elev: #cfdaf5` Periwinkle Mist,
-  `line: #cecac8` Ash, `terracotta: #2b59d1` Lake Blue, `text: #242424` Off-Black,
-  `muted: #4e4d4d` Graphite, `faint: #797776` Smoke). Role keys were kept through the
-  restyle so every call site stayed valid; only the values moved.
-- **Typography**: `Instrument Serif` for anything that announces (headings, KPI numerals,
-  card titles) at weight 400 only -- the face ships one weight, which enforces DESIGN.md's
-  hardest rule mechanically. `JetBrains Mono` for everything that instructs: body, nav,
-  buttons, tags, tables. The serif/mono pairing IS the identity; a sans body would lose it.
-- **Two documented departures from the brief**, both in the `C` docstring:
-  1. *Density.* DESIGN.md specifies a marketing site (80px hero, 40px card padding, 64px
-     gaps). This is an operator console, so the token language is kept exactly and the
-     scale steps down one rung -- 24px padding, 32px gaps, type topping out at 40px.
-  2. *Chart colour.* The brief has no data-viz guidance and calls its pastels
-     decorative-only. Measured on parchment they are unusable as data (Coral/Crimson sit at
-     deltaE 8.7 in NORMAL vision; every pastel is under 3:1 contrast), so magnitude charts
-     carry no chroma -- ink for the emphasised value, ash for the rest. The one data colour
-     is `ACTION_RAMP`, and it is ordinal (create < update < replace < delete by
-     destructiveness) rather than categorical, so it is one hue stepped by lightness.
-- **No shadows anywhere.** Elevation is surface colour plus a 1px Ash hairline. Exactly one
-  Lake Blue fill per screen (`.control-button.primary`); state and severity ride 3px left
-  rules and hairline status pills instead.
-- **Security & Port Binding**: Pure Python WSGI application via Werkzeug. Checks socket availability (`_port_in_use`) and enforces authentication (`_enforce_dashboard_auth`, `_persist_dashboard_token`) when bound to external network interfaces.
+#### 4. HTTP endpoints
+Beyond the Dash SPA at `/`:
+- **`/runs/<run_id>/vault/download/<name>`** -- serves one catalogued deliverable. The guard
+  is an ALLOWLIST, not a sanitiser: the requested name is matched against the vault catalog
+  for that run and served from the path the catalog resolved, so nothing from the URL is ever
+  joined onto a directory. `..`, an absolute path and a symlink name all fail identically --
+  they are not in the catalog.
+- **`/runs/<run_id>/vault/bundle`** -- builds and serves the signed compliance zip. Refuses an
+  empty run rather than handing an auditor a zip full of nothing.
+
+#### 5. What the view layer may not do
+The reconciliation store round-trips through the browser and deliberately carries the change
+SPEC and the run id only -- never `updated_hcl`. A tampered payload therefore cannot be
+written to `main.tf`; the server re-derives the diff from the spec on confirmation.

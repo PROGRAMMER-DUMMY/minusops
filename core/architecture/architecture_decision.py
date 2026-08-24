@@ -14,7 +14,7 @@ Depends on: core/generation/modules.py (module_registry.list_modules, to reject 
     ids in add_modules). Reads and writes architecture_decision.json.
 Shells out to: nothing. Local JSON record-keeping and validation only.
 Used by: core/generation/synthesizer.py, core/generation/accelerators.py,
-    core/governance/plan_gate.py, core/reporting/minusctl.py, app/dashboard_app.py,
+    core/governance/plan_gate.py, core/reporting/minusctl.py, app/console_app.py,
     tests/test_architecture_decision.py, tests/test_synthesizer.py,
     tests/test_teardown_regression_harness.py
 """

@@ -80,7 +80,7 @@ Because there is no bundled IaC, **every tool that acts on infrastructure requir
 │       ├── aws.py                  # AWS impl (Cost Explorer / anomalies / tags / identity)
 │       └── azure.py · gcp.py       # scaffolds (degrade gracefully until implemented)
 │
-├── app/dashboard_app.py            # live control-plane / FinOps console (Plotly Dash, provider-driven)
+├── app/console_app.py              # visual governance console, scoped to one run (Plotly Dash)
 │
 ├── tests/                          # pytest suite (gate hash/approval invariants, scanner rules)
 │
@@ -147,7 +147,7 @@ minusctl export --target-repo ../marketing-analytics --dest-dir pipelines/clicks
 | **Prepare BCM estimate** | `minusctl cost prepare --account-id <account>` (no AWS calls) | BCM payload generator |
 | **Run BCM estimate** | `minusctl cost estimate --mode gatekeeper` (AWS-side effect; approval required). The only source of a reportable cost total -- nothing else in MinusOps computes one | BCM Pricing Calculator API |
 | **Analyze live spend / anomalies** | `python core/reporting/finops_agent.py [--cost \| --anomalies \| --correlate]` (via active provider) | `core/providers/` |
-| **View the control-plane console (UI)** | `python app/dashboard_app.py` → http://127.0.0.1:8050 (`pip install -r requirements.txt`); non-local binds require `MINUS_DASH_TOKEN` | Plotly Dash |
+| **View the governance console (UI)** | `minusctl console` → http://127.0.0.1:8050 (`pip install -r requirements.txt`); non-local binds require `MINUS_DASH_TOKEN` | Plotly Dash |
 | **Notify (Slack/Jira), gated** | `core/reporting/finops_agent.py --notify-slack \| --notify-jira --approval-mode {gatekeeper\|auto-approve}` | `approval.py` gate |
 | **Gate any side effect** | `python core/governance/approval.py --action <a> --details <d> --mode {gatekeeper\|auto-approve}` | HITL / auto + audit |
 | **Resolve creation intent** | `python core/generation/intent_resolver.py "create a data pipeline"` | requirements-first resolver |
@@ -366,7 +366,7 @@ report is tied to exactly one plan; `git` versions the `.tf`, the plan-hash vers
 ## 7. Environment & conventions
 
 - **Active cloud:** set `MINUS_CLOUD={aws|azure|gcp}` (default `aws`). The governance core, FinOps agent, and dashboard all read it and route through `core/providers/`. AWS is fully implemented; azure/gcp are scaffolds that degrade gracefully.
-- **Dashboard exposure:** `app/dashboard_app.py` is localhost-only by default. If you set `DASH_HOST=0.0.0.0` or another non-loopback address, also set a strong `MINUS_DASH_TOKEN`; startup refuses remote binds without it.
+- **Console exposure:** `app/console_app.py` is localhost-only by default. If you pass `--host 0.0.0.0` (or set `CONSOLE_HOST`), also set a strong `MINUS_DASH_TOKEN`; startup refuses remote binds without it, and every request is rejected without it once one is set.
 - **Module assets:** released wheels and Docker images include `modules/`, required `docs/`, examples, and `.agents/skills`. Set `MINUSOPS_MODULES_DIR` only when intentionally replacing the packaged module library with a client-specific one.
 - **OS:** cross-platform (Windows / macOS / Linux). Default shell here is **PowerShell**; a Bash (POSIX) tool is also available — use the right syntax per shell.
 - **Credentials:** never handled by our code. The cloud CLI's own credential chain is used (`aws sso login` / `aws configure` / assumed role). Prefer SSO so no long-term secret lands on disk.

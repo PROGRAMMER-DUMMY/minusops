@@ -156,14 +156,31 @@ def test_the_encoder_and_decoder_are_inverses():
 # --- FR-06: the ledger describes THIS plan ----------------------------------------------
 
 def _two_hop_plan():
-    return {"resource_changes": [
-        {"address": "module.storage.aws_s3_bucket.bronze", "type": "aws_s3_bucket",
-         "mode": "managed", "change": {"actions": ["create"], "after": {}}},
-        {"address": "module.compute.aws_glue_job.etl", "type": "aws_glue_job",
-         "mode": "managed", "change": {"actions": ["create"], "after": {}}},
-        {"address": "module.query.aws_athena_workgroup.wg", "type": "aws_athena_workgroup",
-         "mode": "managed", "change": {"actions": ["create"], "after": {}}},
-    ]}
+    """Two hops the plan genuinely declares.
+
+    This fixture used to carry `resource_changes` alone, and got its hops from the adjacency
+    chaining that discover_flow_edges no longer does. The properties below -- per-resource
+    protocol, a real markdown table -- are still the right things to assert; they just have
+    to be asserted over edges something references.
+    """
+    return {
+        "resource_changes": [
+            {"address": "module.storage.aws_s3_bucket.bronze", "type": "aws_s3_bucket",
+             "mode": "managed", "change": {"actions": ["create"], "after": {}}},
+            {"address": "module.compute.aws_glue_job.etl", "type": "aws_glue_job",
+             "mode": "managed", "change": {"actions": ["create"], "after": {}}},
+            {"address": "module.query.aws_athena_workgroup.wg", "type": "aws_athena_workgroup",
+             "mode": "managed", "change": {"actions": ["create"], "after": {}}},
+        ],
+        "configuration": {"root_module": {"module_calls": {
+            "storage": {"expressions": {}},
+            "compute": {"expressions": {
+                "source_bucket_arn": {"references": ["module.storage.bronze_arn",
+                                                     "module.storage"]}}},
+            "query": {"expressions": {
+                "database": {"references": ["module.compute.catalog", "module.compute"]}}},
+        }}},
+    }
 
 
 def test_the_ledger_protocol_is_derived_from_the_resources_not_a_constant():
@@ -348,3 +365,65 @@ def test_node_labels_are_short_enough_not_to_run_into_the_next_column():
         assert "module." not in cell.get("value", ""), cell.get("value")
         assert "whiteSpace=wrap" in cell.get("style", "")
         assert "verticalLabelPosition=bottom" in cell.get("style", "")
+
+
+# --- Flow edges must be traced, never assumed ------------------------------------------
+#
+# discover_flow_edges carried the comment "Simple mock extraction for now" and chained
+# resources by their ADJACENCY IN THE PLAN FILE. Every consumer treated the result as a
+# traced data flow: the canvas drew arrows, and generate_flow_ledger dressed each hop in a
+# protocol, a latency budget and a list of safeguards. A gold bucket "flowing" into a KMS
+# key is not a data flow, and presenting one on a governance surface is the exact claim this
+# product exists to refuse.
+
+def _plan_with_references():
+    """A plan whose `configuration` records real module-to-module references."""
+    def rc(address, rtype):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": {}}}
+    return {
+        # DELIBERATELY not in flow order. Listed in flow order, plan-file adjacency and
+        # the real references coincide, and a test asserting the real edges passes on the
+        # mock -- proving nothing.
+        "resource_changes": [
+            rc("module.query.aws_athena_workgroup.wg", "aws_athena_workgroup"),
+            rc("module.storage.aws_s3_bucket.bronze", "aws_s3_bucket"),
+            rc("module.compute.aws_glue_job.etl", "aws_glue_job"),
+        ],
+        "configuration": {"root_module": {"module_calls": {
+            "storage": {"expressions": {}},
+            "compute": {"expressions": {
+                "source_bucket_arn": {"references": ["module.storage.bronze_arn",
+                                                     "module.storage"]}}},
+            "query": {"expressions": {
+                "database": {"references": ["module.compute.catalog", "module.compute"]}}},
+        }}},
+    }
+
+
+def test_flow_edges_come_from_declared_references():
+    edges = drawio_generator.discover_flow_edges(_plan_with_references())
+
+    pairs = {(e["source"], e["target"]) for e in edges}
+    assert ("module.storage.aws_s3_bucket.bronze",
+            "module.compute.aws_glue_job.etl") in pairs, pairs
+    assert ("module.compute.aws_glue_job.etl",
+            "module.query.aws_athena_workgroup.wg") in pairs, pairs
+    assert len(edges) == 2, f"invented an edge nothing references: {pairs}"
+
+
+def test_a_plan_with_no_configuration_yields_no_edges_rather_than_a_guessed_chain():
+    """Without `configuration` there is nothing to trace. Emitting a chain anyway is how a
+    ten-resource plan grew nine confident hops that no reference supports."""
+    plan = {"resource_changes": _plan_with_references()["resource_changes"]}
+
+    assert drawio_generator.discover_flow_edges(plan) == []
+
+
+def test_the_ledger_says_nothing_rather_than_describing_untraced_hops():
+    plan = {"resource_changes": _plan_with_references()["resource_changes"]}
+    bundle = drawio_generator.generate_drawio_from_plan(plan)
+
+    assert bundle["ledger"] == []
+    assert "no flow" in bundle["ledger_markdown"].lower()

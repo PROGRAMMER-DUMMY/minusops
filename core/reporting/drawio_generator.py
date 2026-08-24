@@ -94,23 +94,48 @@ def extract_node_metadata(resource_change):
         
     return meta
 
+def _module_of(address):
+    """`module.storage.aws_s3_bucket.bronze` -> `storage`. Root resources have no module."""
+    parts = (address or "").split(".")
+    return parts[1] if len(parts) > 2 and parts[0] == "module" else ""
+
+
 def discover_flow_edges(plan_json):
-    edges = []
-    
+    """Edges the plan actually declares, traced through module input references.
+
+    This used to chain resources by their ADJACENCY IN THE PLAN FILE, with the comment
+    "simple mock extraction for now". Every consumer treated the result as a traced flow --
+    the canvas drew arrows, and generate_flow_ledger gave each hop a protocol, a latency
+    budget and a list of safeguards. So a ten-resource plan grew nine confident hops that no
+    reference supported, and a gold bucket "flowed" into a KMS key.
+
+    A plan with no `configuration` block yields NO edges. There is nothing to trace, and an
+    invented chain is worse than an empty one on a surface an auditor reads.
+    """
     if not plan_json or "resource_changes" not in plan_json:
-        return edges
-        
-    resources = plan_json.get("resource_changes", [])
-    
-    # Simple mock extraction for now, in a real scenario we'd trace depends_on or references
-    for i in range(len(resources) - 1):
-        if resources[i].get("mode") == "managed" and resources[i+1].get("mode") == "managed":
-            edges.append({
-                "source": resources[i].get("address"),
-                "target": resources[i+1].get("address"),
-                "hop": i + 1
-            })
-            
+        return []
+
+    dependencies = architecture_model.module_dependencies(plan_json)
+    if not dependencies:
+        return []
+
+    # One representative resource per module, so an edge can be drawn between two real
+    # addresses. First managed resource wins, in plan order.
+    representative = {}
+    for change in plan_json.get("resource_changes", []):
+        if change.get("mode") != "managed":
+            continue
+        name = _module_of(change.get("address"))
+        if name and name not in representative:
+            representative[name] = change.get("address")
+
+    edges, hop = [], 0
+    for consumer in sorted(dependencies):
+        for producer in sorted(dependencies[consumer]):
+            if producer in representative and consumer in representative:
+                hop += 1
+                edges.append({"source": representative[producer],
+                              "target": representative[consumer], "hop": hop})
     return edges
 
 # diagrams.net decodes a #R payload as: base64 -> inflateRaw -> decodeURIComponent.

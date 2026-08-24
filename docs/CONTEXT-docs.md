@@ -61,7 +61,6 @@ This document provides exhaustive context for all documentation, architecture sp
 - [`docs/superpowers/specs/2026-07-21-generation-engine-cutover-design.md`](./superpowers/specs/2026-07-21-generation-engine-cutover-design.md): Design specification for cutover to requirements-first module synthesizer.
 
 ### Visual Demo & Screenshots (`docs/demo/` & `docs/walkthrough/`)
-- [`docs/demo/minusops-dashboard.gif`](./demo/minusops-dashboard.gif): Animated preview of the Plotly Dash control plane dashboard.
 - [`docs/demo/minusops-requirements.cast`](./demo/minusops-requirements.cast): Asciinema terminal recording of interactive requirements gathering.
 - [`docs/demo/minusops-requirements.svg`](./demo/minusops-requirements.svg): Vector SVG rendering of terminal requirements session.
 - Walkthrough UI Screenshots: [`01-overview.png`](./walkthrough/01-overview.png), [`02-optimization.png`](./walkthrough/02-optimization.png), [`03-reports.png`](./walkthrough/03-reports.png), [`04-readiness.png`](./walkthrough/04-readiness.png), [`05-architecture.png`](./walkthrough/05-architecture.png), [`06-architecture-code.png`](./walkthrough/06-architecture-code.png), [`07-resources.png`](./walkthrough/07-resources.png), [`08-services.png`](./walkthrough/08-services.png), [`09-plan-report.png`](./walkthrough/09-plan-report.png), [`10-cost-report.png`](./walkthrough/10-cost-report.png).

@@ -184,7 +184,7 @@ and what actually happens to each downstream:
 | Field | Validated? | Read back downstream | Verdict |
 |---|---|---|---|
 | `requirements_file` | Yes (non-empty) | No occurrence anywhere else in the repo | Validated, never read back |
-| `selected_architecture` | Yes | `synthesizer.py:430` — copied into `minus-generated.json` manifest text only; `app/dashboard_app.py:752` (display) | Read, but only for manifest text/display, never shapes generation |
+| `selected_architecture` | Yes | `synthesizer.py:430` — copied into `minus-generated.json` manifest text only; the console (display) | Read, but only for manifest text/display, never shapes generation |
 | `decision_summary` | Yes | `app/dashboard_app.py:758` (display) only | Validated, display-only |
 | `selected_modules` | Yes (≥1) | `synthesizer.py:552` drives `select_modules()`; `intent_assertions.py:95` checks it against real plan addresses for drift | **Load-bearing** — the field that actually selects what gets composed |
 | `novel_resources` | Optional; each entry checked if present | `synthesizer.py:496-524` — the entire `_validate_novel_resources()` fail-closed path described in section 1 | **Load-bearing** |

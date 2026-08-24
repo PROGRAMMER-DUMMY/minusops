@@ -114,7 +114,7 @@ python core/governance/plan_gate.py apply --dir runs/<run-id>/terraform
 
 ### 5. Launch Control Plane Dashboard
 ```bash
-python app/dashboard_app.py
+minusctl console
 # Open http://127.0.0.1:8050
 ```
 

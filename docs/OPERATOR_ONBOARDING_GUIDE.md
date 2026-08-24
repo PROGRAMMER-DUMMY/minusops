@@ -165,7 +165,7 @@ Generate the token; do not invent one by hand.
 
 ### Securing the console
 
-`app/dashboard_app.py` refuses to start on a non-loopback host unless `MINUS_DASH_TOKEN` is
+`app/console_app.py` refuses to start on a non-loopback host unless `MINUS_DASH_TOKEN` is
 set, so you cannot expose an unauthenticated console by forgetting a variable. Two things are
 still yours to get right:
 

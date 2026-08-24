@@ -27,6 +27,7 @@ Depends on: core/reporting/lineage_graph.py, core/governance/agent_tracer.py,
 Shells out to: nothing. The console never invokes a cloud mutation (PRD v13 invariant 2).
 Used by: core/cli/commands/console.py (`minusctl console`)
 """
+import hmac
 import json
 import os
 import sys
@@ -998,6 +999,76 @@ app.index_string = """<!DOCTYPE html>
 </html>"""
 
 
+
+# --- Bind and auth guard ------------------------------------------------------------------
+#
+# Ported from app/dashboard_app.py when that was retired. This console reads governance
+# evidence, BCM cost figures and IAM detail for a live AWS account, so the two controls it
+# carried are not decoration:
+#
+#   1. At BIND time, refuse to listen on a non-loopback interface unless a token is set.
+#   2. At REQUEST time, once a token IS set, reject anything that does not present it.
+#
+# Loosening either puts live account data on the LAN.
+
+def _console_token():
+    return os.environ.get("MINUS_DASH_TOKEN") or os.environ.get("DASH_TOKEN")
+
+
+def _is_loopback_host(host):
+    host = (host or "").strip().lower()
+    return host in {"", "localhost", "127.0.0.1", "::1"} or host.startswith("127.")
+
+
+def _remote_bind_requires_token(host):
+    return not _is_loopback_host(host) and not _console_token()
+
+
+def _valid_token(value):
+    # compare_digest, never `==`: a comparison that short-circuits on the first wrong byte
+    # leaks the token's length and prefix to anyone who can time it.
+    token = _console_token()
+    return bool(token and value and hmac.compare_digest(str(value), str(token)))
+
+
+def _request_authorized():
+    """True when no token is configured, which is reachable only on a loopback bind.
+
+    Failing closed here instead would break plain `minusctl console` for everyone; the guard
+    that matters is at bind time, and main() refuses a non-loopback host with no token.
+    """
+    token = _console_token()
+    if not token:
+        return True
+    from flask import request
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer ") and _valid_token(auth[7:].strip()):
+        return True
+    if _valid_token(request.args.get("token")):
+        return True
+    return _valid_token(request.cookies.get("minus_console_token"))
+
+
+@app.server.before_request
+def _enforce_console_auth():
+    if _request_authorized():
+        return None
+    from flask import Response
+    return Response("console authentication required", 401,
+                    {"WWW-Authenticate": 'Bearer realm="minusops-console"'})
+
+
+@app.server.after_request
+def _persist_console_token(response):
+    """Carry a `?token=` through to later requests, so the browser is not asked to append it
+    to every asset URL."""
+    from flask import request
+    if _valid_token(request.args.get("token")):
+        response.set_cookie("minus_console_token", _console_token(),
+                            httponly=True, samesite="Lax")
+    return response
+
+
 def main(argv=None):
     """Serve the console. Loopback by default -- this surface reads governance evidence."""
     import argparse
@@ -1006,6 +1077,13 @@ def main(argv=None):
     parser.add_argument("--port", type=int,
                         default=int(os.environ.get("CONSOLE_PORT", "8050")))
     args = parser.parse_args(argv)
+    if _remote_bind_requires_token(args.host):
+        print("\n  Refusing to serve on {0}: this console exposes governance evidence,"
+              "\n  cost figures and IAM detail for a live account.\n"
+              "\n  Set a token first:"
+              "\n    MINUS_DASH_TOKEN=\"$(openssl rand -hex 32)\" "
+              "minusctl console --host {0}\n".format(args.host), file=sys.stderr)
+        return 2
     print(f"\n  MinusOps Governance Console  ->  http://{args.host}:{args.port}"
           f"   (Ctrl+C to stop)\n")
     app.run(host=args.host, port=args.port, debug=False, dev_tools_hot_reload=False)

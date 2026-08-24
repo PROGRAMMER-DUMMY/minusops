@@ -69,7 +69,7 @@ Creation requests now take a safer enterprise path through [intent_resolver.py](
    * [finops_agent.py](../core/reporting/finops_agent.py) live cost intelligence over the real account (Cost Explorer, anomalies, CloudTrail correlation).
    * [optimize_analyzer.py](../core/reporting/optimize_analyzer.py) configuration scanner.
    * [intent_resolver.py](../core/generation/intent_resolver.py) to map short enterprise creation requests to requirements-first runs and architecture decisions.
-   * Live FinOps operator console ([app/dashboard_app.py](../app/dashboard_app.py)) — a Plotly Dash app rendering real spend, monthly burn, and the anomaly ledger via the active cloud provider.
+   * Visual governance console ([app/console_app.py](../app/console_app.py)) — a Plotly Dash app scoped to one run: architecture canvas, data flow, execution trace and the deliverables vault.
 
 ---
 
@@ -96,7 +96,7 @@ python core/governance/plan_gate.py verify --dir runs/<run-id>/terraform --polic
 python core/governance/plan_gate.py plan   --dir runs/<run-id>/terraform
 python core/reporting/minusctl.py readiness --run <run-id>
 python core/reporting/minusctl.py package   --run <run-id>
-python app/dashboard_app.py
+minusctl console
 ```
 
 ---

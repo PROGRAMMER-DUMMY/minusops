@@ -69,7 +69,7 @@ viewBox: 0 0 1280 <total_h>   (total_h = 760, or more if a tier is tall)
   tallest_tier_content_height + 24 + 56 + 32 + 72)`. The security band and legend shift down
   by the same `dy = total_h - 760` so they always sit just below the last node. A diagram
   that would otherwise need to shrink cards or truncate a column must grow taller instead —
-  the interactive viewer (`app/dashboard_app.py`) provides pan/zoom so a tall canvas stays
+  the interactive canvas (`app/console_app.py`) provides pan/zoom so a tall canvas stays
   navigable rather than illegible.
 
 ---

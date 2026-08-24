@@ -115,20 +115,6 @@ def test_v13_modules_carry_no_emoji(relative):
     assert not re.search("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]", text)
 
 
-# --- The legacy dashboard is deprecated (FR-01) -----------------------------------------
-
-def test_the_legacy_dashboard_says_it_is_superseded():
-    """Deleting it outright would break `minusctl` links and 9 existing tests in one step.
-    It stays, carrying a deprecation notice that points at the console."""
-    path = os.path.join(ROOT, "app", "dashboard_app.py")
-    if not os.path.exists(path):
-        pytest.skip("legacy dashboard already removed")
-    head = open(path, encoding="utf-8").read()[:3000]
-
-    assert "DEPRECATED" in head
-    assert "console_app" in head
-
-
 def test_the_console_command_is_registered_with_its_aliases():
     from cli import main as cli_main
     from cli.commands import console as console_cmd
@@ -470,3 +456,64 @@ def test_the_console_opens_on_the_newest_run_not_the_oldest(monkeypatch):
     monkeypatch.setattr(console_app.runs_engine, "latest_run", lambda: newest)
 
     assert console_app._run_record()["run_id"] == "20260823-newest"
+
+
+# ---------------------------------------------------------------------------------------
+# Bind and auth guard. `app/dashboard_app.py` carried this and the console did not, so
+# retiring the old app without porting it would have quietly removed the only thing
+# standing between a `--host 0.0.0.0` typo and live AWS cost and governance data on the LAN.
+# ---------------------------------------------------------------------------------------
+
+def test_loopback_hosts_are_recognised():
+    for host in ("", "localhost", "127.0.0.1", "127.0.1.1", "::1"):
+        assert console_app._is_loopback_host(host), host
+    for host in ("0.0.0.0", "10.0.0.5", "192.168.1.9"):
+        assert not console_app._is_loopback_host(host), host
+
+
+def test_a_remote_bind_without_a_token_is_refused(monkeypatch):
+    monkeypatch.delenv("MINUS_DASH_TOKEN", raising=False)
+    monkeypatch.delenv("DASH_TOKEN", raising=False)
+
+    assert console_app._remote_bind_requires_token("0.0.0.0")
+    assert console_app._remote_bind_requires_token("10.0.0.5")
+    assert not console_app._remote_bind_requires_token("127.0.0.1")
+
+
+def test_a_remote_bind_with_a_token_is_allowed(monkeypatch):
+    monkeypatch.setenv("MINUS_DASH_TOKEN", "secret-token")
+
+    assert not console_app._remote_bind_requires_token("0.0.0.0")
+
+
+def test_main_refuses_to_serve_remotely_without_a_token(monkeypatch):
+    """The guard that matters is at bind time: nothing should listen at all."""
+    monkeypatch.delenv("MINUS_DASH_TOKEN", raising=False)
+    monkeypatch.delenv("DASH_TOKEN", raising=False)
+    served = []
+    monkeypatch.setattr(console_app.app, "run", lambda *a, **k: served.append(k))
+
+    rc = console_app.main(["--host", "0.0.0.0"])
+
+    assert rc != 0
+    assert served == [], "the server started on a public interface with no token"
+
+
+def test_every_request_is_rejected_without_the_token(monkeypatch):
+    monkeypatch.setenv("MINUS_DASH_TOKEN", "secret-token")
+    client = console_app.app.server.test_client()
+
+    assert client.get("/").status_code == 401
+    assert client.get("/", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get("/", headers={"Authorization": "Bearer secret-token"}).status_code != 401
+    assert client.get("/?token=secret-token").status_code != 401
+
+
+def test_with_no_token_configured_the_console_still_serves_locally(monkeypatch):
+    """Failing closed here would break `minusctl console` for everyone; the bind-time guard
+    is what makes this branch reachable only on loopback."""
+    monkeypatch.delenv("MINUS_DASH_TOKEN", raising=False)
+    monkeypatch.delenv("DASH_TOKEN", raising=False)
+    client = console_app.app.server.test_client()
+
+    assert client.get("/").status_code != 401

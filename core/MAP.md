@@ -139,7 +139,7 @@ sys.path.insert(0, _CORE_DIR)
 This puts every subpackage directory directly on `sys.path`, so `import toolpath` finds
 `core/reporting/toolpath.py` regardless of which subpackage is doing the importing, and
 `from providers.base import get_provider` still resolves because `core/` itself (the parent of
-`providers/`) is on the path too. `tests/conftest.py` and `app/dashboard_app.py` do the same
+`providers/`) is on the path too. `tests/conftest.py` and `app/console_app.py` do the same
 thing once, centrally, for every test/dashboard import.
 
 `integrations/` is appended to that tuple by the two files that import a hook flat
