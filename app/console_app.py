@@ -1314,19 +1314,43 @@ def _cost_switch(active):
                     className="on" if key == active else "") for key, label in tabs])
 
 
+TRANSCRIPT_ENV = "MINUS_AGENT_TRANSCRIPT"
+
+
 def _transcript_path(root):
-    """Where PRD v14 says a run's agent transcript lives, relative to the run workspace."""
-    return os.path.join(root or "", ".system_generated", "logs", "transcript.jsonl")
+    """The agent transcript for this run, or None when nothing links one to it.
+
+    A transcript belongs to a CONVERSATION, not to a run: it lives at
+    <appDataDir>/brain/<conversation-id>/.system_generated/logs/transcript.jsonl, and a run
+    workspace records no conversation id. So there is no path to derive, and an earlier
+    version of this guessed one under the run root -- a path that never exists, which made
+    every run look like it had no telemetry rather than like nothing had been linked.
+
+    Two ways to link one, both explicit: `transcript_path` on the run record, or the
+    MINUS_AGENT_TRANSCRIPT environment variable. Absent both, the view says so.
+    """
+    if os.environ.get(TRANSCRIPT_ENV):
+        return os.environ[TRANSCRIPT_ENV]
+    record = _load_json(os.path.join(root or "", "run.json"))
+    return record.get("transcript_path") or None
 
 
 def view_agents_cost(state):
     """COST -> AGENTS COST (FR-01, FR-02). Token economics for the agents that built a run."""
-    analysis = agent_cost_calculator.analyse_run(_transcript_path(state.get("root")))
+    path = _transcript_path(state.get("root"))
+    if not path:
+        return _empty(
+            "No transcript is linked to this run",
+            "A transcript belongs to a conversation, not to a run, and this run records no "
+            "conversation id. Point " + TRANSCRIPT_ENV + " at one, or record "
+            "`transcript_path` on the run, and the token economics appear here. Nothing is "
+            "estimated in the meantime.")
+    analysis = agent_cost_calculator.analyse_run(path)
     if not analysis.get("available"):
         return _empty("No agent telemetry for this run",
                       analysis.get("reason")
-                      or "No transcript was written, so nothing measured what these agents "
-                         "cost. That is not the same as costing nothing.")
+                      or "The linked transcript could not be read, so nothing measured what "
+                         "these agents cost. That is not the same as costing nothing.")
 
     summary = analysis["summary"]
 

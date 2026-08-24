@@ -62,6 +62,9 @@ All 11 milestone PRDs are delivered, certified with automated tests, and archive
   │ PRD v14.0│ Agent Observability (`agent_tracer.py`), AI Token Economics & Context Pressure          │
   │          │ (`agent_cost_calculator.py`), Interactive Agent Flow Lineage DAG (`agent_flow_graph.py`),│
   │          │ and SOC2/HIPAA cryptographic audit linkage (`audit.jsonl`).                              │
+  ├──────────┼──────────────────────────────────────────────────────────────────────────────────────────┤
+  │ PRD v15.0│ Agent Execution Guardrails Sandbox (`agent_guardrails.py`), Destructive Command Blocker, │
+  │          │ Dynamic Budget Alignment (25% headroom), and Single-Instance Console Lifecycle.         │
   └──────────┴──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 

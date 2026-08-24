@@ -583,20 +583,22 @@ def test_settings_never_offers_a_field_that_would_store_a_secret():
 
 # --- PRD v14 sub-sections ---------------------------------------------------------------
 
-def test_agents_cost_says_nothing_measured_rather_than_zero(tmp_path):
-    """A run with no transcript did not cost nothing -- nothing measured what it cost. On a
-    spend screen those are opposite claims and the second is the one an operator needs."""
+def test_agents_cost_says_nothing_measured_rather_than_zero(tmp_path, monkeypatch):
+    """A run whose linked transcript is unreadable did not cost nothing -- nothing measured
+    what it cost. On a spend screen those are opposite claims."""
+    monkeypatch.setenv(console_app.TRANSCRIPT_ENV, str(tmp_path / "missing.jsonl"))
     rendered = json.dumps(console_app.view_agents_cost({"root": str(tmp_path)}), default=str)
 
     assert "No agent telemetry" in rendered
     assert "$0" not in rendered, "an unmeasured run must not render a dollar figure"
 
 
-def test_agents_cost_totals_exclude_unpriced_steps_and_say_so(tmp_path):
+def test_agents_cost_totals_exclude_unpriced_steps_and_say_so(tmp_path, monkeypatch):
     """The total must be a floor on what a run cost, never a ceiling, and the reader has to
     be told which steps are missing from it."""
     logs = tmp_path / ".system_generated" / "logs"
     logs.mkdir(parents=True)
+    monkeypatch.setenv(console_app.TRANSCRIPT_ENV, str(logs / "transcript.jsonl"))
     logs.joinpath("transcript.jsonl").write_text("\n".join([
         json.dumps({"step_index": 1, "created_at": "2026-08-24T10:00:00Z", "model": "pro",
                     "token_usage": {"prompt_tokens": 1000, "completion_tokens": 100,
@@ -698,3 +700,20 @@ def test_access_reports_a_wildcard_grant_as_reaching_everything():
     rendered = json.dumps(console_app.view_access({"plan": plan}), default=str)
 
     assert "every bucket in the account" in rendered
+
+
+def test_a_run_with_no_linked_transcript_says_so_rather_than_guessing_a_path(tmp_path):
+    """A transcript belongs to a conversation, not a run. An earlier version derived a path
+    under the run root that never exists, which made every run look like it had no telemetry
+    rather than like nothing had been linked."""
+    assert console_app._transcript_path(str(tmp_path)) is None
+
+    rendered = json.dumps(console_app.view_agents_cost({"root": str(tmp_path)}), default=str)
+    assert "No transcript is linked" in rendered
+    assert console_app.TRANSCRIPT_ENV in rendered
+
+
+def test_an_explicitly_linked_transcript_is_used(tmp_path, monkeypatch):
+    monkeypatch.setenv(console_app.TRANSCRIPT_ENV, str(tmp_path / "t.jsonl"))
+
+    assert console_app._transcript_path("") == str(tmp_path / "t.jsonl")
