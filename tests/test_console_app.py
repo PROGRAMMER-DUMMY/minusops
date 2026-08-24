@@ -179,7 +179,8 @@ def test_the_topology_view_renders_for_a_run_that_actually_has_a_plan(tmp_path):
 
     assert rendered is not None
     text = json.dumps(rendered, default=str)
-    assert "app.diagrams.net" in text, "the 1-click editor link must be present"
+    assert "embed.diagrams.net" in text, "the editable canvas must be present"
+    assert "mxGraphModel" in text, "the generated diagram never reached the page"
 
 
 def test_the_step_flow_ledger_renders_as_a_table_not_a_python_repr(tmp_path):
@@ -350,11 +351,21 @@ def test_the_browser_never_supplies_the_hcl_that_gets_written(reconcile_run, mon
 # interaction is not" -- which reads as done in a screenshot and is not.
 # ---------------------------------------------------------------------------------------
 
-PLAN_FIXTURE = {"resource_changes": [
-    {"address": "module.storage.aws_s3_bucket.bronze", "type": "aws_s3_bucket",
-     "mode": "managed", "change": {"actions": ["create"], "after": {}}},
-    {"address": "module.compute.aws_glue_job.etl", "type": "aws_glue_job",
-     "mode": "managed", "change": {"actions": ["create"], "after": {}}}]}
+PLAN_FIXTURE = {
+    "resource_changes": [
+        {"address": "module.storage.aws_s3_bucket.bronze", "type": "aws_s3_bucket",
+         "mode": "managed", "change": {"actions": ["create"], "after": {}}},
+        {"address": "module.compute.aws_glue_job.etl", "type": "aws_glue_job",
+         "mode": "managed", "change": {"actions": ["create"], "after": {}}}],
+    # Without `configuration` the generator draws no edges at all -- correctly, since
+    # nothing declares one -- so a fixture used to test edge EDITS has to declare a
+    # reference for there to be an edge to edit.
+    "configuration": {"root_module": {"module_calls": {
+        "storage": {"expressions": {}},
+        "compute": {"expressions": {"source": {
+            "references": ["module.storage.bronze_arn", "module.storage"]}}},
+    }}},
+}
 
 
 def _state(tmp_path, **over):
@@ -367,23 +378,57 @@ def _state(tmp_path, **over):
 
 # --- FR-02.1: the canvas is embedded, not just linked -----------------------------------
 
-def test_the_topology_view_embeds_a_viewer_and_not_only_an_external_link(tmp_path):
+def test_the_canvas_is_the_editor_not_the_read_only_viewer(tmp_path):
+    """FR-05.1 requires the console to intercept a change made ON THE CANVAS. A viewer
+    cannot be edited, so the architect had no way to make one."""
     rendered = json.dumps(console_app.view_topology(_state(tmp_path)), default=str)
 
-    assert "Iframe" in rendered, "FR-02.1 asks for an embedded canvas, not a link alone"
-    assert "viewer.diagrams.net" in rendered or "app.diagrams.net" in rendered
+    assert "embed.diagrams.net" in rendered
+    assert "viewer.diagrams.net" not in rendered
 
 
-def test_the_embedded_viewer_and_the_button_point_at_the_same_diagram(tmp_path):
-    """Two encodings of the same plan that drift is worse than one: the operator reviews
-    the embed and opens the link, and they would be looking at different architectures."""
+def test_there_is_no_external_editor_link_beside_the_governed_canvas(tmp_path):
+    """It was defensible while the canvas was read-only. With an editable one it is an
+    UNINTERCEPTED path around the gate: edits made in another tab never reach autosave, so
+    no review, no diff, no audit record."""
+    rendered = json.dumps(console_app.view_topology(_state(tmp_path)), default=str)
+
+    assert "app.diagrams.net" not in rendered
+    assert "Open in diagrams" not in rendered
+
+
+def test_a_layout_tidy_up_is_not_an_architecture_change(tmp_path):
+    """Raising an unbypassable review for a dragged box teaches an operator to click
+    through the gate, which is the one thing this gate cannot survive."""
     import drawio_generator
-    bundle = drawio_generator.generate_drawio_from_plan(PLAN_FIXTURE,
-                                                        title="Architecture Blueprint")
-    rendered = json.dumps(console_app.view_topology(_state(tmp_path)), default=str)
+    original = drawio_generator.generate_drawio_from_plan(PLAN_FIXTURE)["xml"]
+    moved = original.replace('x="60"', 'x="640"', 1)
 
-    payload = bundle["url"].split("#R", 1)[1][:60]
-    assert payload in rendered
+    assert console_app.canvas_changes(original, moved) == []
+
+
+def test_deleting_a_connection_is_intercepted_with_its_terraform_addresses(tmp_path):
+    import re as _re
+    import drawio_generator
+    original = drawio_generator.generate_drawio_from_plan(PLAN_FIXTURE)["xml"]
+    edited = _re.sub(r'<mxCell id="edge_0".*?</mxCell>', "", original, flags=_re.S)
+
+    changes = console_app.canvas_changes(original, edited)
+
+    assert changes, "removing an edge raised nothing"
+    assert changes[0]["kind"] == "disconnect"
+    assert str(changes[0]["from"]).startswith("module."), changes[0]
+
+
+def test_the_review_warns_that_confirming_invalidates_the_plan(tmp_path):
+    """FR-05.2. A reviewer who does not know the approval dies with the edit will approve
+    it, and the next apply runs against a plan nobody re-approved."""
+    _hidden, panel = console_app.canvas_intercept_panel(
+        [{"kind": "disconnect", "from": "module.a.x", "to": "module.b.y"}])
+    rendered = json.dumps(panel, default=str)
+
+    assert "Review changes" in rendered
+    assert "Discard" in rendered
 
 
 # --- 02 Flow: selecting a step filters everything below it ------------------------------

@@ -427,3 +427,45 @@ def test_the_ledger_says_nothing_rather_than_describing_untraced_hops():
 
     assert bundle["ledger"] == []
     assert "no flow" in bundle["ledger_markdown"].lower()
+
+
+# --- Reading a diagram back: the input side of FR-05.1 ----------------------------------
+
+_EDITED = '''<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="layer_storage" value="STORAGE" style="text;" vertex="1" parent="1">
+<mxGeometry x="60" y="30" width="240" height="24" as="geometry"/></mxCell>
+<mxCell id="n1" value="bronze" tooltip="module.storage.aws_s3_bucket.bronze" vertex="1"
+ parent="1"><mxGeometry x="60" y="90" width="80" height="80" as="geometry"/></mxCell>
+<mxCell id="n2" value="etl" tooltip="module.compute.aws_glue_job.etl" vertex="1" parent="1">
+<mxGeometry x="340" y="90" width="80" height="80" as="geometry"/></mxCell>
+<mxCell id="e1" value="[1]" edge="1" parent="1" source="n1" target="n2">
+<mxGeometry relative="1" as="geometry"/></mxCell></root></mxGraphModel>'''
+
+
+def test_parse_graph_keys_nodes_by_their_terraform_address():
+    """The tooltip carries the full address. Without it an edge the architect drags is a
+    line between two anonymous box ids, and cannot be mapped back to infrastructure."""
+    graph = drawio_generator.parse_graph(_EDITED)
+
+    assert graph["nodes"]["n1"] == "module.storage.aws_s3_bucket.bronze"
+    assert graph["edges"]["e1"] == {"source": "n1", "target": "n2"}
+
+
+def test_parse_graph_ignores_the_layer_headers_the_generator_draws():
+    """They are captions, not architecture. Deleting one is an edit to the picture, and
+    reporting it as a removed resource puts noise in an unbypassable review."""
+    graph = drawio_generator.parse_graph(_EDITED)
+
+    assert "layer_storage" not in graph["nodes"]
+
+
+def test_parse_graph_carries_no_geometry_so_moving_a_box_is_not_a_change():
+    """Raising a review for a layout tidy-up would train an operator to click through the
+    gate, which is the one thing this gate cannot survive."""
+    moved = _EDITED.replace('x="60" y="90"', 'x="500" y="400"')
+
+    assert drawio_generator.parse_graph(moved) == drawio_generator.parse_graph(_EDITED)
+
+
+def test_parse_graph_survives_a_diagram_it_cannot_read():
+    assert drawio_generator.parse_graph("not xml at all") == {"nodes": {}, "edges": {}}

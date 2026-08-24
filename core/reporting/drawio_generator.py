@@ -368,6 +368,42 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
         # architecture.svg; a second, empty one presented as a diagram is worse than none.
     }
 
+def parse_graph(xml_text):
+    """Read a diagram back into {"nodes": {id: address}, "edges": {id: {source, target}}}.
+
+    The INPUT side of FR-05.1. What is deliberately absent from the result is as important
+    as what is in it:
+
+    - No geometry. Dragging a box to tidy the layout is not an architecture change, and a
+      diff that noticed it would raise an unbypassable review for a cosmetic edit -- which
+      teaches an operator to click through the gate.
+    - No layer headers. Those are captions this module draws; deleting one edits the
+      picture, never the infrastructure.
+    - Nodes are keyed by their `tooltip`, which carries the full Terraform address. Falling
+      back to `value` loses that: an edge between two shortened labels cannot be mapped back
+      to a resource.
+
+    Never raises. A diagram the editor returns malformed is a diff of nothing, which shows
+    the operator no pending changes -- the safe direction. A crash here would take down the
+    view that is supposed to be governing the edit.
+    """
+    nodes, edges = {}, {}
+    try:
+        root = ET.fromstring(xml_text or "")
+    except ET.ParseError:
+        return {"nodes": nodes, "edges": edges}
+
+    for cell in root.iter("mxCell"):
+        cell_id = cell.get("id") or ""
+        if cell_id.startswith("layer_"):
+            continue
+        if cell.get("vertex") == "1":
+            nodes[cell_id] = cell.get("tooltip") or cell.get("value") or cell_id
+        elif cell.get("edge") == "1":
+            edges[cell_id] = {"source": cell.get("source"), "target": cell.get("target")}
+    return {"nodes": nodes, "edges": edges}
+
+
 def generate_drawio_from_requirements(requirements_data, decision_data):
     mxGraphModel, root = _create_mxgraph_xml()
     xml_str = ET.tostring(mxGraphModel, encoding='utf-8', xml_declaration=False).decode('utf-8')

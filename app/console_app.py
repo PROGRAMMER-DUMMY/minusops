@@ -27,6 +27,8 @@ Depends on: core/reporting/lineage_graph.py, core/governance/agent_tracer.py,
 Shells out to: nothing. The console never invokes a cloud mutation (PRD v13 invariant 2).
 Used by: core/cli/commands/console.py (`minusctl console`)
 """
+import datetime
+import getpass
 import hmac
 import json
 import os
@@ -168,7 +170,7 @@ def run_band(state):
         ("Tier", record.get("tier"), "unclassified"),
         ("Resources", len((state.get("plan") or {}).get("resource_changes") or []) or None,
          "not planned"),
-        ("Forecast", f"${cost}/mo" if cost else None, "not priced"),
+        ("Forecast", f"${cost:,}/mo" if cost else None, "not priced"),
         ("Evidence", (f"{vault_stats.get('present', 0)} of {vault_stats.get('total', 0)}"
                       if vault_stats.get("total") else None), "no catalog"),
     ]
@@ -190,17 +192,10 @@ def run_band(state):
     ])
 
 
-# --- View 1: topology -------------------------------------------------------------------
+# --- View 1: topology ---------------------------------------------------------------------
 
-def _viewer_url(edit_url):
-    """The read-only diagrams.net viewer for the same deflated payload as the edit link.
-
-    `viewer.diagrams.net` renders with pan, zoom and layer controls and never writes; the
-    edit link stays a separate, explicit action. Same `#R<payload>` on both sides.
-    """
-    payload = edit_url.split("#R", 1)[1] if "#R" in edit_url else ""
-    return ("https://viewer.diagrams.net/?lightbox=0&nav=1&layers=1&edit=_blank"
-            "#R" + payload)
+_EMBED = ("https://embed.diagrams.net/?embed=1&proto=json&spin=1&noExitBtn=1"
+          "&noSaveBtn=1&ui=min")
 
 
 def view_topology(state):
@@ -208,33 +203,109 @@ def view_topology(state):
     if not plan:
         return _empty("No plan analyzed",
                       "Run `minusctl gate plan` to generate the plan this canvas draws from.")
-    # generate_drawio_from_plan returns a BUNDLE -- {"xml", "url", "ledger", "svg"} -- not
-    # an XML string. Passing its return value to encode_drawio_url() raises AttributeError
-    # on every run that actually has a plan; the first version of this view did exactly
-    # that and the tests never caught it, because the fixture run had no plan.json and only
-    # ever exercised the "No plan analyzed" branch.
+    # generate_drawio_from_plan returns a BUNDLE -- {"xml", "url", "ledger"} -- not an XML
+    # string. Passing its return value to encode_drawio_url() raises AttributeError on every
+    # run that has a plan; the first version of this view did exactly that and the tests
+    # never caught it, because the fixture run had no plan and only ever exercised the
+    # "No plan analyzed" branch.
     bundle = drawio_generator.generate_drawio_from_plan(plan, title="Architecture Blueprint")
-    xml = bundle["xml"]
-    url = bundle["url"]
-    ledger = bundle["ledger"]
     return html.Div([
-        html.Div(className="view-actions", children=[
-            html.A("Open in diagrams.net", href=url, target="_blank",
-                   className="btn dark"),
-            html.Span(f"{len(plan.get('resource_changes', []))} planned resources",
-                      className="muted"),
+        html.P(["Drag a connection to re-route it, or delete one to disconnect. Every "
+                "change is intercepted below and nothing is written until you confirm. "
+                "Export copies live in ", html.B("06 Evidence"), "."],
+               className="hint", style={"margin": "0 0 12px"}),
+        # The generated diagram, handed to the editor by the browser rather than embedded in
+        # the URL: a deflated payload in a query string is capped by URL length, and a large
+        # plan silently truncates.
+        dcc.Store(id="canvas-xml", data=bundle["xml"]),
+        dcc.Store(id="canvas-edited"),
+        dcc.Interval(id="canvas-poll", interval=1200, disabled=False),
+        html.Div(className="canvaswrap", children=[
+            html.Iframe(id="canvas-frame", className="canvas", src=_EMBED,
+                        title="Architecture topology, editable"),
+            html.Div(id="canvas-intercept", hidden=True, className="intercept"),
         ]),
-        # FR-02.1. The embed and the button are built from the SAME payload, deliberately:
-        # two encodings of one plan that drift apart mean the operator reviews the canvas
-        # and opens a link showing a different architecture.
-        html.Iframe(src=_viewer_url(url), className="canvas",
-                    title="Architecture topology"),
-        _ledger_table(ledger),
-        _reconcile_panel(state),
+        html.H2("Flow ledger"),
+        html.P("Hops the plan declares through module references. A plan with no "
+               "configuration block yields none rather than a guessed chain.",
+               className="hint"),
+        _ledger_table(bundle["ledger"]),
         html.Details(className="drawer", children=[
             html.Summary("Draw.io XML (canvas source)"),
-            html.Pre(xml[:4000], className="code"),
+            html.Div(className="body", children=[html.Pre(bundle["xml"], className="ledger")]),
         ]),
+    ])
+
+
+def canvas_changes(original_xml, edited_xml):
+    """The semantic diff between the generated diagram and the returned one (FR-05.1).
+
+    GEOMETRY IS IGNORED. Dragging a box to tidy the layout is not an architecture change,
+    and raising a review for it would teach an operator to click through the gate -- which
+    is the one thing this gate cannot survive.
+
+    Layer headers are excluded too: they are captions the generator draws, so deleting one
+    is an edit to the picture, never to the infrastructure.
+    """
+    before = drawio_generator.parse_graph(original_xml)
+    after = drawio_generator.parse_graph(edited_xml)
+    changes = []
+
+    for edge_id, edge in after["edges"].items():
+        previous = before["edges"].get(edge_id)
+        if not previous:
+            changes.append({"kind": "connect", "from": after["nodes"].get(edge["source"]),
+                            "to": after["nodes"].get(edge["target"])})
+        elif previous != edge:
+            changes.append({"kind": "reroute",
+                            "target": after["nodes"].get(edge["target"]),
+                            "was": before["nodes"].get(previous["source"]),
+                            "now": after["nodes"].get(edge["source"])})
+    for edge_id, edge in before["edges"].items():
+        if edge_id not in after["edges"]:
+            changes.append({"kind": "disconnect", "from": before["nodes"].get(edge["source"]),
+                            "to": before["nodes"].get(edge["target"])})
+    for node_id, label in after["nodes"].items():
+        if node_id not in before["nodes"]:
+            changes.append({"kind": "add", "what": label})
+    for node_id, label in before["nodes"].items():
+        if node_id not in after["nodes"]:
+            changes.append({"kind": "remove", "what": label})
+    return changes
+
+
+def _change_sentence(change):
+    kind = change["kind"]
+    if kind == "reroute":
+        return [f"Re-routed {change['target']} source: ",
+                html.Span(str(change["was"]), className="from"), " -> ",
+                html.Span(str(change["now"]), className="to")]
+    if kind == "connect":
+        return [f"Connected {change['from']} -> {change['to']}"]
+    if kind == "disconnect":
+        return [f"Disconnected {change['from']} -> {change['to']}"]
+    if kind == "add":
+        return [f"Added {change['what']} -- ",
+                html.Span("no resource type; MinusOps cannot infer which module this is",
+                          className="noop")]
+    return [f"Removed {change['what']}"]
+
+
+def canvas_intercept_panel(changes):
+    """FR-05.1. What the canvas edit means, before any HCL is written."""
+    if not changes:
+        return True, html.Div()
+    return False, html.Div([
+        html.Div(className="intercept-head", children=[
+            html.Span("Pending canvas changes", className="lab"),
+            html.Span(className="spacer"),
+            html.Button("Review changes", id="canvas-review", n_clicks=0,
+                        className="btn pri"),
+            html.Button("Discard", id="canvas-discard", n_clicks=0, className="btn ghost"),
+        ]),
+        html.Ul(className="changelist", children=[
+            html.Li([html.Span(change["kind"], className="lab")] + _change_sentence(change))
+            for change in changes]),
     ])
 
 
@@ -1096,6 +1167,7 @@ app.layout = html.Div(children=[
     dcc.Store(id="flow-tab", data="data"),
     dcc.Store(id="flow-node"),
     dcc.Store(id="reconcile-proposal"),
+    html.Div(id="canvas-seed", style={"display": "none"}),
     html.Div(id="bar-slot"),
     html.Div(className="wrap", children=[
         html.Div(id="band-slot"),
@@ -1698,6 +1770,28 @@ details ul{padding:0 0 16px 16px;color:var(--smoke);font-size:12px;columns:3}
     ._dash-loading,._dash-undo-redo{display:none}
 
   </style>
+
+  <script>
+    // FR-05.1 bridge. The editor is cross-origin, so postMessage is the only channel; the
+    // handler parks payloads on window and a Dash Interval lifts them into a Store.
+    window.__minusops = {loaded: false, xml: null};
+    window.addEventListener('message', function (event) {
+      if (typeof event.data !== 'string' || !event.data) { return; }
+      var msg;
+      try { msg = JSON.parse(event.data); } catch (e) { return; }
+      var frame = document.getElementById('canvas-frame');
+      if (msg.event === 'init' && frame) {
+        var store = document.getElementById('canvas-xml-store');
+        var xml = window.__minusops.source || (store && store.textContent) || '';
+        frame.contentWindow.postMessage(
+          JSON.stringify({action: 'load', autosave: 1, xml: xml}), '*');
+        window.__minusops.loaded = true;
+      }
+      if (msg.event === 'autosave' || msg.event === 'save') {
+        window.__minusops.xml = msg.xml;
+      }
+    });
+  </script>
 </head>
 <body>{%app_entry%}<footer>{%config%}{%scripts%}{%renderer%}</footer></body>
 </html>"""
@@ -1771,6 +1865,84 @@ def _persist_console_token(response):
         response.set_cookie("minus_console_token", _console_token(),
                             httponly=True, samesite="Lax")
     return response
+
+
+
+# The generated XML has to reach page script before the editor asks for it, and a Store's
+# value is not in the DOM. A hidden element carries it; the listener reads it on `init`.
+app.clientside_callback(
+    """function (xml) { window.__minusops = window.__minusops || {};
+        window.__minusops.source = xml; return ''; }""",
+    Output("canvas-seed", "children"),
+    Input("canvas-xml", "data"),
+)
+
+app.clientside_callback(
+    """function (_n) {
+        var held = (window.__minusops || {}).xml || null;
+        return held;
+    }""",
+    Output("canvas-edited", "data"),
+    Input("canvas-poll", "n_intervals"),
+)
+
+
+@app.callback(
+    Output("canvas-intercept", "hidden"),
+    Output("canvas-intercept", "children"),
+    Input("canvas-edited", "data"),
+    State("canvas-xml", "data"),
+    prevent_initial_call=True,
+)
+def _intercept_canvas(edited_xml, original_xml):
+    """FR-05.1. Every edit is compared against the generated diagram before anything else
+    happens. Nothing here writes; it only says what changed."""
+    if not edited_xml or not original_xml:
+        return True, html.Div()
+    return canvas_intercept_panel(canvas_changes(original_xml, edited_xml))
+
+
+@app.callback(
+    Output("overlay", "className", allow_duplicate=True),
+    Output("sheet-name", "children", allow_duplicate=True),
+    Output("sheet-kind", "children", allow_duplicate=True),
+    Output("sheet-body", "children", allow_duplicate=True),
+    Input("canvas-review", "n_clicks"),
+    State("canvas-edited", "data"),
+    State("canvas-xml", "data"),
+    State("run-id", "data"),
+    prevent_initial_call=True,
+)
+def _review_canvas(n_clicks, edited_xml, original_xml, run_id):
+    """FR-05.2. The unbypassable review: who, when, what changed in plain English, the
+    lineage and plan-invalidation warning, and the diff -- before any HCL is written."""
+    if not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    changes = canvas_changes(original_xml or "", edited_xml or "")
+    body = html.Div(className="review", style={"padding": "20px"}, children=[
+        html.H3("Confirm before any HCL is written"),
+        html.Div(className="meta", children=[
+            html.Span("Author", className="lab"), html.B(getpass.getuser()),
+            html.Span("At", className="lab"),
+            html.B(datetime.datetime.now(datetime.timezone.utc)
+                   .strftime("%Y-%m-%d %H:%M:%S UTC")),
+            html.Span("Run", className="lab"), html.B(run_id or "unscoped"),
+        ]),
+        html.Ul(className="changelist", children=[
+            html.Li(_change_sentence(change)) for change in changes]),
+        html.Div(className="warn", children=[
+            "This alters a declared data flow. On confirmation the standing plan approval "
+            "is revoked and the run becomes ",
+            html.B(reconciler.STALE_PLAN), ". Re-run ", html.B("minusctl gate plan"),
+            " before any apply.",
+        ]),
+        html.Div(className="foot", children=[
+            html.Button("Confirm and rewrite main.tf", id="canvas-confirm", n_clicks=0,
+                        className="btn pri"),
+            html.Span("Nothing is written until you confirm", className="lab"),
+        ]),
+    ])
+    return "overlay open", "Architecture change review", "Unbypassable", body
 
 
 def main(argv=None):
