@@ -304,3 +304,92 @@ def access_model(plan, own_account_id=None):
         "unresolved": unresolved,
         "malformed": malformed,
     }
+
+def cross_account_grants(model):
+    """Every trust this plan extends outside its own account, plus the ones it cannot read.
+
+    Three things are deliberately in scope that an account-id filter alone would drop:
+
+    - A WILDCARD principal names no account, and is the single most dangerous trust policy
+      there is. Filtering on account id would silently omit it.
+    - An UNRESOLVED trust policy is reported with determinable=False. A policy computed at
+      apply time may well trust another account; treating it as "no trust" is the same
+      under-report this whole module exists to avoid.
+    - Same-account trust is excluded, because flagging it teaches a reviewer to ignore the
+      column, and a column people ignore protects nobody.
+    """
+    own = str(model.get("own_account_id") or "")
+    grants = []
+    for role in model.get("roles") or []:
+        principals = role.get("trusted_principals")
+        if principals is None:
+            grants.append({
+                "role": role.get("name") or role.get("address"),
+                "address": role.get("address"), "account_id": None, "principal": None,
+                "is_wildcard": False, "has_external_id": False, "effect": None,
+                "determinable": False,
+                "reason": (role.get("trust") or {}).get("reason")
+                          or "not determinable from this plan",
+            })
+            continue
+        for principal in principals:
+            account = principal.get("account_id")
+            if not principal.get("is_wildcard") and (not account or account == own):
+                continue
+            grants.append({
+                "role": role.get("name") or role.get("address"),
+                "address": role.get("address"),
+                "account_id": account,
+                "principal": principal.get("identifier"),
+                "is_wildcard": bool(principal.get("is_wildcard")),
+                "has_external_id": bool(principal.get("has_external_id")),
+                "effect": principal.get("effect"),
+                "determinable": True, "reason": None,
+            })
+    return grants
+
+
+def _first_table_block(after):
+    """`table` and `table_with_columns` arrive as a one-element list in plan JSON."""
+    for key in ("table", "table_with_columns", "database"):
+        block = after.get(key)
+        if isinstance(block, list) and block and isinstance(block[0], dict):
+            return key, block[0]
+        if isinstance(block, dict):
+            return key, block
+    return None, {}
+
+
+def lake_formation_grants(plan):
+    """Lake Formation permissions this plan declares.
+
+    A grant whose principal is not known until apply is returned with principal=None and
+    determinable=False rather than omitted: the grant is real, and a governance view that
+    silently drops it reports less access than exists.
+    """
+    raw_changes, _error = plan_reader.read_resource_changes(plan, treat_absent_as_error=False)
+    managed, _malformed = plan_reader.managed_only(raw_changes or [])
+
+    grants = []
+    for rc in managed:
+        if rc.get("type") != "aws_lakeformation_permissions":
+            continue
+        change = rc.get("change") if isinstance(rc.get("change"), dict) else {}
+        after = change.get("after") if isinstance(change.get("after"), dict) else {}
+        unknown = change.get("after_unknown") if isinstance(
+            change.get("after_unknown"), dict) else {}
+
+        principal, principal_reason = _known(after, unknown, "principal")
+        key, block = _first_table_block(after)
+        grants.append({
+            "address": rc.get("address", ""),
+            "principal": principal,
+            "permissions": _as_list(after.get("permissions")),
+            "database": block.get("database_name") or (
+                block.get("name") if key == "database" else None),
+            "table": block.get("name") if key != "database" else None,
+            "determinable": principal is not None,
+            "reason": principal_reason,
+        })
+    return grants
+

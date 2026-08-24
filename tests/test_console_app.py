@@ -497,17 +497,35 @@ def test_access_reports_an_unresolved_trust_policy_rather_than_no_principals():
 
 
 def test_access_says_plainly_which_facts_it_does_not_derive_yet():
-    """The mockup showed dataset reachability and Lake Formation grants. Neither is
-    extracted, so the view names them as absent instead of leaving a reviewer to assume the
-    blank means none."""
+    """Lake Formation grants and cross-account trust ARE derived now. Dataset reachability
+    is not, so the view still names it rather than leaving a blank to be read as none."""
     plan = {"resource_changes": [{
         "address": "module.sec.aws_iam_role.etl", "type": "aws_iam_role", "mode": "managed",
         "name": "etl", "change": {"actions": ["create"], "after": {"name": "etl"}}}]}
 
     rendered = json.dumps(console_app.view_access({"plan": plan}), default=str)
 
-    assert "Lake Formation" in rendered
-    assert "not extracted yet" in rendered
+    assert "not extracted" in rendered
+    assert "under-reports" in rendered
+
+
+def test_access_shows_a_cross_account_trust_and_flags_a_missing_external_id():
+    """SEC-05 is the finding, but the trust itself belongs on screen whether or not the
+    Rego set ran: a reviewer needs to see who can assume into this account."""
+    trust = json.dumps({"Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "sts:AssumeRole",
+        "Principal": {"AWS": "arn:aws:iam::445566772201:root"}}]})
+    plan = {"resource_changes": [{
+        "address": "module.sec.aws_iam_role.partner", "type": "aws_iam_role",
+        "mode": "managed", "name": "partner",
+        "change": {"actions": ["create"],
+                   "after": {"name": "partner", "assume_role_policy": trust}}}]}
+
+    rendered = json.dumps(console_app.view_access({"plan": plan}), default=str)
+
+    assert "445566772201" in rendered
+    assert "SEC-05" in rendered
+    assert "confused-deputy" in rendered
 
 
 # --- 04 Cost and Settings read from disk, and say so when there is nothing --------------

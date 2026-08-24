@@ -244,3 +244,114 @@ def test_a_policy_whose_role_is_unknown_is_not_attached_to_a_guess():
     assert model["policies"][0]["role"] is None
     assert {"address": "aws_iam_role_policy.inline", "field": "role",
             "reason": am.UNKNOWN_UNTIL_APPLY} in model["unresolved"]
+
+
+# --- Cross-account trust and Lake Formation grants --------------------------------------
+
+def _crossacct_trust(principal, condition=None):
+    statement = {"Effect": "Allow", "Action": "sts:AssumeRole",
+                 "Principal": {"AWS": principal}}
+    if condition:
+        statement["Condition"] = condition
+    return json.dumps({"Version": "2012-10-17", "Statement": [statement]})
+
+
+def _role_plan(principal, condition=None):
+    return {"resource_changes": [{
+        "address": "module.sec.aws_iam_role.partner", "type": "aws_iam_role",
+        "mode": "managed", "name": "partner",
+        "change": {"actions": ["create"],
+                   "after": {"name": "partner",
+                             "assume_role_policy": _crossacct_trust(principal, condition)}}}]}
+
+
+def test_a_trust_from_another_account_is_reported_as_cross_account():
+    model = am.access_model(
+        _role_plan("arn:aws:iam::445566772201:root"), own_account_id="111122223333")
+
+    grants = am.cross_account_grants(model)
+
+    assert len(grants) == 1
+    assert grants[0]["account_id"] == "445566772201"
+    assert grants[0]["role"] == "partner"
+
+
+def test_a_trust_from_our_own_account_is_not_cross_account():
+    """Flagging same-account trust as cross-account trains a reviewer to ignore the column."""
+    model = am.access_model(
+        _role_plan("arn:aws:iam::111122223333:root"), own_account_id="111122223333")
+
+    assert am.cross_account_grants(model) == []
+
+
+def test_a_cross_account_trust_without_an_external_id_is_flagged():
+    """SEC-05. Without sts:ExternalId the role is exposed to the confused-deputy problem:
+    anyone who can persuade the trusted account to assume it inherits the access."""
+    model = am.access_model(
+        _role_plan("arn:aws:iam::445566772201:root"), own_account_id="111122223333")
+
+    grant = am.cross_account_grants(model)[0]
+
+    assert grant["has_external_id"] is False
+
+
+def test_an_external_id_condition_is_recognised():
+    model = am.access_model(
+        _role_plan("arn:aws:iam::445566772201:root",
+                   {"StringEquals": {"sts:ExternalId": "shared-secret"}}),
+        own_account_id="111122223333")
+
+    assert am.cross_account_grants(model)[0]["has_external_id"] is True
+
+
+def test_a_wildcard_principal_is_reported_even_with_no_account_to_name():
+    """`Principal: "*"` names no account, so an account-based filter alone would drop the
+    single most dangerous trust policy there is."""
+    model = am.access_model(_role_plan("*"), own_account_id="111122223333")
+
+    grants = am.cross_account_grants(model)
+
+    assert len(grants) == 1 and grants[0]["is_wildcard"] is True
+
+
+def test_an_unresolved_trust_policy_is_reported_not_treated_as_no_trust():
+    model = am.access_model({"resource_changes": [{
+        "address": "module.sec.aws_iam_role.late", "type": "aws_iam_role", "mode": "managed",
+        "name": "late", "change": {"actions": ["create"], "after": {"name": "late"},
+                                   "after_unknown": {"assume_role_policy": True}}}]},
+        own_account_id="111122223333")
+
+    grants = am.cross_account_grants(model)
+
+    assert len(grants) == 1
+    assert grants[0]["determinable"] is False
+
+
+def test_lake_formation_grants_are_extracted_with_principal_and_permissions():
+    plan = {"resource_changes": [{
+        "address": "module.gov.aws_lakeformation_permissions.analysts",
+        "type": "aws_lakeformation_permissions", "mode": "managed", "name": "analysts",
+        "change": {"actions": ["create"], "after": {
+            "principal": "arn:aws:iam::111122223333:role/analyst",
+            "permissions": ["SELECT", "DESCRIBE"],
+            "table": [{"database_name": "marketing", "name": "events"}]}}}]}
+
+    grants = am.lake_formation_grants(plan)
+
+    assert len(grants) == 1
+    assert grants[0]["permissions"] == ["SELECT", "DESCRIBE"]
+    assert grants[0]["database"] == "marketing"
+    assert grants[0]["table"] == "events"
+
+
+def test_a_lake_formation_grant_whose_principal_is_unknown_says_so():
+    plan = {"resource_changes": [{
+        "address": "module.gov.aws_lakeformation_permissions.late",
+        "type": "aws_lakeformation_permissions", "mode": "managed", "name": "late",
+        "change": {"actions": ["create"], "after": {"permissions": ["ALL"]},
+                   "after_unknown": {"principal": True}}}]}
+
+    grant = am.lake_formation_grants(plan)[0]
+
+    assert grant["principal"] is None
+    assert grant["determinable"] is False

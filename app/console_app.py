@@ -1023,8 +1023,14 @@ def view_access(state):
             principals = role.get("trusted_principals") or []
             rows.append(html.Tr([
                 html.Td(role.get("name") or role["address"]),
-                html.Td(", ".join(principals) if principals
-                        else html.Span(reason or "none declared", className="absent")),
+                # trusted_principals carries a dict per identifier, with the effect and
+                # the external-id flag alongside it. A Deny is shown as a Deny: it is a real
+                # fact about who CANNOT assume the role, and rendering it like an Allow
+                # would invert the meaning of the row.
+                html.Td(", ".join(
+                    ("Deny " if p.get("effect") == "Deny" else "")
+                    + str(p.get("identifier") or "-") for p in principals) if principals
+                    else html.Span(reason or "none declared", className="absent")),
                 html.Td(str(count) if count is not None
                         else html.Span("not determinable", className="absent")),
                 html.Td(", ".join(role.get("attached_policies") or [])
@@ -1051,12 +1057,62 @@ def view_access(state):
             html.Tbody([html.Tr([html.Td(item["address"]), html.Td(item["field"]),
                                  html.Td(item["reason"])]) for item in unresolved])]))
 
+    cross = access_model.cross_account_grants(model)
+    blocks.append(html.H2("Cross-account access"))
+    if cross:
+        rows = []
+        for grant in cross:
+            if not grant["determinable"]:
+                rows.append(html.Tr([
+                    html.Td(grant["role"]),
+                    html.Td(html.Span("not determinable", className="absent")),
+                    html.Td(html.Span(grant["reason"], className="absent")),
+                    html.Td("-"),
+                ]))
+                continue
+            rows.append(html.Tr([
+                html.Td(grant["role"]),
+                html.Td("any principal" if grant["is_wildcard"]
+                        else (grant["account_id"] or "-")),
+                html.Td(grant["principal"] or "-"),
+                html.Td(html.Span("present", className="ok") if grant["has_external_id"]
+                        else html.Span("not set -- SEC-05", className="absent")),
+            ]))
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Role"), html.Th("Account"), html.Th("Principal"),
+                                html.Th("External ID")])),
+            html.Tbody(rows)]))
+        blocks.append(html.P("A cross-account trust without sts:ExternalId is open to the "
+                             "confused-deputy problem: anyone who can persuade the trusted "
+                             "account to assume the role inherits this access.",
+                             className="hint"))
+    else:
+        blocks.append(html.P("This plan extends no trust outside its own account.",
+                             className="muted"))
+
+    grants = access_model.lake_formation_grants(plan)
+    blocks.append(html.H2("Lake Formation grants"))
+    if grants:
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Principal"), html.Th("Database"), html.Th("Table"),
+                                html.Th("Permissions")])),
+            html.Tbody([html.Tr([
+                html.Td(grant["principal"]
+                        or html.Span("not determinable", className="absent")),
+                html.Td(grant["database"] or "-"),
+                html.Td(grant["table"] or html.Span("database-wide", className="absent")),
+                html.Td(", ".join(grant["permissions"]) or "-"),
+            ]) for grant in grants])]))
+    else:
+        blocks.append(html.P("This plan declares no Lake Formation permissions.",
+                             className="muted"))
+
     blocks.append(html.Div(className="notice", children=[
         html.Span("Not yet derived", className="lab"),
-        html.P("Which dataset each role can reach, and the Lake Formation grants over those "
-               "datasets, are not extracted yet. The policy findings from the G6 rule set "
-               "are not joined onto these roles either. Those cells are absent rather than "
-               "estimated: an access screen that under-reports is worse than one that says "
+        html.P("Which dataset each role can reach is not extracted: that needs a statement's "
+               "resource ARNs joined to the datasets in 02 Flow. The G6 policy findings are "
+               "not joined onto these roles either. Those cells are absent rather than "
+               "estimated -- an access screen that under-reports is worse than one that says "
                "it cannot see."),
     ]))
     return html.Div(blocks)
