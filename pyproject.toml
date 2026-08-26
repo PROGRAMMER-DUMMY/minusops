@@ -1,5 +1,5 @@
 [build-system]
-# >=77 for PEP 639: `license = "Apache-2.0"` as an SPDX string plus `license-files`.
+# >=77 for PEP 639: `license = "MIT"` as an SPDX string plus `license-files`.
 # Older setuptools only understands the deprecated table form and errors on this.
 requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -10,7 +10,7 @@ version = "0.1.0"
 description = "MinusOps — a governed AWS Terraform control plane (plan-bound, MFA-gated, audited deploys)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0"
+license = "MIT"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "MinusOps contributors" }]
 keywords = ["terraform", "governance", "finops", "devops", "iac", "aws"]

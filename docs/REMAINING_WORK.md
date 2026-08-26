@@ -18,11 +18,11 @@ Suggested split (5 commits, each independently revertible):
 4. `feat: cloud drift detection` — issue #1
 5. `feat: address-churn / moved blocks` — issue #2
 
-### 0.2 Pick a license (issue #5)
-`pyproject.toml` says `license = { text = "Proprietary" }` on a **public repo** you intend
-others to adopt. Everything in the adoption story is downstream of this. Nobody can legally
-use it as-is. Needs a decision only you can make (MIT / Apache-2.0 / BSL / something else),
-then `pyproject.toml` + a `LICENSE` file.
+### 0.2 Pick a license (issue #5) - DONE
+**MIT**, 2026-08-26. `pyproject.toml` carries `license = "MIT"` as a PEP 639 SPDX string,
+`LICENSE` holds the MIT text, and `NOTICE` is kept (though MIT does not require one) because
+its inventory of shelled-out tools is real information: Terraform is BUSL-1.1, and that is
+the license to read before redistributing any bundle.
 
 ---
 

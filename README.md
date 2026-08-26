@@ -171,13 +171,13 @@ python core/generation/intent_resolver.py --list-blueprints
 python core/generation/intent_resolver.py "create a governed AWS data pipeline"
 
 # 4b. Create a fresh governed requirements workspace
-python core/reporting/minusctl.py create "create a governed AWS data pipeline"
-python core/reporting/minusctl.py decision template --write
-python core/reporting/minusctl.py next
-python core/reporting/minusctl.py readiness
-python core/reporting/minusctl.py guard status
-python core/reporting/minusctl.py guard diff
-python core/reporting/minusctl.py package
+minusctl create "create a governed AWS data pipeline"
+minusctl decision template --write
+minusctl next
+minusctl readiness
+minusctl guard status
+minusctl guard diff
+minusctl package
 
 # The lower-level commands remain available
 python core/generation/workflow.py resolve "create a governed AWS data pipeline"
@@ -186,13 +186,13 @@ python core/governance/source_guard.py diff --dir runs/<run-id>/terraform
 
 # Optional reviewable accelerator, chosen by an operator after requirements gathering.
 # It writes requirements.json + architecture_decision.json; it does not synthesize, plan, or apply.
-python core/reporting/minusctl.py accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
-python core/reporting/minusctl.py next
+minusctl accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
+minusctl next
 
 # Optional no-cloud demo report, with synthetic plan JSON and no Terraform/AWS calls
-python core/reporting/minusctl.py demo governed-data-pipeline --owner data-platform --daily-data-gb 50
-python core/reporting/minusctl.py reports services --latest
-python core/reporting/minusctl.py reports roles --latest
+minusctl demo governed-data-pipeline --owner data-platform --daily-data-gb 50
+minusctl reports services --latest
+minusctl reports roles --latest
 
 # 5. Inspect cost / health any time (read-only, safe)
 python core/reporting/finops_agent.py --cost
@@ -256,7 +256,7 @@ You provide the Terraform. MinusOps governs how it ships.
 
 ## License
 
-Apache License 2.0 — see [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).
+MIT License — see [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).
 
 Terraform, the AWS CLI, OPA, Checkov, and tfsec are invoked as external processes and are
 never bundled or redistributed here; each stays under its own license and is installed by
