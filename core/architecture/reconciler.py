@@ -27,7 +27,7 @@ Belt and braces: writing main.tf also trips the gate's own source-drift check
 This module does not reimplement that; it just makes the invalidation visible immediately
 rather than at the next apply attempt.
 
-Depends on: nothing (standard library only -- PRD v13 invariant 4)
+Depends on: core/governance/audit_chain.py (stdlib-only, so PRD v13 invariant 4 holds)
 Shells out to: nothing
 Used by: app/console_app.py (canvas edit interception), tests/test_reconciler.py
 """
@@ -37,6 +37,11 @@ import getpass
 import glob
 import json
 import os
+import sys
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "governance"))
+import audit_chain  # noqa: E402
 
 AUDIT_ACTION = "ARCH_VISUAL_RECONCILIATION"
 STALE_PLAN = "STALE_PLAN (NEEDS_REPLAN)"
@@ -210,8 +215,16 @@ def confirm(proposal, confirmed=False, audit_path=None, operator=None):
 
 
 def _audit(audit_path, author, proposal, result):
-    """Append to the tamper-evident chain. Never raises: a confirmed edit that already
-    touched the filesystem must not be reported as failed because the log was unwritable.
+    """Append to the tamper-evident chain, THROUGH audit_chain.append.
+
+    Not a bare `open(path, "a")`. That lands the record in the same file and still omits
+    `prev_hash`/`entry_hash`, which breaks every link after it -- this module wrote 85 such
+    entries into this repo's own audit.jsonl before the bug was found, and `audit verify`
+    exited 1 with 218 errors. A log that reads correctly and fails verification is worse
+    than no log: the failure surfaces as tampering rather than as a defect.
+
+    Never raises: a confirmed edit that already touched the filesystem must not be reported
+    as failed because the log was unwritable.
     """
     path = audit_path or os.path.join(os.getcwd(), ".agents", "logs", "audit.jsonl")
     record = {
@@ -224,9 +237,7 @@ def _audit(audit_path, author, proposal, result):
         "status": "RECORDED",
     }
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(record) + "\n")
+        audit_chain.append(path, record)
     except OSError:
         pass
 

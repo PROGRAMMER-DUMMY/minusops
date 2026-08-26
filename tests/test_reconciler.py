@@ -24,6 +24,7 @@ import os
 
 import pytest
 
+import audit_chain
 import reconciler
 
 
@@ -181,6 +182,42 @@ def test_a_confirmed_change_is_audited_under_the_declared_action(run, tmp_path):
     assert "aws_glue_job.etl" in records[-1]["details"]
 
 
+def test_a_confirmed_change_is_chained_not_just_appended(run, tmp_path):
+    """In the file is not in the chain.
+
+    The test above only proved the record LANDED. Writing it with a bare `open(..., "a")`
+    passes that and still leaves an entry with no `prev_hash`/`entry_hash`, which breaks
+    every link after it -- 85 such entries were found in this repo's own audit.jsonl, and
+    `audit verify` exited 1 with 218 errors. So the assertion that matters is the verifier's,
+    not the reader's.
+    """
+    audit = tmp_path / "audit.jsonl"
+    audit_chain.append(str(audit), {"action": "prior", "operator": "someone"})
+
+    proposal = reconciler.propose(run, _change(), author="shubh")
+    reconciler.confirm(proposal, confirmed=True, audit_path=str(audit))
+
+    ok, errors = audit_chain.verify(str(audit))
+    assert ok, f"a reconciliation must not break the chain: {errors}"
+
+    records = [json.loads(line) for line in open(audit, encoding="utf-8") if line.strip()]
+    assert records[-1]["prev_hash"] == records[-2]["entry_hash"],         "the entry must link to the one before it"
+
+
+def test_an_unwritable_audit_path_does_not_fail_a_confirmed_edit(run, tmp_path):
+    """The files are already rewritten by the time the audit runs, so a logging failure must
+    not be reported as a failed edit -- that would tell an operator nothing happened when
+    main.tf had in fact changed."""
+    blocker = tmp_path / "occupied"
+    blocker.write_text("a file where the log directory needs to be", encoding="utf-8")
+    proposal = reconciler.propose(run, _change(), author="shubh")
+
+    result = reconciler.confirm(proposal, confirmed=True,
+                                audit_path=str(blocker / "audit.jsonl"))
+
+    assert result["files"], "the edit itself still succeeded"
+
+
 # --- Plan invalidation (FR-05.3, AC-02) -------------------------------------------------
 
 def test_a_confirmed_change_revokes_the_standing_approval(run, tmp_path, monkeypatch):
@@ -213,12 +250,19 @@ def test_the_result_tells_the_operator_the_exact_next_command(run, tmp_path):
 
 # --- Invariants -------------------------------------------------------------------------
 
-def test_the_module_imports_only_the_standard_library():
+def test_the_module_imports_only_the_standard_library_and_core():
+    """PRD v13 invariant 4 bans THIRD-PARTY packages, not sibling core modules.
+
+    So the check is not "every import is stdlib" -- that would forbid `audit_chain`, and
+    forbidding it is what produced the unchained-entry bug. Every non-stdlib import must
+    instead resolve to a file inside `core/`, which proves it ships with this repo rather
+    than arriving from pip.
+    """
     import ast
     import sys
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "core", "architecture", "reconciler.py")
-    tree = ast.parse(open(path, encoding="utf-8").read())
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tree = ast.parse(open(os.path.join(repo, "core", "architecture", "reconciler.py"),
+                          encoding="utf-8").read())
 
     roots = set()
     for node in ast.walk(tree):
@@ -227,4 +271,9 @@ def test_the_module_imports_only_the_standard_library():
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             roots.add(node.module.split(".")[0])
 
-    assert roots <= set(sys.stdlib_module_names), f"non-stdlib imports: {sorted(roots)}"
+    core_modules = {os.path.splitext(f)[0]
+                    for _root, _dirs, files in os.walk(os.path.join(repo, "core"))
+                    for f in files if f.endswith(".py")}
+
+    foreign = roots - set(sys.stdlib_module_names) - core_modules
+    assert not foreign, f"third-party imports: {sorted(foreign)}"

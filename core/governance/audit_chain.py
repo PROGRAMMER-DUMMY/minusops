@@ -1,5 +1,5 @@
 """
-Tamper-evident audit log — hash-chained, append-only JSONL.
+Tamper-evident audit log -- hash-chained, append-only JSONL.
 
 Every record is cryptographically linked to the one before it:
 
@@ -48,20 +48,33 @@ def _entry_hash(prev_hash, record_without_hash):
 
 
 def last_hash(path):
-    """Return the entry_hash of the final record, or GENESIS for an empty/absent log."""
+    """Return the entry_hash of the last CHAINED record, or GENESIS for an empty/absent log.
+
+    The last chained record, not the last line. A record appended past the chain -- by a
+    writer using a bare `open(path, "a")` instead of append() -- carries no entry_hash, and
+    taking the final line at face value would hand the next writer GENESIS, making a record
+    written mid-log claim to be the first one ever. That turned one bug into two in this
+    repo: 85 unchained reconciliation records were written, and 24 legitimate entries that
+    followed them were corrupted by exactly this fallback.
+
+    Skipping back to the last chained entry conceals nothing -- chain_status() still reports
+    the unchained record as a possible insertion. It only stops the damage spreading to
+    records that were written correctly.
+    """
     if not os.path.exists(path):
         return GENESIS
-    last = None
+    found = GENESIS
     with open(path, encoding="utf-8") as f:
         for line in f:
-            if line.strip():
-                last = line
-    if not last:
-        return GENESIS
-    try:
-        return json.loads(last).get("entry_hash", GENESIS)
-    except json.JSONDecodeError:
-        return GENESIS
+            if not line.strip():
+                continue
+            try:
+                entry_hash = json.loads(line).get("entry_hash")
+            except json.JSONDecodeError:
+                continue
+            if entry_hash:
+                found = entry_hash
+    return found
 
 
 # LOCK DESIGN -- three constraints, each of which caused a real failure when violated.
@@ -235,7 +248,7 @@ def verify(path):
 def chain_status(path):
     """
     Richer view than verify(): tolerate a *legacy unchained prefix* (records written before
-    hash-chaining was introduced — no entry_hash) while still proving the chained segment is
+    hash-chaining was introduced -- no entry_hash) while still proving the chained segment is
     intact and detecting tampering. Returns a dict:
 
         {ok, legacy_count, chained_count, errors, intact}
@@ -243,7 +256,7 @@ def chain_status(path):
     Rules that keep this honest (a legacy prefix is NOT a free pass to drop records):
       - all legacy (un-chained) records must precede the first chained record; a legacy record
         appearing *after* chaining began is flagged (possible insertion / downgrade);
-      - the first chained record must link to GENESIS — so chained records cannot be silently
+      - the first chained record must link to GENESIS -- so chained records cannot be silently
         deleted from the front (that would leave a non-GENESIS prev_hash with nothing before it);
       - every chained link is re-derived exactly as in verify().
     """
@@ -286,13 +299,23 @@ def chain_status(path):
     return result
 
 
-def seal(path):
+DEFAULT_SEAL_REASON = "legacy/pre-chaining audit records archived; fresh chain starts here"
+
+
+def seal(path, reason=None, operator=None):
     """
-    One-time migration for a log that predates (or pre-dates the current format of) hash-chaining:
-    archive the existing file to `<path>.<ts>.bak`, record its SHA-256, and start a FRESH chain
-    whose first record is an anchor committing to that digest. The old content is preserved as
-    evidence (and its hash is in the chain), but verification proceeds against a clean, continuous
-    chain from here. This is the honest alternative to weakening verify() to ignore mismatches.
+    Archive a log that can no longer verify, and anchor a fresh chain to its digest.
+
+    The existing file moves to `<path>.<ts>.bak`, its SHA-256 goes into the first record of a
+    new chain, and verification proceeds cleanly from there. Nothing is deleted: the old
+    content survives as evidence and the chain commits to exactly those bytes. This is the
+    honest alternative to weakening verify() until the mismatches stop being reported.
+
+    `reason` MATTERS and should almost always be given. The default note says the records
+    predate chaining, which was true for the migration this was written for. It was false for
+    the case that actually arose: 85 records written PAST an existing chain by a buggy writer.
+    An anchor that misdescribes the break is worse than none, because the next reader concludes
+    the log predates hash-chaining and stops looking for the defect.
 
     Returns the anchor entry, or None if there was nothing to seal.
     """
@@ -304,29 +327,34 @@ def seal(path):
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = f"{path}.{ts}.bak"
     os.replace(path, backup)
-    return append(path, {
+    record = {
         "action": "chain-anchor",
         "component": "audit_chain.seal",
         "archived_path": os.path.basename(backup),
         "archived_sha256": digest,
         "archived_bytes": len(raw),
-        "note": "legacy/pre-chaining audit records archived; fresh chain starts here",
+        "note": reason or DEFAULT_SEAL_REASON,
         "timestamp": ts,
-    })
+    }
+    if operator:
+        record["operator"] = operator
+    return append(path, record)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Tamper-evident audit chain")
     ap.add_argument("command", choices=["verify", "seal"])
     ap.add_argument("--path", default=os.path.join(os.getcwd(), ".agents", "logs", "audit.jsonl"))
+    ap.add_argument("--reason", help="Why this log is being sealed. Recorded in the anchor.")
+    ap.add_argument("--operator", help="Who sealed it. Recorded in the anchor.")
     args = ap.parse_args(argv)
     if args.command == "seal":
-        entry = seal(args.path)
+        entry = seal(args.path, reason=args.reason, operator=args.operator)
         if entry is None:
             print(f"[audit] nothing to seal (empty/absent): {args.path}")
             return 0
         print(f"[audit] sealed legacy log -> {entry['archived_path']} "
-              f"(sha256 {entry['archived_sha256'][:12]}…); fresh chain anchored at {args.path}")
+              f"(sha256 {entry['archived_sha256'][:12]}...); fresh chain anchored at {args.path}")
         return 0
     ok, errors = verify(args.path)
     if ok:

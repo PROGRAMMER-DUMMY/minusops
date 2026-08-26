@@ -271,3 +271,78 @@ def test_chain_status_flags_legacy_record_inserted_after_chaining(tmp_path):
     status = audit_chain.chain_status(str(log))
     assert not status["intact"]
     assert any("after chaining began" in e for e in status["errors"])
+
+
+def test_an_unchained_tail_does_not_reset_the_next_append_to_genesis(tmp_path):
+    """A record written past the chain must not make the NEXT record claim to be the first.
+
+    last_hash() reads the final line and falls back to GENESIS when it carries no
+    entry_hash. That is how one bug became two: core/architecture/reconciler.py appended 85
+    unchained records to this repo's audit.jsonl, and every legitimate entry written
+    immediately after one of them linked to genesis instead of the real tail -- corrupting
+    24 records that were written correctly.
+
+    Falling back to the last CHAINED entry keeps the chain continuous. It hides nothing:
+    chain_status() still reports the unchained record as a possible insertion.
+    """
+    path = str(tmp_path / "audit.jsonl")
+    first = audit_chain.append(path, {"action": "plan", "operator": "shubh"})
+
+    with open(path, "a", encoding="utf-8") as handle:          # the bug, reproduced exactly
+        handle.write(json.dumps({"action": "ARCH_VISUAL_RECONCILIATION"}) + "\n")
+
+    after = audit_chain.append(path, {"action": "approve", "operator": "shubh"})
+
+    assert after["prev_hash"] != audit_chain.GENESIS, \
+        "an unchained tail must not make the next entry look like the start of the log"
+    assert after["prev_hash"] == first["entry_hash"], "it links to the last CHAINED entry"
+
+    status = audit_chain.chain_status(path)
+    assert any("possible insertion" in e for e in status["errors"]), \
+        "the unchained record is still reported -- continuity is not absolution"
+
+
+def test_seal_records_why_it_was_sealed_not_just_that_it_was(tmp_path):
+    """The anchor's default note says "legacy/pre-chaining records". That was true for the
+    migration seal() was written for, and it is false for the case that actually arose here:
+    the records were not pre-chaining, they were written past a chain that already existed,
+    by a writer with a bug. An anchor that misdescribes the break is a worse record than no
+    anchor -- someone reading it later concludes the log predates chaining and stops looking.
+    """
+    path = str(tmp_path / "audit.jsonl")
+    audit_chain.append(path, {"action": "plan", "operator": "shubh"})
+
+    anchor = audit_chain.seal(path, reason="85 unchained records from reconciler._audit",
+                              operator="shubh")
+
+    assert "reconciler._audit" in anchor["note"]
+    assert anchor["operator"] == "shubh"
+    assert anchor["archived_sha256"]
+    ok, errors = audit_chain.verify(path)
+    assert ok, errors
+
+
+def test_seal_preserves_the_original_bytes_under_the_recorded_digest(tmp_path):
+    """The archive is evidence. If its digest does not match what the anchor committed to,
+    the seal proves nothing at all."""
+    import hashlib
+    import os
+
+    path = str(tmp_path / "audit.jsonl")
+    audit_chain.append(path, {"action": "plan", "operator": "shubh"})
+    original = open(path, "rb").read()
+
+    anchor = audit_chain.seal(path)
+
+    archived = os.path.join(os.path.dirname(path), anchor["archived_path"])
+    assert open(archived, "rb").read() == original, "the archive must be byte-identical"
+    assert hashlib.sha256(original).hexdigest() == anchor["archived_sha256"]
+    assert anchor["archived_bytes"] == len(original)
+
+
+def test_the_audit_chain_cli_output_is_ascii_only():
+    """Printed to a Windows console, where cp1252 raises UnicodeEncodeError rather than
+    degrading. The seal message carried a Unicode ellipsis."""
+    source = open(audit_chain.__file__, encoding="utf-8").read()
+    offenders = sorted({c for c in source if ord(c) > 127})
+    assert not offenders, f"non-ASCII characters: {offenders}"
