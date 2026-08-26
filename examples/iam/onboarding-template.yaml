@@ -24,7 +24,7 @@ Metadata:
     from the identity provider -- so a trust policy requiring it DENIES an SSO operator even
     after a hardware key prompt. Set it to true only if you sign in as an IAM user with
     sts:GetSessionToken, and verify against your own directory before relying on it with
-    examples/iam/verify-mfa-condition.py --live. Note the second, likelier denial: a session
+    minusctl iam mfa-probe --live. Note the second, likelier denial: a session
     on long-lived access keys carries no MFA flag whether or not a device is enrolled, so
     turning this on locks out every session that has not elevated first, CI included. Either
     way, MFA at assume time proves MFA happened somewhere in the session, not that a human

@@ -345,6 +345,13 @@ _PREFIX_WRAPPERS = frozenset({
     "sudo", "doas", "setsid", "exec",
 })
 
+# `timeout` takes a duration before the command it wraps. Without skipping it the check lands
+# on the duration: `timeout 5 rm -rf /` was refused for `5` not being an allowed command,
+# which is the right answer for the wrong reason -- and the delete parser, looking at the same
+# tokens, never saw `rm` at all.
+_WRAPPERS_WITH_OPERAND = frozenset({"timeout"})
+_DURATION = re.compile(r"^\d+(\.\d+)?[smhd]?$")
+
 
 def _command_tokens(segment):
     """The segment's tokens with leading noise removed: `VAR=value` assignments, flags before
@@ -381,6 +388,8 @@ def _command_tokens(segment):
             continue
         if name in _PREFIX_WRAPPERS:
             tokens.pop(0)
+            if name in _WRAPPERS_WITH_OPERAND and tokens and _DURATION.match(tokens[0]):
+                tokens.pop(0)
             continue
         tokens[0] = name
         return tokens

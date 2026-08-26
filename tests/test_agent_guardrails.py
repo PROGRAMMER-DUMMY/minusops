@@ -590,6 +590,31 @@ def test_a_bare_wrapper_with_nothing_after_it_is_allowed():
     assert guard.evaluate("env")["allowed"] is True
 
 
+@pytest.mark.parametrize("command", ["timeout 180 python -m pytest",
+                                     "timeout 1.5h git status",
+                                     "timeout 30s terraform plan"])
+def test_a_timeout_duration_is_not_mistaken_for_the_command(command):
+    """`timeout` takes a duration before the command it wraps. Reading the duration as the
+    command refused ordinary work for the wrong reason."""
+    assert guard.evaluate(command)["allowed"] is True
+
+
+@pytest.mark.parametrize("command,rule", [("timeout 5 rm -rf /", "FS-01"),
+                                          ("timeout 30s terraform destroy", "TF-01")])
+def test_a_timeout_wrapper_does_not_hide_the_command_it_wraps(command, rule):
+    """The refusal must name what the command actually does. Skipping the duration is what
+    lets the delete parser see `rm` rather than `5`."""
+    decision = guard.evaluate(command)
+    assert decision["allowed"] is False
+    assert decision["rule"] == rule
+
+
+def test_only_a_duration_is_skipped_after_timeout():
+    """A non-duration operand is still checked as the command, so the skip cannot be used to
+    step over an arbitrary token."""
+    assert guard.evaluate("timeout notacommand")["rule"] == "ALLOW-01"
+
+
 def test_a_windows_executable_suffix_does_not_hide_an_allowlisted_command():
     """On Windows the console script is `minusctl.exe`, and the allowlist holds `minusctl`.
 

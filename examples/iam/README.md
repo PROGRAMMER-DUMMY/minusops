@@ -75,13 +75,13 @@ shell inherits it and can assume the apply role with no prompt.
 consent.** What makes the separation real is the credential simply not existing in the
 agent's environment. Verify the behaviour against your own directory before relying on it:
 
-    python examples/iam/verify-mfa-condition.py --live
+    minusctl iam mfa-probe --live
 
 It creates one permissionless role carrying the condition, tries to assume it, reports the
 result and deletes the role. To measure an elevated IAM-user session and the chaining claim
 in one pass, add a TOTP code:
 
-    python examples/iam/verify-mfa-condition.py --live --chain --mfa-code 123456
+    minusctl iam mfa-probe --live --chain --mfa-code 123456
 
 That elevates via sts:GetSessionToken, assumes the role, then re-assumes it from the
 resulting session to see whether the flag was inherited or re-checked.

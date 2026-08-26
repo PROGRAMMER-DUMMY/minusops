@@ -40,7 +40,7 @@ for _path in (_CORE_DIR, os.path.dirname(_CORE_DIR)):
         sys.path.insert(0, _path)
 
 from. import theme  # noqa: E402
-from .commands import console, cost, gate, source, use, diagram  # noqa: E402
+from .commands import console, cost, gate, iam, source, use, diagram  # noqa: E402
 from .commands import runs as runs_cmd  # noqa: E402
 
 # Owned by this package. Everything else is delegated.
@@ -49,6 +49,7 @@ NATIVE = {
     "use": use,
     "runs": runs_cmd,
     "gate": gate,
+    "iam": iam,
     "cost": cost,
     "source": source,
     "diagram": diagram,
@@ -81,6 +82,7 @@ COMMAND_HELP = {
     "conformance": "Score a run against the AWS analytics reference architecture.",
     "readiness": "Score whether a run is presentable to an enterprise reviewer.",
     "audit": "Verify the tamper-evident audit chain has not been altered.",
+    "iam": "IAM checks: probe whether an MFA trust-policy condition works for you.",
     "cost": "AWS BCM Pricing Calculator: prepare a profile, then estimate.",
     "prove": "Prove the pipeline end to end; --execute runs the live 5-hop harness.",
     "seed": "The older 3-hop data proof. Prefer `prove --execute`.",
@@ -107,7 +109,7 @@ COMMAND_GROUPS = (
      ("gate", "source", "guard", "policy", "decision", "conformance", "readiness", "audit")),
     ("Cost and verification", ("cost", "prove", "seed", "diagnose", "validate")),
     ("Delivery and handoff", ("export", "package", "accelerator", "demo", "diagram")),
-    ("Environment", ("doctor", "adopt", "reports")),
+    ("Environment", ("doctor", "iam", "adopt", "reports")),
 )
 
 USAGE = "minusctl <command> [options]"
@@ -161,7 +163,7 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="minusctl", usage=USAGE, add_help=False)
     parser.add_argument("-h", "--help", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
-    for module in (use, runs_cmd, gate, cost, source, diagram, console):
+    for module in (use, runs_cmd, gate, iam, cost, source, diagram, console):
         module.add_parser(sub)
     for name in sorted(DELEGATED):
         sub.add_parser(name, help=COMMAND_HELP.get(name, ""), add_help=False)
