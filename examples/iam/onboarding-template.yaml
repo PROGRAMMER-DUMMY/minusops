@@ -1,0 +1,409 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  MinusOps onboarding. Creates the plan role, the apply role, the permissions boundary, and
+  the Terraform state backend in YOUR account. MinusOps stores no credentials and holds no
+  state; everything this creates stays yours.
+
+Metadata:
+  Purpose: >-
+    One CloudFormation Quick Create instead of "here are five policy documents, go wire them
+    up". Every hand-assembled step is a step someone gets subtly wrong, and an IAM design
+    that is subtly wrong reads as working until it does not.
+
+  TheSplitThisEnforces: >-
+    The agent holds the PLAN role: it can read the account and compute a plan, and it cannot
+    mutate anything. `terraform apply` runs under the APPLY role, which the agent never
+    holds, assumed out of band by CI on an approved plan or by an operator. That boundary is
+    the control; the command-level guardrail in front of it is a legible refusal, not
+    containment.
+
+  MfaParameter: >-
+    RequireMfaOnApply defaults to false, deliberately. `aws:MultiFactorAuthPresent` is absent
+    or false for IAM Identity Center, SAML and OIDC sessions -- STS receives no MFA assertion
+    from the identity provider -- so a trust policy requiring it DENIES an SSO operator even
+    after a hardware key prompt. Set it to true only if you sign in as an IAM user with
+    sts:GetSessionToken, and verify against your own directory before relying on it. Either
+    way, MFA at assume time proves MFA happened somewhere in the session, not that a human
+    approved this action: the credential simply not existing in the agent's environment is
+    what makes the separation real.
+
+Parameters:
+  OidcProviderUrl:
+    Type: String
+    Default: token.actions.githubusercontent.com
+    Description: OIDC issuer for the CI runner that assumes the apply role.
+
+  OidcSubjectClaim:
+    Type: String
+    Default: "repo:YOUR-ORG/YOUR-REPO:environment:production"
+    Description: >-
+      The sub claim allowed to assume the apply role. Pin it to a protected environment, not
+      to a branch: the environment's own approval is the human gate.
+
+  OperatorPrincipalArn:
+    Type: String
+    Default: ""
+    Description: >-
+      IAM principal (group or role) allowed to assume the apply role interactively. Leave
+      empty for CI-only.
+
+  RequireMfaOnApply:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: See MfaParameter in Metadata before setting this to true.
+
+  StateBucketName:
+    Type: String
+    Description: S3 bucket for Terraform state. Must be globally unique.
+
+Conditions:
+  MfaRequired: !Equals [!Ref RequireMfaOnApply, "true"]
+  HasOperator: !Not [!Equals [!Ref OperatorPrincipalArn, ""]]
+
+Resources:
+  # --- State backend. Versioned and encrypted, and only the apply role may write it. --------
+  StateKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: MinusOps Terraform state encryption
+      EnableKeyRotation: true
+
+  StateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref StateBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref StateKey
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  StateBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StateBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Whoever writes state decides what Terraform believes it owns. Denying
+          # DeleteBucket while leaving state writable achieves nothing.
+          - Sid: OnlyTheApplyRoleMutatesState
+            Effect: Deny
+            Principal: "*"
+            Action: [s3:PutObject, s3:DeleteObject, s3:DeleteObjectVersion]
+            Resource: !Sub "arn:aws:s3:::${StateBucketName}/*"
+            Condition:
+              StringNotLike:
+                aws:PrincipalArn:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/minusops-apply"
+          - Sid: DenyUnencryptedTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !Sub "arn:aws:s3:::${StateBucketName}"
+              - !Sub "arn:aws:s3:::${StateBucketName}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  LockTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: minusops-tflock
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: LockID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LockID
+          KeyType: HASH
+
+  # --- The ceiling on everything Terraform creates ------------------------------------------
+  AppPermissionsBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: MinusOpsAppPermissionsBoundary
+      Description: >-
+        Maximum permissions for any role MinusOps creates. Does not grant: effective
+        permissions are the intersection of the identity policy and this. Keep in sync with
+        examples/iam/permissions-boundary.json.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: WorkloadDataPlane
+            Effect: Allow
+            Action:
+              [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket,
+               s3:GetBucketLocation, s3:AbortMultipartUpload,
+               glue:Get*, glue:BatchGet*, glue:StartJobRun, glue:StartCrawler,
+               glue:CreateTable, glue:UpdateTable, glue:CreatePartition,
+               glue:BatchCreatePartition,
+               athena:StartQueryExecution, athena:GetQueryExecution, athena:GetQueryResults,
+               lakeformation:GetDataAccess,
+               kinesis:PutRecord, kinesis:PutRecords, kinesis:GetRecords,
+               kinesis:GetShardIterator, kinesis:DescribeStream,
+               firehose:PutRecord, firehose:PutRecordBatch,
+               sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessage,
+               sns:Publish,
+               dynamodb:GetItem, dynamodb:Query, dynamodb:PutItem, dynamodb:UpdateItem,
+               states:StartExecution, states:SendTaskSuccess, states:SendTaskFailure]
+            Resource: "*"
+          - Sid: WorkloadObservability
+            Effect: Allow
+            Action:
+              [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents,
+               logs:DescribeLogGroups, logs:DescribeLogStreams,
+               cloudwatch:PutMetricData]
+            Resource: "*"
+          - Sid: WorkloadCryptoAndSecrets
+            # USE a key, never manage one.
+            Effect: Allow
+            Action:
+              [kms:Decrypt, kms:Encrypt, kms:GenerateDataKey, kms:DescribeKey,
+               secretsmanager:GetSecretValue, ssm:GetParameter, ssm:GetParameters]
+            Resource: "*"
+          - Sid: WorkloadNetworkAttachment
+            Effect: Allow
+            Action:
+              [ec2:CreateNetworkInterface, ec2:DeleteNetworkInterface,
+               ec2:DescribeNetworkInterfaces, ec2:DescribeSubnets,
+               ec2:DescribeSecurityGroups, ec2:DescribeVpcs, ec2:CreateTags]
+            Resource: "*"
+          - Sid: NoIdentityManagementEver
+            # Stops the escalation chain continuing one level down.
+            Effect: Deny
+            Action: [iam:*, organizations:*, account:*, sts:AssumeRole]
+            Resource: "*"
+          - Sid: NoIrreversibleDestruction
+            Effect: Deny
+            Action:
+              [kms:ScheduleKeyDeletion, kms:DeleteCustomKeyStore,
+               s3:DeleteObjectVersion, s3:DeleteBucket,
+               cloudtrail:StopLogging, cloudtrail:DeleteTrail]
+            Resource: "*"
+
+  # --- The role the agent holds -------------------------------------------------------------
+  PlanRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: minusops-plan
+      Description: Read and plan. Holds no mutating permission.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Policies:
+        - PolicyName: minusops-plan-state-and-scope
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadTerraformState
+                Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion, s3:ListBucket]
+                Resource:
+                  - !Sub "arn:aws:s3:::${StateBucketName}"
+                  - !Sub "arn:aws:s3:::${StateBucketName}/*"
+              - Sid: DecryptTerraformState
+                Effect: Allow
+                Action: [kms:Decrypt, kms:DescribeKey]
+                Resource: !GetAtt StateKey.Arn
+              - Sid: HoldTheStateLockWhilePlanning
+                # plan is not purely read-only: the S3 backend takes the lock.
+                Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem]
+                Resource: !GetAtt LockTable.Arn
+              - Sid: DenyAssumingAnyOtherRole
+                # Closes the provider assume_role escalation: an agent can author
+                # `assume_role { role_arn = "...Admin" }`, and it only works if the
+                # caller may assume it.
+                Effect: Deny
+                Action:
+                  [sts:AssumeRole, sts:AssumeRoleWithSAML, sts:AssumeRoleWithWebIdentity]
+                Resource: "*"
+              - Sid: DenyMutation
+                Effect: Deny
+                Action:
+                  [s3:PutObject, s3:DeleteObject, s3:DeleteObjectVersion, s3:DeleteBucket,
+                   iam:*, kms:ScheduleKeyDeletion, kms:CreateKey,
+                   cloudtrail:StopLogging, cloudtrail:DeleteTrail]
+                Resource: "*"
+
+  # --- The role the agent never holds -------------------------------------------------------
+  ApplyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: minusops-apply
+      Description: Runs terraform apply. Assumed out of band, never by the agent.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CiViaOidc
+            Effect: Allow
+            Principal:
+              Federated: !Sub
+                - "arn:aws:iam::${AWS::AccountId}:oidc-provider/${Url}"
+                - Url: !Ref OidcProviderUrl
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub "${OidcProviderUrl}:aud": sts.amazonaws.com
+                !Sub "${OidcProviderUrl}:sub": !Ref OidcSubjectClaim
+          - !If
+            - HasOperator
+            - Sid: OperatorInteractively
+              Effect: Allow
+              Principal:
+                AWS: !Ref OperatorPrincipalArn
+              Action: sts:AssumeRole
+              Condition: !If
+                - MfaRequired
+                - Bool: {aws:MultiFactorAuthPresent: "true"}
+                  NumericLessThan: {aws:MultiFactorAuthAge: 3600}
+                - !Ref AWS::NoValue
+            - !Ref AWS::NoValue
+      Policies:
+        - PolicyName: minusops-apply
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteTerraformState
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket]
+                Resource:
+                  - !Sub "arn:aws:s3:::${StateBucketName}"
+                  - !Sub "arn:aws:s3:::${StateBucketName}/*"
+              - Sid: EncryptTerraformState
+                Effect: Allow
+                Action: [kms:Decrypt, kms:DescribeKey, kms:GenerateDataKey]
+                Resource: !GetAtt StateKey.Arn
+              - Sid: HoldTheStateLock
+                Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem]
+                Resource: !GetAtt LockTable.Arn
+              - Sid: ProvisionWhatTheCatalogBuilds
+                # Derived from what modules/*/main.tf provisions, not a blanket grant.
+                Effect: Allow
+                Action:
+                  ["s3:*", "glue:*", "athena:*", "lakeformation:*",
+                   kms:CreateKey, kms:CreateAlias, kms:DeleteAlias, kms:TagResource,
+                   kms:PutKeyPolicy, kms:EnableKeyRotation, kms:DescribeKey,
+                   "logs:*", "cloudwatch:*", "sns:*", "sqs:*", "events:*",
+                   "kinesis:*", "firehose:*", "kafka:*",
+                   "dms:*", "appflow:*", "transfer:*",
+                   "states:*", "airflow:*", "elasticmapreduce:*", "emr-serverless:*",
+                   "redshift-serverless:*", "elasticache:*", "apigateway:*",
+                   "ec2:*", "dynamodb:*", "secretsmanager:*", "budgets:*", "cloudtrail:*",
+                   tag:GetResources, tag:TagResources, tag:UntagResources]
+                Resource: "*"
+              - Sid: CreateRolesOnlyInsideTheBoundary
+                Effect: Allow
+                Action:
+                  [iam:CreateRole, iam:PutRolePolicy, iam:AttachRolePolicy,
+                   iam:DetachRolePolicy, iam:DeleteRolePolicy,
+                   iam:PutRolePermissionsBoundary]
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/minusops-managed/*"
+                Condition:
+                  StringEquals:
+                    iam:PermissionsBoundary: !Ref AppPermissionsBoundary
+              - Sid: ManageRolesOnTheManagedPathOnly
+                Effect: Allow
+                Action:
+                  [iam:GetRole, iam:GetRolePolicy, iam:ListRolePolicies,
+                   iam:ListAttachedRolePolicies, iam:UpdateRole,
+                   iam:UpdateAssumeRolePolicy, iam:DeleteRole, iam:TagRole, iam:UntagRole,
+                   iam:CreateInstanceProfile, iam:DeleteInstanceProfile,
+                   iam:AddRoleToInstanceProfile, iam:RemoveRoleFromInstanceProfile,
+                   iam:CreateServiceLinkedRole]
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/minusops-managed/*"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:instance-profile/minusops-managed/*"
+              - Sid: PassRolesOnlyToTheServicesThatRunThem
+                # Unscoped PassRole hands an admin role to a service you control.
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/minusops-managed/*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - glue.amazonaws.com
+                      - lambda.amazonaws.com
+                      - states.amazonaws.com
+                      - airflow.amazonaws.com
+                      - airflow-env.amazonaws.com
+                      - elasticmapreduce.amazonaws.com
+                      - emr-serverless.amazonaws.com
+                      - dms.amazonaws.com
+                      - firehose.amazonaws.com
+                      - redshift-serverless.amazonaws.com
+                      - transfer.amazonaws.com
+                      - ec2.amazonaws.com
+                      - lakeformation.amazonaws.com
+              - Sid: DenyBoundaryRemoval
+                Effect: Deny
+                Action:
+                  [iam:DeleteRolePermissionsBoundary, iam:DeleteUserPermissionsBoundary]
+                Resource: "*"
+              - Sid: DenyBoundaryPolicyTampering
+                # Scoped to the boundary: a blanket DeletePolicyVersion deny breaks every
+                # managed-policy update once the 5-version quota is reached.
+                Effect: Deny
+                Action:
+                  [iam:CreatePolicyVersion, iam:DeletePolicyVersion,
+                   iam:SetDefaultPolicyVersion, iam:DeletePolicy]
+                Resource: !Ref AppPermissionsBoundary
+              - Sid: DenyTouchingThePlatformRoles
+                Effect: Deny
+                Action: "iam:*"
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/minusops-plan"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/minusops-apply"
+
+Outputs:
+  PlanRoleArn:
+    Description: Give this to the agent. It reads and plans; it cannot mutate.
+    Value: !GetAtt PlanRole.Arn
+
+  ApplyRoleArn:
+    Description: Never give this to the agent. CI assumes it on an approved plan.
+    Value: !GetAtt ApplyRole.Arn
+
+  BackendConfig:
+    Description: Terraform backend block for the generated root.
+    Value: !Sub |
+      terraform {
+        backend "s3" {
+          bucket         = "${StateBucketName}"
+          key            = "minusops/terraform.tfstate"
+          region         = "${AWS::Region}"
+          dynamodb_table = "${LockTable}"
+          kms_key_id     = "${StateKey.Arn}"
+          encrypt        = true
+        }
+      }
+
+  NextStep:
+    Description: What to do once this stack completes.
+    Value: >-
+      Attach the SCP from examples/iam/organization-scp.json at the OU (it is the only
+      control no principal in this account can override), then run `minusctl doctor` to
+      confirm the plan role is what the session is using.

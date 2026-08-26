@@ -1,30 +1,87 @@
-# IAM templates for MinusOps
+# The IAM split
 
-You provision these in **your** account. They make the engine's promises enforceable:
-the deploy role requires MFA at assume-time, so by the time `minus-gate apply` runs the
-session is already MFA-backed — and the gate independently refuses long-term/static keys
-(see `docs/security_model.md`).
+MinusOps runs in your account with your credentials. These files are what bound it.
 
-| File | Purpose |
-| :-- | :-- |
-| `deploy-role-trust-policy.json` | Trust policy for a human-assumed deploy role — **requires MFA** to assume. |
-| `ci-oidc-trust-policy.json` | Trust policy for the same role assumed by GitHub Actions via **OIDC** (no static keys), scoped to the protected `production` environment. |
-| `finops-readonly-policy.json` | Least-privilege **read-only** permissions for cost/anomaly/health/BCM-lookup. |
+## The one idea
 
-## Wiring
+**The agent holds a role that can read and plan. It never holds the role that applies.**
 
-1. **Deploy role** — create a role (e.g. `MinusDeploy`), attach the *permissions* your
-   Terraform needs (least privilege for the resources you manage), and set its trust
-   policy to `deploy-role-trust-policy.json` (humans) and/or `ci-oidc-trust-policy.json`
-   (CI). Scope the human `Principal` to your operator group, not account root.
-2. **State protection** — on your remote-state S3 bucket, add the MFA `Deny` from
-   `docs/enterprise_iam_manifest.md` §2.A so state writes require MFA too.
-3. **FinOps role** — create a read-only role with `finops-readonly-policy.json` for the
-   dashboard / `finops_agent` / `health_checker`.
-4. **Operators authenticate via IAM Identity Center (SSO)** — the recommended standard
-   (`aws configure sso` / `aws sso login`); assuming the deploy role with MFA is a fallback
-   only. Then run the gate, which verifies the session is temporary and refuses long-term
-   keys unless `MINUS_ALLOW_STATIC_CREDS=1` (audited downgrade).
+Everything else here is arrangement around that. A command-level guardrail ships with this
+repo and it is genuinely useful, but measured against one destructive action expressed five
+ways it catches three -- the misses are interpreter paths, and no allowlist of binaries
+closes an interpreter. What holds is the credential.
 
-> Replace every `<ACCOUNT_ID>`, `<ORG>`, `<REPO>` placeholder. These are starting points —
-> tighten resource scopes to your workload before production.
+## Files
+
+| File | What it is |
+| :--- | :--- |
+| `onboarding-template.yaml` | **Start here.** One CloudFormation stack creates both roles, the boundary and the state backend in your account. |
+| `plan-role-policy.json` | The agent's role. Read, plan, hold the state lock. No mutation, no role assumption beyond two named read roles. |
+| `apply-role-policy.json` | The role CI assumes on an approved plan. Mutating, with the escalation caps below. |
+| `permissions-boundary.json` | The ceiling on every role Terraform creates. |
+| `organization-scp.json` | Attach at the OU. The only control no principal in the account can override. |
+| `deploy-role-trust-policy.json`, `ci-oidc-trust-policy.json` | Who may assume the apply role. |
+| `finops-readonly-policy.json` | Unrelated: the read-only role for cost reporting. |
+
+## Why the apply role is not least-privilege in the usual sense
+
+To build a pipeline, Terraform needs `iam:CreateRole` and `iam:AttachRolePolicy`. Anything
+holding those can mint a role with `*:*` and use it. **There is no least-privilege Terraform
+role that can still create IAM.**
+
+So the design does not withhold `CreateRole`. It caps what gets created:
+
+1. **Every role it creates carries the boundary.** `iam:CreateRole` is conditioned on
+   `iam:PermissionsBoundary`, so a create without it is denied.
+2. **Role writes are confined to `/minusops-managed/`.** The plan role, the apply role and
+   every platform role are out of reach.
+3. **The boundary cannot be detached or edited** by the role it bounds. A boundary the
+   bounded principal can rewrite is decoration.
+4. **`iam:PassRole` is scoped by `iam:PassedToService`.** Unscoped, an agent passes an admin
+   role to a Lambda it created, invokes it, and inherits that authority without ever holding
+   a destructive permission itself. This is the escalation most designs miss.
+
+## Two things the research got wrong, corrected here
+
+**`sts:AssumeRole` is scoped, not denied outright.** A blanket deny closes the provider
+`assume_role` escalation and also makes hub-and-spoke unplannable -- a cross-account
+lakehouse plans through aliased providers. The plan role may assume exactly the named
+cross-account *read* roles and nothing else.
+
+**The SCP does not deny `s3:PutBucketVersioning`.** Suspending versioning removes the undo,
+so it looks like it belongs. But enabling and suspending are the **same API call** with no
+condition key separating them, and `modules/storage-medallion-s3/main.tf` declares
+`aws_s3_bucket_versioning` -- so that deny fails `terraform apply` on every new bucket the
+primary storage module creates. Catch suspension with an AWS Config rule instead. A published
+template that breaks bucket creation on day one is worse than no template.
+
+`organization-scp.json` records every deliberate omission under `_not_denied_deliberately`,
+because an omission that looks like an oversight gets "fixed" by the next reader.
+
+## On MFA
+
+`RequireMfaOnApply` defaults to **false**, and that is not laziness.
+
+`aws:MultiFactorAuthPresent` is absent or false for IAM Identity Center, SAML and OIDC
+sessions -- AWS STS receives no MFA assertion from the identity provider. A trust policy
+requiring it **denies an SSO operator**, even after a hardware key prompt.
+
+And where it does populate, it propagates: a session derived from MFA-authenticated
+credentials carries the flag through role chaining. An agent running in your authenticated
+shell inherits it and can assume the apply role with no prompt.
+
+**MFA at assume time proves MFA happened somewhere in the session. It is not per-action
+consent.** What makes the separation real is the credential simply not existing in the
+agent's environment. Verify the behaviour against your own directory before relying on it.
+
+## What is still not covered
+
+- **State is equivalent to control.** Whoever writes `terraform.tfstate` decides what
+  Terraform believes it owns. The bucket policy in the template denies writes from anything
+  but the apply role; treat that file as the crown jewel it is.
+- **A human approving a 400-resource diff is rubber-stamping.** The machine review carries
+  it -- SEC scan, conformance, BCM cost, and the plan hash binding what was approved to what
+  runs. The gate's forced impact statement exists for the same reason.
+- **Binding a credential to a specific plan hash needs a token broker.** An IAM trust policy
+  matches OIDC claims, and no CI token carries a plan digest. That is a service to build, not
+  a policy to write.

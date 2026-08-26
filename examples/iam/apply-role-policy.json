@@ -1,0 +1,187 @@
+{
+  "_comment": [
+    "Identity policy for the role that runs `terraform apply`. It is NEVER given to the",
+    "agent: it is assumed out of band, by CI on a human-approved plan, or by an operator",
+    "with MFA. See deploy-role-trust-policy.json for who may assume it.",
+    "",
+    "Terraform needs iam:CreateRole to build a pipeline -- a Glue job needs an execution",
+    "role -- and anything holding CreateRole plus AttachRolePolicy can mint an admin role and",
+    "use it. There is no least-privilege Terraform role that can still create IAM. The answer",
+    "is not to withhold CreateRole; it is to CAP what gets created:",
+    "",
+    "  1. Every role this creates must carry MinusOpsAppPermissionsBoundary. Enforced by an",
+    "     iam:PermissionsBoundary condition, so a create without it is denied.",
+    "  2. Role management is confined to the /minusops-managed/ path, so platform roles --",
+    "     including this one and the plan role -- are out of reach.",
+    "  3. The boundary policy itself cannot be edited or detached. A boundary the bounded",
+    "     principal can rewrite is decoration.",
+    "  4. iam:PassRole is scoped by iam:PassedToService. Unscoped, an agent passes an admin",
+    "     role to a Lambda it controls and inherits that role's authority without ever",
+    "     holding a destructive permission itself.",
+    "",
+    "The service list is derived from what modules/*/main.tf actually provisions (76 aws_*",
+    "resource types across 29 modules), not from a general-purpose data-platform allowance.",
+    "Extend it when a module introduces a new service; do not pre-grant.",
+    "",
+    "Replace <ACCOUNT_ID>, <STATE_BUCKET>, <LOCK_TABLE>, <STATE_KEY_ID>."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriteTerraformState",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::<STATE_BUCKET>",
+        "arn:aws:s3:::<STATE_BUCKET>/*"
+      ]
+    },
+    {
+      "Sid": "EncryptTerraformState",
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKey"],
+      "Resource": "arn:aws:kms:*:<ACCOUNT_ID>:key/<STATE_KEY_ID>"
+    },
+    {
+      "Sid": "HoldTheStateLock",
+      "Effect": "Allow",
+      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+      "Resource": "arn:aws:dynamodb:*:<ACCOUNT_ID>:table/<LOCK_TABLE>"
+    },
+    {
+      "Sid": "ProvisionWhatTheCatalogBuilds",
+      "_comment": [
+        "Resource is * because Terraform names resources at apply time and cannot be",
+        "pre-enumerated. The bound is the ACTION set, plus the SCP that denies the",
+        "irreversible subset above any policy in this account."
+      ],
+      "Effect": "Allow",
+      "Action": [
+        "s3:*", "glue:*", "athena:*", "lakeformation:*",
+        "kms:CreateKey", "kms:CreateAlias", "kms:DeleteAlias", "kms:TagResource",
+        "kms:PutKeyPolicy", "kms:EnableKeyRotation", "kms:DescribeKey", "kms:ListAliases",
+        "logs:*", "cloudwatch:*", "sns:*", "sqs:*", "events:*",
+        "kinesis:*", "firehose:*", "kafka:*", "kinesisanalytics:*",
+        "dms:*", "appflow:*", "transfer:*",
+        "states:*", "airflow:*", "elasticmapreduce:*", "emr-serverless:*",
+        "redshift-serverless:*", "elasticache:*", "apigateway:*",
+        "ec2:*", "dynamodb:*", "secretsmanager:*", "budgets:*", "cloudtrail:*",
+        "tag:GetResources", "tag:TagResources", "tag:UntagResources"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CreateRolesOnlyInsideTheBoundary",
+      "_comment": [
+        "The escalation cap. A create or a policy attach without the boundary ARN is denied,",
+        "so every role Terraform mints is capped by the same ceiling this role is."
+      ],
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:PutRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:PutRolePermissionsBoundary"
+      ],
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/minusops-managed/*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary":
+            "arn:aws:iam::<ACCOUNT_ID>:policy/MinusOpsAppPermissionsBoundary"
+        }
+      }
+    },
+    {
+      "Sid": "ManageRolesOnTheManagedPathOnly",
+      "_comment": [
+        "Lifecycle operations that cannot escalate. Confined to the same path, so this role",
+        "cannot touch the plan role, this role, or any platform role."
+      ],
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies", "iam:UpdateRole", "iam:UpdateAssumeRolePolicy",
+        "iam:DeleteRole", "iam:TagRole", "iam:UntagRole",
+        "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile",
+        "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
+        "iam:CreateServiceLinkedRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::<ACCOUNT_ID>:role/minusops-managed/*",
+        "arn:aws:iam::<ACCOUNT_ID>:instance-profile/minusops-managed/*"
+      ]
+    },
+    {
+      "Sid": "PassRolesOnlyToTheServicesThatRunThem",
+      "_comment": [
+        "Unscoped iam:PassRole is the escalation people miss. With Resource \"*\" an agent",
+        "hands an admin role to a Lambda it just created, invokes it, and inherits that",
+        "role's authority -- without ever holding a destructive permission itself."
+      ],
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/minusops-managed/*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "glue.amazonaws.com",
+            "lambda.amazonaws.com",
+            "states.amazonaws.com",
+            "airflow.amazonaws.com",
+            "airflow-env.amazonaws.com",
+            "elasticmapreduce.amazonaws.com",
+            "emr-serverless.amazonaws.com",
+            "dms.amazonaws.com",
+            "firehose.amazonaws.com",
+            "redshift-serverless.amazonaws.com",
+            "transfer.amazonaws.com",
+            "ec2.amazonaws.com",
+            "lakeformation.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyBoundaryRemoval",
+      "_comment": "A boundary the bounded principal can detach is not a boundary.",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:DeleteUserPermissionsBoundary"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyBoundaryPolicyTampering",
+      "_comment": [
+        "Editing the boundary lifts the ceiling. Scoped to the boundary ARN, deliberately:",
+        "a blanket deny on iam:DeletePolicyVersion breaks every managed-policy update once",
+        "the 5-version quota is reached, including ones this role legitimately makes."
+      ],
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:DeletePolicy"
+      ],
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:policy/MinusOpsAppPermissionsBoundary"
+    },
+    {
+      "Sid": "DenyTouchingThePlatformRoles",
+      "_comment": [
+        "The path condition above already confines writes, but this makes the intent",
+        "explicit and survives someone widening that Resource by mistake."
+      ],
+      "Effect": "Deny",
+      "Action": ["iam:*"],
+      "Resource": [
+        "arn:aws:iam::<ACCOUNT_ID>:role/minusops-plan",
+        "arn:aws:iam::<ACCOUNT_ID>:role/minusops-apply",
+        "arn:aws:iam::<ACCOUNT_ID>:role/aws-service-role/*"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "_comment": [
+    "MinusOpsAppPermissionsBoundary -- the ceiling on every role the apply role creates.",
+    "",
+    "A permissions boundary does not GRANT. Effective permissions are the intersection of the",
+    "identity policy, this boundary, and any SCP, so a workload role whose identity policy",
+    "says iam:* still cannot use it: the boundary does not allow it, and the intersection is",
+    "empty. That is what closes `CreateRole` + `AttachRolePolicy` as an escalation path -- the",
+    "created role cannot exceed this file no matter what policy Terraform attaches to it.",
+    "",
+    "Scoped to what a DATA PIPELINE WORKLOAD does at runtime: read and write its own data,",
+    "run its jobs, log, and alert. Deliberately NOT what Terraform does at deploy time -- a",
+    "Glue job has no business creating IAM roles or KMS keys.",
+    "",
+    "Attach it with `iam:PermissionsBoundary` conditions on the apply role, and protect it",
+    "from edits with the SCP. This file is the one thing in the whole design that must not be",
+    "writable by anything it bounds.",
+    "",
+    "Replace <ACCOUNT_ID>."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WorkloadDataPlane",
+      "_comment": [
+        "What a Glue job, a Step Function, an MWAA environment or a Lambda actually needs to",
+        "move data. Read/write on objects, catalog metadata, queues and streams."
+      ],
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject",
+        "s3:ListBucket", "s3:GetBucketLocation", "s3:AbortMultipartUpload",
+        "s3:ListBucketMultipartUploads", "s3:ListMultipartUploadParts",
+        "glue:Get*", "glue:BatchGet*", "glue:Search*", "glue:StartJobRun",
+        "glue:StartCrawler", "glue:CreateTable", "glue:UpdateTable", "glue:CreatePartition",
+        "glue:BatchCreatePartition", "glue:UpdatePartition", "glue:DeletePartition",
+        "athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults",
+        "athena:StopQueryExecution", "athena:GetWorkGroup",
+        "lakeformation:GetDataAccess", "lakeformation:GetTemporaryTablePermissions",
+        "lakeformation:GetTemporaryGluePartitionCredentials",
+        "kinesis:PutRecord", "kinesis:PutRecords", "kinesis:GetRecords",
+        "kinesis:GetShardIterator", "kinesis:DescribeStream", "kinesis:ListShards",
+        "firehose:PutRecord", "firehose:PutRecordBatch",
+        "sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes", "sqs:GetQueueUrl",
+        "sns:Publish",
+        "dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:PutItem",
+        "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchGetItem",
+        "dynamodb:BatchWriteItem",
+        "states:StartExecution", "states:DescribeExecution", "states:SendTaskSuccess",
+        "states:SendTaskFailure", "states:SendTaskHeartbeat"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "WorkloadObservability",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents",
+        "logs:DescribeLogGroups", "logs:DescribeLogStreams", "logs:AssociateKmsKey",
+        "cloudwatch:PutMetricData", "cloudwatch:GetMetricData",
+        "xray:PutTraceSegments", "xray:PutTelemetryRecords"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "WorkloadCryptoAndSecrets",
+      "_comment": [
+        "USE a key, never manage one. Decrypt and GenerateDataKey let a job read and write",
+        "encrypted objects; CreateKey, PutKeyPolicy and ScheduleKeyDeletion are absent, so a",
+        "workload role cannot mint a key it controls or destroy one it does not."
+      ],
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:DescribeKey", "kms:ReEncryptFrom", "kms:ReEncryptTo",
+        "secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret",
+        "ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "WorkloadNetworkAttachment",
+      "_comment": "A Glue connection or an MWAA environment attaches ENIs to run in a VPC.",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateNetworkInterface", "ec2:DeleteNetworkInterface",
+        "ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups", "ec2:DescribeVpcs", "ec2:DescribeVpcEndpoints",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoIdentityManagementEver",
+      "_comment": [
+        "The escalation cap, stated as a Deny so no attached policy can override it. A role",
+        "created inside this boundary cannot create another role, attach a policy, or lift",
+        "its own boundary -- which is what stops the chain continuing one level down."
+      ],
+      "Effect": "Deny",
+      "Action": [
+        "iam:*",
+        "organizations:*",
+        "account:*",
+        "sts:AssumeRole"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoIrreversibleDestruction",
+      "_comment": [
+        "The same set the SCP denies org-wide, repeated here so the boundary alone is",
+        "sufficient in an account that has no Organization."
+      ],
+      "Effect": "Deny",
+      "Action": [
+        "kms:ScheduleKeyDeletion", "kms:DeleteCustomKeyStore", "kms:DisableKey",
+        "s3:DeleteObjectVersion", "s3:DeleteBucket", "s3:PutBucketPolicy",
+        "cloudtrail:StopLogging", "cloudtrail:DeleteTrail",
+        "config:DeleteDeliveryChannel", "config:StopConfigurationRecorder",
+        "guardduty:DeleteDetector",
+        "dynamodb:DeleteTable", "glue:DeleteDatabase", "glue:DeleteJob"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
