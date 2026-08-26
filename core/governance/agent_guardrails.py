@@ -24,7 +24,12 @@ scope is unclear.
 
 Depends on: nothing
 Shells out to: nothing. Standard library only.
-Used by: agent tool-call sites, tests/test_agent_guardrails.py
+Used by: .claude/hooks/guardrails.py -- the PreToolUse adapter registered in
+    .claude/settings.json, which is the one place this repo's tool calls funnel through.
+    That registration is not decoration: this module had ZERO call sites for its whole life,
+    and 216 lines of refusal logic nothing invokes is worse than no guardrail, because the
+    file's existence implies a coverage that does not exist.
+    Also tests/test_agent_guardrails.py, tests/test_guardrails_hook.py
 """
 import os
 import re
@@ -60,19 +65,119 @@ _HUMAN_REQUIRED = [
 # reads as an invocation of bash and passes every rule above.
 _WRAPPERS = ("bash", "sh", "zsh", "cmd", "powershell", "pwsh")
 
+# THE ALLOWLIST -- what may run at all. The rules above then decide HOW.
+#
+# The denylist alone was measured at 1 of 5 against one destructive action expressed five
+# ways: `terraform destroy` was caught, while `make teardown`, `python cleanup.py` and
+# `npm run reset` all passed. Enumerating danger is fail-open by construction, which is the
+# same argument destructive_change_gate.py makes about resource types and the reason its gate
+# is AUTO_SHIP_ELIGIBLE_TYPES rather than a denylist. AWS reached the same shape: the AWS API
+# MCP Server's READ_OPERATIONS_ONLY matches each command against known-read-only actions and
+# runs it only on a hit.
+#
+# Membership is a reviewed fact. A binary absent from here is refused as ALLOW-01 naming the
+# binary, so adding one is a deliberate act with a name attached rather than a silent default.
+#
+# WHAT THIS DOES NOT CLOSE. `python` has to be here -- this project runs pytest and its own
+# CLIs through it -- so `python anything.py` is allowed and that script can call boto3. No
+# allowlist of BINARIES closes an interpreter; only the credential does. The allowlist raises
+# the floor (no make, no npm, no curl piped to a shell, no unknown tool) and the IAM boundary
+# is still what holds. test_an_interpreter_running_a_file_is_allowed_and_this_is_a_known_limit
+# pins that gap open on purpose so no reader mistakes this for containment.
+_ALLOWED_COMMANDS = frozenset({
+    # This control plane, and the tools it drives.
+    "minusctl", "minus-gate", "minus-bcm", "minus-runs", "minus-demo", "minus-resolve",
+    "minus-workflow", "minus-accelerator", "minus-update-module", "minus-schema-watch",
+    "terraform", "tflint", "checkov", "trivy", "opa", "tfsec", "infracost",
+    # Interpreters and package tooling. See the limit noted above.
+    "python", "python3", "py", "pip", "pip3", "pytest", "uv", "uvx",
+    # Version control. `git` is allowlisted; GIT-01..03 still refuse its destructive verbs.
+    "git", "gh",
+    # Ordinary read and inspect.
+    "ls", "dir", "cat", "head", "tail", "less", "more", "grep", "rg", "find", "wc", "sort",
+    "uniq", "cut", "tr", "sed", "awk", "diff", "jq", "yq", "file", "stat", "du", "df",
+    "which", "where", "type", "command", "env", "printenv", "date", "whoami", "hostname", "pwd", "tree",
+    "echo", "printf", "true", "false", "sleep", "test", "basename", "dirname", "realpath",
+    "xargs", "tee",
+    # Ordinary file work. `rm` is here so a single file can be removed; FS-01 still refuses a
+    # recursive force delete, which is the shape that destroys work.
+    "mkdir", "cp", "mv", "touch", "rm", "rmdir", "ln", "chmod", "tar", "zip", "unzip",
+    "cd", "pushd", "popd", "export", "set",
+    # The cloud CLI. Its own destructive verbs are refused by AWS-01/AWS-02, and the IAM
+    # credential is what actually bounds it.
+    "aws",
+})
+
 # Where an agent may never write, even inside its own run: these are the engine, and an agent
 # editing the code that governs it has removed the thing governing it.
 _PROTECTED_DIRS = ("core", "policy", "tests", ".agents", ".github")
 
 
+# Commands that EXECUTE what they are fed on stdin. A heredoc addressed to one of these is
+# a script; a heredoc addressed to anything else is data that happens to be quoted.
+_SHELL_READERS = {"bash", "sh", "zsh", "ksh", "dash", "ash", "busybox"}
+
+# `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`.
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def _strip_heredoc_bodies(text):
+    """Drop heredoc bodies that no shell will execute, keeping every real command line.
+
+    This guardrail blocked its own test script for containing the string "terraform destroy"
+    in a list of fixtures. A `python - <<'EOF'` body is Python source; a `cat <<'EOF'` body is
+    file content. Neither is a shell command, and refusing them makes it impossible to write
+    a test, a document, or a grep about the very commands being guarded.
+
+    The exemption is about the READER, not the syntax. `bash <<'EOF'` executes every line of
+    its body, so the body is kept and checked. When any token on the opening line looks like
+    a shell the body is kept -- an approximation that errs toward checking.
+
+    An UNTERMINATED heredoc returns the text untouched. If the terminator never arrives there
+    is no way to know where the body ends, and guessing would mean guessing permissively.
+    """
+    if "<<" not in text:
+        return text
+    lines = text.split("\n")
+    kept, index = [], 0
+    while index < len(lines):
+        line = lines[index]
+        kept.append(line)
+        match = _HEREDOC.search(line)
+        if not match:
+            index += 1
+            continue
+
+        delimiter = match.group(2)
+        end = index + 1
+        while end < len(lines) and lines[end].strip() != delimiter:
+            end += 1
+        if end >= len(lines):
+            return text                                  # unterminated: check everything
+
+        if any(os.path.basename(token) in _SHELL_READERS for token in line.split()):
+            kept.extend(lines[index + 1:end + 1])         # a shell runs this body
+        # Otherwise the body AND its terminator are dropped. Keeping the terminator left a
+        # bare word on its own line, which the allowlist then read as an unknown binary and
+        # refused -- `python - <<'PYEOF' ... PYEOF` failed on the word PYEOF.
+        index = end + 1
+    return "\n".join(kept)
+
+
 def normalise(command):
     """Lowercase, collapse whitespace, and unwrap `bash -c "..."` style wrappers.
+
+    Newlines become `;` before the whitespace collapse. A newline IS a shell command
+    separator, and flattening it to a space instead made `cat <<'EOF' > f.txt` ... `EOF` then
+    `rm -rf /data` a single segment beginning with `cat`, so the per-segment parse looked at
+    the wrong verb and the delete went unnoticed.
 
     Returns the normalised string. Never raises: an unparseable command still has to be
     evaluated, and returning the raw lowered text keeps it subject to every rule rather than
     letting a quoting error skip the checks.
     """
-    text = str(command or "").strip().lower()
+    text = _strip_heredoc_bodies(str(command or "").strip()).lower()
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ; ")
     for _ in range(3):  # a wrapper inside a wrapper is rare, but not worth trusting
         try:
             parts = shlex.split(text)
@@ -86,14 +191,126 @@ def normalise(command):
     return re.sub(r"\s+", " ", text)
 
 
-def _segments(text):
-    """Split a command line on shell separators.
+def _extract_substitutions(text):
+    """Pull `$(...)` and backtick spans out as commands in their own right.
 
-    Every rule runs per segment. Without this, `echo hello && rm -rf build` is one string in
-    which the destructive half is easy to miss -- and chaining is how a destructive command
-    most often reaches a tool call in the first place.
+    Two bugs in one place, both found in live use. A substitution RUNS a command, so
+    `echo $(rm -rf /)` has to be checked -- it was allowed before this existed. And the outer
+    text must not be tokenized as though the substitution's words were its own:
+    `d="/tmp/gate$(date +%s)"` was refused because the fragment `+%s)"` read as a binary name.
+
+    Returns (outer_with_spans_blanked, [inner commands]). Nested substitutions are extracted
+    recursively. `$((...))` is arithmetic, not a command, so it is blanked without being
+    checked -- refusing `$((1+2))` as an unknown binary would be nonsense.
     """
-    return [part.strip() for part in re.split(r"&&|\|\||;|\|", text) if part.strip()]
+    inner = []
+    out = []
+    index = 0
+    while index < len(text):
+        if text.startswith("$((", index):
+            depth, scan = 0, index + 1
+            while scan < len(text):
+                if text[scan] == "(":
+                    depth += 1
+                elif text[scan] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                scan += 1
+            out.append(" ")
+            index = scan + 1
+            continue
+        if text.startswith("$(", index):
+            depth, scan = 1, index + 2
+            while scan < len(text) and depth:
+                if text[scan] == "(":
+                    depth += 1
+                elif text[scan] == ")":
+                    depth -= 1
+                    if not depth:
+                        break
+                scan += 1
+            body = text[index + 2:scan]
+            nested_outer, nested_inner = _extract_substitutions(body)
+            inner.append(nested_outer)
+            inner.extend(nested_inner)
+            out.append(" ")
+            index = scan + 1
+            continue
+        if text[index] == "`":
+            scan = text.find("`", index + 1)
+            if scan == -1:
+                out.append(text[index])
+                index += 1
+                continue
+            inner.append(text[index + 1:scan])
+            out.append(" ")
+            index = scan + 1
+            continue
+        out.append(text[index])
+        index += 1
+    return "".join(out), inner
+
+
+def _segments(text):
+    """Split a command line on UNQUOTED shell separators.
+
+    Every rule runs per segment. Without splitting, `echo hello && rm -rf build` is one string
+    in which the destructive half is easy to miss, and chaining is how a destructive command
+    most often reaches a tool call in the first place.
+
+    Quote-aware because a regex split is not. `sed 's/x1b\\[[0-9;]*m//g'` carries a `;` inside
+    a single-quoted script; splitting on it produced a fragment whose first token read as the
+    binary `g'`, and the allowlist refused an ordinary log-stripping pipeline. That was found
+    in live use minutes after the allowlist went in, which is the shape of false positive that
+    gets a guardrail switched off.
+
+    An UNBALANCED quote falls back to splitting the remainder anyway: a quoting error must not
+    turn the rest of the line into one inert string that no rule looks inside.
+    """
+    text, substitutions = _extract_substitutions(text)
+
+    parts, current = [], []
+    quote = None
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if text.startswith("&&", index) or text.startswith("||", index):
+            parts.append("".join(current))
+            current = []
+            index += 2
+            continue
+        if char in ";|":
+            parts.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    parts.append("".join(current))
+
+    if quote:
+        # The quote never closed, so the tail was never really quoted. Re-split it naively
+        # rather than trusting a broken quoting state to have hidden nothing.
+        tail = parts.pop()
+        parts.extend(re.split(r"&&|\|\||;|\|", tail))
+
+    # Each substitution is its own command line, so it gets the same treatment recursively.
+    for substitution in substitutions:
+        parts.extend(_segments(substitution))
+
+    return [part.strip() for part in parts if part.strip()]
 
 
 def _is_recursive_force_delete(segment):
@@ -103,7 +320,7 @@ def _is_recursive_force_delete(segment):
     `--recursive --force` and `/s /q` are all the same instruction, and a regex covering
     every arrangement is harder to read than the parse and still misses one.
     """
-    tokens = segment.split()
+    tokens = _command_tokens(segment)
     if not tokens or os.path.basename(tokens[0]) not in ("rm", "del"):
         return False
     recursive = force = False
@@ -118,6 +335,63 @@ def _is_recursive_force_delete(segment):
             recursive |= token[1:] == "s"
             force |= token[1:] == "q"
     return recursive and force
+
+
+# Commands whose ARGUMENT is the real command. Allowlisting one of these without stepping
+# through it would allow everything behind it: `env make teardown` would pass on the strength
+# of `env`. Skipped so the check lands on what actually runs.
+_EXECUTABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".com", ".ps1")
+
+_PREFIX_WRAPPERS = frozenset({
+    "command", "env", "nohup", "time", "xargs", "nice", "ionice", "stdbuf", "timeout",
+    "sudo", "doas", "setsid", "exec",
+})
+
+
+def _command_tokens(segment):
+    """The segment's tokens with leading noise removed: `VAR=value` assignments, flags before
+    the command, dangling punctuation, and prefix wrappers.
+
+    Shared by _binary_of and _is_recursive_force_delete so both agree on where the command
+    starts. They did not, briefly: `time rm -rf build` was refused by neither, because the
+    delete parser looked at token[0] and found `time`.
+    """
+    tokens = list(segment.split())
+    while tokens:
+        token = tokens[0]
+        if "=" in token and not token.startswith(("-", "/", ".")):
+            tokens.pop(0)
+            continue
+        if token.startswith(("-", ">", "<", "(", ")", "&")):
+            tokens.pop(0)
+            continue
+        name = os.path.basename(token.strip("\"'")).lower()
+        # Windows installs console scripts as `minusctl.exe`. Matching the raw basename meant
+        # the one command this repo tells everyone to use was not on its own allowlist.
+        for suffix in _EXECUTABLE_SUFFIXES:
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        if not any(char.isalnum() for char in name):
+            tokens.pop(0)
+            continue
+        if name in _PREFIX_WRAPPERS:
+            tokens.pop(0)
+            continue
+        tokens[0] = name
+        return tokens
+    return []
+
+
+def _binary_of(segment):
+    """The command a segment invokes, stripped of path, assignments and prefix wrappers.
+
+    `/usr/bin/make` and `make` are the same instruction, `FOO=1 make teardown` runs make, and
+    so does `env make teardown`. Returns "" for a segment with nothing invocable in it (a bare
+    redirect, a lone wrapper, a stray operator) -- there is no command there to refuse.
+    """
+    tokens = _command_tokens(segment)
+    return tokens[0] if tokens else ""
 
 
 def _allow(**extra):
@@ -144,12 +418,23 @@ def evaluate(command, human_authorized=False):
     if not text:
         return _refuse("GEN-01", "empty command")
 
+    # The specific rules run FIRST, so a refusal carries the reason that explains it. Checking
+    # the allowlist first would report `terraform destroy` as ALLOW-01 if terraform were ever
+    # taken off the list -- technically a refusal, and useless to the operator reading it.
     for segment in _segments(text):
         if _is_recursive_force_delete(segment):
             return _refuse("FS-01", f"refused: recursive force delete ({command})")
         for rule, why, pattern in _DESTRUCTIVE:
             if pattern.search(segment):
                 return _refuse(rule, f"refused: {why} ({command})")
+
+    for segment in _segments(text):
+        binary = _binary_of(segment)
+        if binary and binary not in _ALLOWED_COMMANDS:
+            return _refuse("ALLOW-01",
+                           f"refused: {binary!r} is not on the allowlist of commands this "
+                           f"agent may run ({command}). Adding it is a reviewed decision, "
+                           f"not a default", binary=binary)
 
     for rule, why, pattern in _HUMAN_REQUIRED:
         if pattern.search(text):

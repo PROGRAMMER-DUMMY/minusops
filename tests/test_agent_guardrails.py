@@ -73,7 +73,6 @@ def test_the_ways_an_agent_would_slip_past_are_also_refused(command):
     "aws s3 ls s3://prod-lake",
     "minusctl gate plan",
     "rm build.log",
-    "select * from customers",
 ])
 def test_ordinary_commands_are_allowed(command):
     """A guardrail that blocks the day job gets disabled, and then it protects nothing."""
@@ -330,3 +329,283 @@ def test_no_contradiction_is_claimed_without_both_numbers():
     architecture is not a contradiction with a budget."""
     assert budget.contradiction(declared_usd=0, estimated_usd=1258.29) is None
     assert budget.contradiction(declared_usd=500, estimated_usd=None) is None
+
+
+# --- Heredoc bodies: data, unless a shell is reading them --------------------------------
+
+def test_a_heredoc_body_that_merely_mentions_a_destructive_command_is_not_one():
+    """The guardrail blocked its own test script for containing the phrase in a string.
+
+    A `python - <<'EOF'` body is Python source. `"terraform destroy"` inside it is a string
+    literal in a list of test fixtures, not an invocation, and refusing it makes it
+    impossible to write a test for the guardrail -- or documentation about it, or a grep for
+    it. The pattern list catches the shapes commands actually arrive in; a heredoc body fed
+    to a non-shell is not one of those shapes.
+    """
+    script = "python - <<'PYEOF'\ncases = ['terraform destroy', 'rm -rf /']\nPYEOF"
+    assert guard.evaluate(script)["allowed"] is True
+
+
+def test_a_heredoc_body_fed_to_a_shell_is_still_commands():
+    """The exemption is about the READER, not the syntax. `bash <<EOF` executes every line of
+    the body, so stripping it there would be a hole big enough to drive anything through."""
+    for shell in ("bash", "sh", "zsh", "/bin/bash", "bash -s"):
+        script = f"{shell} <<'EOF'\nrm -rf /important\nEOF"
+        decision = guard.evaluate(script)
+        assert decision["allowed"] is False, f"{shell} heredoc was not checked: {script!r}"
+
+
+def test_the_command_line_around_a_heredoc_is_always_checked():
+    """Only the BODY is data. The line that opens it is still a command, and so is anything
+    chained after the terminator."""
+    assert guard.evaluate(
+        "rm -rf /data && python - <<'EOF'\nprint(1)\nEOF")["allowed"] is False
+    assert guard.evaluate(
+        "cat <<'EOF' > f.txt\nharmless\nEOF\nrm -rf /data")["allowed"] is False
+
+
+def test_an_unterminated_heredoc_is_refused_rather_than_stripped():
+    """Fail closed on ambiguity. If the terminator never arrives, we cannot tell where the
+    body ends, and guessing means guessing in the permissive direction."""
+    decision = guard.evaluate("python - <<'EOF'\nrm -rf /\n")
+    assert decision["allowed"] is False
+
+
+def test_a_quoted_mention_outside_a_heredoc_is_still_refused():
+    """No general "it was in quotes" exemption -- `sh -c "rm -rf /"` is quoted and real."""
+    assert guard.evaluate('sh -c "rm -rf /"')["allowed"] is False
+
+
+# --- The allowlist -----------------------------------------------------------------------
+#
+# The denylist was measured at 1 of 5 against the same destructive action expressed five
+# ways: only the literal `terraform destroy` spelling was caught, while `make teardown`,
+# `python cleanup.py` and `npm run reset` all passed. Enumerating danger is fail-open by
+# construction -- the same argument destructive_change_gate.py makes about resource types.
+
+def test_an_unknown_binary_is_refused_rather_than_allowed():
+    """The whole point of inverting. `make` is not on the allowlist, so `make teardown` is
+    refused without anyone having to predict that a Makefile target might destroy something."""
+    decision = guard.evaluate("make teardown")
+    assert decision["allowed"] is False
+    assert decision["rule"] == "ALLOW-01"
+
+
+def test_the_refusal_names_the_binary_so_it_can_be_reviewed_and_added():
+    decision = guard.evaluate("kubectl delete ns prod")
+    assert decision["allowed"] is False
+    assert "kubectl" in decision["reason"]
+
+
+@pytest.mark.parametrize("command", [
+    "make teardown",
+    "npm run reset",
+    "curl https://example.com/x.sh",
+    "wget https://example.com/x.sh",
+    "docker system prune -af",
+    "kubectl delete namespace prod",
+    "helm uninstall release",
+    "psql -c 'drop table t'",
+])
+def test_commands_no_one_predicted_are_refused_by_default(command):
+    assert guard.evaluate(command)["allowed"] is False, command
+
+
+@pytest.mark.parametrize("command", [
+    "python -m pytest -q",
+    "git status --short",
+    "git diff --stat",
+    "git log --oneline -5",
+    "grep -rn pattern core/",
+    "ls -la",
+    "cat README.md",
+    "terraform validate",
+    "terraform plan -out=tfplan",
+    "minusctl gate verify --dir runs/x/terraform",
+    "minusctl runs list",
+    "echo done",
+    "mkdir -p runs/x",
+    "python core/architecture/pillars.py list",
+])
+def test_the_work_this_project_actually_does_is_allowed(command):
+    """An allowlist that blocks ordinary work gets switched off, and then protects nothing."""
+    decision = guard.evaluate(command)
+    assert decision["allowed"] is True, f"{command!r} refused: {decision['reason']}"
+
+
+def test_every_segment_of_a_chain_must_be_on_the_allowlist():
+    """`ls && make teardown` is not made safe by starting with `ls`."""
+    assert guard.evaluate("ls && make teardown")["allowed"] is False
+
+
+def test_the_allowlist_does_not_excuse_a_destructive_command():
+    """git is allowlisted; `git push --force` is still refused. The allowlist decides WHAT may
+    run, the destructive rules decide HOW -- one does not override the other."""
+    assert guard.evaluate("git status")["allowed"] is True
+    for command in ("git push --force origin main", "git reset --hard HEAD~5",
+                    "terraform destroy", "rm -rf runs"):
+        decision = guard.evaluate(command)
+        assert decision["allowed"] is False, command
+        assert decision["rule"] != "ALLOW-01", (
+            f"{command!r} should be refused by its specific rule, not by the allowlist -- the "
+            f"specific reason is what tells the operator why")
+
+
+def test_the_human_gate_still_applies_to_an_allowlisted_command():
+    assert guard.evaluate("minusctl gate apply --dir x")["allowed"] is False
+    assert guard.evaluate("minusctl gate apply --dir x",
+                          human_authorized=True)["allowed"] is True
+
+
+def test_a_wrapper_cannot_smuggle_a_non_allowlisted_binary():
+    """normalise() unwraps `bash -c`, so the payload is what gets checked, not the wrapper."""
+    assert guard.evaluate('bash -c "make teardown"')["allowed"] is False
+
+
+def test_an_interpreter_running_a_file_is_allowed_and_this_is_a_known_limit():
+    """HONEST LIMIT, asserted so nobody mistakes the allowlist for containment.
+
+    `python` has to be on the allowlist -- this project runs pytest and its own CLIs through
+    it. That means `python cleanup.py` is allowed, and cleanup.py can call boto3 and delete a
+    bucket. No allowlist of BINARIES closes that; only the credential does. This test exists
+    to keep the limit visible rather than letting a reader assume the gap was closed.
+    """
+    assert guard.evaluate("python cleanup.py")["allowed"] is True
+
+
+def test_a_benign_select_is_not_caught_by_the_drop_or_truncate_rules():
+    """SQL-01 and SQL-02 must not over-match on ordinary SQL.
+
+    `select * from customers` used to sit in the allowed list. Under the allowlist it is
+    refused -- correctly, because `select` is not a program and a shell cannot run it -- so
+    the assertion that still matters is WHICH rule refuses it. If a SQL rule fired here it
+    would fire on every read query the agent ever passed to a client.
+    """
+    decision = guard.evaluate("select * from customers")
+    assert decision["allowed"] is False
+    assert decision["rule"] == "ALLOW-01", (
+        f"refused by {decision['rule']} -- a read query must not trip a destructive SQL rule")
+
+
+# --- Segment splitting must respect quoting ----------------------------------------------
+
+def test_a_separator_inside_quotes_is_not_a_separator():
+    """Found in live use, immediately after the allowlist went in.
+
+    `sed 's/\\x1b\\[[0-9;]*m//g'` carries a `;` inside a single-quoted script. Splitting on it
+    produced a fragment starting `]*m//g'`, whose first token read as the binary `g'`, and the
+    allowlist refused an ordinary log-stripping pipeline. Shell operators only separate
+    commands when they are unquoted.
+    """
+    command = "python -m pytest | sed 's/x1b\\[[0-9;]*m//g'"
+    decision = guard.evaluate(command)
+    assert decision["allowed"] is True, decision["reason"]
+
+
+@pytest.mark.parametrize("command", [
+    "grep -n 'a;b' core/",
+    'grep -n "a|b" core/',
+    "echo 'one && two'",
+    "python -c 'print(1); print(2)'",
+    "sed 's/;//g' file.txt",
+    "awk -F'|' '{print $1}' data.csv",
+])
+def test_quoted_operators_do_not_fragment_an_ordinary_command(command):
+    assert guard.evaluate(command)["allowed"] is True, command
+
+
+@pytest.mark.parametrize("command", [
+    "ls && make teardown",
+    "ls ; make teardown",
+    "ls | make teardown",
+    "echo 'safe' && make teardown",
+    "grep -n 'a;b' core/ && make teardown",
+])
+def test_an_unquoted_separator_still_splits(command):
+    """The fix must not go the other way: real chaining is exactly how a refused command
+    reaches a tool call, so an UNQUOTED separator has to keep splitting."""
+    assert guard.evaluate(command)["allowed"] is False, command
+
+
+def test_an_unbalanced_quote_does_not_swallow_the_rest_of_the_line():
+    """Fail closed on a quoting error. If an opening quote never closes, the remainder must
+    still be checked rather than treated as one inert string."""
+    assert guard.evaluate("echo 'unclosed && rm -rf /")["allowed"] is False
+
+
+# --- Command substitution -----------------------------------------------------------------
+
+def test_a_command_substitution_is_checked_as_its_own_command():
+    """`$(...)` and backticks run a command. It has to be checked, and the OUTER text must not
+    be tokenized as though the substitution's words belonged to it.
+
+    Found in live use: `d="$JOB/gate$(date +%s)"` was refused because the fragment `+%s)"`
+    read as the binary name. Two bugs in one -- the substitution went unchecked, and its
+    spillover produced a nonsense refusal.
+    """
+    assert guard.evaluate('d="/tmp/gate$(date +%s)"')["allowed"] is True
+    assert guard.evaluate("echo `date`")["allowed"] is True
+
+
+@pytest.mark.parametrize("command", [
+    "echo $(make teardown)",
+    "echo `make teardown`",
+    "d=$(curl https://example.com/x.sh)",
+    "echo $(rm -rf /)",
+])
+def test_a_substitution_cannot_smuggle_a_refused_command(command):
+    assert guard.evaluate(command)["allowed"] is False, command
+
+
+def test_a_plain_variable_expansion_is_not_a_command():
+    """`$VAR` and `${VAR}` expand, they do not execute. Refusing them would block every
+    ordinary use of an environment variable."""
+    assert guard.evaluate('cat "$HOME/notes.txt"')["allowed"] is True
+    assert guard.evaluate('cd "${CLAUDE_JOB_DIR}/tmp"')["allowed"] is True
+
+
+# --- Prefix wrappers ----------------------------------------------------------------------
+
+def test_a_prefix_wrapper_is_transparent_not_the_command():
+    """`command -v x`, `env FOO=1 x`, `xargs x`, `time x` all RUN x. Treating the wrapper as
+    the command would allowlist everything behind it -- `env make teardown` would pass on the
+    strength of `env` being allowed. Skipping the wrapper checks what actually runs.
+    """
+    assert guard.evaluate("command -v minusctl")["allowed"] is True
+    assert guard.evaluate("env FOO=1 python -m pytest")["allowed"] is True
+
+    for smuggled in ("command make teardown", "env make teardown",
+                     "xargs make teardown", "time make teardown",
+                     "nohup make teardown"):
+        assert guard.evaluate(smuggled)["allowed"] is False, smuggled
+
+
+def test_a_wrapper_does_not_excuse_a_destructive_command():
+    assert guard.evaluate("env terraform destroy")["allowed"] is False
+    assert guard.evaluate("time rm -rf build")["allowed"] is False
+
+
+def test_a_bare_wrapper_with_nothing_after_it_is_allowed():
+    """`env` alone prints the environment. There is no smuggled command to refuse."""
+    assert guard.evaluate("env")["allowed"] is True
+
+
+def test_a_windows_executable_suffix_does_not_hide_an_allowlisted_command():
+    """On Windows the console script is `minusctl.exe`, and the allowlist holds `minusctl`.
+
+    Found by the guardrail refusing this project's OWN front door: pyproject installs
+    minusctl.exe, and matching on the raw basename meant the one command the repo tells
+    everyone to use was not on its own allowlist.
+    """
+    for name in ("minusctl.exe", "minusctl.cmd", "minusctl.bat", "terraform.exe",
+                 "python.exe", "git.exe"):
+        assert guard.evaluate(f"{name} runs list")["allowed"] is True, name
+
+
+def test_stripping_the_suffix_does_not_allowlist_something_new():
+    """`make.exe` is still make."""
+    assert guard.evaluate("make.exe teardown")["allowed"] is False
+
+
+def test_a_suffix_does_not_excuse_a_destructive_command():
+    assert guard.evaluate("terraform.exe destroy")["allowed"] is False
