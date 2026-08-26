@@ -23,10 +23,18 @@ which is "feeds a generator":
      to machines. `deferral_signoff` is the clearest case: it exists so a human is on record
      accepting deferred axes, its job is finished the moment it is written, and nothing
      downstream should ever read it back. `stakeholders` is the same.
-  3. It supplies exactly two generation inputs today: `non_functional.budget` (parse_budget_usd,
-     wiring the governance-observability guardrail) and `data_pipeline.data_volume`
-     (parse_daily_gb, the S3 usage estimate + daily_data_gb module wiring). Both are wireable
-     with a plain regex because both are bounded, numeric answers.
+  3. It supplies the generation inputs. Two of these are long-standing:
+     `non_functional.budget` (parse_budget_usd, wiring the governance-observability guardrail)
+     and `data_pipeline.data_volume` (parse_daily_gb, the S3 usage estimate + daily_data_gb
+     module wiring). Both are wireable with a plain regex because both are bounded, numeric
+     answers.
+
+     `pillar_facts` extends that set rather than replacing it. It holds the numeric answers
+     the 18-pillar interview collects -- partition granularity, read pattern, transform shape,
+     runs per day, event rate, record size -- which core/architecture/pillars.py turns into a
+     worker plan, an object-size verdict and a shard count. Before it existed the interview
+     asked eighteen questions into a record with sixteen unrelated slots, so half the answers
+     had nowhere to land and never reached the synthesizer.
 
 So: a field with no reader is not automatically dead weight here, and deleting one because
 nothing imports it removes audit evidence. `goal`, `functional` and `constraints` are free text
@@ -41,7 +49,8 @@ Redshift Serverless; lifecycle/KMS/multi-AZ toggles). They are real signal held 
 until a generator exists that needs a module-choice or config input -- the candidate list to
 start from, not a gap to close now.
 
-Depends on: nothing (stdlib only -- datetime/json/os/re)
+Depends on: core/architecture/pillars.py (stdlib-only, for the pillar catalogue and the
+    sizing derivations); otherwise stdlib only -- datetime/json/os/re
 Shells out to: nothing. Pure validation and parsing over a local JSON record.
 Used by: core/architecture/intent_assertions.py, core/cost/bcm_pricing_calculator.py,
     core/generation/accelerators.py, core/generation/synthesizer.py,
@@ -53,8 +62,13 @@ import datetime
 import json
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pillars  # noqa: E402
 
 REQUIRED_NFR = ["latency", "scale", "availability", "retention", "security", "budget"]
+PILLAR_KEYS = pillars.PILLAR_KEYS
 FILENAME = "requirements.json"
 
 # --- Data-pipeline profile (additive; enforced only for data workloads) ------
@@ -98,6 +112,8 @@ def template():
         "functional": [],
         "non_functional": {k: "" for k in REQUIRED_NFR},
         "data_pipeline": {k: "" for k in DATA_FIELDS},
+        "pillars": {k: {"choice": "", "notes": ""} for k in PILLAR_KEYS},
+        "pillar_facts": {k: "" for k in pillars.FACT_KEYS},
         "constraints": "",
         "gathered_by": "",
         "gathered_at": "",
@@ -192,6 +208,81 @@ def validate_data_pipeline(data):
     dp = (data or {}).get("data_pipeline") or {}
     missing = [f"data_pipeline.{f}" for f in DATA_FIELDS if not _field_answered(dp.get(f, ""))]
     return (not missing), missing
+
+
+# --- The 18 pillars ---------------------------------------------------------------------
+#
+# The interview asked 18 questions and the record had 16 slots, none of which matched them.
+# Half the answers had nowhere to land, which is why a module like security-iam-scoped came
+# out with two wired inputs and six REVIEW markers: the operator answered the Lake Formation
+# question and the answer went nowhere.
+#
+# This block is ADDITIVE and validated SEPARATELY, the same way the data-pipeline profile is.
+# Folding eighteen new required fields into validate() would invalidate every record written
+# before today and block generation on runs that were complete by the rules they were
+# gathered under -- a gate that retroactively fails past work teaches people to bypass gates.
+
+def validate_pillars(data):
+    """Return (ok, problems) for the pillar block. Unknown keys are problems, not extras.
+
+    A key that is not a pillar is reported rather than kept: silently accepting it means an
+    interview typo is stored, looks answered in the record, and reaches no derivation.
+    """
+    block = (data or {}).get("pillars") or {}
+    if not isinstance(block, dict):
+        return False, ["pillars (not an object)"]
+    problems = [f"pillars.{key} is not one of the 18 pillars"
+                for key in block if key not in PILLAR_KEYS]
+    problems.extend(f"pillars.{key}" for key in unanswered_pillars(data))
+    return (not problems), problems
+
+
+def unanswered_pillars(data):
+    """Pillar keys with no answer yet. The interview's own to-do list.
+
+    A well-formed `deferred: <reason>` counts as answered on exactly the same terms as an NFR
+    axis -- a deferral is a recorded decision, a bare "deferred: tbd" is not.
+    """
+    block = (data or {}).get("pillars") or {}
+    unanswered = []
+    for key in PILLAR_KEYS:
+        entry = block.get(key)
+        choice = entry.get("choice") if isinstance(entry, dict) else entry
+        if not _field_answered(choice):
+            unanswered.append(key)
+    return unanswered
+
+
+def pillar_facts(data):
+    """The numeric answers the derivations consume, from the record alone.
+
+    Two sources, in priority order: an explicit `pillar_facts` entry wins, and otherwise the
+    prose answers already collected are parsed. The fallback matters because `data_volume` was
+    being asked and parsed long before the pillars existed, and making an operator state the
+    same number twice is how the two copies end up disagreeing.
+
+    Only keys the arithmetic knows about survive. An unrecognised one is dropped rather than
+    passed through, so a typo cannot masquerade as an input.
+    """
+    data = data or {}
+    stated = data.get("pillar_facts") or {}
+    facts = {k: v for k, v in stated.items() if k in pillars.FACT_KEYS and v not in (None, "")}
+
+    if "daily_gb" not in facts:
+        parsed, _source = parse_daily_gb(data)
+        if parsed:
+            facts["daily_gb"] = parsed
+    return facts
+
+
+def derived_sizing(data):
+    """Everything this record's own answers already decide, and what blocks the rest.
+
+    Returns pillars.derive()'s shape: each entry either carries its arithmetic or says which
+    fact is missing. It never fills a gap with a default -- an unstated volume produces
+    `determinable: False`, not a plausible worker count nobody asked for.
+    """
+    return pillars.derive(pillar_facts(data))
 
 
 _VOLUME_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(gb|tb|gigabyte|terabyte)", re.I)
