@@ -39,6 +39,10 @@ def add_parser(sub):
     parser.add_argument("--role-arn",
                         help="assert the active session is this deploy role; `approve` "
                              "refuses if it is not")
+    parser.add_argument("--impact",
+                        help="What this change breaks, and for whom. Required when the plan "
+                             "is not autonomous-eligible. The approver reads this sentence "
+                             "rather than the raw finding list.")
     parser.add_argument("--with-telemetry", action="store_true",
                         help="correlate detected drift with CloudTrail identity and Glue "
                              "failure signatures (read-only, advisory, off by default)")
@@ -81,4 +85,6 @@ def run(args):
         argv.append("--with-telemetry")
     if getattr(args, "role_arn", None):
         argv += ["--role-arn", args.role_arn]
+    if getattr(args, "impact", None):
+        argv += ["--impact", args.impact]
     return _delegate(argv)

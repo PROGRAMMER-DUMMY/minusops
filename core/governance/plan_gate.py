@@ -1119,7 +1119,6 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
             "destroy": destroy,
     })
     _clear_approvals(dir_)  # a new plan for this dir invalidates prior approvals
-    print(f"[gate] plan saved. plan_hash = {h[:16]}...")
 
     # Destructive-change classification (core/governance/destructive_change_gate.py, Phase 1 of
     # the generation-time-authoring gate stack). SHADOW ONLY here: logged and printed, never
@@ -1152,6 +1151,11 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
             _clear_pending(dir_)
             return False
         _record_impact(dir_, impact_text, classification)
+
+    # Announced only once the plan has actually survived staging. Printing it earlier said
+    # "plan saved" and then refused two lines later, and an operator reading the tail of the
+    # output saw a success that had been discarded.
+    print(f"[gate] plan saved. plan_hash = {h[:16]}...")
 
     # G6 (docs/g6_scope.md): SEC-*/COST-* rules over real plan JSON via OPA/Rego, run alongside
     # the regex-over-HCL scan (core/reporting/optimize_analyzer.py, invoked separately in

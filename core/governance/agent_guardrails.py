@@ -365,7 +365,13 @@ def _command_tokens(segment):
         if token.startswith(("-", ">", "<", "(", ")", "&")):
             tokens.pop(0)
             continue
-        name = os.path.basename(token.strip("\"'")).lower()
+        bare = token.strip("\"'")
+        if "$" in bare:
+            # Kept whole: basename("${BIN}/thing") is "thing", which hides that the path came
+            # from a variable and would let an unresolvable command read as a known one.
+            tokens[0] = bare.lower()
+            return tokens
+        name = os.path.basename(bare).lower()
         # Windows installs console scripts as `minusctl.exe`. Matching the raw basename meant
         # the one command this repo tells everyone to use was not on its own allowlist.
         for suffix in _EXECUTABLE_SUFFIXES:
@@ -430,6 +436,15 @@ def evaluate(command, human_authorized=False):
 
     for segment in _segments(text):
         binary = _binary_of(segment)
+        if binary and "$" in binary:
+            # The command NAME comes from a variable, so it only exists once the shell
+            # expands it -- resolving it would mean running the thing being checked. Refusing
+            # is right; saying "not on the allowlist" was not, because it reads as a missing
+            # binary and sends the operator to edit the list.
+            return _refuse("ALLOW-02",
+                           f"refused: the command name comes from a shell variable "
+                           f"({binary!r}) and cannot be checked before it runs ({command}). "
+                           f"Write the command literally", binary=binary)
         if binary and binary not in _ALLOWED_COMMANDS:
             return _refuse("ALLOW-01",
                            f"refused: {binary!r} is not on the allowlist of commands this "

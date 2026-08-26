@@ -344,3 +344,34 @@ def test_a_none_cell_renders_as_a_dash_not_the_word_none(workspace):
     text = formatters.table(["A"], [[None]])
 
     assert "None" not in text
+
+
+def test_the_gate_front_door_forwards_every_flag_plan_gate_accepts():
+    """`--impact` shipped on plan_gate and was unreachable through `minusctl gate`.
+
+    The tests passed because they called stage_plan() directly; the CLI wrapper had never
+    been updated, so the documented front door rejected the flag with "unrecognized
+    arguments". Found by running the real binary, not by running the suite.
+
+    This asserts the general case rather than that one flag: every option plan_gate's own
+    parser accepts must be reachable through the wrapper, or the front door silently offers
+    less than the engine does.
+    """
+    import argparse
+
+    import plan_gate
+    from core.cli.commands import gate as gate_cmd
+
+    def _options(parser):
+        return {a for action in parser._actions for a in action.option_strings
+                if a.startswith("--")}
+
+    engine = _options(plan_gate._build_parser())
+
+    front = argparse.ArgumentParser()
+    gate_cmd.add_parser(front.add_subparsers(dest="command"))
+    wrapper = _options(front._subparsers._group_actions[0].choices["gate"])
+
+    # --run is CLI-only: it resolves the active run into --dir for the engine.
+    missing = engine - wrapper - {"--help"}
+    assert not missing, f"minusctl gate cannot pass these through to plan_gate: {sorted(missing)}"

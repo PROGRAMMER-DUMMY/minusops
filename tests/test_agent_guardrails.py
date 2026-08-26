@@ -609,3 +609,23 @@ def test_stripping_the_suffix_does_not_allowlist_something_new():
 
 def test_a_suffix_does_not_excuse_a_destructive_command():
     assert guard.evaluate("terraform.exe destroy")["allowed"] is False
+
+
+def test_a_command_name_from_a_variable_is_refused_with_a_reason_that_says_so():
+    """`"$MC" gate plan` cannot be checked: the name only exists once the shell expands it.
+
+    Refusing is right -- resolving it would mean executing the thing being checked. But the
+    message said `'$mc' is not on the allowlist`, which reads as a missing binary and sends
+    the operator to edit the allowlist. It has to say the name came from a variable.
+    """
+    for command in ('"$MC" gate plan --dir x', "$TOOL --help", "${BIN}/thing run"):
+        decision = guard.evaluate(command)
+        assert decision["allowed"] is False, command
+        assert decision["rule"] == "ALLOW-02", command
+        assert "variable" in decision["reason"], command
+
+
+def test_a_variable_used_as_an_ARGUMENT_is_not_mistaken_for_the_command():
+    """Only the command NAME is unresolvable. `cat "$HOME/notes"` is a cat invocation."""
+    assert guard.evaluate('cat "$HOME/notes.txt"')["allowed"] is True
+    assert guard.evaluate('python "$SCRIPT"')["allowed"] is True
