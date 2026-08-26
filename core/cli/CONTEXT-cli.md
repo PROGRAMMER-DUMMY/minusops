@@ -36,7 +36,7 @@ give every file two module objects, and a `monkeypatch` on one would not be seen
   existing `minusctl runs show` invocation keeps working.
 - **Unknown commands are delegated** so the error message comes from one parser. Two parsers
   producing two different lists of valid commands is how they start disagreeing.
-- Run it as `python -m core.cli.main` or through the console script; the relative imports mean
+- Run it as `minusctl` or through the console script; the relative imports mean
   direct file execution is not an entry point.
 
 ## [`context.py`](./context.py)

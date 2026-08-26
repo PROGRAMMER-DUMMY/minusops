@@ -52,10 +52,10 @@ library.
 ```bash
 python core/generation/modules.py match "airflow, lambda architecture, data quality, schema enforcement"
 python core/architecture/discovery.py "mwaa airflow" --resource aws_mwaa_environment --service-code AmazonMWAA
-python core/reporting/minusctl.py accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
+minusctl accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
 python core/generation/synthesizer.py "<requirements>" --run <run-id> --requirements-file requirements.json --decision-file architecture_decision.json --owner <team>
-python core/governance/plan_gate.py verify --dir runs/<run-id>/terraform   # govern it (same gate)
-python core/governance/plan_gate.py verify --dir runs/<run-id>/terraform --policy-mode production
+minusctl gate verify --dir runs/<run-id>/terraform   # govern it (same gate)
+minusctl gate verify --dir runs/<run-id>/terraform --policy-mode production
 # production requires checkov or tfsec on PATH and blocks on external findings
 python core/generation/patterns.py match "<requirements>"                  # reuse a prior approved composition
 ```
@@ -73,7 +73,7 @@ architecture, selected modules, alternatives, assumptions, risks, and sources. `
 ```bash
 python core/architecture/requirements.py template > requirements.json   # grill-me fills this
 python core/architecture/requirements.py check requirements.json        # completeness check
-python core/reporting/minusctl.py decision template --write           # create run-bound decision record
+minusctl decision template --write           # create run-bound decision record
 python core/architecture/architecture_decision.py template --requirements-file requirements.json > architecture_decision.json
 python core/architecture/architecture_decision.py set architecture_decision.json --architecture "<selected architecture>" --summary "<why this choice>"
 python core/architecture/architecture_decision.py add-module architecture_decision.json <module-id>

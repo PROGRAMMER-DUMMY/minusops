@@ -92,10 +92,10 @@ The AWS-side steps require live credentials and Terraform, and are run by the op
 their own account:
 
 ```powershell
-python core/governance/plan_gate.py verify --dir runs/<run-id>/terraform --policy-mode production
-python core/governance/plan_gate.py plan   --dir runs/<run-id>/terraform
-python core/reporting/minusctl.py readiness --run <run-id>
-python core/reporting/minusctl.py package   --run <run-id>
+minusctl gate verify --dir runs/<run-id>/terraform --policy-mode production
+minusctl gate plan   --dir runs/<run-id>/terraform
+minusctl readiness --run <run-id>
+minusctl package   --run <run-id>
 minusctl console
 ```
 

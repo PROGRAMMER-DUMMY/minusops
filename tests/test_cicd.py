@@ -70,16 +70,16 @@ def test_feed_config_carries_no_role_arn_or_account_id():
 def test_feed_factory_plans_but_never_applies():
     """Applying inside a per-feed matrix fans an apply across every vendor at once."""
     factory = cicd.render_feed_factory()
-    assert "plan_gate.py plan" in factory
-    assert "plan_gate.py apply" not in factory
+    assert "minusctl gate plan" in factory
+    assert "minusctl gate apply" not in factory
 
 
 def test_jenkins_and_github_drive_the_same_governance_commands():
     """The governance logic lives in Python, not the CI engine. Switching engines must not
     quietly change what is enforced."""
     jenkins = cicd.render_jenkinsfile()
-    assert "plan_gate.py verify" in jenkins
-    assert "plan_gate.py plan" in jenkins
+    assert "minusctl gate verify" in jenkins
+    assert "minusctl gate plan" in jenkins
     assert "--policy-mode production" in jenkins
 
 

@@ -795,7 +795,7 @@ def _render_main(chosen, present_ids, monthly_budget_usd=0, glue_execution_class
     lines = [
         "# Composed by MinusOps architect synthesis — vetted modules assembled for the gathered",
         "# requirements. Review the items marked REVIEW, then run the deploy gate:",
-        "#   python core/governance/plan_gate.py verify --dir <this dir> --policy-mode production",
+        "#   minusctl gate verify --dir <this dir> --policy-mode production",
         "",
         "locals {",
         "  name_prefix = var.name_prefix",
@@ -1323,8 +1323,8 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
             doc.append(f"- **{entry['resource_type']}** (`authored_{entry['resource_type']}.tf`) "
                        f"-- {entry.get('justification') or '(no justification recorded)'}")
     doc += ["", "## Next", "",
-            "```bash", f"python core/governance/plan_gate.py verify --dir {out_dir} --policy-mode production",
-            f"python core/governance/plan_gate.py plan   --dir {out_dir}", "```",
+            "```bash", f"minusctl gate verify --dir {out_dir} --policy-mode production",
+            f"minusctl gate plan   --dir {out_dir}", "```",
             "", "The composed Terraform is governed by the same gate (validate + native SEC scan + "
             "production external scanner evidence + plan-hash approval + BCM cost). Nothing applies without human review."]
     _w("COMPOSITION.md", "\n".join(doc) + "\n")
@@ -2031,7 +2031,7 @@ def _main_author(argv):
             "status": "composed", "resource_type": args.resource_type,
             "run_id": res["run"]["run_id"], "out_dir": res["out_dir"],
             "modules": res["modules"], "review": res["review"],
-            "next": f"python core/governance/plan_gate.py verify --dir {res['out_dir']} --policy-mode production",
+            "next": f"minusctl gate verify --dir {res['out_dir']} --policy-mode production",
         }, indent=2))
     else:
         print("[author] composed  :", args.resource_type)
@@ -2040,7 +2040,7 @@ def _main_author(argv):
             print("[author] review inputs:")
             for r in res["review"]:
                 print(f"    - {r}")
-        print(f"[author] next      : python core/governance/plan_gate.py verify --dir {res['out_dir']} --policy-mode production")
+        print(f"[author] next      : minusctl gate verify --dir {res['out_dir']} --policy-mode production")
     return 0
 
 
@@ -2190,7 +2190,7 @@ def main(argv=None):
     if res.get("validation"):
         import tf_validate
         print("[architect] " + tf_validate._format(res["validation"]))
-    print(f"[architect] next          : python core/governance/plan_gate.py verify --dir {res['out_dir']} --policy-mode production")
+    print(f"[architect] next          : minusctl gate verify --dir {res['out_dir']} --policy-mode production")
     return 0
 
 

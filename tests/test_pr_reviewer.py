@@ -94,7 +94,7 @@ def test_pipe_in_a_gate_detail_does_not_break_the_table():
 
 def test_action_runs_all_four_stages():
     action = open(_ACTION, encoding="utf-8").read()
-    for stage in ("plan_gate.py verify", "plan_gate.py plan",
+    for stage in ("minusctl gate verify", "minusctl gate plan",
                   "bcm_pricing_calculator.py prepare", "reflector.py"):
         assert stage in action, stage
 
@@ -102,7 +102,7 @@ def test_action_runs_all_four_stages():
 def test_action_never_applies():
     """If apply ever appears here, the review path has gained the ability to change
     infrastructure without the environment gate."""
-    assert "plan_gate.py apply" not in open(_ACTION, encoding="utf-8").read()
+    assert "minusctl gate apply" not in open(_ACTION, encoding="utf-8").read()
 
 
 def test_action_exposes_the_plan_hash_for_the_merge_gate():

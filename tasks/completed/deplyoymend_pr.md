@@ -112,7 +112,7 @@ Enterprises deploying data platforms with MinusOps face real-world organizationa
 ### FR-03: Frictionless Export & Packaging (`minusctl export`)
 * **Command:**
   ```bash
-  python core/reporting/minusctl.py export \
+  minusctl export \
     --run marketing-clickstream-mwaa_20260822_111530 \
     --target-repo /path/to/marketing-analytics \
     --dest-dir pipelines/clickstream \

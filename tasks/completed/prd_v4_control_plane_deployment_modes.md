@@ -36,7 +36,7 @@ To make enterprise adoption frictionless, MinusOps must provide:
 ├──────────────────────────┼──────────────────────────────────────────────────┤
 │ **Mode 1: Local CLI**    │ • Runtime: Developer Laptop / Workstation.       │
 │ (Ad-Hoc Engineering)     │ • Auth: Ambient AWS CLI SSO / `aws configure`.   │
-│                          │ • Command: `python core/reporting/minusctl.py`   │
+│                          │ • Command: `minusctl`   │
 ├──────────────────────────┼──────────────────────────────────────────────────┤
 │ **Mode 2: Automated CI** │ • Runtime: GitHub Actions or Jenkins VPC Runner. │
 │ (Pipeline Automation)    │ • Auth: OIDC STS `AssumeRoleWithWebIdentity`.    │

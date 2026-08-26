@@ -227,9 +227,9 @@ def test_pr_reviewer_is_packaged_and_never_applies():
     ability to change infrastructure without the environment gate."""
     action = open(os.path.join(_ROOT, ".github", "actions", "pr-reviewer", "action.yml"),
                   encoding="utf-8").read()
-    assert "plan_gate.py verify" in action
-    assert "plan_gate.py plan" in action
-    assert "plan_gate.py apply" not in action
+    assert "minusctl gate verify" in action
+    assert "minusctl gate plan" in action
+    assert "minusctl gate apply" not in action
 
 
 def test_pr_reviewer_refuses_to_invent_a_cost():

@@ -120,7 +120,7 @@ import at load time, make it a lazy (function-body) import like the existing one
 ## The sys.path bootstrap (read this before adding a new file)
 
 Every file in `core/` is written to work two ways at once, unchanged: as a directly-run script
-(`python core/governance/plan_gate.py verify --dir ...`, still the documented CLI form) and as
+(`minusctl gate verify --dir ...`, still the documented CLI form) and as
 an installed package module (`core.governance.plan_gate:main`, the console-script form in
 `pyproject.toml`). Both need bare, flat imports like `import audit_chain` or `import toolpath`
 to resolve — not `from core.governance import audit_chain` — because that's what every existing

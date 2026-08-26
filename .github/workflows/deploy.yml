@@ -77,7 +77,7 @@ jobs:
 
       # plan_gate verify == fmt -check + init (no backend) + validate + security scan.
       - name: Verify (gate static checks)
-        run: python core/governance/plan_gate.py verify --dir "${{ inputs.tf_dir }}"
+        run: minusctl gate verify --dir "${{ inputs.tf_dir }}"
 
   # ---------------------------------------------------------------------------
   # Deploy only when apply=true, AFTER validate, AND after manual approval.
@@ -125,7 +125,7 @@ jobs:
       - name: Plan (record plan hash)
         id: plan
         run: |
-          python core/governance/plan_gate.py plan --dir "${{ inputs.tf_dir }}"
+          minusctl gate plan --dir "${{ inputs.tf_dir }}"
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import glob, json, os
           target = os.path.abspath("${{ inputs.tf_dir }}")
@@ -172,9 +172,9 @@ jobs:
         run: |
           echo "::warning::approved_plan_hash was not supplied -- this apply is bound to no PR sign-off."
       - name: Approve (hash-bound; human gate already passed)
-        run: python core/governance/plan_gate.py approve --dir "${{ inputs.tf_dir }}" --mode auto-approve
+        run: minusctl gate approve --dir "${{ inputs.tf_dir }}" --mode auto-approve
       - name: Apply (exact approved plan only)
-        run: python core/governance/plan_gate.py apply --dir "${{ inputs.tf_dir }}"
+        run: minusctl gate apply --dir "${{ inputs.tf_dir }}"
 
       - name: Upload audit log + deploy report
         if: always()

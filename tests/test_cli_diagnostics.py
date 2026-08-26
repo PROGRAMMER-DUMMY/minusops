@@ -52,9 +52,9 @@ def test_error_has_all_three_parts_in_order():
 def test_the_action_is_a_literal_command_not_a_placeholder_sentence():
     """A "fix" that still needs the reader to substitute something is a fourth problem, not a
     solution."""
-    body = cd.format_agent_error("t", "r", "python core/reporting/minusctl.py next --run abc")
+    body = cd.format_agent_error("t", "r", "minusctl next --run abc")
     action = body.split("ACTION REQUIRED:")[1]
-    assert "python core/reporting/minusctl.py next --run abc" in action
+    assert "minusctl next --run abc" in action
 
 
 def test_multiple_commands_are_each_on_their_own_line():
@@ -130,7 +130,7 @@ def test_an_unresolvable_run_names_the_suggestion_in_the_fix_command(workspace, 
 def test_no_runs_at_all_points_at_create(workspace):
     with pytest.raises(SystemExit) as excinfo:
         minusctl._latest_run_or_exit()
-    assert "minusctl.py create" in str(excinfo.value)
+    assert "minusctl create" in str(excinfo.value)
 
 
 # --- MINUS-158: prerequisite interception ---------------------------------------------------
@@ -139,7 +139,7 @@ def test_missing_requirements_names_step_one(workspace):
     root = _run_dir(workspace, "20260819-000001-bare")
     gap = cd.missing_prerequisite(str(root), "20260819-000001-bare")
     assert gap["step"] == 1 and gap["artifact"] == "requirements.json"
-    assert "minusctl.py create" in gap["command"]
+    assert "minusctl create" in gap["command"]
 
 
 def test_missing_adr_names_step_two(workspace):
@@ -189,7 +189,7 @@ def test_readiness_is_intercepted_on_an_incomplete_run(workspace):
         minusctl._run_by_id_or_latest("20260819-000008-bare", command="readiness")
     message = str(excinfo.value)
     assert "needs step 1 (Requirements)" in message
-    assert "minusctl.py create" in message
+    assert "minusctl create" in message
 
 
 def test_decision_is_not_blocked_by_its_own_missing_output(workspace):
@@ -205,7 +205,7 @@ def test_no_plan_record_names_step_four(tmp_path):
     tf.mkdir()
     gap = cd.missing_plan_prerequisite(str(tf))
     assert gap["step"] == 4
-    assert "plan_gate.py plan --dir" in gap["command"]
+    assert "minusctl gate plan --dir" in gap["command"]
 
 
 def test_a_planned_but_unapproved_directory_names_step_five(tmp_path, monkeypatch):
@@ -222,7 +222,7 @@ def test_a_planned_but_unapproved_directory_names_step_five(tmp_path, monkeypatc
 
     gap = cd.missing_plan_prerequisite(str(tf))
     assert gap["step"] == 5
-    assert "plan_gate.py approve --dir" in gap["command"]
+    assert "minusctl gate approve --dir" in gap["command"]
 
     os.makedirs(tmp_path / "approvals")
     (tmp_path / "approvals" / f"{'a' * 64}.json").write_text("{}", encoding="utf-8")
@@ -347,7 +347,7 @@ def test_the_not_found_error_shows_descriptions_for_every_candidate(workspace):
     assert "possible matches" in message
     assert "fraud-squad" in message and "growth" in message
     # One suggested command per candidate: the agent must choose, not accept a default.
-    assert message.count("minusctl.py next --run") >= 2
+    assert message.count("minusctl next --run") >= 2
 
 
 def test_a_runs_prefixed_id_resolves(workspace):

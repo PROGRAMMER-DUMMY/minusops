@@ -25,7 +25,7 @@ not in the wrapper, so changing modes cannot change what is enforced.
 ### Check the environment first
 
 ```bash
-python core/reporting/minusctl.py doctor
+minusctl doctor
 ```
 
 `doctor` distinguishes three states, and the middle one matters most:
@@ -42,7 +42,7 @@ Exit code follows `ok`, so it drops straight into a shell script.
 ### Create your first run
 
 ```bash
-python core/reporting/minusctl.py create "daily payer reconciliation from S3 drops"
+minusctl create "daily payer reconciliation from S3 drops"
 ```
 
 This does **not** generate infrastructure. It creates a run workspace and seeds
@@ -52,17 +52,17 @@ silently guessed into production infrastructure is the failure this gate exists 
 Then, in order:
 
 ```bash
-python core/reporting/minusctl.py next --run <run-id>        # what to do next, and why
-python core/reporting/minusctl.py readiness --run <run-id>   # scored against 15+ checks
+minusctl next --run <run-id>        # what to do next, and why
+minusctl readiness --run <run-id>   # scored against 15+ checks
 ```
 
 ### Deploy behind the gate
 
 ```bash
-python core/governance/plan_gate.py verify  --dir runs/<run-id>/terraform
-python core/governance/plan_gate.py plan    --dir runs/<run-id>/terraform
-python core/governance/plan_gate.py approve --dir runs/<run-id>/terraform
-python core/governance/plan_gate.py apply   --dir runs/<run-id>/terraform
+minusctl gate verify  --dir runs/<run-id>/terraform
+minusctl gate plan    --dir runs/<run-id>/terraform
+minusctl gate approve --dir runs/<run-id>/terraform
+minusctl gate apply   --dir runs/<run-id>/terraform
 ```
 
 `apply` runs only the exact plan whose SHA-256 hash was approved. Editing any `.tf` file

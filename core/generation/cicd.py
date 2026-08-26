@@ -205,8 +205,8 @@ jobs:
 
       - name: Verify and plan through the deploy gate
         run: |
-          python core/governance/plan_gate.py verify --dir "${{ steps.feed.outputs.tf_dir }}"
-          python core/governance/plan_gate.py plan   --dir "${{ steps.feed.outputs.tf_dir }}"
+          minusctl gate verify --dir "${{ steps.feed.outputs.tf_dir }}"
+          minusctl gate plan   --dir "${{ steps.feed.outputs.tf_dir }}"
 
       # No apply here on purpose. Applying belongs behind the environment protection rule
       # and the two-person check in plan_gate, not inside a per-feed loop that a matrix
@@ -320,8 +320,8 @@ pipeline {
                 }
                 stage('Lane 3 - Terraform plan + AST scan') {
                     steps {
-                        sh 'python core/governance/plan_gate.py verify --dir "$TF_DIR"'
-                        sh 'python core/governance/plan_gate.py plan   --dir "$TF_DIR"'
+                        sh 'minusctl gate verify --dir "$TF_DIR"'
+                        sh 'minusctl gate plan   --dir "$TF_DIR"'
                     }
                 }
                 stage('Lane 4 - Unit tests') {
@@ -336,7 +336,7 @@ __ARTIFACT_STAGE__
         stage('Deploy to dev') {
             when { branch 'develop' }
             steps {
-                sh 'python core/governance/plan_gate.py run --dir "$TF_DIR" --mode gatekeeper --policy-mode dev'
+                sh 'minusctl gate run --dir "$TF_DIR" --mode gatekeeper --policy-mode dev'
             }
         }
 
@@ -347,7 +347,7 @@ __ARTIFACT_STAGE__
                 submitter '__STAGING_APPROVERS__'
             }
             steps {
-                sh 'python core/governance/plan_gate.py run --dir "$TF_DIR" --mode gatekeeper --policy-mode production'
+                sh 'minusctl gate run --dir "$TF_DIR" --mode gatekeeper --policy-mode production'
             }
         }
 
@@ -362,7 +362,7 @@ __ARTIFACT_STAGE__
                 submitter '__PROD_APPROVERS__'
             }
             steps {
-                sh 'python core/governance/plan_gate.py run --dir "$TF_DIR" --mode gatekeeper --policy-mode production'
+                sh 'minusctl gate run --dir "$TF_DIR" --mode gatekeeper --policy-mode production'
             }
         }
     }

@@ -197,7 +197,7 @@ def resolve_run_or_fail(run_id=None, command="next"):
         return None, fail(
             "No run workspaces exist yet.",
             "Nothing has been created in runs/ on this machine.",
-            'python core/reporting/minusctl.py create "<what you want to build>"')
+            'minusctl create "<what you want to build>"')
 
     suggestions = suggest_runs(run_id or "")
     listing = "\n".join(f"       - runs/{rid}  (stage: {stage})"
@@ -206,11 +206,11 @@ def resolve_run_or_fail(run_id=None, command="next"):
         best = suggestions[0]
         reason = (f"No run matches {run_id!r}. Closest existing id is {best!r} -- "
                   "likely a typo or a truncated timestamp.")
-        fix = [f"python core/reporting/minusctl.py {command} --run {best}"]
+        fix = [f"minusctl {command} --run {best}"]
     else:
         reason = (f"No run matches {run_id!r}, and nothing in runs/ is close enough to "
                   "guess at.")
-        fix = [f"python core/reporting/minusctl.py {command} --run <id from the list below>"]
+        fix = [f"minusctl {command} --run <id from the list below>"]
 
     print(f"\n[?] Recent runs:\n{listing}", file=sys.stderr)
     return None, fail(f"Run workspace {run_id!r} not found.", reason, fix)
@@ -223,9 +223,9 @@ def resolve_run_or_fail(run_id=None, command="next"):
 # missing when they have not synthesised yet sends them to the wrong end of the pipeline.
 _LIFECYCLE = (
     ("requirements.json", 1, "Requirements",
-     'python core/reporting/minusctl.py create "<what you want to build>"'),
+     'minusctl create "<what you want to build>"'),
     ("architecture_decision.json", 2, "Architecture decision record",
-     "python core/reporting/minusctl.py decision template --write --run {run_id}"),
+     "minusctl decision template --write --run {run_id}"),
     ("terraform", 3, "Synthesis (generated HCL)",
      'python core/generation/synthesizer.py "<requirements summary>" --run {run_id}'),
 )
@@ -290,24 +290,24 @@ def missing_plan_prerequisite(tf_dir):
         import plan_gate
     except Exception as exc:
         return {"step": 4, "name": "Plan", "reason": f"plan gate unavailable: {exc}",
-                "command": f"python core/governance/plan_gate.py plan --dir {tf_dir}"}
+                "command": f"minusctl gate plan --dir {tf_dir}"}
 
     pending_path = plan_gate._pending_path(tf_dir)
     if not os.path.exists(pending_path):
         return {"step": 4, "name": "Plan",
                 "reason": f"no plan record at {pending_path}",
-                "command": f"python core/governance/plan_gate.py plan --dir {tf_dir}"}
+                "command": f"minusctl gate plan --dir {tf_dir}"}
     try:
         with open(pending_path, encoding="utf-8") as handle:
             plan_hash = json.load(handle).get("plan_hash", "")
     except (OSError, ValueError) as exc:
         return {"step": 4, "name": "Plan", "reason": f"plan record unreadable: {exc}",
-                "command": f"python core/governance/plan_gate.py plan --dir {tf_dir}"}
+                "command": f"minusctl gate plan --dir {tf_dir}"}
 
     if not os.path.exists(plan_gate._approved_path(tf_dir, plan_hash)):
         return {"step": 5, "name": "Approval",
                 "reason": f"plan {plan_hash[:12]}... has no approval on record",
-                "command": f"python core/governance/plan_gate.py approve --dir {tf_dir}"}
+                "command": f"minusctl gate approve --dir {tf_dir}"}
     return None
 
 

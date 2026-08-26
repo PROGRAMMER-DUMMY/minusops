@@ -69,7 +69,7 @@ def _latest_run_or_exit():
         raise SystemExit(cli_diagnostics.format_agent_error(
             "No run workspaces exist yet.",
             "Nothing has been created in runs/ on this machine.",
-            'python core/reporting/minusctl.py create "<what you want to build>"'))
+            'minusctl create "<what you want to build>"'))
     return run
 
 
@@ -106,11 +106,11 @@ def _run_by_id_or_latest(run_id=None, command="next"):
         reason = (f"No run matches {run_id!r}. {len(suggestions)} existing run(s) are close -- "
                   "likely a typo or a truncated timestamp. Compare the descriptions before "
                   "picking one.")
-        fix = [f"python core/reporting/minusctl.py {command} --run {rid}" for rid in suggestions]
+        fix = [f"minusctl {command} --run {rid}" for rid in suggestions]
         context = {"possible matches": chr(10) + candidates}
     else:
         reason = f"No run matches {run_id!r}, and nothing in runs/ is close enough to guess at."
-        fix = f"python core/reporting/minusctl.py {command} --run <id from the list below>"
+        fix = f"minusctl {command} --run <id from the list below>"
         context = {"recent runs": chr(10) + cli_diagnostics.format_candidates(
             [rid for rid, _ in cli_diagnostics.recent_runs()])}
     raise SystemExit(cli_diagnostics.format_agent_error(
@@ -264,7 +264,7 @@ def _next_steps(run):
             lines.append("arch missing: " + ", ".join(missing_decision))
         lines.extend([
             "complete   : python core/architecture/requirements.py check " + requirements_file,
-            "decide     : python core/reporting/minusctl.py decision template --write",
+            "decide     : minusctl decision template --write",
             "check arch : python core/architecture/architecture_decision.py check " + decision_file,
             "synthesize : python core/generation/synthesizer.py \"<requirements summary>\" --run " + run["run_id"] + " --requirements-file " + requirements_file + " --decision-file " + decision_file,
             "blocked    : do not generate Terraform from demo fixtures for production",
@@ -281,19 +281,19 @@ def _next_steps(run):
         f"source     : {guard['status']}",
     ]
     if guard["status"] == "STALE":
-        lines.append("review diff : python core/reporting/minusctl.py guard diff --run " + run["run_id"])
+        lines.append("review diff : minusctl guard diff --run " + run["run_id"])
     if not reports:
         lines.extend([
-            "verify     : python core/governance/plan_gate.py verify --dir " + tf_dir,
-            "prod verify: python core/governance/plan_gate.py verify --dir " + tf_dir + " --policy-mode production",
-            "plan       : python core/governance/plan_gate.py plan --dir " + tf_dir,
+            "verify     : minusctl gate verify --dir " + tf_dir,
+            "prod verify: minusctl gate verify --dir " + tf_dir + " --policy-mode production",
+            "plan       : minusctl gate plan --dir " + tf_dir,
             "reports    : none yet",
         ])
     else:
         lines.extend([
             "latest rpt : " + reports[0]["id"],
-            "inspect    : python core/reporting/minusctl.py reports services --latest",
-            "drift      : python core/reporting/minusctl.py reports diff --latest",
+            "inspect    : minusctl reports services --latest",
+            "drift      : minusctl reports diff --latest",
         ])
     lines.append("blocked    : do not apply until a reviewed plan hash is approved")
     lines.extend(_diagnostic_banner(run))
@@ -458,7 +458,7 @@ def _readiness(run):
                 bool(requirements_data),
                 "blocker",
                 requirements_file,
-                "Run `python core/reporting/minusctl.py create \"<request>\"` to create a requirements-first run.",
+                "Run `minusctl create \"<request>\"` to create a requirements-first run.",
             ),
             _check(
                 "requirements complete",
@@ -535,7 +535,7 @@ def _readiness(run):
             tf_dir.exists() and tf_dir.is_dir(),
             "blocker",
             str(tf_dir),
-            "Create a requirements-first run with `python core/reporting/minusctl.py create \"<request>\"`, then synthesize Terraform after architecture approval.",
+            "Create a requirements-first run with `minusctl create \"<request>\"`, then synthesize Terraform after architecture approval.",
         ),
         _check(
             "generated manifest exists",
@@ -549,14 +549,14 @@ def _readiness(run):
             (tf_dir / ".minus" / "baseline.json").exists(),
             "blocker",
             ".minus/baseline.json",
-            "Run `python core/reporting/minusctl.py guard baseline --run " + run["run_id"] + "` after reviewing the generated source.",
+            "Run `minusctl guard baseline --run " + run["run_id"] + "` after reviewing the generated source.",
         ),
         _check(
             "source is current",
             source.get("status") == "CURRENT",
             "blocker",
             source.get("status", "UNKNOWN"),
-            "Run `python core/reporting/minusctl.py guard diff --run " + run["run_id"] + "` and reconcile manual edits.",
+            "Run `minusctl guard diff --run " + run["run_id"] + "` and reconcile manual edits.",
         ),
         _check(
             "core Terraform files present",
@@ -570,7 +570,7 @@ def _readiness(run):
             bool(reports),
             "warning",
             reports[0]["id"] if reports else "none",
-            "Run `python core/governance/plan_gate.py verify --dir <terraform-dir> --policy-mode production` then `python core/governance/plan_gate.py plan --dir <terraform-dir>`.",
+            "Run `minusctl gate verify --dir <terraform-dir> --policy-mode production` then `minusctl gate plan --dir <terraform-dir>`.",
         ),
         _check(
             "latest report has required visuals",
@@ -584,7 +584,7 @@ def _readiness(run):
             not latest or latest.get("source_status", {}).get("status") == "CURRENT",
             "warning",
             latest.get("source_status", {}).get("status", "no report"),
-            "Run `python core/reporting/minusctl.py reports diff --latest` and regenerate the plan if files changed.",
+            "Run `minusctl reports diff --latest` and regenerate the plan if files changed.",
         ),
         _check(
             "cost evidence is BCM-backed",
@@ -625,7 +625,7 @@ def _readiness(run):
              "not recorded — run `validate`" if not _tf_validation else
              "terraform not installed" if _tf_validation.get("ok") is None else
              f"{_tf_validation.get('error_count', '?')} error(s)"),
-            "Run `python core/reporting/minusctl.py validate --run " + run["run_id"] + "` (offline, no credentials).",
+            "Run `minusctl validate --run " + run["run_id"] + "` (offline, no credentials).",
         ),
         _check(
             "data-pipeline requirements profile",
@@ -644,7 +644,7 @@ def _readiness(run):
             "warning",
             (f"{conformance['score']}/100, {len(conformance['findings'])} finding(s)"
              if conformance else "no plan to analyze"),
-            "Run `python core/reporting/minusctl.py conformance --run " + run["run_id"]
+            "Run `minusctl conformance --run " + run["run_id"]
             + "` and address the reference / Well-Architected gaps.",
         ),
         _check(
@@ -652,7 +652,7 @@ def _readiness(run):
             bool(run.get("root")) and Path(run["root"]).exists(),
             "info",
             run.get("root", "-"),
-            "Run `python core/reporting/minusctl.py package --run " + run["run_id"] + "`.",
+            "Run `minusctl package --run " + run["run_id"] + "`.",
         ),
     ]
     blockers = [item for item in checks if not item["ok"] and item["severity"] == "blocker"]
@@ -744,7 +744,7 @@ def _package_markdown(package):
             f"- Source: `{latest.get('cost', {}).get('pricing_source', 'BCM Pricing Calculator API required')}`",
         ])
     else:
-        lines.append("- No report exists yet. Run `python core/governance/plan_gate.py plan --dir <terraform-dir>` after verification.")
+        lines.append("- No report exists yet. Run `minusctl gate plan --dir <terraform-dir>` after verification.")
     lines.extend([
         "",
         "## Safe Next Steps",
@@ -783,7 +783,7 @@ def _package_markdown(package):
         "",
         "## Blocked Actions",
         "",
-        "- Do not run `terraform apply`, `terraform destroy`, mutating cloud CLI commands, or mutating git commands directly, outside the gate, until the exact plan hash is reviewed and approved. Teardown is governed the same way as create/modify: `python core/governance/plan_gate.py plan --dir <dir> --destroy`, then the normal `approve`/`apply`.",
+        "- Do not run `terraform apply`, `terraform destroy`, mutating cloud CLI commands, or mutating git commands directly, outside the gate, until the exact plan hash is reviewed and approved. Teardown is governed the same way as create/modify: `minusctl gate plan --dir <dir> --destroy`, then the normal `approve`/`apply`.",
         "- Do not publish enterprise cost totals unless AWS BCM Pricing Calculator API evidence exists.",
         "",
     ])
@@ -916,11 +916,11 @@ def main(argv=None):
 
     create = sub.add_parser("create", help="resolve request and create a requirements-first run")
     _rich(create,
-          [f'python core/reporting/minusctl.py create "governed lakehouse for 100 GB/day of clickstream"',
-           f'python core/reporting/minusctl.py create "nightly finance ETL" --json'],
+          [f'minusctl create "governed lakehouse for 100 GB/day of clickstream"',
+           f'minusctl create "nightly finance ETL" --json'],
           requires=("nothing -- this is step 1 of the lifecycle",),
           produces=("runs/<id>/requirements.json", "runs/<id>/run.json"),
-          next_step=f"answer the REVIEW fields, then python core/reporting/minusctl.py decision template --write")
+          next_step=f"answer the REVIEW fields, then minusctl decision template --write")
     create.add_argument("request")
     create.add_argument("--cloud", default=None)
     create.add_argument("--name", help="workload name; produces a semantic run id "
@@ -935,7 +935,7 @@ def main(argv=None):
     export_cmd = sub.add_parser(
         "export", help="package a run into a domain repository (local file copy only)")
     _rich(export_cmd,
-          ['python core/reporting/minusctl.py export --run marketing-clickstream-mwaa_20260822_111530 '
+          ['minusctl export --run marketing-clickstream-mwaa_20260822_111530 '
            '--target-repo ../marketing-analytics --dest-dir pipelines/clickstream --generate-workflow'],
           requires=("a synthesized run with generated Terraform",),
           produces=("<target-repo>/<dest-dir>/{terraform,dags,scripts,configs}",
@@ -954,8 +954,8 @@ def main(argv=None):
     diagnose_cmd = sub.add_parser(
         "diagnose", help="explain a failure: evidence, root cause, options, next command")
     _rich(diagnose_cmd,
-          ['python core/reporting/minusctl.py diagnose --run <run-id>',
-           'python core/reporting/minusctl.py diagnose --error "Container killed by YARN..."'],
+          ['minusctl diagnose --run <run-id>',
+           'minusctl diagnose --error "Container killed by YARN..."'],
           requires=("a failure -- from --error text, or extracted from the run's local "
                     "artifacts",),
           produces=("a four-part resolution report on stdout",),
@@ -1009,7 +1009,7 @@ def main(argv=None):
 
     nxt = sub.add_parser("next", help="print safe next steps for a run")
     _rich(nxt,
-          [f"python core/reporting/minusctl.py next", f"python core/reporting/minusctl.py next --run 20260818-085523 --json"],
+          [f"minusctl next", f"minusctl next --run 20260818-085523 --json"],
           requires=("runs/<id>/run.json",),
           produces=("nothing -- read-only",),
           next_step="whichever command it prints")
@@ -1018,7 +1018,7 @@ def main(argv=None):
 
     pkg = sub.add_parser("package", help="write an enterprise handoff package for a run")
     _rich(pkg,
-          [f"python core/reporting/minusctl.py package --run 20260818-085523"],
+          [f"minusctl package --run 20260818-085523"],
           requires=("runs/<id>/terraform/", "at least one report under runs/<id>/reports/"),
           produces=("runs/<id>/handoff.md", "runs/<id>/handoff.json"),
           next_step="share the package; it is evidence, not an approval")
@@ -1027,11 +1027,11 @@ def main(argv=None):
 
     ready = sub.add_parser("readiness", help="score enterprise presentation readiness for a run")
     _rich(ready,
-          [f"python core/reporting/minusctl.py readiness --run 20260818-085523",
-           f"python core/reporting/minusctl.py readiness --strict   # exit 2 unless READY"],
+          [f"minusctl readiness --run 20260818-085523",
+           f"minusctl readiness --strict   # exit 2 unless READY"],
           requires=("runs/<id>/terraform/",),
           produces=("nothing -- read-only",),
-          next_step="python core/governance/plan_gate.py verify --dir runs/<id>/terraform")
+          next_step="minusctl gate verify --dir runs/<id>/terraform")
     ready.add_argument("--run", default="latest")
     ready.add_argument("--json", action="store_true")
     ready.add_argument("--strict", action="store_true", help="Exit non-zero unless status is READY")
@@ -1087,7 +1087,7 @@ def main(argv=None):
 
     audit_cmd = sub.add_parser("audit", help="verify the tamper-evident audit chain")
     _rich(audit_cmd,
-          [f"python core/reporting/minusctl.py audit", f"python core/reporting/minusctl.py audit --json"],
+          [f"minusctl audit", f"minusctl audit --json"],
           requires=(".agents/logs/audit.jsonl",),
           produces=("nothing -- read-only",),
           next_step="investigate any break; a broken chain is evidence, not noise")
@@ -1103,10 +1103,10 @@ def main(argv=None):
 
     doctor_cmd = sub.add_parser("doctor", help="diagnose the local environment (cross-platform)")
     _rich(doctor_cmd,
-          [f"python core/reporting/minusctl.py doctor", f"python core/reporting/minusctl.py doctor --json", f"python core/reporting/minusctl.py doctor --fix"],
+          [f"minusctl doctor", f"minusctl doctor --json", f"minusctl doctor --fix"],
           requires=("nothing -- run this first on a new machine",),
           produces=("nothing, unless --fix starts a LocalStack container",),
-          next_step=f'python core/reporting/minusctl.py create "<what you want to build>"')
+          next_step=f'minusctl create "<what you want to build>"')
     doctor_cmd.add_argument("--json", action="store_true")
     doctor_cmd.add_argument("--fix", action="store_true",
                             help="attempt the repairs doctor knows how to make (MINUS-154). "
@@ -1117,11 +1117,11 @@ def main(argv=None):
     adopt_cmd = sub.add_parser(
         "adopt", help="inventory + scan an existing Terraform directory and bring it under the gate")
     _rich(adopt_cmd,
-          [f"python core/reporting/minusctl.py adopt --dir infra/legacy",
-           f"python core/reporting/minusctl.py adopt --dir infra/legacy --anchor   # claims these files as reviewed"],
+          [f"minusctl adopt --dir infra/legacy",
+           f"minusctl adopt --dir infra/legacy --anchor   # claims these files as reviewed"],
           requires=("any directory containing .tf files",),
           produces=("nothing, unless --anchor writes .minus/ inside the target",),
-          next_step="python core/governance/plan_gate.py verify --dir <dir> --policy-mode production")
+          next_step="minusctl gate verify --dir <dir> --policy-mode production")
     adopt_cmd.add_argument("--dir", required=True)
     adopt_cmd.add_argument("--anchor", action="store_true",
                            help="write the source baseline (the only write this makes)")
@@ -1131,8 +1131,8 @@ def main(argv=None):
     seed_cmd = sub.add_parser(
         "seed", help="prove an APPLIED stack end to end: seed Bronze, run the job, query Gold")
     _rich(seed_cmd,
-          [f"python core/reporting/minusctl.py seed --run 20260818-085523            # plan only, sends nothing",
-           f"python core/reporting/minusctl.py seed --run 20260818-085523 --execute  # MUTATES AWS"],
+          [f"minusctl seed --run 20260818-085523            # plan only, sends nothing",
+           f"minusctl seed --run 20260818-085523 --execute  # MUTATES AWS"],
           requires=("an APPLIED stack (terraform outputs must resolve)",
                     "runs/<id>/tests/fixtures/sample.json"),
           produces=("objects in Bronze, a Glue job run, one Athena query",),

@@ -174,7 +174,7 @@ Every engineer and AI agent operating on this repository must strictly adhere to
 
 ## 5. Daily Operator Command Cheat Sheet
 
-All operations run via `minusctl` (or `.venv\Scripts\minusctl.exe` / `python -m core.cli.main`):
+All operations run via `minusctl` (or `.venv\Scripts\minusctl.exe` / `minusctl`):
 
 ```bash
 # 1. Workspace & Lifecycle

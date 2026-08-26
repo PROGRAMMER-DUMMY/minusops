@@ -137,9 +137,9 @@ def adopt(source_dir, anchor=False, label="adopted"):
         next_steps.append(
             "No backend block: this directory keeps state locally, which blocks CI and "
             "concurrent operators (TerraShark FM-03).")
-    next_steps.append(f"python core/governance/plan_gate.py verify --dir {source_dir} "
+    next_steps.append(f"minusctl gate verify --dir {source_dir} "
                       "--policy-mode production")
-    next_steps.append(f"python core/governance/plan_gate.py plan --dir {source_dir}")
+    next_steps.append(f"minusctl gate plan --dir {source_dir}")
 
     return {
         "ok": not blocking,

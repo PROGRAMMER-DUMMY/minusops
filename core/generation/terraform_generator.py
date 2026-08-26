@@ -377,8 +377,8 @@ Generated Terraform for demo fixture `aws-data-pipeline-standard`.
 Safe workflow:
 
 ```powershell
-python core/governance/plan_gate.py verify --dir {out.as_posix()}
-python core/governance/plan_gate.py plan --dir {out.as_posix()}
+minusctl gate verify --dir {out.as_posix()}
+minusctl gate plan --dir {out.as_posix()}
 ```
 
 Do not run apply until the plan hash is reviewed and approved.

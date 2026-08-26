@@ -63,7 +63,7 @@ def test_minusctl_next_reports_safe_commands(tmp_path, monkeypatch):
     assert code == 0
     assert "requirements:" in output
     assert "decision   :" in output
-    assert "python core/reporting/minusctl.py decision template --write" in output
+    assert "minusctl decision template --write" in output
     assert "--run" in output
     assert "--decision-file" in output
     assert "do not generate Terraform from demo fixtures for production" in output

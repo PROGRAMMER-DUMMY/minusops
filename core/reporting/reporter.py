@@ -1978,7 +1978,7 @@ footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid rgba(212,163,11
 <div class="sub">Terraform loads all .tf files in this directory. Files are split by concern for reviewability.</div></div>
 <div class="panel">{_terraform_structure_html(tf_dir)}</div>
 <h2>Safe execution flow</h2>
-<div class="panel"><p class="flow"><code>terraform init</code> prepares providers. <code>python core/governance/plan_gate.py verify --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')} --policy-mode production</code> formats, validates, runs native SEC checks, and requires external scanner evidence. <code>python core/governance/plan_gate.py plan --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')}</code> generates <code>tfplan</code> and this report. Apply is intentionally absent from this report and remains gated.</p></div>
+<div class="panel"><p class="flow"><code>terraform init</code> prepares providers. <code>minusctl gate verify --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')} --policy-mode production</code> formats, validates, runs native SEC checks, and requires external scanner evidence. <code>minusctl gate plan --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')}</code> generates <code>tfplan</code> and this report. Apply is intentionally absent from this report and remains gated.</p></div>
 </section>
 <section class="page">
 <div class="header"><div class="section-no">Section 10</div><h1>Terraform Outputs</h1>

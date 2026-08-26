@@ -77,13 +77,13 @@ The workspace is maintained with **14 dedicated, non-monolithic `CONTEXT-[folder
 
 ### 1. Diagnostics & Pre-Flight Check
 ```bash
-python core/reporting/minusctl.py doctor
+minusctl doctor
 ```
 
 ### 2. Requirements-First Creation Workflow
 ```bash
 # 1. Gather requirements and generate run workspace
-python core/reporting/minusctl.py create "create a data pipeline for ingestion and analytics"
+minusctl create "create a data pipeline for ingestion and analytics"
 
 # 2. Synthesize Terraform from requirements and decision records
 python core/generation/synthesizer.py "ingest and analytics pipeline" \
@@ -100,16 +100,16 @@ python core/governance/reflector.py --run-root runs/<run-id>
 ### 4. Secure Deployment Loop
 ```bash
 # Verify HCL syntax and static rules
-python core/governance/plan_gate.py verify --dir runs/<run-id>/terraform --policy-mode production
+minusctl gate verify --dir runs/<run-id>/terraform --policy-mode production
 
 # Generate plan artifact and SHA-256 hash
-python core/governance/plan_gate.py plan --dir runs/<run-id>/terraform
+minusctl gate plan --dir runs/<run-id>/terraform
 
 # Approve plan hash (HITL MFA gate)
-python core/governance/plan_gate.py approve --dir runs/<run-id>/terraform
+minusctl gate approve --dir runs/<run-id>/terraform
 
 # Apply approved plan
-python core/governance/plan_gate.py apply --dir runs/<run-id>/terraform
+minusctl gate apply --dir runs/<run-id>/terraform
 ```
 
 ### 5. Launch Control Plane Dashboard

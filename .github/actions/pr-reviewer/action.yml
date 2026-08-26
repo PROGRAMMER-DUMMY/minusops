@@ -98,7 +98,7 @@ runs:
           tail -n 20 .minus-review/verify.txt
           exit 0
         fi
-        python core/governance/plan_gate.py verify --dir "$TF_DIR" \
+        minusctl gate verify --dir "$TF_DIR" \
           --policy-mode "$POLICY_MODE" > .minus-review/verify.txt 2>&1
         echo "rc=$?" >> "$GITHUB_OUTPUT"
         tail -n 20 .minus-review/verify.txt
@@ -111,7 +111,7 @@ runs:
         TF_DIR: ${{ inputs.tf_dir }}
       run: |
         set -uo pipefail
-        python core/governance/plan_gate.py plan --dir "$TF_DIR" > .minus-review/plan.txt 2>&1 || true
+        minusctl gate plan --dir "$TF_DIR" > .minus-review/plan.txt 2>&1 || true
         # The hash comes from the gate's own record, not scraped from log text: the log prints
         # a truncated prefix, and the merge gate compares full digests.
         python - <<'PY' >> "$GITHUB_OUTPUT"
