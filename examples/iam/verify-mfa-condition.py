@@ -54,7 +54,8 @@ def classify(arn):
                             "AssumeRole carrying MFA parameters")
     if "assumed-role/AWSReservedSSO" in arn:
         return ("IAM Identity Center (SSO)", "the condition is expected to DENY: STS receives "
-                                             "no MFA assertion from the IdP")
+                                             "no MFA assertion from the IdP. Documented, not "
+                                             "measured -- run --live and report the result")
     if ":assumed-role/" in arn:
         return ("assumed role", "depends on how the ORIGINAL session authenticated -- the flag "
                                 "propagates through the chain if it was set")

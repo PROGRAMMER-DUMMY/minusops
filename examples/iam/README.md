@@ -64,7 +64,8 @@ because an omission that looks like an oversight gets "fixed" by the next reader
 
 `aws:MultiFactorAuthPresent` is absent or false for IAM Identity Center, SAML and OIDC
 sessions -- AWS STS receives no MFA assertion from the identity provider. A trust policy
-requiring it **denies an SSO operator**, even after a hardware key prompt.
+requiring it **denies an SSO operator**, even after a hardware key prompt. That statement is
+sourced from AWS documentation and has not been measured here; see the limits below.
 
 And where it does populate, it propagates: a session derived from MFA-authenticated
 credentials carries the flag through role chaining. An agent running in your authenticated
@@ -79,14 +80,29 @@ agent's environment. Verify the behaviour against your own directory before rely
 It creates one permissionless role carrying the condition, tries to assume it, reports the
 result and deletes the role.
 
-### One measured result
+### What has been measured, and what has not
 
-Run on 2026-08-26 against a development account, signed in as an **IAM user with long-lived
-access keys**: **DENIED**. That is the unelevated case rather than the SSO one -- access keys
+**Measured, 2026-08-26.** A development account, signed in as an IAM user with long-lived
+access keys: **DENIED**. That is the unelevated case rather than the SSO one -- access keys
 carry no MFA flag whether or not a device is enrolled -- and it is the case most CI runners
 and most local shells are in. Turning the condition on there locks out every session that has
 not called `sts:GetSessionToken` with a code first, which is the failure that gets diagnosed
 as "MFA is broken" and fixed by deleting the condition.
+
+**Not measured: the SSO case.** An IAM Identity Center session requires an *organization*
+instance -- an account instance cannot grant AWS account access at all -- and creating one
+converts a standalone account into an AWS Organizations management account, which ends free
+tier eligibility immediately. The development account this was written against is on free
+tier, so the SSO claim above stays documentation-sourced. Anyone running an organization
+already can measure it in a minute, and the result is worth contributing back.
+
+**Not measured: the propagation claim.** That the flag survives role chaining is asserted
+above and not tested. Testing it needs an MFA device enrolled on an IAM user, which is free
+and needs no organization.
+
+**Not exercised: `organization-scp.json`.** Service control policies require AWS
+Organizations with all features enabled. The file is written against the AWS SCP schema and
+has never been attached to a live organization.
 
 ## What is still not covered
 
