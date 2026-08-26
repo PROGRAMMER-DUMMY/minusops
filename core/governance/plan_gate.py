@@ -32,15 +32,15 @@ actions=["delete"], which hash-binding, RBAC, and the audit chain already handle
 other plan.
 
 Examples (point --dir at any Terraform directory — the engine is workload-agnostic):
-    python core/governance/plan_gate.py verify  --dir path/to/terraform
-    python core/governance/plan_gate.py plan    --dir path/to/terraform
-    python core/governance/plan_gate.py approve --dir path/to/terraform
-    python core/governance/plan_gate.py apply   --dir path/to/terraform
-    python core/governance/plan_gate.py run     --dir path/to/terraform [--mode auto-approve]
+    minusctl gate verify  --dir path/to/terraform
+    minusctl gate plan    --dir path/to/terraform
+    minusctl gate approve --dir path/to/terraform
+    minusctl gate apply   --dir path/to/terraform
+    minusctl gate run     --dir path/to/terraform [--mode auto-approve]
 
-    python core/governance/plan_gate.py plan    --dir path/to/terraform --destroy   # governed teardown
-    python core/governance/plan_gate.py approve --dir path/to/terraform
-    python core/governance/plan_gate.py apply   --dir path/to/terraform
+    minusctl gate plan    --dir path/to/terraform --destroy   # governed teardown
+    minusctl gate approve --dir path/to/terraform
+    minusctl gate apply   --dir path/to/terraform
 
 Depends on: providers.base (get_provider), plan_inspector, cli_diagnostics, team_resolver,
     toolpath, audit_chain, authz, destructive_change_gate, cloud_drift, address_churn,
@@ -62,6 +62,7 @@ import hashlib
 import getpass
 import argparse
 import datetime
+import textwrap
 import threading
 import time
 import subprocess
@@ -87,6 +88,7 @@ import intent_assertions  # noqa: E402
 import requirements as reqgate  # noqa: E402
 import architecture_decision as adecision  # noqa: E402
 import ephemeral_apply  # noqa: E402
+import source_guard  # noqa: E402
 
 WORKSPACE = os.getcwd()
 LOG_DIR = os.path.join(WORKSPACE, ".agents", "logs")
@@ -557,6 +559,147 @@ def _print_classification(classification):
             print(f"    - {addr}", file=sys.stderr)
 
 
+# --- Verify receipts ----------------------------------------------------------------------
+#
+# `plan` used to run on a directory `verify` had never seen. Measured: a plan hash was minted,
+# an approval could be attached to it, and nothing recorded that the fmt check, `terraform
+# validate` and the SEC scan had all been skipped. The G6 evaluation inside stage_plan is
+# shadow-only by design and never blocked anything, so there was no second line holding it.
+#
+# The fix is the plan-hash pattern one stage earlier: verify binds a receipt to the SOURCE
+# content, and plan refuses without a receipt matching what is on disk right now. An edit
+# after verify invalidates it for exactly the reason an edit after plan voids an approval --
+# the evidence describes content that is no longer there.
+
+VERIFY_RECEIPT = "verified.json"
+
+# Long enough that "ok", "fine" and "n/a" cannot pass for a consequence. Not a quality bar --
+# no length check makes a sentence true -- but it stops the field being satisfied by a
+# keystroke, which is the failure mode a free-text box actually has.
+MIN_IMPACT_CHARS = 20
+
+# Ordered weakest to strongest. A receipt satisfies a plan when it was produced under a mode
+# at least as strict, so production evidence covers a dev plan but never the reverse: a dev
+# verify never ran the external policy scanners production requires, and honouring it would
+# report a check that did not happen.
+_POLICY_STRENGTH = {"dev": 0, "production": 1}
+
+
+def _verify_receipt_path(dir_):
+    return os.path.join(_state_dir(dir_), VERIFY_RECEIPT)
+
+
+def _source_digest(dir_):
+    """One digest over the content of every source file in the directory.
+
+    Built on source_guard.source_hashes(), which already walks the tree and hashes each file
+    for the drift check -- this only folds that mapping into a single comparable value.
+    """
+    hashes = source_guard.source_hashes(dir_)
+    canonical = json.dumps(hashes, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _write_verify_receipt(dir_, policy_mode):
+    """Record that verify passed, and over exactly what."""
+    os.makedirs(_state_dir(dir_), exist_ok=True)
+    record = {
+        "source_digest": _source_digest(dir_),
+        "policy_mode": policy_mode,
+        "canonical_dir": _canonical_dir(dir_),
+        "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "verified_by": getpass.getuser(),
+    }
+    with open(_verify_receipt_path(dir_), "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(record, handle, indent=2)
+    return record
+
+
+def _read_verify_receipt(dir_):
+    """The receipt, or None. A corrupt record reads as ABSENT, never as valid -- treating a
+    truncated file as a pass is how a disk-full event silently turns the gate off."""
+    path = _verify_receipt_path(dir_)
+    if not os.path.exists(path):
+        return None
+    try:
+        record = json.load(open(path, encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _verify_state(dir_, policy_mode):
+    """{ok, reason, detail} -- whether verify's evidence covers a plan of this directory now."""
+    receipt = _read_verify_receipt(dir_)
+    if receipt is None:
+        return {"ok": False, "reason": "verify_not_run",
+                "detail": "no verify receipt for this directory"}
+    if receipt.get("canonical_dir") != _canonical_dir(dir_):
+        return {"ok": False, "reason": "verified_another_directory",
+                "detail": f"receipt was written for {receipt.get('canonical_dir')!r}"}
+    if receipt.get("source_digest") != _source_digest(dir_):
+        return {"ok": False, "reason": "source_changed_since_verify",
+                "detail": "the Terraform source changed after verify passed"}
+    have = _POLICY_STRENGTH.get(receipt.get("policy_mode"), -1)
+    want = _POLICY_STRENGTH.get(policy_mode, 0)
+    if have < want:
+        return {"ok": False, "reason": "verified_under_weaker_policy_mode",
+                "detail": f"verified under {receipt.get('policy_mode')!r}, "
+                          f"planning under {policy_mode!r}"}
+    return {"ok": True, "reason": None, "detail": None, "receipt": receipt}
+
+
+def _record_impact(dir_, impact_text, classification):
+    """Attach the author's impact statement to the pending plan, so approve can show it."""
+    with _gate_state_lock(_pending_path(dir_)):
+        try:
+            pending = json.load(open(_pending_path(dir_), encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        pending["impact"] = {
+            "statement": impact_text,
+            "stated_by": authz.verified_operator() or authz.operator(),
+            "stated_at": _now(),
+            "finding_count": len(classification.get("findings") or []),
+        }
+        _write_json_atomic(_pending_path(dir_), pending)
+
+
+def _clear_pending(dir_):
+    """Remove the pending record. A refused plan must leave nothing approvable behind."""
+    try:
+        os.remove(_pending_path(dir_))
+    except OSError:
+        pass
+
+
+def _print_impact(pending):
+    """Show the impact statement to the approver, above the y/N."""
+    impact = (pending or {}).get("impact") or {}
+    statement = impact.get("statement")
+    if not statement:
+        return
+    print("")
+    print("  WHAT THIS CHANGES, stated by the author of the plan:")
+    for line in textwrap.wrap(statement, width=76):
+        print(f"    {line}")
+    print(f"    -- {impact.get('stated_by')}, {impact.get('stated_at', '')[:19]}")
+    print("")
+
+
+def _reject_if_unverified(dir_, policy_mode):
+    """True when plan must not proceed. Prints what to run rather than only what went wrong."""
+    state = _verify_state(dir_, policy_mode)
+    if state["ok"]:
+        return False
+    print(f"[gate] refusing to plan: {state['detail']}.", file=sys.stderr)
+    print(f"[gate] run `minusctl gate verify --dir {dir_}` first -- a plan a human can "
+          f"approve must have been format-checked, validated and security-scanned.",
+          file=sys.stderr)
+    _audit("plan", "REJECTED", reason=state["reason"], dir=dir_, policy_mode=policy_mode)
+    return True
+
+
 def _source_status_for_hash(plan_hash):
     try:
         return plan_inspector.source_status(plan_hash[:12])
@@ -840,8 +983,10 @@ def stage_verify(dir_, policy_mode=None):
     if not _reject_if_policy_engine_unavailable(dir_, policy_mode):
         return False
 
+    receipt = _write_verify_receipt(dir_, policy_mode)
     print("[gate] verify OK")
-    _audit("verify", "OK", dir=dir_, policy_mode=policy_mode)
+    _audit("verify", "OK", dir=dir_, policy_mode=policy_mode,
+           source_digest=receipt["source_digest"])
     return True
 
 
@@ -935,7 +1080,8 @@ def _drift_for_plan(plan_json, with_telemetry=False):
     return cloud_drift.classify(plan_json or {}, telemetry=telemetry_fn)
 
 
-def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False):
+def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
+               impact=None):
     """destroy=True governs teardown through the exact same hash-bind -> approve -> apply loop
     as create/modify, so teardown is never a raw `terraform destroy` with no plan-hash binding,
     no RBAC, and no audit chain. A destroy plan's resource_changes carry actions=["delete"],
@@ -944,6 +1090,8 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False):
     render "delete" as Destroying/destruction."""
     print("== plan (destroy) ==" if destroy else "== plan ==")
     policy_mode = _policy_mode(policy_mode)
+    if _reject_if_unverified(dir_, policy_mode):
+        return False
     plan_args = ["plan", f"-out={PLAN_FILE}"]
     if destroy:
         plan_args.insert(1, "-destroy")
@@ -979,6 +1127,31 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False):
     # autonomous-eligible) lives in stage_apply below, the actual mutation point.
     classification = _classify_plan(dir_)
     _print_classification(classification)
+
+    # A staged plan must arrive with a written impact statement (FR: forced articulation).
+    #
+    # The gate already KNEW the plan was staged and printed why -- machine-readable findings
+    # naming the address and the reason. What nobody had to do was say what BREAKS. A human
+    # reading "STAGED PATH REQUIRED (3 finding(s))" over a 400-resource diff is being asked to
+    # rubber-stamp, and a y/N on a diff nobody can hold in their head is not review.
+    #
+    # So the author states the consequence at plan time, and the human reads that sentence at
+    # approve time. Modelled on the awslabs ccapi-mcp-server, which requires an explain() call
+    # describing deletion impact before it will accept a confirmation.
+    if not classification.get("autonomous_eligible", False):
+        impact_text = (impact or "").strip()
+        if len(impact_text) < MIN_IMPACT_CHARS:
+            print(f"[gate] refusing to stage this plan: it is not autonomous-eligible and "
+                  f"carries no impact statement.", file=sys.stderr)
+            print(f"[gate] re-run with --impact \"<what breaks, and for whom>\" "
+                  f"({MIN_IMPACT_CHARS} characters minimum). The approver reads this "
+                  f"sentence, not the {len(classification['findings'])} finding(s) above.",
+                  file=sys.stderr)
+            _audit("plan", "REJECTED", reason="staged_plan_without_impact_statement",
+                   dir=dir_, plan_hash=h, destroy=destroy)
+            _clear_pending(dir_)
+            return False
+        _record_impact(dir_, impact_text, classification)
 
     # G6 (docs/g6_scope.md): SEC-*/COST-* rules over real plan JSON via OPA/Rego, run alongside
     # the regex-over-HCL scan (core/reporting/optimize_analyzer.py, invoked separately in
@@ -1335,6 +1508,7 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None, role_arn=None):
     print(f"  identity  : {account if connected else 'NOT AUTHENTICATED'}")
     print(f"  approver  : {approver} ({authz_mode})")
     print(f"  mode      : {mode}")
+    _print_impact(pending)
     if not connected:
         print("[gate] WARNING: no active cloud session. Authenticate before apply "
               "(`aws sso login`, or assume the MFA-gated deploy role).")
@@ -1531,7 +1705,7 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
         print(cli_diagnostics.format_agent_error(
             "`apply` needs step 5 (Approval), which has not run for this plan.",
             f"no approval record for plan {current[:12]}... in {dir_}",
-            f"python core/governance/plan_gate.py approve --dir {dir_}"),
+            f"minusctl gate approve --dir {dir_}"),
             file=sys.stderr)
         print("[gate] no approval on record for this directory and plan hash. Run `approve` first.",
               file=sys.stderr)
@@ -1621,7 +1795,8 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
 def stage_run(dir_, mode, policy_mode=None, destroy=False, with_telemetry=False,
               role_arn=None):
     return (stage_verify(dir_, policy_mode)
-            and stage_plan(dir_, policy_mode, destroy=destroy, with_telemetry=with_telemetry)
+            and stage_plan(dir_, policy_mode, destroy=destroy, with_telemetry=with_telemetry,
+                           impact=impact)
             and stage_approve(dir_, mode, policy_mode, role_arn=role_arn)
             and stage_apply(dir_, mode, policy_mode))
 
@@ -1644,6 +1819,12 @@ def _build_parser():
                         "role and never handles credentials. (No --mfa-arn: an MFA claim is "
                         "not visible to sts get-caller-identity, so the gate cannot check "
                         "one; MFA is enforced by the role's trust policy at AssumeRole.)")
+    p.add_argument("--impact", default=None,
+                   help="What this change breaks, and for whom. REQUIRED when the plan is "
+                        "not autonomous-eligible (stateful, IAM or unreviewed resource "
+                        "types). The approver reads this sentence rather than the raw "
+                        "finding list, which is what makes the y/N a review instead of a "
+                        "rubber stamp.")
     p.add_argument("--with-telemetry", action="store_true",
                    help="on detected cloud drift, ask CloudTrail who changed the resource and "
                         "Glue what failed first (read-only, advisory, fail-open). Off by "
@@ -1658,14 +1839,15 @@ def main(argv=None):
         ok = stage_verify(args.dir, args.policy_mode)
     elif args.stage == "plan":
         ok = stage_plan(args.dir, args.policy_mode, destroy=args.destroy,
-                        with_telemetry=args.with_telemetry)
+                        with_telemetry=args.with_telemetry, impact=args.impact)
     elif args.stage == "approve":
         ok = stage_approve(args.dir, args.mode, args.policy_mode, role_arn=args.role_arn)
     elif args.stage == "apply":
         ok = stage_apply(args.dir, args.mode, args.policy_mode)
     else:
         ok = stage_run(args.dir, args.mode, args.policy_mode, destroy=args.destroy,
-                       with_telemetry=args.with_telemetry, role_arn=args.role_arn)
+                       impact=args.impact, with_telemetry=args.with_telemetry,
+                       role_arn=args.role_arn)
     return 0 if ok else 1
 
 
