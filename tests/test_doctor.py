@@ -200,7 +200,11 @@ def test_missing_lock_seed_is_reported(monkeypatch, tmp_path):
 def test_doctor_skill_manifest_exists_and_names_the_command():
     skill = open(os.path.join(_ROOT, ".agents", "skills", "doctor", "SKILL.md"),
                  encoding="utf-8").read()
-    assert "minusctl.py doctor --json" in skill
+    # The front door, not the script path. `.agents/AGENTS.md` section 2 and pyproject's
+    # [project.scripts] comment both say to invoke `minusctl`; a skill that teaches
+    # `python core/reporting/minusctl.py` teaches around the CLI's own context resolution.
+    assert "minusctl doctor --json" in skill
+    assert "python core/reporting/minusctl.py" not in skill
     # The manifest must not promise a check the code does not make.
     assert "configs/teams.yaml" in skill and "no such file" in skill.lower()
 

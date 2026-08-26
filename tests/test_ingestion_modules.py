@@ -134,17 +134,39 @@ def _grill_me_skill():
                 encoding="utf-8").read()
 
 
-def test_grill_me_covers_every_pillar_and_drops_the_demo_blueprint():
+def test_grill_me_drops_the_demo_blueprint():
     """MINUS-116 plus TASK-TDD-2026-002 WP3. The stale guidance AGENTS.md flags must not
     survive as instruction -- the only surviving mention is the explicit prohibition."""
     skill = _grill_me_skill()
-    for pillar in ("Ingestion source", "Storage & format", "Compute engine", "Orchestration",
-                   "Data quality", "Serving layer", "Alert routing",
-                   "Logging & observability", "Secrets & key hierarchy",
-                   "Network topology"):
-        assert pillar in skill, pillar
     prohibition = [line for line in skill.splitlines() if "aws-data-pipeline-standard" in line]
     assert len(prohibition) == 1 and prohibition[0].lstrip().startswith("> **Do not**")
+
+
+def test_the_interview_covers_every_pillar_topic():
+    """Asserted against the catalogue, not against a transcription of it.
+
+    The pillars used to be written out longhand in SKILL.md and asserted there, so the
+    document and the generator's idea of a pillar could disagree and only the document was
+    checked. They now live in core/architecture/pillars.py, which is what the interview reads
+    and what requirements.py validates against -- so that is where the coverage check belongs.
+    """
+    import pillars
+
+    covered = " ".join(p["title"] + " " + p["question"] + " " + " ".join(p["maps_to"])
+                       for p in pillars.PILLARS).lower()
+    for topic in ("ingestion source", "storage medallion", "partitioning", "data quality",
+                  "compute engine", "worker sizing", "orchestration", "serving",
+                  "access control", "alert routing", "criticality", "proving"):
+        assert topic in covered, topic
+
+
+def test_the_skill_points_at_the_catalogue_rather_than_copying_it():
+    """A second copy of eighteen questions is a second copy that goes stale. The document was
+    carrying its own transcription of the pillars AND its own roadmap while
+    requirements.LIFECYCLE held another; the duplicate is what drifted."""
+    skill = _grill_me_skill()
+    assert "core/architecture/pillars.py" in skill
+    assert skill.count("#### Pillar") == 0, "the pillars are not transcribed into the skill"
 
 
 def test_logging_pillar_names_retention_as_a_cost_leak():

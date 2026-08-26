@@ -16,7 +16,7 @@ AWS only. Every command below is read-only or writes local files, except `apply`
 ## 0. Before anything
 
 ```bash
-python -m pytest            # 533 passed / ~75s. If this is red, stop and report.
+python -m pytest            # 1617 passed, 90 skipped / ~90s. If this is red, stop and report.
 ```
 
 Do **not** pass `--basetemp` or `-m`; `pyproject.toml` already sets both. Live-Terraform
@@ -30,7 +30,7 @@ MinusOps refuses to generate from a vague request. That refusal is the product, 
 obstacle: it forces the interview to actually happen.
 
 ```bash
-python core/reporting/minusctl.py create "<what the user asked for>"
+minusctl create "<what the user asked for>"
 ```
 
 A bare noun phrase works (`"governed AWS data pipeline for clickstream analytics"`). Asking
@@ -43,7 +43,7 @@ need a value **or an explicit `deferred: <reason>`**; a deferral is a recorded d
 an omission.
 
 ```bash
-python core/reporting/minusctl.py readiness --run <id>
+minusctl readiness --run <id>
 ```
 
 Keep going until requirements stop being listed as blockers.
@@ -51,7 +51,7 @@ Keep going until requirements stop being listed as blockers.
 ## 2. Record the architecture decision
 
 ```bash
-python core/reporting/minusctl.py decision template --write --run <id>
+minusctl decision template --write --run <id>
 ```
 
 Fill `architecture_decision.json`: selected architecture, `selected_modules` (from
@@ -104,10 +104,10 @@ with you — re-read it rather than working around the gate.
 ## 6. Ship it through the gate
 
 ```bash
-python core/governance/plan_gate.py verify  --dir runs/<id>/terraform
-python core/governance/plan_gate.py plan    --dir runs/<id>/terraform
-python core/governance/plan_gate.py approve --dir runs/<id>/terraform
-python core/governance/plan_gate.py apply   --dir runs/<id>/terraform
+minusctl gate verify  --dir runs/<id>/terraform
+minusctl gate plan    --dir runs/<id>/terraform
+minusctl gate approve --dir runs/<id>/terraform
+minusctl gate apply   --dir runs/<id>/terraform
 ```
 
 `plan` records a SHA-256 plan hash. `apply` runs **only** that hash; any `.tf` edit voids the
@@ -137,14 +137,14 @@ a claim citing the source you based it on. **A proposed rule lands warn-only aut
 it appears in reports and coverage but cannot block anything until a human promotes it:
 
 ```bash
-python core/reporting/minusctl.py policy list
+minusctl policy list
 ```
 
 Do **not** promote it yourself. Promotion requires a named person and a statement of what
 they actually reviewed:
 
 ```bash
-python core/reporting/minusctl.py policy promote SEC-42 --by alice@corp --reason "verified against AWS docs, fires on the 3 known cases"
+minusctl policy promote SEC-42 --by alice@corp --reason "verified against AWS docs, fires on the 3 known cases"
 ```
 
 Write the rule so it fires on a case you can demonstrate. A rule that never fires is worse
@@ -153,9 +153,9 @@ than no rule: it makes a type look reviewed when nothing checks it.
 ## 7. Hand over
 
 ```bash
-python core/reporting/minusctl.py readiness --run <id>
-python core/reporting/minusctl.py package   --run <id>
-python core/reporting/minusctl.py audit verify
+minusctl readiness --run <id>
+minusctl package   --run <id>
+minusctl audit verify
 ```
 
 The report carries a **Verification coverage** section stating which resource types had a
@@ -176,6 +176,6 @@ to the user; do not present a green report as a verified one.
 ## Try it with no cloud
 
 ```bash
-python core/reporting/minusctl.py demo governed-data-pipeline --owner data-platform --daily-data-gb 50
-python core/reporting/minusctl.py prove
+minusctl demo governed-data-pipeline --owner data-platform --daily-data-gb 50
+minusctl prove
 ```

@@ -85,11 +85,11 @@ Keep it reviewable: split by concern, no secrets in code.
 The synthesized dir goes through the normal control plane:
 
 ```bash
-python core/governance/plan_gate.py verify --dir <run>/terraform   # fmt + terraform validate + SEC scan (blocks on findings)
-python core/governance/plan_gate.py plan   --dir <run>/terraform   # plan-hash + deploy report (architecture diagram, cost, etc.)
+minusctl gate verify --dir <run>/terraform   # fmt + terraform validate + SEC scan (blocks on findings)
+minusctl gate plan   --dir <run>/terraform   # plan-hash + deploy report (architecture diagram, cost, etc.)
 minus-bcm prepare --report-dir <run>/reports/<hash> ... && minus-bcm run ...   # real cost from the BCM Pricing Calculator
-python core/governance/plan_gate.py approve --dir <run>/terraform   # a human reviews the exact plan-hash (RBAC + MFA-backed session)
-python core/governance/plan_gate.py apply   --dir <run>/terraform   # applies ONLY the approved hash; one-shot
+minusctl gate approve --dir <run>/terraform   # a human reviews the exact plan-hash (RBAC + MFA-backed session)
+minusctl gate apply   --dir <run>/terraform   # applies ONLY the approved hash; one-shot
 ```
 
 If `verify` fails (a validate error or a `SEC-*` finding), fix the Terraform and re-verify — do

@@ -9,8 +9,7 @@ You post one Teams Adaptive Card, report the result, and stop.
 
 ```bash
 python -c "
-import sys; sys.path.insert(0, 'core/integrations')
-import teams_hook
+from core.integrations import teams_hook
 print(teams_hook.send_teams_card(
     title='<title>',
     facts_list=[('Rows quarantined', '412'), ('Expectation', 'amount_not_null')],

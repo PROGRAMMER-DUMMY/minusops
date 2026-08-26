@@ -9,8 +9,7 @@ You send one email with attachments, report the result, and stop.
 
 ```bash
 python -c "
-import sys; sys.path.insert(0, 'core/integrations')
-import outlook_hook
+from core.integrations import outlook_hook
 print(outlook_hook.send_executive_email(
     to_addresses=['<recipient>'],
     subject='<subject>',

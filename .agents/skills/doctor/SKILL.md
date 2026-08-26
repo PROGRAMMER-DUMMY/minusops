@@ -13,8 +13,8 @@ file, or an emulator nobody started.
 One command does the whole thing:
 
 ```bash
-python core/reporting/minusctl.py doctor          # human-readable
-python core/reporting/minusctl.py doctor --json   # machine-readable, for a gate or CI step
+minusctl doctor          # human-readable
+minusctl doctor --json   # machine-readable, for a gate or CI step
 ```
 
 Exit code is **0 unless some check is `error`**. `warn` never fails the command — a warn means

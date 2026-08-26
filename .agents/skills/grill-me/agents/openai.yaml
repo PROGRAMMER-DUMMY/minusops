@@ -1,4 +1,4 @@
 interface:
   display_name: "Grill Me"
   short_description: "Gather requirements before building, one question at a time"
-  default_prompt: "Use $grill-me to gather complete requirements before building any system — functional + non-functional via the ISO 25010 / FURPS+ checklist, quantified, MoSCoW-scoped — then map them to a blueprint."
+  default_prompt: "Use $grill-me to gather complete requirements before building any system - functional + non-functional via the ISO 25010 / FURPS+ checklist, quantified, MoSCoW-scoped, plus the 18 data-engineering pillars with each later question derived from the answers already given - then map them to vetted modules and hand off to $architect. Never onto a fixed blueprint."

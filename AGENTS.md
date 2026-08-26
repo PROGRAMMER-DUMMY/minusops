@@ -37,6 +37,7 @@ message through `core/integrations/` and stops:
 - [`.agents/subagents/teams-agent.md`](./.agents/subagents/teams-agent.md) - data-quality failures and quarantine alerts.
 - [`.agents/subagents/outlook-agent.md`](./.agents/subagents/outlook-agent.md) - executive FinOps email with the generated `.xlsx` attached.
 - [`.agents/subagents/confluence-agent.md`](./.agents/subagents/confluence-agent.md) - living architecture documentation pages.
+- [`.agents/subagents/jira-agent.md`](./.agents/subagents/jira-agent.md) - change tickets for a governed deploy, one ticket per invocation.
 
 Three rules bind all four. Never accept, echo, or log a webhook URL or token: they are bearer
 credentials and the hook resolves them itself. A denied approval is a denial, not a failure,
@@ -111,7 +112,7 @@ Because there is no bundled IaC, **every tool that acts on infrastructure requir
 All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws|azure|gcp}` (default `aws`).
 
 **Use `minusctl` rather than a script path.** After `pip install -e .` it is on PATH; without
-an install, `python -m core.cli.main <command>` is the same entry point. The script paths below
+an install, `minusctl <command>` is the same entry point. The script paths below
 still work and the engines are unchanged -- `minusctl` is a front door, not a rewrite -- but the
 subcommand is the stable name and the path is an implementation detail.
 
@@ -373,7 +374,7 @@ report is tied to exactly one plan; `git` versions the `.tf`, the plan-hash vers
 - **Approver RBAC:** set `MINUS_OPERATOR` (the acting principal; wire to SSO/OIDC or CI actor) and `MINUS_APPROVERS` (comma-separated allowlist) or `.minus/approvers.json`. With no allowlist the gates run in recorded "open" mode — never use open mode for production. See [`docs/security_model.md`](./docs/security_model.md) and [`docs/operations_runbook.md`](./docs/operations_runbook.md).
 - **Region/defaults:** none are bundled — your Terraform owns its own region, environment, and tagging. The engine reads `MINUS_CLOUD` and your CLI's configured region; it does not inject provider defaults.
 - **Git:** this **is** a git repo. Work on a branch; commit/push only when asked.
-- **Before touching infra:** run `python core/reporting/minusctl.py doctor` to confirm Terraform, the cloud CLI, credentials, and the policy tooling are present. It also warns when the active credentials are long-term or root, which is exactly the posture an unattended auto-approve run must not have.
+- **Before touching infra:** run `minusctl doctor` to confirm Terraform, the cloud CLI, credentials, and the policy tooling are present. It also warns when the active credentials are long-term or root, which is exactly the posture an unattended auto-approve run must not have.
 
 ---
 

@@ -9,8 +9,7 @@ You open one Jira change ticket, report the result, and stop.
 
 ```bash
 python -c "
-import sys; sys.path.insert(0, 'core/integrations')
-import jira_hook
+from core.integrations import jira_hook
 print(jira_hook.create_change_ticket(
     project_key='<KEY>',
     summary='<one line>',

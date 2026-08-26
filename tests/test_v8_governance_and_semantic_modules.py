@@ -333,16 +333,23 @@ def test_the_location_template_uses_the_gold_bucket_variable():
 
 # --- FR-05: the interview points at the command that exists ---------------------------
 
-def test_pillar_14_names_the_five_hop_proving_command():
-    """AC-04. Pillar 14 describes DQ validation and quarantine checks, which is the five-hop
-    harness; `minusctl seed --execute` is the older three-hop form and does neither."""
+def test_the_proving_pillar_names_the_five_hop_command():
+    """AC-04. The proving pillar covers DQ validation and quarantine checks, which is the
+    five-hop harness; `minusctl seed --execute` is the older three-hop form and does neither.
+
+    Asserted on the sentence that names the command rather than on a table row: the pillar was
+    number 14 under the old fourteen-pillar layout and is 18 under the current one, and a test
+    pinned to the row number fails on a renumbering while saying nothing about the command.
+    """
     with open(os.path.join(ROOT, ".agents", "skills", "grill-me", "SKILL.md"),
               encoding="utf-8") as f:
         skill = f.read()
 
-    pillar = skill.split("| **14** |")[1].split("\n")[0]
-    assert "minusctl prove --execute" in pillar
-    assert "minusctl seed --execute" not in pillar
+    assert "minusctl prove --execute" in skill
+    proving = [line for line in skill.splitlines() if "minusctl seed --execute" in line]
+    for line in proving:
+        assert "older three-hop" in line, (
+            "seed --execute may only appear as the superseded form, never as the instruction")
 
 
 def test_every_module_the_interview_names_exists_in_the_catalog():

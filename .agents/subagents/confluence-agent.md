@@ -9,8 +9,7 @@ You publish or update one Confluence page, report the result, and stop.
 
 ```bash
 python -c "
-import sys; sys.path.insert(0, 'core/integrations')
-import confluence_hook
+from core.integrations import confluence_hook
 print(confluence_hook.publish_confluence_page(
     space_key='<SPACE>',
     page_title='<title>',

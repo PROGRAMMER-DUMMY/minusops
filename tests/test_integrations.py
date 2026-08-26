@@ -579,3 +579,49 @@ def test_finops_agent_uses_the_extracted_hooks():
     assert finops_agent.create_change_ticket is jira_hook.create_change_ticket
     source = open(finops_agent.__file__, encoding="utf-8").read()
     assert "urlopen" not in source          # no second Slack transport
+
+
+# --- Subagent manifests ------------------------------------------------------------------
+
+def test_subagent_manifests_import_the_package_not_a_relative_path():
+    """`sys.path.insert(0, 'core/integrations')` is relative to the CURRENT DIRECTORY.
+
+    It works from a source checkout root and nowhere else. Run from any other directory --
+    which is what a pip-installed MinusOps means -- every one of these manifests raised
+    ModuleNotFoundError, so five registered subagents could not dispatch a single message.
+    pyproject ships `core.integrations` as a real package precisely so the import does not
+    need the trick.
+    """
+    import glob
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    manifests = glob.glob(os.path.join(root, ".agents", "subagents", "*-agent.md"))
+    assert manifests, "the subagent manifests are missing entirely"
+
+    for path in manifests:
+        text = open(path, encoding="utf-8").read()
+        name = os.path.basename(path)
+        assert "sys.path.insert" not in text, (
+            f"{name} reaches for a cwd-relative path; use "
+            f"`from core.integrations import <hook>`")
+        assert "from core.integrations import" in text, (
+            f"{name} does not import its hook from the package")
+
+
+def test_every_subagent_manifest_is_registered_in_agents_md():
+    """A manifest nothing points at is a manifest nobody activates. jira-agent.md existed for
+    months with the most detailed rules of the five and appeared in none of the three places
+    that list them."""
+    import glob
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    registry = ""
+    for doc in ("AGENTS.md", os.path.join(".agents", "AGENTS.md"),
+                os.path.join(".agents", "CONTEXT-agents.md")):
+        full = os.path.join(root, doc)
+        if os.path.exists(full):
+            registry += open(full, encoding="utf-8").read()
+
+    for path in glob.glob(os.path.join(root, ".agents", "subagents", "*-agent.md")):
+        name = os.path.splitext(os.path.basename(path))[0]
+        assert name in registry, f"{name} is not registered in any manifest list"

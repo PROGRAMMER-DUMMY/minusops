@@ -11,8 +11,7 @@ Call the hook, never hand-roll an HTTP request:
 
 ```bash
 python -c "
-import sys; sys.path.insert(0, 'core/integrations')
-import slack_hook
+from core.integrations import slack_hook
 print(slack_hook.send_slack_notification(
     payload={'text': '<message>'},
     interactive=<True|False>,

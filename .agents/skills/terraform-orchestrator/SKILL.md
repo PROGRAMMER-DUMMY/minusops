@@ -29,13 +29,13 @@ MFA-gated deploy role into your CLI session. MFA is enforced by that role's trus
 workload-agnostic engine; there is no bundled default).
 ```bash
 # stage by stage
-python core/governance/plan_gate.py verify  --dir path/to/your/terraform
-python core/governance/plan_gate.py plan    --dir path/to/your/terraform
-python core/governance/plan_gate.py approve --dir path/to/your/terraform
-python core/governance/plan_gate.py apply   --dir path/to/your/terraform
+minusctl gate verify  --dir path/to/your/terraform
+minusctl gate plan    --dir path/to/your/terraform
+minusctl gate approve --dir path/to/your/terraform
+minusctl gate apply   --dir path/to/your/terraform
 
 # or all four in sequence (gatekeeper prompts at approve; --mode auto-approve skips the y/N)
-python core/governance/plan_gate.py run     --dir path/to/your/terraform
+minusctl gate run     --dir path/to/your/terraform
 ```
 
 ### Plan-bound guarantee
