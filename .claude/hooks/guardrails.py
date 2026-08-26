@@ -21,10 +21,9 @@ TWO SCOPES, DELIBERATELY DIFFERENT.
   human-gated `minusctl gate apply` is refused regardless of who is driving, because none of
   those is made safe by a developer being at the keyboard.
 
-  Measured before and after, against one destructive action expressed five ways: the
-  denylist alone caught 1 of 5; the allowlist catches 3. The two it still misses are
-  interpreter paths (`python cleanup.py`), which no allowlist of binaries can close and
-  which the IAM credential is what actually bounds.
+  It does not close interpreter paths. `python cleanup.py` is allowed because `python`
+  must be, and that script can call boto3. No allowlist of binaries closes an interpreter;
+  the IAM credential is what bounds it.
 
   Writes are checked ONLY when a run scope is declared, via MINUS_AGENT_RUN_ID.
   evaluate_write() refuses every path when no run is set, which is right for an autonomous

@@ -90,3 +90,17 @@ configs/teams.yaml
 # session state, not project configuration -- committing it would make one person's selection
 # everyone else's default, and `gate apply` reads it.
 .minus/
+
+# --- Building plans, specs and audits ------------------------------------------------------
+# Working documents, not deliverables. They record how the project got here rather than what
+# it does, they go stale the moment the work moves on, and a reader of the repository is
+# served by the code and the operator docs instead. Kept on disk, out of the repository.
+tasks/
+docs/superpowers/
+docs/*_scope.md
+docs/phase*_plan.md
+docs/project_plan.md
+docs/REMAINING_WORK.md
+docs/minusops_v2_engineering_tickets.md
+docs/generation_engine_ground_truth_survey.md
+docs/generation_pivot_first_proof_*.md

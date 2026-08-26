@@ -53,9 +53,8 @@ def last_hash(path):
     The last chained record, not the last line. A record appended past the chain -- by a
     writer using a bare `open(path, "a")` instead of append() -- carries no entry_hash, and
     taking the final line at face value would hand the next writer GENESIS, making a record
-    written mid-log claim to be the first one ever. That turned one bug into two in this
-    repo: 85 unchained reconciliation records were written, and 24 legitimate entries that
-    followed them were corrupted by exactly this fallback.
+    written mid-log claim to be the first one ever -- so one bad writer corrupts every
+    correctly-written entry that follows it.
 
     Skipping back to the last chained entry conceals nothing -- chain_status() still reports
     the unchained record as a possible insertion. It only stops the damage spreading to

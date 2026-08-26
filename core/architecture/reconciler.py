@@ -217,11 +217,10 @@ def confirm(proposal, confirmed=False, audit_path=None, operator=None):
 def _audit(audit_path, author, proposal, result):
     """Append to the tamper-evident chain, THROUGH audit_chain.append.
 
-    Not a bare `open(path, "a")`. That lands the record in the same file and still omits
-    `prev_hash`/`entry_hash`, which breaks every link after it -- this module wrote 85 such
-    entries into this repo's own audit.jsonl before the bug was found, and `audit verify`
-    exited 1 with 218 errors. A log that reads correctly and fails verification is worse
-    than no log: the failure surfaces as tampering rather than as a defect.
+    Not a bare `open(path, "a")`. That lands the record in the same file with no
+    `prev_hash`/`entry_hash`, breaking every link after it. A log that reads correctly and
+    fails verification is worse than no log: the failure surfaces as tampering rather than
+    as a defect.
 
     Never raises: a confirmed edit that already touched the filesystem must not be reported
     as failed because the log was unwritable.

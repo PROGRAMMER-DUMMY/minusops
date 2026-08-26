@@ -146,7 +146,7 @@ python -m pytest          # no flags needed; pyproject sets --basetemp and -m 'n
 
 ## 5. Open work
 
-> Full categorised breakdown with a suggested order: **[`docs/REMAINING_WORK.md`](./REMAINING_WORK.md)**.
+> Full categorised breakdown with a suggested order: **`docs/REMAINING_WORK.md`**.
 > Summary below.
 
 GitHub issues (created 2026-07-26):
@@ -566,7 +566,7 @@ All 21 engineering tickets from the **MinusOps Enterprise v2.0 Roadmap (`MINUS-1
 
 ## 9. PRD-ARCH-2026-005 (Revision 5.0) — Multi-Repo Export & Semantic Runs — 2026-08-22
 
-Source: [`tasks/completed/deplyoymend_pr.md`](../tasks/completed/deplyoymend_pr.md), implemented against the
+Source: `tasks/completed/deplyoymend_pr.md`, implemented against the
 coding-agent advisory. Built TDD: RED on 21 failures plus one collection error, then GREEN.
 
 **Suite after this work: 1079 tests collected across 88 test files, `pytest` exits 0.**
@@ -615,7 +615,7 @@ coding-agent advisory. Built TDD: RED on 21 failures plus one collection error, 
 
 ## 10. PRD-ARCH-2026-007 (Revision 7.0) — Unified CLI & 5-Hop Proving Harness — 2026-08-22
 
-Source: [`tasks/completed/prd_v7_unified_cli_and_proving_harness.md`](../tasks/completed/prd_v7_unified_cli_and_proving_harness.md).
+Source: `tasks/completed/prd_v7_unified_cli_and_proving_harness.md`.
 Built TDD: RED on 21 harness failures, then RED on the CLI package, then GREEN.
 
 **Suite after this work: 1127 tests collected across 90 test files, `pytest` exits 0.**
@@ -680,7 +680,7 @@ Built TDD: RED on 21 harness failures, then RED on the CLI package, then GREEN.
 
 ## 11. PRD-ARCH-2026-006 FR-07 / AC-05 completion -- Telemetry reaches the gate -- 2026-08-22
 
-Source: [`tasks/completed/prd_v6_enterprise_cli_architecture.md`](../tasks/completed/prd_v6_enterprise_cli_architecture.md)
+Source: `tasks/completed/prd_v6_enterprise_cli_architecture.md`
 FR-07 and AC-05, closed on Matt's work order after a self-audit found the gap.
 
 **Suite: 1049 passed, 86 skipped, 342 slow deselected. `pytest` exits 0.**
@@ -729,7 +729,7 @@ nothing about whether a feature works.
 
 ## 12. PRD v6 FR-01..FR-04 completion -- the FR bodies, not just the ACs -- 2026-08-22
 
-Source: [`tasks/completed/prd_v6_enterprise_cli_architecture.md`](../tasks/completed/prd_v6_enterprise_cli_architecture.md),
+Source: `tasks/completed/prd_v6_enterprise_cli_architecture.md`,
 closed on Matt's work order after a self-audit found that v6's acceptance criteria all passed
 while several FR bodies specified more than their ACs tested.
 
@@ -807,7 +807,7 @@ remembering: 22 passing tests said nothing about whether the two views agreed wi
 
 ## 13. PRD-ARCH-2026-008 (v8) -- Governance and semantic modules, spend ceilings, projection -- 2026-08-22
 
-Source: [`tasks/completed/prd_v8_enterprise_governance_and_semantic_modules.md`](../tasks/completed/prd_v8_enterprise_governance_and_semantic_modules.md).
+Source: `tasks/completed/prd_v8_enterprise_governance_and_semantic_modules.md`.
 Raised by a self-audit: grill-me Pillars 12 and 13 were interviewing operators about four
 modules the catalog did not contain, so those requirements landed in `requirements.json` and
 synthesis produced nothing.
@@ -883,7 +883,7 @@ compositions just stop being offered. Only adding a module that happened to shar
 
 ## 14. PRD-ARCH-2026-009 (v9) -- Incident diagnostics and serving topology -- 2026-08-22
 
-Source: [`tasks/completed/prd_v9_incident_diagnostics_and_serving_topology.md`](../tasks/completed/prd_v9_incident_diagnostics_and_serving_topology.md).
+Source: `tasks/completed/prd_v9_incident_diagnostics_and_serving_topology.md`.
 
 **Suite: 1187 passed, 90 skipped, 362 slow deselected. `pytest` exits 0.**
 

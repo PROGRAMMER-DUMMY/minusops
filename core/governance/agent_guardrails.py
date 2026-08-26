@@ -67,9 +67,9 @@ _WRAPPERS = ("bash", "sh", "zsh", "cmd", "powershell", "pwsh")
 
 # THE ALLOWLIST -- what may run at all. The rules above then decide HOW.
 #
-# The denylist alone was measured at 1 of 5 against one destructive action expressed five
-# ways: `terraform destroy` was caught, while `make teardown`, `python cleanup.py` and
-# `npm run reset` all passed. Enumerating danger is fail-open by construction, which is the
+# A denylist catches only the spelling it enumerates: `terraform destroy` is refused while
+# `make teardown`, `python cleanup.py` and `npm run reset` are the same instruction wearing
+# different clothes. Enumerating danger is fail-open by construction, which is the
 # same argument destructive_change_gate.py makes about resource types and the reason its gate
 # is AUTO_SHIP_ELIGIBLE_TYPES rather than a denylist. AWS reached the same shape: the AWS API
 # MCP Server's READ_OPERATIONS_ONLY matches each command against known-read-only actions and
@@ -194,10 +194,9 @@ def normalise(command):
 def _extract_substitutions(text):
     """Pull `$(...)` and backtick spans out as commands in their own right.
 
-    Two bugs in one place, both found in live use. A substitution RUNS a command, so
-    `echo $(rm -rf /)` has to be checked -- it was allowed before this existed. And the outer
-    text must not be tokenized as though the substitution's words were its own:
-    `d="/tmp/gate$(date +%s)"` was refused because the fragment `+%s)"` read as a binary name.
+    A substitution RUNS a command, so `echo $(rm -rf /)` has to be checked. The outer text
+    must also not be tokenized as though the substitution's words were its own, or
+    `d="/tmp/gate$(date +%s)"` is refused for a binary named `+%s)"`.
 
     Returns (outer_with_spans_blanked, [inner commands]). Nested substitutions are extracted
     recursively. `$((...))` is arithmetic, not a command, so it is blanked without being
@@ -260,10 +259,9 @@ def _segments(text):
     most often reaches a tool call in the first place.
 
     Quote-aware because a regex split is not. `sed 's/x1b\\[[0-9;]*m//g'` carries a `;` inside
-    a single-quoted script; splitting on it produced a fragment whose first token read as the
-    binary `g'`, and the allowlist refused an ordinary log-stripping pipeline. That was found
-    in live use minutes after the allowlist went in, which is the shape of false positive that
-    gets a guardrail switched off.
+    a single-quoted script; splitting on it leaves a fragment whose first token reads as the
+    binary `g'`, and an ordinary log-stripping pipeline is refused. That is the shape of
+    false positive that gets a guardrail switched off.
 
     An UNBALANCED quote falls back to splitting the remainder anyway: a quoting error must not
     turn the rest of the line into one inert string that no rule looks inside.

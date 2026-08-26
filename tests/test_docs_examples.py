@@ -271,10 +271,16 @@ def test_the_context_graph_skill_prescribes_repo_relative_links():
     assert "file://" in skill, "the skill should say explicitly that file:// is banned"
 
 
-@pytest.mark.parametrize("scope", ["docs", "tasks/completed", ".agents/skills"])
+@pytest.mark.parametrize("scope", ["docs", ".agents/skills"])
 def test_local_markdown_links_resolve_on_disk(scope):
-    """Eight links in tasks/completed/ broke when the PRDs were archived: `../` used to mean
-    the repo root and now means tasks/."""
+    """A link that resolves on the author's disk but not in a clone is the failure this
+    catches, so it checks git-tracked-ness rather than os.path.exists.
+
+    `tasks/` is no longer a scope. It is gitignored -- building plans and PRDs are working
+    documents, not deliverables -- so every link inside it points at another untracked file
+    and fails a tracking check by construction. Walking it would only ever assert that
+    ignored files are ignored.
+    """
     broken = []
     for path in _markdown_files(os.path.join(ROOT, scope)):
         base = os.path.dirname(path)
