@@ -21,6 +21,14 @@ on:
         required: false
         default: false
         type: boolean
+      approval_file:
+        description: >-
+          Path to the approval record for this plan, read from a store the plan role cannot
+          write. Verified by core/governance/apply_broker.py: hash match, approver identity,
+          two-person, freshness. Empty means the apply is bound to a hash string only.
+        required: false
+        default: ""
+        type: string
       approved_plan_hash:
         description: >-
           MINUS-145. The SHA-256 the PR reviewer posted and a human signed off on. When set,
@@ -171,6 +179,22 @@ jobs:
         if: ${{ inputs.approved_plan_hash == '' }}
         run: |
           echo "::warning::approved_plan_hash was not supplied -- this apply is bound to no PR sign-off."
+      # The hash check above compares two strings the WORKFLOW was handed. This checks the
+      # approval RECORD: who approved, whether they are the person who planned it, and how
+      # long ago. `approved_plan_hash` is a workflow input -- whoever triggers the run
+      # supplies it -- so on its own it proves the caller knows a hash, not that a human
+      # approved anything.
+      #
+      # Point approval_file at a store the PLAN role cannot write. Reading it from the
+      # runner's own checkout proves only that the file is there.
+      - name: Release check (approval record, not just the hash)
+        if: ${{ inputs.approval_file != '' }}
+        run: |
+          python -m core.governance.apply_broker             --dir "${{ inputs.tf_dir }}"             --approval-file "${{ inputs.approval_file }}"             --max-age-hours 24             --json
+      - name: Warn when no approval record was supplied
+        if: ${{ inputs.approval_file == '' }}
+        run: |
+          echo "::warning::approval_file was not supplied -- nothing verified WHO approved this plan, only that a hash matched."
       - name: Approve (hash-bound; human gate already passed)
         run: minusctl gate approve --dir "${{ inputs.tf_dir }}" --mode auto-approve
       - name: Apply (exact approved plan only)
