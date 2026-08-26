@@ -227,3 +227,46 @@ def test_the_opa_check_pins_the_version_ci_uses():
     checks = {c["name"]: c for c in doctor.diagnose()["checks"]}
 
     assert "1.18" in checks["opa"]["fix"]
+
+
+# --- The console script is reachable ---------------------------------------------------------
+
+def test_a_missing_minusctl_on_path_is_a_warn_that_names_the_directory(monkeypatch):
+    """The binary exists and the instruction still fails: on a Windows Store Python the
+    scripts directory is not on PATH by default, so an operator reads "run minusctl doctor",
+    gets "command not found", and concludes the install is broken.
+
+    A warn, never an error -- `python -m core.cli.main` is the identical entry point.
+    """
+    import doctor
+    monkeypatch.setattr(doctor.toolpath, "find_tool", lambda name, *a, **k: None)
+    monkeypatch.setattr(doctor.os.path, "exists",
+                        lambda p: p.endswith(("minusctl.exe", "minusctl")))
+
+    check = doctor._console_script_check()
+    assert check["status"] == "warn"
+    assert "not on PATH" in check["detail"]
+    assert "core.cli.main" in check["fix"], "the fix must name the working alternative"
+
+
+def test_minusctl_found_on_path_is_ok(monkeypatch):
+    import doctor
+    monkeypatch.setattr(doctor.toolpath, "find_tool", lambda name, *a, **k: "/usr/bin/minusctl")
+    assert doctor._console_script_check()["status"] == "ok"
+
+
+def test_a_missing_console_script_never_blocks(monkeypatch):
+    """It is a convenience, not a capability. Erroring here would fail `doctor` on a machine
+    that can plan and apply perfectly well through the module entry point."""
+    import doctor
+    monkeypatch.setattr(doctor.toolpath, "find_tool", lambda name, *a, **k: None)
+    monkeypatch.setattr(doctor.os.path, "exists", lambda p: False)
+    assert doctor._console_script_check()["status"] != "error"
+
+
+def test_doctor_includes_the_console_script_check(monkeypatch):
+    import doctor
+    monkeypatch.setattr(doctor, "_port_open", lambda *a, **k: False)
+    _fake_env(monkeypatch, {"terraform", "aws"},
+              {"connected": True, "account": "1", "arn": "a", "type": "temporary"})
+    assert any(c["name"] == "minusctl on PATH" for c in doctor.diagnose()["checks"])

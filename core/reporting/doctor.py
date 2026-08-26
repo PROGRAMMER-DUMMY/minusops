@@ -39,9 +39,11 @@ import socket
 import urllib.parse
 import json
 import os
+import site
 import platform
 import subprocess
 import sys
+import sysconfig
 
 try:
     from core.governance import ephemeral_apply, plan_gate, toolpath
@@ -342,6 +344,45 @@ def fix(checks):
     return results
 
 
+def _console_script_check():
+    """Is `minusctl` reachable as a command, or only as `python -m core.cli.main`?
+
+    pyproject installs it as a console script and every document, skill and error message in
+    this repo names it. On a Windows Store Python the scripts directory is not on PATH by
+    default, so the binary exists and the instruction still fails -- the operator reads
+    "run minusctl doctor", gets "command not found", and concludes the install is broken.
+
+    A warn, never an error: `python -m core.cli.main` is the identical entry point.
+    """
+    found = toolpath.find_tool("minusctl")
+    if found:
+        return {"name": "minusctl on PATH", "status": "ok",
+                "detail": found, "fix": ""}
+
+    scripts = sysconfig.get_path("scripts")
+    candidates = [scripts, os.path.join(site.USER_BASE, "Scripts"),
+                  sysconfig.get_path("scripts", "nt_user") if os.name == "nt" else ""]
+    for base in candidates:
+        if not base:
+            continue
+        for name in ("minusctl.exe", "minusctl"):
+            path = os.path.join(base, name)
+            if os.path.exists(path):
+                return {
+                    "name": "minusctl on PATH", "status": "warn",
+                    "detail": f"installed at {path} but that directory is not on PATH",
+                    "fix": f"add {base} to PATH, or use `python -m core.cli.main <command>` "
+                           f"-- pyproject maps the console script straight to it",
+                }
+
+    return {
+        "name": "minusctl on PATH", "status": "warn",
+        "detail": "the console script is not installed",
+        "fix": "run `pip install -e .` in the repository root, or use "
+               "`python -m core.cli.main <command>`",
+    }
+
+
 def diagnose():
     """Run every check. Returns {"ok": bool, "checks": [...]} — ok is False iff any error."""
     checks = [
@@ -372,6 +413,7 @@ def diagnose():
         _lockfile_check(),
         _emulator_check(),
         _packages_check(),
+        _console_script_check(),
     ]
     return {"ok": not any(c["status"] == "error" for c in checks), "checks": checks}
 

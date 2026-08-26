@@ -168,6 +168,39 @@ commands across the whole `minusctl` surface, the console, the dev loop, the no-
 capabilities and terraform/aws read paths, and asserts none of them is refused while the
 destructive set still is. Run it after editing the allowlist.
 
+### MCP clients: ask the guardrail instead of hosting it
+
+An MCP-first client has no shell-command chokepoint, so the hook cannot be installed there.
+It can still ASK. `core/integrations/mcp_server.py` exposes MinusOps over stdio:
+
+```json
+{
+  "mcpServers": {
+    "minusops": {
+      "command": "python",
+      "args": ["-m", "core.integrations.mcp_server"],
+      "cwd": "/path/to/MinusTeraformCli"
+    }
+  }
+}
+```
+
+Goes in `claude_desktop_config.json`, `.cursor/mcp.json`, or your client's equivalent.
+`python -m core.integrations.mcp_server --list-tools` prints the surface without a client.
+
+| Tool | Answers |
+| :--- | :--- |
+| `guardrail_check` | Would this command be refused? Returns the rule id and the reason. |
+| `gate_status` | Planned? Approved? Which hash? What is the next safe command? |
+| `plan_summary` | What would this change, by action and type, plus the author's impact statement. |
+| `pillar_next` / `pillar_derive` | The next requirements question, and what the stated numbers already decide. |
+
+**Every tool is read-only, and `gate apply` is deliberately absent.** A mutating MCP tool
+would put an apply behind a tool call any client could make -- the exact boundary the
+plan/apply role split exists to create. An agent that can ask *"is this approved, and what
+does it change?"* is more useful than one that can approve, and it cannot be talked into
+anything.
+
 ### Known false-positive shapes
 
 Report these rather than working around them:
