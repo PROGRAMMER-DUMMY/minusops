@@ -60,20 +60,33 @@ because an omission that looks like an oversight gets "fixed" by the next reader
 
 ## On MFA
 
-`RequireMfaOnApply` defaults to **false**, and that is not laziness.
+`RequireMfaOnApply` defaults to **false**, and that is not laziness. It stays false even
+where the condition is measured to work, because what it costs (every unelevated session,
+CI included) is certain and what it buys against an agent (nothing -- the flag is inherited)
+was measured below.
 
 `aws:MultiFactorAuthPresent` is absent or false for IAM Identity Center, SAML and OIDC
 sessions -- AWS STS receives no MFA assertion from the identity provider. A trust policy
 requiring it **denies an SSO operator**, even after a hardware key prompt. That statement is
 sourced from AWS documentation and has not been measured here; see the limits below.
 
-And where it does populate, it propagates: a session derived from MFA-authenticated
-credentials carries the flag through role chaining. An agent running in your authenticated
-shell inherits it and can assume the apply role with no prompt.
+And where it does populate, it propagates -- measured, not assumed. A session derived from
+MFA-authenticated credentials carries the flag through role chaining, so an agent running in
+your authenticated shell inherits it and assumes the apply role with no prompt.
 
 **MFA at assume time proves MFA happened somewhere in the session. It is not per-action
 consent.** What makes the separation real is the credential simply not existing in the
-agent's environment. Verify the behaviour against your own directory before relying on it:
+agent's environment.
+
+That does not make the condition worthless. Draw the line by threat:
+
+| Threat | Does the condition stop it? |
+| --- | --- |
+| Someone who stole your long-lived access keys | **Yes.** They cannot elevate without the TOTP, so they cannot assume the apply role. |
+| An agent running inside your already-elevated shell | **No.** It inherits the flag from the credential it was handed. |
+| A CI runner authenticating by OIDC | It denies the runner outright. That is a break, not a defence. |
+
+Verify the behaviour against your own directory before relying on it:
 
     minusctl iam mfa-probe --live
 
@@ -102,9 +115,16 @@ tier eligibility immediately. The development account this was written against i
 tier, so the SSO claim above stays documentation-sourced. Anyone running an organization
 already can measure it in a minute, and the result is worth contributing back.
 
-**Not measured: the propagation claim.** That the flag survives role chaining is asserted
-above and not tested. Testing it needs an MFA device enrolled on an IAM user, which is free
-and needs no organization.
+**Measured, 2026-08-26: an elevated IAM-user session, SATISFIED.** The same account after
+`sts:GetSessionToken` with a TOTP. The condition works; `RequireMfaOnApply=true` is
+technically available to an operator who signs in this way.
+
+**Measured, 2026-08-26: chaining, PROPAGATES.** Re-assuming the probe role from the
+assumed-role session succeeded, from a session holding no TOTP of its own. Note what makes
+this measurement valid: the probe role carries an inline `sts:AssumeRole` on itself. Without
+it the chained call is denied for lack of permission, and a first run of this test reported
+that permission denial as a propagation result. A control pair with no MFA condition anywhere
+-- one role with the self-assume policy, one without -- separated the two.
 
 **Not exercised: `organization-scp.json`.** Service control policies require AWS
 Organizations with all features enabled. The file is written against the AWS SCP schema and

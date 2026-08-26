@@ -28,8 +28,11 @@ Metadata:
     on long-lived access keys carries no MFA flag whether or not a device is enrolled, so
     turning this on locks out every session that has not elevated first, CI included. Either
     way, MFA at assume time proves MFA happened somewhere in the session, not that a human
-    approved this action: the credential simply not existing in the agent's environment is
-    what makes the separation real.
+    approved this action: the flag is carried by the credential and survives role chaining
+    (measured 2026-08-26), so an agent running in an elevated shell inherits it and assumes
+    the role with no prompt. It does stop someone holding only stolen static keys. The
+    credential simply not existing in the agent's environment is what makes the separation
+    real.
 
 Parameters:
   OidcProviderUrl:
