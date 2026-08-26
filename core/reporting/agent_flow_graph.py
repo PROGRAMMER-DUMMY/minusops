@@ -1,5 +1,5 @@
 """
-Agent execution lineage graph (PRD v14 FR-04, WP-03).
+Agent execution lineage graph.
 
 Compiles what `agent_tracer.trace()` recorded into a directed acyclic graph the console can
 draw: one node per pipeline stage, one edge per handoff, and a per-node status drawn from a

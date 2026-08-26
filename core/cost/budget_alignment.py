@@ -1,5 +1,5 @@
 """
-Dynamic budget guardrail alignment (PRD v15 FR-02).
+Dynamic budget guardrail alignment.
 
 Sizes `aws_budgets_budget.monthly_budget_usd` from what the architecture actually costs
 instead of a static default. The static default is what produced the reported failure: a

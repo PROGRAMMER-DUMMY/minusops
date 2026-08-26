@@ -200,7 +200,7 @@ def _transport_for(address):
 
 
 def generate_flow_ledger(hops):
-    """The step execution ledger (FR-06.1), one row per discovered hop."""
+    """The step execution ledger, one row per discovered hop."""
     ledger = []
     for edge in hops:
         protocol, latency, safeguards = _transport_for(str(edge.get("target", "")))
@@ -216,7 +216,7 @@ def generate_flow_ledger(hops):
 
 
 def generate_flow_ledger_markdown(hops):
-    """The same ledger as a Markdown table, for PR comments and reports (FR-06.2)."""
+    """The same ledger as a Markdown table, for PR comments and reports."""
     rows = generate_flow_ledger(hops)
     lines = ["| Hop | Source | Target | Protocol | Latency budget | Safeguards |",
              "| :--- | :--- | :--- | :--- | :--- | :--- |"]

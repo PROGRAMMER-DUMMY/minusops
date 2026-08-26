@@ -224,7 +224,7 @@ def _run_reports(run):
 
 
 def _diagnostic_banner(run):
-    """A one-line pointer when the run holds a failure (PRD v9 FR-04).
+    """A one-line pointer when the run holds a failure.
 
     `next` is where an operator looks after something breaks, and sending them to the happy
     path while a failed proving report sits in the run is how the failure gets missed. Only
@@ -1255,7 +1255,7 @@ def main(argv=None):
         if args.run:
             record = _run_by_id_or_latest(args.run, command="diagnose")
             run_root = record["root"]
-            # FR-05: the run's DECLARED tier drives severity. --tier overrides it for a
+            # The run's DECLARED tier drives severity. --tier overrides it for a
             # one-off triage, but nothing infers a tier from the run's shape -- an
             # undeclared tier yields UNCLASSIFIED rather than a guess.
             tier = tier if tier is not None else record.get("tier")

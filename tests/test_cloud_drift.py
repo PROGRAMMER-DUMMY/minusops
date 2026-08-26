@@ -120,7 +120,7 @@ def test_missing_drift_record_does_not_block(tmp_path):
         str(tmp_path), "auto-approve", {}, False) is False
 
 
-# --- FR-06: telemetry correlation (PRD-ARCH-2026-005) ---------------------------------
+# --- Telemetry correlation (PRD-ARCH-2026-005) ----------------------------------------
 #
 # Drift tells a reviewer that a Glue job was resized outside Terraform. It does not tell
 # them WHY, so the honest options are "revert it" and "leave it", with no way to choose.

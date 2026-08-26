@@ -227,7 +227,7 @@ def test_synthesize_refuses_unknown_decision_module(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# novel_resources / authored_content (docs/phase6_step1_authoring_scope.md sections 1/2):
+# novel_resources / authored_content:
 # nothing a generator produces auto-ships on its first real appearance -- synthesize() itself
 # only validates and composes what a caller's authoring step already produced, fail-closed on
 # every way that step's own output could be wrong. Real `opa`/`terraform` not needed for these
@@ -329,7 +329,7 @@ def test_synthesize_refuses_authored_content_with_no_declared_blocks(tmp_path, m
 def test_synthesize_refuses_authored_content_with_hallucinated_type(tmp_path, monkeypatch):
     """The authoring step's own output declaring a REAL type (aws_dynamodb_table, per
     _NOVEL_DECISION) but authoring content for a completely different, nonexistent type --
-    Phase 7 Item 5's declared-vs-authored type-match check (docs/phase7_item5_authoring_scope.md
+    Phase 7 Item 5's declared-vs-authored type-match check (
     section 4) catches this earlier and more specifically than G2's own generic unknown_type
     finding now would: the content doesn't even address what was declared, which is authoring
     malfunction, not "a hallucinated but on-topic attempt." See the sibling test below for the
@@ -354,7 +354,7 @@ def test_synthesize_refuses_authored_content_with_hallucinated_type(tmp_path, mo
 def test_synthesize_refuses_novel_resource_declaring_a_hallucinated_type(tmp_path, monkeypatch):
     """The declared resource_type ITSELF doesn't exist in the live provider schema (a typo/
     hallucination in novel_resources, not just in the authored content) -- Phase 7 Item 5's
-    pre-authoring schema-exists check (docs/phase7_item5_authoring_scope.md section 4) refuses
+    pre-authoring schema-exists check refuses
     before ever reaching G2, since a type that doesn't exist can't be authored correctly no
     matter what content is supplied."""
     import runs
@@ -562,7 +562,7 @@ def test_write_authoring_record_carries_the_real_measured_full_size_payload(tmp_
 
 
 # ---------------------------------------------------------------------------
-# Phase 7 Item 5, revised (docs/phase7_item5_authoring_scope.md section 1): MinusOps is operated
+# Phase 7 Item 5, revised: MinusOps is operated
 # THROUGH an agentic CLI tool (Claude Code, Codex, agy, etc.) -- it does not embed its own LLM
 # client. assemble_authoring_context() is the real surface: it hands a driving agent the same
 # live schema + grounding context a human author would want, so that agent can write
@@ -825,7 +825,7 @@ def test_author_cli_refuses_decision_file_missing_the_declared_type(tmp_path, ca
 
 
 # ---------------------------------------------------------------------------
-# Phase 7 Item 1 (docs/phase7_item1_module_unit_scope.md) -- authored_content's module-shaped
+# Phase 7 Item 1 -- authored_content's module-shaped
 # unit. The flat str form above is completely unchanged (see tests above, all still passing
 # untouched); these cover the new dict form: its own variable/output/locals namespace and
 # path.module resolution via a real Terraform module boundary, not the flat root-file shape.

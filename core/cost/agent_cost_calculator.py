@@ -1,10 +1,10 @@
 """
-Agent token economics -- parses transcript.jsonl, applies the model pricing matrix (PRD v14 FR-01).
+Agent token economics -- parses transcript.jsonl, applies the model pricing matrix.
 
 The rate table below is NOT the hardcoded-cost-data this repo forbids elsewhere. budget_calculator.py
 refuses to hold AWS SKU prices because AWS is the only authority on what an AWS resource costs, and
 a guessed SKU rate is unfalsifiable. Model inference rates are different in kind: they are contract
-terms stated in PRD v14 FR-01, fixed per million tokens, and the token counts they multiply come
+terms stated in, fixed per million tokens, and the token counts they multiply come
 from the transcript rather than from an estimate. Nothing here invents a quantity.
 
 The property that matters more than the arithmetic is absence. Three situations look alike in a
@@ -29,7 +29,7 @@ import json
 import os
 import re
 
-# FR-01, verbatim. USD per one million tokens.
+# Verbatim. USD per one million tokens.
 PRICING = {
     "pro": {"input": 1.25, "output": 10.00, "cached": 0.30},
     "flash": {"input": 0.10, "output": 0.40, "cached": 0.025},

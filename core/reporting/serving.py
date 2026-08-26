@@ -1,5 +1,5 @@
 """
-Serving-layer endpoints: where Gold data is actually consumed from (PRD v9 section 3).
+Serving-layer endpoints: where Gold data is actually consumed from.
 
 Four archetypes, each with a concrete address an analyst can paste:
 

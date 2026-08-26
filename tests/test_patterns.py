@@ -35,7 +35,7 @@ def test_match_reuses_a_prior_approved_pattern(tmp_path, monkeypatch):
 
 def test_reuse_is_scored_against_modules_the_request_names_not_token_noise(tmp_path,
                                                                           monkeypatch):
-    """Regression, 2026-08-22 (PRD v8).
+    """Regression, 2026-08-22.
 
     `match_modules` is a weak-signal RANKER: any single shared token scores +1, which is how
     `governance-lakeformation` ("lake formation") surfaces on any request containing "data

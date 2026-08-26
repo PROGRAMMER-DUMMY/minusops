@@ -1,5 +1,5 @@
 """
-PRD v6 FR-01..FR-04 completion: precedence, list filters, the attribute card, gate status.
+.FR-04 completion: precedence, list filters, the attribute card, gate status.
 
 These close the gap between v6's acceptance criteria (which passed) and its FR bodies (which
 specified more). The precedence order is the part with teeth, and it changed in Matt's ruling
@@ -40,7 +40,7 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
-# --- FR-01: context timestamp ---------------------------------------------------------
+# --- Context timestamp ----------------------------------------------------------------
 
 def test_the_context_records_when_it_was_set(workspace):
     """A stale selection is the dangerous one. Without a timestamp there is no way to notice
@@ -54,7 +54,7 @@ def test_the_context_records_when_it_was_set(workspace):
     assert saved["updated_at"].endswith("+00:00")
 
 
-# --- FR-01: upward discovery ----------------------------------------------------------
+# --- Upward discovery -----------------------------------------------------------------
 
 def test_being_inside_a_run_directory_resolves_that_run(workspace, monkeypatch):
     """An operator who has cd'd into a run is unambiguously working on it."""
@@ -114,7 +114,7 @@ def test_nothing_anywhere_still_refuses(workspace):
         cli_context.resolve_run()
 
 
-# --- FR-02: list filters and columns --------------------------------------------------
+# --- List filters and columns ---------------------------------------------------------
 
 def _seed(**kwargs):
     defaults = dict(orchestrator="mwaa", compute_engine="Glue 4.0", tier="test",
@@ -218,7 +218,7 @@ def test_json_output_is_unfiltered_by_formatting_but_honours_filters(workspace):
     assert [item["domain"] for item in data] == ["finance"]
 
 
-# --- FR-03: the attribute card --------------------------------------------------------
+# --- The attribute card ---------------------------------------------------------------
 
 @pytest.fixture
 def described_run(workspace):
@@ -331,7 +331,7 @@ def test_the_card_carries_no_emoji(described_run):
     assert all(ord(ch) < 0x2190 for ch in output)
 
 
-# --- FR-04: gate status ---------------------------------------------------------------
+# --- Gate status ----------------------------------------------------------------------
 
 def test_gate_status_reports_a_directory_that_was_never_planned(workspace, monkeypatch):
     import plan_gate
@@ -467,7 +467,7 @@ def test_artifact_paths_are_workspace_relative(described_run):
     assert ":" not in terraform_line.split("main.tf")[0].replace("HCL", "")
 
 
-# --- FR-04: --role-arn as a verified assertion ----------------------------------------
+# --- --role-arn as a verified assertion -----------------------------------------------
 #
 # `--mfa-arn` is deliberately absent; see the module note in plan_gate. This one is
 # implementable because the gate already reads the ambient session's ARN.

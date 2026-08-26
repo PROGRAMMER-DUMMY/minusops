@@ -108,7 +108,7 @@ def test_get_and_categories():
 
 
 # ---------------------------------------------------------------------------
-# retrieve_grounding_examples() (docs/phase6_step5_teardown_scope.md section 3): match_modules()
+# retrieve_grounding_examples(): match_modules()
 # repurposed toward retrieval-for-grounding, additive -- the scorer itself is untouched, this is
 # just a different consumer of its ranking.
 # ---------------------------------------------------------------------------

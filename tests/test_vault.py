@@ -1,5 +1,5 @@
 """
-Deliverables and compliance vault (PRD v13 FR-06).
+Deliverables and compliance vault.
 
 The vault's job is to be honest about what evidence exists. Its failure mode is not a
 crash -- it is listing `proving_report.json` for a run that was never proven, because an
@@ -74,7 +74,7 @@ def test_summary_counts_only_what_is_on_disk(run):
     assert summary["present"] < summary["total"]
 
 
-# --- The bundle (FR-06.2) ---------------------------------------------------------------
+# --- The bundle -------------------------------------------------------------------------
 
 def test_the_bundle_contains_exactly_the_documents_that_existed(run, tmp_path):
     out = str(tmp_path / "compliance.zip")

@@ -1,6 +1,6 @@
 """
 Logging, retention and key-hierarchy governance, asserted against module HCL
-(TASK-TDD-2026-002 WP3/WP4).
+.
 
 Every gap here is silent. A log group with no retention keeps data forever and bills for it
 forever -- nothing errors, the line item just grows. An unencrypted log group holds whatever

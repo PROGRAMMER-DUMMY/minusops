@@ -76,7 +76,7 @@ def _audit_allow_incomplete_bypass(requirements_text, spec, decision, run):
 
 def write_authoring_record(run, resource_type, justification, schema_block, grounding_examples,
                             raw_output, verdict, detail="", driving_agent=""):
-    """Record one authoring attempt (docs/phase7_item5_authoring_scope.md section 1).
+    """Record one authoring attempt.
 
     Captures the context supplied (schema + grounding), the content returned, and the gate verdict
     on it, so a specific authoring decision stays reconstructable even though a repeat attempt
@@ -140,7 +140,7 @@ def write_authoring_record(run, resource_type, justification, schema_block, grou
 
 
 # The authoring mechanism is deliberately NOT an API call this project makes on its own
-# (docs/phase7_item5_authoring_scope.md section 1). MinusOps is operated THROUGH an agentic CLI
+# MinusOps is operated THROUGH an agentic CLI
 # tool (Claude Code, Codex, agy, etc.); that driving agent already has full authoring capability
 # and does not need MinusOps to embed its own LLM client, credentials, or model choice. Do not
 # add one. What the driving agent DOES need is the same live context a human author would want:
@@ -521,7 +521,7 @@ actually catch rather than passing vacuously.
 
 
 def write_project_scaffold(project_dir):
-    """Scaffold `src/{compute,sql,quality,orchestration}` and `tests/fixtures` (MINUS-118).
+    """Scaffold `src/{compute,sql,quality,orchestration}` and `tests/fixtures`.
 
     Never overwrites: re-synthesising into an existing run must not discard the operator's
     PySpark. Returns the paths actually written.
@@ -1191,7 +1191,7 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
             monthly_budget_usd=0, budget_source="", authored_resources=None,
             state_backend=None, glue_execution_class=None):
     """Write a composed Terraform root into out_dir from the selected modules, plus any
-    generation-time-authored novel resources (docs/phase6_step1_authoring_scope.md section 2).
+    generation-time-authored novel resources.
     `authored_resources` is a list of {resource_type, content, justification, decision_source,
     content_hash} -- already lint-checked by the caller (synthesize()), never linted here; this
     function only writes what it's given."""
@@ -1200,7 +1200,7 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
     chosen = [m for m in chosen if m]
     if not chosen and not authored_resources:
         # The `authored_resources` half of this test matters: a composition can be entirely
-        # authored content (docs/phase6_step1_authoring_scope.md) with zero catalog picks, which
+        # authored content with zero catalog picks, which
         # is not "nothing valid to compose", only "nothing FROM THE CATALOG to compose".
         raise ValueError("no valid modules or authored resources selected")
     present_ids = {m["id"] for m in chosen}
@@ -1252,8 +1252,8 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
                       + (f'  # from requirements: "{volume_source}" (upper bound)' if volume_source else ""))
     _w("terraform.tfvars", "\n".join(tfvars) + "\n")
 
-    # Authored (novel) resources. Two forms (docs/phase7_item1_module_unit_scope.md):
-    #   - "flat" (docs/phase6_step1_authoring_scope.md section 2 item 1): a standalone resource
+    # Authored (novel) resources. Two forms:
+    #   - "flat": a standalone resource
     #     with no input contract of its own gets its own file at the composition root, sharing
     #     the root's variables/locals directly.
     #   - "module": a unit that declares its own variable/output/locals needs a real module
@@ -1442,7 +1442,7 @@ def _update_workflow(run, result):
 
 
 # Well-known root-level values every composition already declares (compose()'s own _VARIABLES /
-# _render_main()'s locals block) -- docs/phase7_item1_module_unit_scope.md section 3, decision
+# _render_main()'s locals block) --, decision
 # (b): a module-shaped authored unit's own variable gets auto-wired to the matching root value
 # when its name matches one of these exactly, so a future authoring step can't get this wrong by
 # emitting a variable name without also emitting a matching wiring entry (that mismatch would be
@@ -1519,7 +1519,7 @@ _DATA_PREFIX = "data."
 
 def _split_resource_type(resource_type):
     """('resource'|'data', bare_type) from a declared resource_type, honoring the existing
-    'data.'-prefix convention (docs/phase6_step1_authoring_scope.md section 1: authored_content
+    'data.'-prefix convention (: authored_content
     is keyed by resource type, "optionally data.-prefixed")."""
     if resource_type.startswith(_DATA_PREFIX):
         return "data", resource_type[len(_DATA_PREFIX):]
@@ -1531,7 +1531,7 @@ def _infer_provider(bare_type):
 
 
 def _resource_type_exists_live(resource_type):
-    """Phase 7 Item 5 (docs/phase7_item5_authoring_scope.md section 4): a declared
+    """Phase 7 Item 5: a declared
     novel_resources resource_type must exist in the REAL, live provider schema before anything
     is trusted for it -- the cheapest possible check, and (for a real authoring step, not built
     here) the only one that can save an authoring call entirely: a type that doesn't exist can't
@@ -1763,7 +1763,7 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     gate exception listing what's unanswered. `allow_incomplete` is an explicit, audited override
     (demo/testing only).
 
-    `authored_content` (docs/phase6_step1_authoring_scope.md section 1/2) is an optional
+    `authored_content` is an optional
     `{resource_type: hcl_text}` map supplying real, already-authored HCL for every entry in
     `decision["novel_resources"]` -- this function does not itself author anything; it only
     validates and composes what a caller's authoring step already produced. See
@@ -1838,7 +1838,7 @@ def synthesize(requirements_text, spec=None, decision=None, allow_incomplete=Fal
     prefix = name_prefix or f"{module_registry._WORD.findall(owner.lower())[0] if owner else 'app'}-dev"
     daily_gb, volume_source = parse_daily_gb(spec)
     budget_usd, budget_source = parse_budget_usd(spec)
-    # PRD v15 FR-02. A guardrail below what the architecture costs alarms on the mismatch
+    # A guardrail below what the architecture costs alarms on the mismatch
     # rather than on overspend -- that is the reported $500-against-$1,258 warning. Size it
     # from the estimate when one exists, and CARRY the override in budget_source so the run
     # records that an operator's stated cap was raised rather than silently replacing it.

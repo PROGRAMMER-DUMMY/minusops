@@ -362,12 +362,12 @@ G6_RULE_IDS = ("SEC-01", "COST-01", "SEC-03", "SEC-04", "COST-02", "COST-03", "S
 # the audit chain. Its field_unresolved findings would still surface (separate, unfiltered
 # list), so the uncertain case stays visible while the confirmed violation goes silent --
 # backwards from what the shadow mechanism exists to guarantee. SEC-06/SEC-07
-# (docs/g6_iam_extension_scope.md) have no regex counterpart at all, which is how that gap
+# have no regex counterpart at all, which is how that gap
 # first appeared.
 
 
 def _g6_shadow_eval(dir_, plan_json):
-    """G6 (docs/g6_scope.md): Rego-over-plan-JSON evaluation run in SHADOW MODE alongside the
+    """G6: Rego-over-plan-JSON evaluation run in SHADOW MODE alongside the
     existing regex-over-HCL scan -- logged and printed, never blocks stage_plan, never
     enforces. `optimize_analyzer.scan_hcl_files(dir_)` is re-run here (a second, redundant,
     harmless read-only invocation on the same dir -- stage_verify's own call happens earlier,
@@ -476,7 +476,7 @@ G9_EMULATOR_ENV = "MINUS_G9_EMULATOR"
 
 
 def _g9_eval(dir_, plan_json):
-    """G9 (docs/phase5_scope.md): real ephemeral-apply verdict for the current plan.
+    """G9: real ephemeral-apply verdict for the current plan.
 
     Computed once here at plan time and carried through the approval record to apply time --
     the same shape destroy already uses -- rather than re-run at apply. A real
@@ -489,7 +489,7 @@ def _g9_eval(dir_, plan_json):
     and passed.
 
     No emulator configured (MINUS_G9_EMULATOR unset, the current state here: no LocalStack
-    token, and both free emulators fail IAM/KMS/S3 negative fidelity -- docs/phase5_scope.md
+    token, and both free emulators fail IAM/KMS/S3 negative fidelity --
     section 7.5/8.6) returns a synthetic, always-non-clean verdict in the same
     {evaluation_failed, reason, ...} shape ephemeral_apply.py's _fail() produces, so the
     enforcement check and the audit record treat it identically to any other G9 failure. Do
@@ -525,7 +525,7 @@ def _print_g9_result(result):
 
 
 def _print_intent_assertions(result):
-    """Phase 4 (docs/phase4_scope.md, G3/G4): intent-vs-reality advisory findings. ADVISORY
+    """Phase 4: intent-vs-reality advisory findings. ADVISORY
     ONLY -- printed and audited, never blocks stage_plan, same shadow discipline as G6."""
     if result.get("evaluation_failed"):
         print(f"[gate] Phase 4 intent-assertions evaluation failed: "
@@ -1157,7 +1157,7 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
     # output saw a success that had been discarded.
     print(f"[gate] plan saved. plan_hash = {h[:16]}...")
 
-    # G6 (docs/g6_scope.md): SEC-*/COST-* rules over real plan JSON via OPA/Rego, run alongside
+    # G6: SEC-*/COST-* rules over real plan JSON via OPA/Rego, run alongside
     # the regex-over-HCL scan (core/reporting/optimize_analyzer.py, invoked separately in
     # stage_verify above). SHADOW ONLY: this never blocks stage_plan and never enforces.
     # Enforcement stays where it already is, in optimize_analyzer.py's own SEC- prefix check.
@@ -1188,7 +1188,7 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
         if _reject_if_promoted_policy_violated(dir_, _rego_for_promotion, destroy):
             return False
 
-    # G9 (docs/phase5_scope.md): unlike G6, NOT shadow-only -- a not-clean verdict blocks the
+    # G9: unlike G6, NOT shadow-only -- a not-clean verdict blocks the
     # auto-approve path (see _reject_if_g9_not_clean_and_auto_approve in stage_apply). Skipped
     # for destroy plans on the same reasoning as the cost-coverage skip below: G9 catches
     # create-order apply-time failures, and a teardown gives it nothing new to check. Computed
@@ -1237,7 +1237,7 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
     if churn_result["advisory"]:
         print(address_churn.format_result(churn_result))
 
-    # Phase 4 (docs/phase4_scope.md, G3/G4): intent-vs-reality advisory checks. ADVISORY ONLY
+    # Phase 4: intent-vs-reality advisory checks. ADVISORY ONLY
     # -- never blocks stage_plan, same shadow discipline as G6. requirements.json and
     # architecture_decision.json are looked up in dir_'s parent (the run root, matching
     # runs.new_run()'s terraform_dir = root/"terraform" convention); their absence just means
@@ -1374,7 +1374,7 @@ def _reject_if_not_asserted_role(posture, role_arn):
 
 
 def gate_status(dir_):
-    """Recorded gate state for a directory, read from disk only (PRD v6 FR-04).
+    """Recorded gate state for a directory, read from disk only.
 
     Deliberately does NOT re-hash the plan. Doing so shells out to `terraform show` on every
     call, which needs an initialised directory and turns a status check into a slow,

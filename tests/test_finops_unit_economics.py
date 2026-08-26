@@ -17,7 +17,7 @@ import budget_calculator
 import finops_agent
 
 
-# --- FR-17: unit economics ------------------------------------------------------------
+# --- Unit economics -------------------------------------------------------------------
 
 def test_unit_economics_refuses_without_an_evidenced_total():
     """The whole point. No BCM figure, no number -- and specifically no zero, which reads as
@@ -74,7 +74,7 @@ def test_scale_curve_divides_each_measured_point_and_never_extrapolates():
     assert all(p["reportable"] for p in curve)
 
 
-# --- FR-19: error budget burn ---------------------------------------------------------
+# --- Error budget burn ----------------------------------------------------------------
 
 def test_error_budget_minutes_matches_the_published_table():
     assert finops_agent.error_budget_minutes(99.0) == 432.0

@@ -72,7 +72,7 @@ def test_architecture_decision_rejects_unknown_module(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# novel_resources (docs/phase6_step1_authoring_scope.md section 1) -- additive field for a
+# novel_resources -- additive field for a
 # requirement no existing catalog module covers. Optional at the record level (a record with no
 # novel resources needs none), but every entry present is held to the same completeness bar
 # `alternatives` already gets.
@@ -176,7 +176,7 @@ def test_architecture_decision_editor_add_novel_resource(tmp_path):
     assert record["novel_resources"][0]["resource_type"] == "aws_dynamodb_table"
 
 
-# --- MINUS-136: TerraShark 4-part output contract (assumptions, tradeoffs, validation, rollback)
+# --- TerraShark 4-part output contract (assumptions, tradeoffs, validation, rollback)
 
 def test_validation_and_rollback_are_required():
     """`assumptions` and `alternatives` already carried two parts of the contract. A record

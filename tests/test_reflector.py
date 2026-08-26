@@ -1,5 +1,5 @@
 """
-Step 8 (MINUS-128/129/135): compute tiers, the stage reflector, and --based-on inheritance.
+Step 8: compute tiers, the stage reflector, and --based-on inheritance.
 
 The reflector's whole value is that it re-derives from artifacts instead of trusting claims,
 so these tests hand it real files on disk and check the verdict, never a mocked "result".
@@ -14,7 +14,7 @@ import synthesizer
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-# --- MINUS-128: compute tier matrix -------------------------------------------------------
+# --- Compute tier matrix ------------------------------------------------------------------
 
 def test_tier_crossovers_are_where_the_cheaper_option_stops_being_cheaper():
     assert modules.compute_tier(500)["module_id"] == "compute-glue-etl"
@@ -50,7 +50,7 @@ def test_execution_class_is_only_meaningful_for_glue():
     assert modules.compute_tier(9000, "nightly")["execution_class"] is None
 
 
-# --- MINUS-129: the reflector ------------------------------------------------------------
+# --- The reflector -----------------------------------------------------------------------
 
 def _run(tmp_path, main_tf="", requirements=None):
     root = tmp_path / "runs" / "r1"
@@ -193,7 +193,7 @@ def test_module_block_parser_survives_nested_braces(tmp_path):
     assert "target_bucket" in blocks["a"]
 
 
-# --- MINUS-135: --based-on ----------------------------------------------------------------
+# --- --based-on ---------------------------------------------------------------------------
 
 def test_inherits_organisational_settings_with_attribution(tmp_path):
     root = tmp_path / "runs" / "base"

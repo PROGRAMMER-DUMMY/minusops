@@ -125,7 +125,7 @@ def _open_like_drawio(url):
     return urllib.parse.unquote(inflated)
 
 
-# --- FR-05: the URL has to actually open ------------------------------------------------
+# --- The URL has to actually open -------------------------------------------------------
 
 def test_the_url_opens_in_drawio_when_a_label_contains_a_percent_sign():
     """The defect this closes. Deflating raw XML skips encodeURIComponent, so any percent
@@ -153,7 +153,7 @@ def test_the_encoder_and_decoder_are_inverses():
     assert _open_like_drawio(url) == xml
 
 
-# --- FR-06: the ledger describes THIS plan ----------------------------------------------
+# --- The ledger describes THIS plan -----------------------------------------------------
 
 def _two_hop_plan():
     """Two hops the plan genuinely declares.
@@ -212,7 +212,7 @@ def test_the_markdown_ledger_says_so_rather_than_emitting_an_empty_table():
     assert "no flow" in markdown.lower()
 
 
-# --- FR-07: no format may be a stub -----------------------------------------------------
+# --- No format may be a stub ------------------------------------------------------------
 
 def test_the_bundle_does_not_ship_a_mock_svg():
     """A literal "<svg></svg>" was returned as a deliverable and offered as --format svg.
@@ -222,7 +222,7 @@ def test_the_bundle_does_not_ship_a_mock_svg():
     assert bundle.get("svg") != "<svg></svg>"
 
 
-# --- AC-02: three diverse fixtures ------------------------------------------------------
+# --- Three diverse fixtures -------------------------------------------------------------
 
 LAKEHOUSE = _two_hop_plan()
 INGESTION = {"resource_changes": [

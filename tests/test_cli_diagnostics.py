@@ -40,7 +40,7 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
-# --- MINUS-160: the error shape -------------------------------------------------------------
+# --- The error shape ------------------------------------------------------------------------
 
 def test_error_has_all_three_parts_in_order():
     body = cd.format_agent_error("it broke", "because X", "do-this --now")
@@ -75,7 +75,7 @@ def test_fail_writes_to_stderr_and_returns_two(capsys):
     assert captured.out == ""
 
 
-# --- MINUS-157: fuzzy matching --------------------------------------------------------------
+# --- Fuzzy matching -------------------------------------------------------------------------
 
 def test_a_transposed_digit_suggests_the_real_run(workspace):
     _run_dir(workspace, "20260818-085523-requirements-first")
@@ -133,7 +133,7 @@ def test_no_runs_at_all_points_at_create(workspace):
     assert "minusctl create" in str(excinfo.value)
 
 
-# --- MINUS-158: prerequisite interception ---------------------------------------------------
+# --- Prerequisite interception --------------------------------------------------------------
 
 def test_missing_requirements_names_step_one(workspace):
     root = _run_dir(workspace, "20260819-000001-bare")
@@ -198,7 +198,7 @@ def test_decision_is_not_blocked_by_its_own_missing_output(workspace):
     assert run["run_id"] == "20260819-000010-req"
 
 
-# --- MINUS-158: plan / approval steps -------------------------------------------------------
+# --- Plan / approval steps ------------------------------------------------------------------
 
 def test_no_plan_record_names_step_four(tmp_path):
     tf = tmp_path / "terraform"
@@ -229,7 +229,7 @@ def test_a_planned_but_unapproved_directory_names_step_five(tmp_path, monkeypatc
     assert cd.missing_plan_prerequisite(str(tf)) is None
 
 
-# --- MINUS-159: help text -------------------------------------------------------------------
+# --- Help text ------------------------------------------------------------------------------
 
 def test_epilog_carries_examples_requirements_and_the_next_step():
     text = cd.epilog(["cmd --flag"], requires=("a.json",), produces=("b.json",),

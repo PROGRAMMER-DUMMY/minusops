@@ -1,5 +1,5 @@
 """
-PRD v8: governance and semantic-layer modules, Redshift ceilings, partition projection.
+Governance and semantic-layer modules, Redshift ceilings, partition projection.
 
 This exists because grill-me Pillars 12 and 13 interviewed operators about capabilities the
 catalog could not build. A requirement captured and never consumed is worse than one never
@@ -37,7 +37,7 @@ def _hcl(module_id, filename="main.tf"):
         return f.read()
 
 
-# --- FR-05: the catalog can build what the interview asks about -----------------------
+# --- The catalog can build what the interview asks about ------------------------------
 
 @pytest.mark.parametrize("module_id", NEW_MODULES)
 def test_the_module_exists_on_disk(module_id):
@@ -203,7 +203,7 @@ def test_scoped_iam_takes_the_specified_inputs():
         assert f'variable "{variable}"' in hcl
 
 
-# --- FR-02: semantic layers -----------------------------------------------------------
+# --- Semantic layers ------------------------------------------------------------------
 
 def test_dbt_scaffolds_the_specified_manifests():
     directory = os.path.join(ROOT, "modules", "dbt-semantic-layer")
@@ -255,7 +255,7 @@ def test_the_semantic_modules_carry_terraform_too():
         assert _hcl(module_id).strip()
 
 
-# --- FR-03: Redshift ceilings ---------------------------------------------------------
+# --- Redshift ceilings ----------------------------------------------------------------
 
 def test_redshift_declares_a_capacity_ceiling():
     """AC-02. base_capacity is a floor. Without max_capacity the workgroup scales RPUs with
@@ -301,7 +301,7 @@ def test_the_redshift_registry_entry_lists_the_new_inputs():
     assert "max_capacity" in entry["inputs"]
 
 
-# --- FR-04: Athena partition projection -----------------------------------------------
+# --- Athena partition projection ------------------------------------------------------
 
 def test_athena_declares_partition_projection():
     """AC-03. MSCK REPAIR TABLE gets slower with every partition added; projection resolves
@@ -331,7 +331,7 @@ def test_the_location_template_uses_the_gold_bucket_variable():
     assert "var.gold_bucket" in hcl.split("storage.location.template")[1][:200]
 
 
-# --- FR-05: the interview points at the command that exists ---------------------------
+# --- The interview points at the command that exists ----------------------------------
 
 def test_the_proving_pillar_names_the_five_hop_command():
     """AC-04. The proving pillar covers DQ validation and quarantine checks, which is the

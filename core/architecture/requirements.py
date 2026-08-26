@@ -417,7 +417,7 @@ if __name__ == "__main__":
     import sys
     sys.exit(main())
 
-# --- PRD v15 FR-04: the lifecycle an operator is agreeing to ------------------------------
+# --- The lifecycle an operator is agreeing to ---------------------------------------------
 #
 # Shown before grilling starts. An operator who cannot see the shape of the work cannot tell
 # which step they are being asked to approve, and the approval that matters is at step 7 --

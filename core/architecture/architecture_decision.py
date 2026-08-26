@@ -136,7 +136,7 @@ def validate(data):
         missing.append(
             "failure_modes has unknown ids " + json.dumps(unknown)
             + " (valid: " + ", ".join(sorted(FAILURE_MODES)) + ")")
-    # novel_resources (docs/phase6_step1_authoring_scope.md section 1) is OPTIONAL at the record
+    # novel_resources is OPTIONAL at the record
     # level -- a decision with no novel resources needs no entries here at all. But once
     # present, every entry meets the same bar _valid_alternative enforces above: an entry
     # missing its justification or its alternatives_considered fails validation exactly like an

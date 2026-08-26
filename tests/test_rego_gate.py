@@ -474,7 +474,7 @@ def test_sec06_clean_when_principal_is_scoped():
 
 def test_sec06_unset_policy_routes_to_field_unresolved_not_silent_pass():
     """The load-bearing, live-verified finding this whole rule design is built around
-    (docs/g6_iam_extension_scope.md section 2): aws_kms_key.policy is schema computed=true, so
+    Aws_kms_key.policy is schema computed=true, so
     a module that doesn't set it at all (the common real pattern -- storage-medallion-s3 does
     exactly this) resolves as after_unknown.policy=True, not a knowable "no policy" default.
     Must never be silently read as safe."""
@@ -523,7 +523,7 @@ def test_sec07_unknown_policy_routes_to_field_unresolved_not_silent_pass():
 
 
 # ---------------------------------------------------------------------------
-# SEC-08 (new, docs/phase6_step1_authoring_scope.md section 4.2) -- Redshift Serverless
+# SEC-08 (new.2) -- Redshift Serverless
 # workgroup publicly accessible
 # ---------------------------------------------------------------------------
 
@@ -552,7 +552,7 @@ def test_sec08_clean_when_omitted_resolves_to_known_null_not_unresolved():
 
 
 # ---------------------------------------------------------------------------
-# SEC-09 (new, docs/phase6_step1_authoring_scope.md section 4.2) -- Subnet auto-assigns
+# SEC-09 (new.2) -- Subnet auto-assigns
 # public IPs
 # ---------------------------------------------------------------------------
 
@@ -573,7 +573,7 @@ def test_sec09_clean_when_omitted_resolves_to_known_false():
 
 
 # ---------------------------------------------------------------------------
-# SEC-10 (new, docs/phase6_step1_authoring_scope.md section 4.2) -- S3 object ACL public
+# SEC-10 (new.2) -- S3 object ACL public
 # ---------------------------------------------------------------------------
 
 def test_sec10_flags_public_read_acl():
@@ -767,7 +767,7 @@ resource "aws_redshift_cluster" "c" {
 
 @pytest.mark.skipif(TERRAFORM is None or OPA is None, reason="terraform and/or opa CLI not installed")
 def test_real_plan_unknown_encrypted_routes_to_field_unresolved(tmp_path):
-    """Proof-bar item 5 (docs/g6_scope.md section 4): a deliberately constructed real plan with
+    """Proof-bar item 5: a deliberately constructed real plan with
     a genuinely unknown-until-apply value, not a memorized/assumed shape. `encrypted` here is
     derived from a KMS key being created in the same plan, so its value cannot be known until
     apply -- confirmed live: this produces after.encrypted=None, after_unknown.encrypted=True,
@@ -1032,16 +1032,16 @@ _CANNOT_PLAN_STANDALONE = {
 
 # Real, known, pre-existing findings this test's own first run confirmed against the actual
 # catalog content (not asserted from prose) -- distinguishes "zero FALSE positives" (the real
-# claim docs/g6_iam_extension_scope.md section 7.2 made) from "zero findings at all" (a
+# claim.2 made) from "zero findings at all" (a
 # stricter, wrong claim this test must not silently encode). Each entry is a real, explained,
 # non-regression finding; a module producing anything ELSE (or missing one of these) is a real
 # regression this test must catch, not paper over.
 _KNOWN_REAL_FINDINGS = {
     "databricks-workspace": {
-        # Pre-existing since Phase 3 (docs/g6_scope.md), independent of this session's IAM/KMS/S3
+        # Pre-existing since Phase 3, independent of this session's IAM/KMS/S3
         # extension -- databricks-workspace's own root storage bucket has no lifecycle policy.
         ("COST-01", "aws_s3_bucket.root_storage_bucket"),
-        # The exact finding docs/g6_iam_extension_scope.md section 7.2 predicted and confirmed:
+        # The exact finding.2 predicted and confirmed:
         # a pre-existing Resource == "*" IAM finding, not a new false positive from the
         # Action == "*" extension.
         ("SEC-02", "aws_iam_role_policy.cross_account_role"),
@@ -1059,7 +1059,7 @@ def _strip_caller_identity(content):
     """Terraform reads every declared data source at plan time regardless of whether its output
     is referenced -- data.aws_caller_identity is a real STS GetCallerIdentity call dummy
     credentials cannot satisfy, so the block itself must go, not just its references (the real
-    bug docs/g6_iam_extension_scope.md section 7.2 found and fixed the first time this ran)."""
+    bug.2 found and fixed the first time this ran)."""
     content = _CALLER_IDENTITY_BLOCK_RE.sub("", content)
     content = _CALLER_IDENTITY_REF_RE.sub('"000000000000"', content)
     return content

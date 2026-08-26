@@ -1,5 +1,5 @@
 """
-Sprint 4 (MINUS-146/154/155): BCM usage heuristics, doctor --fix, G6 verify-stage promotion.
+Sprint 4: BCM usage heuristics, doctor --fix, G6 verify-stage promotion.
 """
 import json
 import os
@@ -10,7 +10,7 @@ import doctor
 import plan_gate
 
 
-# --- MINUS-146: usage heuristics ------------------------------------------------------------
+# --- Usage heuristics -----------------------------------------------------------------------
 
 def _reqs(volume=None, transforms=None, latency=None, retention=None):
     return {
@@ -94,7 +94,7 @@ def test_no_requirements_file_leaves_assumptions_untouched(tmp_path):
     assert bcm._merge_assumptions(str(tmp_path), None, {"x": 1}) == {"x": 1}
 
 
-# --- MINUS-154: doctor --fix ----------------------------------------------------------------
+# --- Doctor --fix ---------------------------------------------------------------------------
 
 def test_a_wedged_docker_daemon_is_reported_as_unresponsive_not_missing(monkeypatch):
     """Observed 2026-08-18: every Docker Desktop process alive, named pipe present, WSL distro
@@ -169,7 +169,7 @@ def test_fix_only_touches_checks_it_can_actually_repair(monkeypatch):
     assert [r["check"] for r in repairs] == ["g9 emulator"]
 
 
-# --- MINUS-155: G6 promotion ----------------------------------------------------------------
+# --- G6 promotion ---------------------------------------------------------------------------
 
 def test_production_refuses_without_a_policy_engine(monkeypatch, tmp_path):
     """A passing verify with no OPA would be asserting a compliance check that never ran."""

@@ -1,5 +1,5 @@
 """
-ephemeral_apply.py -- G9 (docs/phase5_scope.md, Phase 5), ephemeral apply against LocalStack.
+ephemeral_apply.py -- G9, ephemeral apply against LocalStack.
 
 Static analysis (G1 `terraform validate`, G2 schema lint, G6 OPA policy) runs pre-apply and
 catches everything derivable from HCL/plan JSON alone. G9 exists for the class of failure that
@@ -7,7 +7,7 @@ only surfaces once resources are actually created, in real dependency order, aga
 (emulated) provider: missing/implicit `depends_on` that plans fine but fails at apply time,
 provider-side validation Terraform's own type system can't express, and apply-time computed
 values that only resolve once real IDs exist. A G9 finding is never a re-run of what G1/G2/G5/G6
-already checked -- see docs/phase5_scope.md section 3.
+already checked --
 
 Structurally AWS-only: LocalStack has no Databricks emulation. This module never claims more
 assurance than it earned -- every verdict carries a `coverage` field distinguishing "full"
@@ -25,7 +25,7 @@ attempted against an emulator whose real coverage for it has not been confirmed 
 hand-maintained `endpoints{}` block and the official `tflocal` wrapper have a documented,
 non-hypothetical gap where an unlisted service silently falls through to real AWS.
 
-PLUGGABLE EMULATOR (docs/phase5_scope.md section 7): `emulator` is `"localstack"`,
+PLUGGABLE EMULATOR: `emulator` is `"localstack"`,
 `"ministack"`, or `"floci"` -- an unrecognized value BLOCKS (`unsupported_emulator`), never
 assumed to behave like a known one. `RESOURCE_TYPE_ALLOWLIST` is keyed per `(type, emulator)`,
 proven independently for each -- a type verified on one emulator says nothing about another.
@@ -35,7 +35,7 @@ plan blocks (`negative_fidelity_unverified`) -- positive-only verification on th
 is a rubber-stamp risk, not proof.
 
 VERIFICATION STATUS -- these are disclosed gaps, not placeholders to be optimistically filled
-in (docs/phase5_scope.md section 7 has the full writeup):
+in:
   - LocalStack: every type unverified. A paid account (LOCALSTACK_AUTH_TOKEN) is required and
     has never been provisioned here.
   - MiniStack and Floci: both free, and both were run through the real gauntlet (Docker
@@ -96,7 +96,7 @@ _ENDPOINT_SERVICES = (
 # type, never guessed. Enumerate with
 # `grep -rhoE '^resource "aws_[a-z_0-9]+"' modules/*/main.tf` rather than adding from memory.
 #
-# Per-(type, emulator) shape (docs/phase5_scope.md section 7.2): a type verified on one
+# Per-(type, emulator) shape: a type verified on one
 # emulator says nothing about another, so each entry carries its own record per supported
 # emulator. `security_critical` is per-type, not per-emulator -- a type's real-world security
 # sensitivity does not change with the emulator.
@@ -223,7 +223,7 @@ def unverified_types_in_plan(plan_json, emulator):
     """AWS resource types present in the plan that are either entirely unknown to the allowlist
     (a new module introduced a type this file hasn't reviewed at all) or known but not yet
     verified=True FOR THIS SPECIFIC EMULATOR -- a type verified on a different emulator still
-    counts as unverified here (docs/phase5_scope.md section 7.2: fidelity is proven
+    counts as unverified here (: fidelity is proven
     independently per emulator, never assumed to transfer)."""
     raw_rc, _error = plan_reader.read_resource_changes(plan_json, treat_absent_as_error=False)
     managed, _malformed = plan_reader.managed_only(raw_rc or [])
@@ -239,7 +239,7 @@ def unverified_types_in_plan(plan_json, emulator):
 
 
 def negative_fidelity_unverified_types_in_plan(plan_json, emulator):
-    """Security-critical types (docs/phase5_scope.md section 8: IAM role trust policies, KMS
+    """Security-critical types (: IAM role trust policies, KMS
     key policies, S3 bucket policies) present in the plan whose `negative_fidelity_verified` is
     NOT True for this emulator -- checked independently from unverified_types_in_plan because a
     type can be `verified=True` (a valid config applies) while still `negative_fidelity_
@@ -335,7 +335,7 @@ def run_ephemeral_apply(dir_, emulator=DEFAULT_EMULATOR, localstack_endpoint=Non
     case in docs/phase5_scope.md section 4/8.4's tables maps to a returned verdict, not an
     exception.
 
-    `emulator` (docs/phase5_scope.md section 7): one of SUPPORTED_EMULATORS. An unrecognized
+    `emulator`: one of SUPPORTED_EMULATORS. An unrecognized
     value BLOCKS (`unsupported_emulator`) before anything else runs -- never assumed to behave
     like a known emulator. `localstack_endpoint` (kept under its original name for backward
     compatibility) is the connection endpoint for whichever emulator is selected; all three

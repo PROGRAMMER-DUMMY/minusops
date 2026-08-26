@@ -2,7 +2,7 @@
 module_provenance.py pins a module's content hash + who/what informed it, and detects drift
 if the module's files change without a matching re-pin.
 
-RETIRED AS A GATE (docs/phase6_step5_teardown_scope.md section 3, 2026-07-15): the `pin` CLI
+RETIRED AS A GATE: the `pin` CLI
 used to refuse to write a record at all on a blocking G2 finding. It no longer does -- see the
 module's own docstring for the reasoning (only 2 of 16 real catalog modules were ever actually
 pinned in the first place, so "pinned means G2-checked" was never a fact the rest of the catalog
@@ -206,7 +206,7 @@ def test_repin_with_unchanged_content_writes_no_upgrade_report(tmp_path, monkeyp
 
 
 # ---------------------------------------------------------------------------
-# G2 retirement as a gate (docs/phase6_step5_teardown_scope.md section 3): pin() records what G2
+# G2 retirement as a gate: pin() records what G2
 # found, but never refuses on it -- neither the pure function nor the CLI action.
 # ---------------------------------------------------------------------------
 

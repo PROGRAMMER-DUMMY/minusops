@@ -36,7 +36,7 @@ def test_get_run_by_prefix_returns_existing_run(workspace):
     assert found["run_id"] == run["run_id"]
 
 
-# --- FR-01: semantic naming -----------------------------------------------------------
+# --- Semantic naming ------------------------------------------------------------------
 
 def test_a_named_run_is_domain_workload_orchestrator_then_timestamp(workspace):
     run = runs.new_run(name="clickstream", domain="marketing", orchestrator="mwaa")
@@ -89,7 +89,7 @@ def test_legacy_and_semantic_runs_are_listed_side_by_side(workspace):
     assert {legacy["run_id"], semantic["run_id"]} <= listed
 
 
-# --- FR-02: the central registry ------------------------------------------------------
+# --- The central registry -------------------------------------------------------------
 
 def test_creating_a_run_writes_the_registry(workspace):
     run = runs.new_run(name="clickstream", domain="marketing", orchestrator="mwaa")

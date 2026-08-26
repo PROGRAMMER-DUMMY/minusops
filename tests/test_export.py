@@ -49,7 +49,7 @@ def target_repo(tmp_path):
     return repo
 
 
-# --- FR-03: what lands in the domain repository ---------------------------------------
+# --- What lands in the domain repository ----------------------------------------------
 
 def test_export_copies_the_four_deployable_directories(run, target_repo):
     export.export_run(str(run), str(target_repo), dest_dir="pipelines/clickstream")
@@ -143,7 +143,7 @@ def test_export_does_not_touch_sibling_pipelines(run, target_repo):
     assert (sibling / "main.tf").read_text(encoding="utf-8") == "# untouched\n"
 
 
-# --- FR-04: the tailored workflow -----------------------------------------------------
+# --- The tailored workflow ------------------------------------------------------------
 
 def test_the_generated_workflow_lands_in_dot_github_workflows(run, target_repo):
     manifest = export.export_run(str(run), str(target_repo), dest_dir="pipelines/clickstream",

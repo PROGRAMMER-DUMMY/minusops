@@ -204,7 +204,7 @@ def _pairs(values):
 
 
 def format_result(result):
-    """Per-resource summary for the gate's stdout (PRD v6 FR-07).
+    """Per-resource summary for the gate's stdout.
 
     Grouped by resource rather than by finding type, because the declared value, the live
     value, who changed it and what failed beforehand are one story about one resource; split

@@ -1,5 +1,5 @@
 """
-Control-plane deployment assets: Dockerfile, EKS manifests, operator guide (PRD v4 WP1-5).
+Control-plane deployment assets: Dockerfile, EKS manifests, operator guide.
 
 Every assertion here covers something that fails late and quietly. A container that runs as
 root works fine until an auditor looks. A `readOnlyRootFilesystem` pod with no writable mount

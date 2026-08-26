@@ -397,7 +397,7 @@ def test_a_second_genuinely_novel_type_also_stages_not_just_the_one_hardcoded_ex
     same fail-closed path.
 
     Fixture changed 2026-08-18: this used `aws_secretsmanager_secret`, which stopped being a
-    novel type when modules/ingestion-webhook started declaring one (MINUS-125) -- it is now a
+    novel type when modules/ingestion-webhook started declaring one -- it is now a
     reviewed member of STATEFUL_RESOURCE_TYPES. That is the fail-closed design doing its job,
     not a regression: growing the catalog is supposed to force a review. `aws_neptune_cluster`
     replaces it, re-confirmed absent from modules/, core/, and tests/ by the same grep."""

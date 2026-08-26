@@ -1,5 +1,5 @@
 """
-`minusctl console` -- serve the visual governance console (PRD v13 WP-05, PRD v15 FR-03).
+`minusctl console` -- serve the visual governance console.
 
 Thin by design, exactly like `gate.py`: the console decides nothing, so a wrapper that grew
 behaviour would be a second place governance rules could live. This resolves the run through

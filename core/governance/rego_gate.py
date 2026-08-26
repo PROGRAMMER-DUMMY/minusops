@@ -1,5 +1,5 @@
 """
-rego_gate.py -- G6 (docs/g6_scope.md), SEC-*/COST-* rules over real Terraform plan JSON via
+rego_gate.py -- G6, SEC-*/COST-* rules over real Terraform plan JSON via
 OPA/Rego (policy/g6/rules.rego), evaluated in SHADOW MODE alongside the existing regex-over-
 HCL rules in core/reporting/optimize_analyzer.py.
 

@@ -1,5 +1,5 @@
 """
-Deliverables and compliance vault (PRD v13 FR-06).
+Deliverables and compliance vault.
 
 A document catalog is read as an inventory. Its dangerous failure is not crashing -- it is
 listing `proving_report.json` for a run that was never proven, because the reader concludes

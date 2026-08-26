@@ -160,7 +160,7 @@ def test_approve_then_apply_happy_path(gate_env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# G9 wiring into the real flow (docs/phase6_step1_authoring_scope.md section 3): stage_plan()
+# G9 wiring into the real flow: stage_plan()
 # computes a real G9 verdict (or a synthetic "not configured" one), carries it through the
 # approval record, and stage_apply(mode="auto-approve") refuses to proceed unless it's clean.
 # ---------------------------------------------------------------------------
@@ -232,7 +232,7 @@ def test_auto_approve_apply_unaffected_when_plan_has_no_aws_content(gate_env, mo
 
 
 def test_destroy_plan_skips_g9(gate_env, monkeypatch):
-    """G9 exists to catch CREATE-order apply-time failures (docs/phase5_scope.md); a destroy
+    """G9 exists to catch CREATE-order apply-time failures; a destroy
     plan has nothing new for it to check, same reasoning the pre-existing cost-coverage skip
     already uses for destroy plans."""
     monkeypatch.delenv(plan_gate.G9_EMULATOR_ENV, raising=False)

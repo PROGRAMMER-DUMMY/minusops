@@ -1,5 +1,5 @@
 """
-Sprint 2 (MINUS-153/141/142/147): team directory, state isolation, role binding, audit shipping.
+Sprint 2: team directory, state isolation, role binding, audit shipping.
 
 The through-line: a team id stops being decoration the moment it decides where state lives and
 which role may apply it, so these tests are mostly about what happens when it is wrong.
@@ -18,7 +18,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _EXAMPLE = os.path.join(_ROOT, "configs", "teams.yaml.example")
 
 
-# --- MINUS-153: the directory ---------------------------------------------------------------
+# --- The directory --------------------------------------------------------------------------
 
 def test_absent_directory_still_resolves(tmp_path):
     """The directory is opt-in. A machine without one must generate exactly as before."""
@@ -61,7 +61,7 @@ def test_malformed_directory_raises_rather_than_looking_empty(tmp_path):
         team_resolver.load_directory(str(bad))
 
 
-# --- MINUS-141: state isolation -------------------------------------------------------------
+# --- State isolation ------------------------------------------------------------------------
 
 def test_team_state_key_isolates_squads():
     # Superseded by the 2026-08-21 ruling: the key is now domain/project/workload.
@@ -103,7 +103,7 @@ def test_no_team_keeps_the_existing_run_scoped_key():
     assert 'key          = "acme/run1/terraform.tfstate"' in rendered
 
 
-# --- MINUS-142: role binding ----------------------------------------------------------------
+# --- Role binding ---------------------------------------------------------------------------
 
 def _tf_dir(tmp_path, key):
     tf = tmp_path / "terraform"
@@ -168,7 +168,7 @@ def test_wildcard_does_not_cross_an_arn_field():
         "arn:aws:iam::*:role/minusops-deploy-acme-data") is False
 
 
-# --- MINUS-147: audit shipping --------------------------------------------------------------
+# --- Audit shipping -------------------------------------------------------------------------
 
 def test_shipping_is_off_until_configured(monkeypatch):
     for var in (audit_logger.S3_BUCKET_ENV, audit_logger.CW_GROUP_ENV):

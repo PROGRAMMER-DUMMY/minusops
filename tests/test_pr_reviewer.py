@@ -1,5 +1,5 @@
 """
-Sprint 1 (MINUS-143/144/145): the PR reviewer action, its comment renderer, and the merge gate.
+Sprint 1: the PR reviewer action, its comment renderer, and the merge gate.
 
 comment.py is a pure renderer -- it reads files and returns Markdown -- which is exactly what
 makes these assertions possible without a workflow runner.
@@ -25,7 +25,7 @@ def _yaml(path):
         return yaml.safe_load(handle)
 
 
-# --- MINUS-144: the sticky comment ----------------------------------------------------------
+# --- The sticky comment ---------------------------------------------------------------------
 
 def test_cost_uses_the_nested_estimate_not_the_pre_usage_create_block():
     """`create.totalCost` is the estimate BEFORE usage lines attach and reads 0.0 for every
@@ -90,7 +90,7 @@ def test_pipe_in_a_gate_detail_does_not_break_the_table():
     assert r"a \| b" in row, "a literal pipe in a detail must be escaped, not split the row"
 
 
-# --- MINUS-143: the action ------------------------------------------------------------------
+# --- The action -----------------------------------------------------------------------------
 
 def test_action_runs_all_four_stages():
     action = open(_ACTION, encoding="utf-8").read()
@@ -115,7 +115,7 @@ def test_plan_hash_comes_from_the_gate_record_not_scraped_log_text():
     assert "pending_plan.json" in action
 
 
-# --- MINUS-145: the merge gate --------------------------------------------------------------
+# --- The merge gate -------------------------------------------------------------------------
 
 def test_deploy_reverifies_the_approved_hash_before_apply():
     deploy = _yaml(_DEPLOY)

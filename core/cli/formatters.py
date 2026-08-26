@@ -55,7 +55,7 @@ def table(headers, rows):
 def card(title, sections):
     """A run specification card: `sections` is [(heading, [(label, value), ...]), ...].
 
-    Headings render as `[Heading]` (PRD v6 FR-03) so a section is scannable in a wall of
+    Headings render as `[Heading]` so a section is scannable in a wall of
     plain text without colour."""
     title = _ascii_only(title)
     rule = "=" * max(len(title), 60)

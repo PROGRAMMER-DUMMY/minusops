@@ -44,7 +44,7 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
-# --- FR-03: context switching ---------------------------------------------------------
+# --- Context switching ----------------------------------------------------------------
 
 def test_use_persists_the_active_run(workspace):
     run = runs.new_run(name="clickstream", domain="marketing", orchestrator="mwaa")
@@ -115,7 +115,7 @@ def test_a_traversing_run_id_is_refused(workspace, hostile):
         cli_context.set_active_run(hostile)
 
 
-# --- FR-03: runs list / describe ------------------------------------------------------
+# --- Runs list / describe -------------------------------------------------------------
 
 def test_runs_list_marks_the_active_run(workspace):
     first = runs.new_run(name="clickstream", domain="marketing")
@@ -165,7 +165,7 @@ def test_describe_reports_an_unpriced_run_as_unpriced(workspace):
     assert "unpriced" in output.lower()
 
 
-# --- FR-03: commands default to the active run ----------------------------------------
+# --- Commands default to the active run -----------------------------------------------
 
 def test_gate_plan_resolves_the_active_run_without_a_dir_flag(workspace, monkeypatch):
     """AC-04. `--dir runs/<id>/terraform` is the single most-typed and most-mistyped
@@ -264,7 +264,7 @@ def test_source_status_targets_the_active_runs_terraform_dir(workspace, monkeypa
     assert seen["dir"] == run["terraform_dir"]
 
 
-# --- FR-02: the package contract ------------------------------------------------------
+# --- The package contract -------------------------------------------------------------
 
 def test_every_legacy_subcommand_still_resolves(workspace, monkeypatch):
     """19 subcommands existed before this package. Dropping one silently would break a

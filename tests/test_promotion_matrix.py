@@ -1,5 +1,5 @@
 """
-Step 6 (MINUS-114/130/131/132): environment promotion, SIEM, DR, mandatory tags.
+Step 6: environment promotion, SIEM, DR, mandatory tags.
 
 Fast: renderers and generated text, not Terraform. The composed stack is validated by the
 slow tests.

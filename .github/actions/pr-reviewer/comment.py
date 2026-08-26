@@ -1,5 +1,5 @@
 """
-Render the PR reviewer's sticky comment (MINUS-144).
+Render the PR reviewer's sticky comment.
 
 A pure renderer: it reads artifacts the action already produced and returns Markdown. No
 network, no AWS, no git. That is what makes it testable, and it is also the point -- a comment

@@ -1,5 +1,5 @@
 """
-Step 7 (MINUS-116/117/118/123-125): ingestion catalog, quarantine, scaffold, 7 pillars.
+Step 7: ingestion catalog, quarantine, scaffold, 7 pillars.
 
 Fast: reads the module HCL and the registry, no Terraform. The four ingestion modules were
 validated against the installed AWS provider schema (v6) during development; what is asserted

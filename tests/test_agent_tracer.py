@@ -1,5 +1,5 @@
 """
-Multi-agent execution trace (PRD v13 FR-04).
+Multi-agent execution trace.
 
 The trace is evidence, not a diagram of the happy path. FR-04.2 names a lifecycle that runs
 grill-me -> architect -> synthesizer -> diagrammer -> reflector -> orchestrator -> proving
@@ -126,7 +126,7 @@ def test_a_corrupt_line_does_not_discard_the_rest_of_the_chain(tmp_path):
     assert by_key["plan"]["status"] == "RECORDED"
 
 
-# --- Artifacts (FR-04.3) ----------------------------------------------------------------
+# --- Artifacts --------------------------------------------------------------------------
 
 def test_artifacts_are_reported_as_present_only_when_they_are_on_disk(tmp_path):
     run = tmp_path / "run"
@@ -142,7 +142,7 @@ def test_artifacts_are_reported_as_present_only_when_they_are_on_disk(tmp_path):
     assert by_key["proving"]["artifact_present"] is False
 
 
-# --- Live monitor (FR-04.1) -------------------------------------------------------------
+# --- Live monitor -----------------------------------------------------------------------
 
 def test_active_agents_is_empty_rather_than_invented_when_nothing_is_running(tmp_path):
     """There is no agent supervisor in this repo to ask. Reporting a plausible-looking

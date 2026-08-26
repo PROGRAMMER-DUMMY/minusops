@@ -1,6 +1,6 @@
 """
 Invariants for the transport subagent manifests in `.agents/subagents/`
-(TASK-TDD-2026-002 WP1).
+.
 
 These manifests are prompts, so nothing executes them and nothing fails when one drifts from
 the hook it describes. The three rules below are the ones whose absence causes real damage: a

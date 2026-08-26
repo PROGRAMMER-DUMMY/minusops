@@ -1,5 +1,5 @@
 """
-Incident diagnostics: raw failure text in, a four-part resolution report out (PRD v9 FR-01..04).
+Incident diagnostics: raw failure text in, a four-part resolution report out.
 
 A Terraform apply error, a YARN OOM kill and a Great Expectations assertion failure are three
 different opaque stack traces that all end with an engineer guessing. This turns each into
@@ -522,7 +522,7 @@ def diagnose(error_text, telemetry=None, address=None, resource_type=None, run_r
     }
 
 
-# --- Severity (PRD v11 FR-05) ----------------------------------------------------------
+# --- Severity --------------------------------------------------------------------------
 #
 # Severity is computed per incident from impact, NOT looked up from the alert's source.
 # The rejected design mapped outage->P1, data-quality->P2, FinOps->P3 and pinned each to a
@@ -630,7 +630,7 @@ def _wrap(label, value, indent=23):
 
 
 def format_report(result):
-    """The four-part report (FR-01). ASCII only -- these are pasted into tickets."""
+    """The four-part report. ASCII only -- these are pasted into tickets."""
     rule = "=" * REPORT_WIDTH
     lines = [rule, "DIAGNOSTIC & INCIDENT RESOLUTION REPORT", rule, ""]
     evidence = result["evidence"]

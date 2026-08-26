@@ -1,5 +1,5 @@
 """
-MinusOps Enterprise Visual Governance Console (PRD v13 FR-01).
+MinusOps Enterprise Visual Governance Console.
 
 Replaces `app/dashboard_app.py`, which mixed FinOps charts, CLI command execution and
 report viewers across five tabs that each served a different person. This is four views
@@ -24,7 +24,7 @@ split is the whole safety property.
 Depends on: core/reporting/lineage_graph.py, core/governance/agent_tracer.py,
     core/reporting/vault.py, core/architecture/reconciler.py,
     core/reporting/drawio_generator.py, core/reporting/runs.py
-Shells out to: nothing. The console never invokes a cloud mutation (PRD v13 invariant 2).
+Shells out to: nothing. The console never invokes a cloud mutation.
 Used by: core/cli/commands/console.py (`minusctl console`)
 """
 import datetime
@@ -245,7 +245,7 @@ def view_topology(state):
 
 
 def canvas_changes(original_xml, edited_xml):
-    """The semantic diff between the generated diagram and the returned one (FR-05.1).
+    """The semantic diff between the generated diagram and the returned one.
 
     GEOMETRY IS IGNORED. Dragging a box to tidy the layout is not an architecture change,
     and raising a review for it would teach an operator to click through the gate -- which
@@ -298,7 +298,7 @@ def _change_sentence(change):
     return [f"Removed {change['what']}"]
 
 
-# --- Canvas change -> reconciler proposal (FR-05.2, FR-05.3) ------------------------------
+# --- Canvas change -> reconciler proposal -------------------------------------------------
 
 # Which argument on a resource type carries an upstream reference. A diagram cannot supply
 # this: a line between two boxes says a relationship exists, never which attribute encodes
@@ -939,7 +939,7 @@ def document_sheet(name, run_id):
 
 
 def _ledger_table(ledger):
-    """The step-flow ledger (FR-02.3).
+    """The step-flow ledger.
 
     `generate_flow_ledger()` returns a list of dicts, not text -- rendering it with html.Pre
     prints a Python repr on the page. Its protocol/latency/safeguard values are the same
@@ -956,7 +956,7 @@ def _ledger_table(ledger):
     ])
 
 
-# --- FR-05: governed visual reconciliation ----------------------------------------------
+# --- Governed visual reconciliation -----------------------------------------------------
 
 # --- FR-06.1 / FR-06.2: preview and download --------------------------------------------
 #
@@ -1341,7 +1341,7 @@ def _transcript_path(root):
 
 
 def view_agents_cost(state):
-    """COST -> AGENTS COST (FR-01, FR-02). Token economics for the agents that built a run."""
+    """COST -> AGENTS COST. Token economics for the agents that built a run."""
     path = _transcript_path(state.get("root"))
     if not path:
         return _empty(
@@ -1437,7 +1437,7 @@ def view_agents_cost(state):
 
 
 def view_agent_flow(state):
-    """FLOW -> AGENT FLOW (FR-04, FR-05). The agent handoff DAG and its integrity seal."""
+    """FLOW -> AGENT FLOW. The agent handoff DAG and its integrity seal."""
     chain = agent_tracer.verify_chain(
         os.path.join(state.get("root") or "", ".agents", "logs", "audit.jsonl"))
     order = [spec["key"] for spec in agent_tracer.STAGES]

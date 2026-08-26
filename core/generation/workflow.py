@@ -67,7 +67,7 @@ def resolve_to_run(query, cloud=None, inputs=None, generate=False, name=None,
         }
 
     # name/domain/orchestrator only change the run id and the registry row; absent them
-    # the id keeps its original `<timestamp>-requirements-first` shape (FR-01).
+    # the id keeps its original `<timestamp>-requirements-first` shape.
     run = runs.new_run(blueprint="requirements-first", request=query, cloud=result["cloud"],
                        name=name, domain=domain, orchestrator=orchestrator, owner=owner)
     requirements_record = reqgate.template()

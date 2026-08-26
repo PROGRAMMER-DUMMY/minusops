@@ -1,6 +1,6 @@
 """
 `minusctl runs list` and `minusctl runs describe` -- the two questions an operator asks about
-generated workspaces: what exists, and what is this one (PRD v6 FR-02/FR-03).
+generated workspaces: what exists, and what is this one.
 
 `list` marks the active run `[*]` and everything else `[ ]`, so the marker reads as a column
 rather than as a rendering bug, and filters on the three axes a platform team actually slices
@@ -221,7 +221,7 @@ def _describe(args):
         if value:
             endpoints.append((label, value if key == "region" else f"s3://{value}"))
 
-    # Only what the stack actually provisioned (PRD v9 s3). An endpoint for infrastructure
+    # Only what the stack actually provisioned. An endpoint for infrastructure
     # that does not exist fails at connect time and the analyst blames the tool.
     served = serving.endpoints(outputs, modules=decision.get("selected_modules") or [])
     sections = [

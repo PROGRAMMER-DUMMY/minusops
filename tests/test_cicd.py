@@ -223,7 +223,7 @@ def test_no_unsubstituted_tokens_survive_any_render():
         assert not re.findall(r"__[A-Z][A-Z0-9_]*__", text)
 
 
-# --- PRD v11 Step 2 (FR-02): immutable artifact staging --------------------------------
+# --- PRD v11 Step 2: immutable artifact staging ----------------------------------------
 
 def test_artifact_repo_must_be_one_we_can_actually_emit():
     with pytest.raises(ValueError):

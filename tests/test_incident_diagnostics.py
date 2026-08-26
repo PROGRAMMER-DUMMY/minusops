@@ -1,5 +1,5 @@
 """
-PRD v9: the incident diagnostics and remediation engine.
+The incident diagnostics and remediation engine.
 
 Turns a raw failure -- a YARN OOM kill, an IAM eventual-consistency error, a GE assertion
 failure -- into the four-part report an engineer can act on: evidence, root cause, evaluated
@@ -39,7 +39,7 @@ ATHENA_SPLIT = "HIVE_CANNOT_OPEN_SPLIT: Error opening Hive split s3://gold/event
 GE_FAILURE = "Great Expectations suite failed: 3 of 14 expectations did not pass"
 
 
-# --- FR-02: signature classification --------------------------------------------------
+# --- Signature classification ---------------------------------------------------------
 
 @pytest.mark.parametrize("text,category_fragment", [
     (GLUE_OOM, "memory"),
@@ -81,7 +81,7 @@ def test_the_first_matching_rule_wins_and_is_reported_by_id():
     assert any(r.rule_id == result["rule_id"] for r in diag.FAILURE_RULES)
 
 
-# --- FR-03: alternatives and trade-offs -----------------------------------------------
+# --- Alternatives and trade-offs ------------------------------------------------------
 
 def test_every_rule_offers_at_least_two_paths_forward():
     """FR-03. One option is an instruction, not an evaluation. The engineer needs to be able
@@ -139,7 +139,7 @@ def test_the_report_points_at_the_command_that_produces_real_dollars():
     assert "minusctl cost estimate" in text
 
 
-# --- FR-01: the report ----------------------------------------------------------------
+# --- The report -----------------------------------------------------------------------
 
 def test_the_report_has_all_four_numbered_sections():
     text = diag.format_report(diag.diagnose(GLUE_OOM))
@@ -207,7 +207,7 @@ def test_classification_is_sub_50ms():
     assert elapsed_ms < 50, f"{elapsed_ms:.2f}ms per classification"
 
 
-# --- FR-02: local evidence extraction -------------------------------------------------
+# --- Local evidence extraction --------------------------------------------------------
 
 def test_evidence_is_read_from_a_proving_report(tmp_path):
     root = tmp_path / "run"
@@ -288,7 +288,7 @@ def test_a_telemetry_lookup_that_raises_never_blocks_the_report():
     assert result["telemetry_available"] is False
 
 
-# --- FR-04: reachable from the CLI ----------------------------------------------------
+# --- Reachable from the CLI -----------------------------------------------------------
 
 def test_diagnose_subcommand_reports_a_known_failure(tmp_path, monkeypatch):
     """The engine is only useful if an operator mid-incident can reach it by name."""
@@ -380,7 +380,7 @@ def test_next_is_unchanged_for_a_run_with_no_failure(tmp_path, monkeypatch):
     assert "minusctl diagnose" not in out.getvalue()
 
 
-# --- PRD v11 Step 4 (FR-05): impact-driven severity ------------------------------------
+# --- PRD v11 Step 4: impact-driven severity --------------------------------------------
 #
 # The rejected design bound severity to the alert SOURCE -- outage=P1, data quality=P2,
 # FinOps=P3 -- each pinned to a fixed channel. Two things break under it, both visible in

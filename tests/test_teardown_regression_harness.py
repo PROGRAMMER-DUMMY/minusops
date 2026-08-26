@@ -1,5 +1,5 @@
 """
-Phase 6 Step 5 (docs/phase6_step5_teardown_scope.md section 1.1) -- the regression-baseline
+Phase 6 Step 5 -- the regression-baseline
 harness. Decided by the user: Option B (the catalog stays the real composition source; nothing
 retires or relocates on the strength of this harness alone). This harness still needs to exist
 and run, under either option, because it is what turns "the authored-content path is
@@ -336,7 +336,7 @@ def _module_args_from_required_variables(main_tf):
 
 
 def _new_module_form_plan(module_id, tmp_path):
-    """The authored-content MODULE form (docs/phase7_item1_module_unit_scope.md, approved): the
+    """The authored-content MODULE form: the
     module's entire real main.tf routed through synthesizer.compose(authored_resources=...) as
     ONE module-shaped unit -- its own directory (authored_modules/<module_id>/), its own
     variable/output namespace, its real companion asset files copied alongside it -- instead of
@@ -389,7 +389,7 @@ def _new_module_form_plan(module_id, tmp_path):
 
 
 # Real, named blockers found RUNNING this harness (not hypothetical, not hacked around) --
-# per docs/phase6_step5_teardown_scope.md section 2: a module the current authored_content
+# A module the current authored_content
 # mechanism can't reproduce to the same bar is a disclosed blocker, not something to paper over
 # by copying extra files into the flat-root composition to make the symptom disappear.
 _NEW_PATH_KNOWN_BLOCKERS = {
@@ -397,7 +397,7 @@ _NEW_PATH_KNOWN_BLOCKERS = {
     # decomposition _new_path_plan() uses (one root file per resource type, no module
     # subdirectory) has no way to carry a companion asset file a `path.module`-relative
     # reference needs (aws_s3_object.script's `filemd5("${path.module}/scripts/....py")`).
-    # CLOSED for real by Phase 7 Item 1 (docs/phase7_item1_module_unit_scope.md): the new
+    # CLOSED for real by Phase 7 Item 1: the new
     # module-shaped authored_content form gives the unit its own directory, so `path.module`
     # resolves correctly -- see test_module_form_closes_the_path_module_asset_blockers below,
     # which proves plan-equivalence for both using that form. Still skipped HERE because this

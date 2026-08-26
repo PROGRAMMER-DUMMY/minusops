@@ -1,5 +1,5 @@
 """
-Multi-agent execution trace, read out of the audit chain (PRD v13 FR-04).
+Multi-agent execution trace, read out of the audit chain.
 
 WHAT THIS IS NOT: a picture of the lifecycle. FR-04.2 names eight relay stages, and the
 audit chain currently records six actions -- `synthesize`, `plan`, `verify`, `approve`,
@@ -31,7 +31,7 @@ RECORDED = "RECORDED"
 DEFAULT_AUDIT_PATH = os.path.join(".agents", "logs", "audit.jsonl")
 DECISION_FILE = "architecture_decision.json"
 
-# PRD v14 FR-06, three states, never one boolean. VERIFIED and BROKEN are the obvious two;
+# Three states, never one boolean. VERIFIED and BROKEN are the obvious two;
 # ABSENT exists because a log that was never hash-chained is neither. Folding it into BROKEN
 # sends an auditor hunting a tampering incident that did not happen, and folding it into
 # VERIFIED presents an unprotected file as evidence.
@@ -77,7 +77,7 @@ STAGES = (
      "produces": os.path.join("reports", "notification.json")},
 )
 
-# Persona and model tier per stage (PRD v14 FR-05). Kept beside the catalog rather than
+# Persona and model tier per stage. Kept beside the catalog rather than
 # inside it so the v13 STAGES literal and everything reading it stay exactly as they were.
 #
 # `model_tier` is what actually executes the stage in THIS repo, not what the PRD's example
@@ -146,7 +146,7 @@ def _entry_hash(prev_hash, record_without_hash):
     """The chain format `audit_chain.append` writes, re-derived here.
 
     Not imported from `audit_chain`: this module is asserted to import only the standard
-    library (PRD v14 invariant 5, enforced by test_agent_flow.py), and a cross-module import
+    library, and a cross-module import
     would break that. The two must stay byte-identical -- if `audit_chain._entry_hash`
     changes, this changes with it or every verification here reports a false BROKEN.
 
@@ -161,7 +161,7 @@ def _entry_hash(prev_hash, record_without_hash):
 
 
 def verify_chain(audit_path=None):
-    """Tamper-check `.agents/logs/audit.jsonl` (FR-06).
+    """Tamper-check `.agents/logs/audit.jsonl`.
 
     Returns {"state", "broken_at", "checked", "errors", "audit_path"} where state is one of
     CHAIN_VERIFIED, CHAIN_BROKEN or CHAIN_ABSENT, and `broken_at` is the 1-based index of
@@ -276,7 +276,7 @@ def _apply_latency(stages):
 
 def decision_branches(run_root=None):
     """The architecture decision behind a run: what was chosen, why, and what was rejected
-    (FR-05).
+.
 
     Returns present=False when the record is missing or unreadable. Every list is empty
     rather than filled with a placeholder when the record does not carry that field -- the
@@ -352,7 +352,7 @@ def trace(run_root=None, audit_path=None):
                 status=RECORDED,
                 at=record.get("timestamp"),
                 operator=record.get("operator"),
-                # FR-04.3: the cryptographic link back into the chain. A stage claiming it
+                # The cryptographic link back into the chain. A stage claiming it
                 # ran without one is unfalsifiable, so `trace` never emits that.
                 audit_hash=record.get("entry_hash"),
                 details=record.get("details"),
@@ -377,7 +377,7 @@ def trace(run_root=None, audit_path=None):
 
 
 def active_agents(run_root=None):
-    """Currently-running subagents (FR-04.1).
+    """Currently-running subagents.
 
     Always empty today, and deliberately so. Nothing in this repo supervises subagent
     processes, so there is no source of truth to read. Returning a plausible-looking

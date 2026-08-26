@@ -16,7 +16,7 @@ touches, so every failure mode here is loud on purpose:
   * A run id containing a path separator or `..` is refused before it is stored, because it
     is read back off disk later and joined into a path.
 
-PRECEDENCE (PRD v6 FR-01, as ratified 2026-08-22):
+PRECEDENCE:
 
     1. an explicit --run / --dir flag
     2. upward discovery -- the cwd is inside runs/<run-id>/

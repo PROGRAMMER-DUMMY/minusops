@@ -1,5 +1,5 @@
 """
-Dataset-to-dataset lineage for a governed medallion pipeline (PRD v13 FR-03).
+Dataset-to-dataset lineage for a governed medallion pipeline.
 
 The architecture diagram (`drawio_generator.py`) answers "what resources exist and how are
 they wired". This answers a different question: "where does a record go, and what happens

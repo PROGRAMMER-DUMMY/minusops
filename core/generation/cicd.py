@@ -382,7 +382,7 @@ _TOKEN = re.compile(r"__([A-Z][A-Z0-9_]*)__")
 
 # A pipeline name becomes a directory, a workflow filename, a YAML `name:` value and -- the
 # one that matters -- the `paths:` filter deciding which subtree the workflow deploys
-# (FR-01.3). DNS-label shape: lowercase, digits, hyphens, 63 max.
+# DNS-label shape: lowercase, digits, hyphens, 63 max.
 _PIPELINE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
@@ -441,7 +441,7 @@ def render_jenkinsfile(tf_dir=DEFAULT_TF_DIR, region=DEFAULT_REGION,
                        staging_approvers="bi-analysts,domain-leads",
                        prod_approvers="platform-lead,secops-approvers",
                        artifact_repo=None):
-    """The declarative Jenkins pipeline. `artifact_repo` (FR-02) adds one publish stage.
+    """The declarative Jenkins pipeline. `artifact_repo` adds one publish stage.
 
     Artifactory's steps are plugin-provided, so they are emitted only when asked for --
     see the comment inside `_JENKINS_ARTIFACT[ARTIFACTORY]`.
@@ -536,7 +536,7 @@ __ARTIFACT_STAGE__
 """
 
 
-# --- Immutable artifact staging (PRD v11 FR-02) ----------------------------------------
+# --- Immutable artifact staging --------------------------------------------------------
 #
 # "Build once, deploy many" only holds if the thing deployed to prod is byte-identical to
 # the thing proven in UAT. That means the tag is the git SHA and never `latest`, and the
@@ -673,7 +673,7 @@ def render_pipeline_workflow(pipeline_name, dest_dir=None, region=DEFAULT_REGION
                              tf_version=DEFAULT_TF_VERSION, artifact_repo=None):
     """One domain-repo GitHub Actions workflow, scoped to a single exported pipeline.
 
-    `artifact_repo` (PRD v11 FR-02) adds a build-and-publish stage ahead of Terraform and
+    `artifact_repo` adds a build-and-publish stage ahead of Terraform and
     passes the resulting immutable URI into the plan as `-var artifact_uri=...`.
     """
     pipeline_name = _valid_name(pipeline_name)
@@ -683,7 +683,7 @@ def render_pipeline_workflow(pipeline_name, dest_dir=None, region=DEFAULT_REGION
     # `paths:` filter, so each segment gets the same treatment.
     for segment in dest_dir.split("/"):
         _valid_name(segment)
-    # Terraform consumes the URI the build stage published (FR-02.3) rather than resolving
+    # Terraform consumes the URI the build stage published rather than resolving
     # the tag itself: a tag resolved twice can resolve to two different images.
     tf_var = ' -var "artifact_uri=${{ env.ARTIFACT_URI }}"' if artifact_repo else ""
     return _fill(_PIPELINE_WORKFLOW, pipeline=pipeline_name, dest_dir=dest_dir,

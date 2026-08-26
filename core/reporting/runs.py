@@ -132,7 +132,7 @@ def get_run(run_id=None):
     return None
 
 
-# --- Central registry (FR-02) ---------------------------------------------------------
+# --- Central registry -----------------------------------------------------------------
 
 def _index_entry(item):
     run_id = item.get("run_id", "")

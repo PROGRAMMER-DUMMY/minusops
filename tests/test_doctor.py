@@ -62,7 +62,7 @@ def test_minusctl_doctor_exit_code_follows_ok(monkeypatch, capsys):
     assert "install it" in capsys.readouterr().out
 
 
-# --- MINUS-138: offline init ---------------------------------------------------------------
+# --- Offline init --------------------------------------------------------------------------
 
 def test_cache_dir_is_created_not_merely_detected(tmp_path, monkeypatch):
     """The old code only exported TF_PLUGIN_CACHE_DIR `if os.path.isdir(cache_dir)`, so on a
@@ -95,7 +95,7 @@ def test_compose_seeds_the_dependency_lock_file(tmp_path):
     assert "registry.terraform.io/hashicorp/aws" in seeded.read_text(encoding="utf-8")
 
 
-# --- MINUS-139: G9 emulator pre-flight ------------------------------------------------------
+# --- G9 emulator pre-flight -----------------------------------------------------------------
 
 def _emulator_env(monkeypatch, name=None, listening=False):
     import doctor
@@ -153,7 +153,7 @@ def test_doctor_includes_the_emulator_check(monkeypatch):
     assert any(c["name"] == "g9 emulator" for c in doctor.diagnose()["checks"])
 
 
-# --- MINUS-156: version floors, lock seed, and the skill manifest --------------------------
+# --- Version floors, lock seed, and the skill manifest -------------------------------------
 
 def test_version_parser_handles_both_tool_formats():
     """`terraform version` prints "Terraform v1.15.7"; the AWS CLI prints
@@ -189,7 +189,7 @@ def test_unreadable_version_warns_rather_than_blocks(monkeypatch):
 
 
 def test_missing_lock_seed_is_reported(monkeypatch, tmp_path):
-    """Without the seed every fresh run re-downloads ~855 MB per provider (MINUS-138)."""
+    """Without the seed every fresh run re-downloads ~855 MB per provider."""
     import doctor
     monkeypatch.setattr(doctor.os.path, "exists", lambda p: False)
     check = doctor._lockfile_check()

@@ -1,5 +1,5 @@
 """
-Alert-storm suppression in the notification gate (TASK-TDD-2026-002 WP2).
+Alert-storm suppression in the notification gate.
 
 A pipeline that fails 50 times in ten seconds should page someone once. Without a cooldown
 the on-call channel fills with identical messages, the human mutes it, and the next distinct

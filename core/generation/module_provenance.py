@@ -16,7 +16,7 @@ this repo actually uses the catalog killed it: most modules were added directly 
 at all, so "pinned means G2-checked" was never true for the catalog as a whole; and nothing calls
 `verify()` automatically, so a pin is never re-checked against later drift either. The
 replacement is stricter, not looser -- G2's `gate_content()` re-checks live at the point any
-content is actually drawn on for composition or authoring (docs/phase6_step1_authoring_scope.md),
+content is actually drawn on for composition or authoring,
 so a fresh check happens every time instead of once. `pin` now ALWAYS records (a maintainer's own
 decision to keep a version is not this tool's to override), still runs G2, and still records what
 it found in `g2_blocking`/`g2_findings` and prints it loudly on stderr -- a signal, never a
@@ -191,7 +191,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.cmd == "pin":
-        # G2 (docs/g2_scope.md) does NOT gate this action -- see the module docstring's "NOT A
+        # G2 does NOT gate this action -- see the module docstring's "NOT A
         # GATE". It is still run, still recorded, and still printed loudly: a maintainer pinning
         # content G2 flags stays a visible fact, never silently swallowed, but this tool does not
         # refuse the write. Imported lazily to avoid a module-level import cycle -- schema_lint.py

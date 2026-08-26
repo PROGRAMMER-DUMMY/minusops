@@ -1,5 +1,5 @@
 """
-Governed visual-to-code reconciliation (PRD v13 FR-05).
+Governed visual-to-code reconciliation.
 
 Everywhere else the console reads. Here a drag on a canvas rewrites `terraform/main.tf`, so
 this file is the one place in the console that can undo the deploy gate. The gate's whole
@@ -120,7 +120,7 @@ def propose(run_root, change, author=None, audit_path=None):
 
 
 def _warnings(target, old_value, new_value):
-    """The safety and lineage notice (FR-05.2 item 3)."""
+    """The safety and lineage notice."""
     notes = [
         "This edits generated Terraform in Git. Git remains the authoritative state; the "
         "canvas only proposes.",

@@ -107,7 +107,7 @@ def test_unreadable_tf_file_does_not_crash_the_scan(tmp_path):
     assert address_churn.read_moved_blocks(str(tmp_path)) == [{"from": "a.b", "to": "c.d"}]
 
 
-# --- MINUS-137: generating the moved blocks, not just demanding them -------------------
+# --- Generating the moved blocks, not just demanding them ------------------------------
 
 def test_generated_moved_block_clears_the_churn_it_was_generated_from(tmp_path):
     """The round trip is the whole point: what write_moved() emits must be what

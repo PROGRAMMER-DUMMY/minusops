@@ -1,5 +1,5 @@
 """
-Step 5 (MINUS-110/119/120): the catalog database, the dbt scaffold, and dbt-only mode.
+Step 5: the catalog database, the dbt scaffold, and dbt-only mode.
 
 Fast by construction -- these exercise the pure renderers and the selection rule, not
 Terraform. The end-to-end composition is covered by the slow tests in test_synthesizer.py.

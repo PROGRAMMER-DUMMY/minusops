@@ -223,7 +223,7 @@ def test_the_module_states_that_it_is_not_a_security_boundary():
     assert "not a security boundary" in head or "not a sandbox" in head
 
 
-# --- PRD v15 WP-02: dynamic budget alignment ---------------------------------------------
+# --- Dynamic budget alignment ------------------------------------------------------------
 #
 # Kept here rather than in a new file because it is the same class of decision: a rule that
 # changes what an agent may do without a human in the room.
@@ -284,7 +284,7 @@ def test_the_headroom_multiplier_is_the_one_the_prd_states():
     assert budget.HEADROOM == 1.25
 
 
-# --- PRD v15 WP-04: the upfront roadmap and the volume/budget contradiction --------------
+# --- The upfront roadmap and the volume/budget contradiction -----------------------------
 
 import requirements as reqs
 

@@ -281,7 +281,7 @@ FIVE_HOP_OUTPUTS = ("dq_job_name", "dq_results_bucket", "quarantine_bucket")
 REPORT_FILENAME = "proving_report.json"
 _DIGEST_FIELD = "payload_sha256"
 
-# --- The hop registry (PRD v11 FR-03) --------------------------------------------------
+# --- The hop registry ------------------------------------------------------------------
 #
 # A dict of specs rather than an abstract base class and eight subclasses. The hops are
 # functions and have always been functions; composability needs a lookup table, not a

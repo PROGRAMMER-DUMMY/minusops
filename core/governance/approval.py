@@ -3,9 +3,9 @@ Approval gate for side-effecting / mutating actions (notifications, ticket creat
 infrastructure changes, etc.).
 
 Two selectable modes:
-  - gatekeeper   : require explicit human approval before the action proceeds.
+  - gatekeeper: require explicit human approval before the action proceeds.
                    In a non-interactive session (no TTY) this safely DENIES.
-  - auto-approve : proceed without prompting (still fully audited).
+  - auto-approve: proceed without prompting (still fully audited).
 
 Authorization (RBAC): in BOTH modes, if an approver allowlist is configured
 (MINUS_APPROVERS / .minus/approvers.json) the acting operator must be on it, or the

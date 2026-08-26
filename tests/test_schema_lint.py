@@ -1,6 +1,6 @@
 """
 schema_lint.py (G2) checks a module's actual resource/data-source attribute references against
-the REAL, LIVE provider schema before the pin CLI accepts it -- docs/g2_scope.md. Unlike
+the REAL, LIVE provider schema before the pin CLI accepts it --. Unlike
 schema_watch.py (a diff engine, no-ops without a prior snapshot), this is a single-point check
 against live-schema-now on every call, no baseline required. Unit tests below use synthetic
 schema fixtures (fast, hermetic, no network); the tests at the bottom are real-terraform proof
@@ -733,7 +733,7 @@ def test_gate_module_no_warning_on_first_ever_pin_nothing_to_compare(fake_module
 
 
 # ---------------------------------------------------------------------------
-# module_provenance.py CLI wiring: G2 no longer GATES `pin` (docs/phase6_step5_teardown_scope.md
+# module_provenance.py CLI wiring: G2 no longer GATES `pin` (
 # section 3, 2026-07-15) -- it still runs, still prints a loud warning on a blocking verdict, and
 # still records the result in PROVENANCE.json (g2_blocking/g2_findings), but never refuses to
 # write the record. See module_provenance.py's own module docstring ("RETIRED AS A GATE") for the
@@ -832,7 +832,7 @@ def test_real_aws_catches_the_name_to_region_deprecation(fake_module, monkeypatc
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
 def test_real_databricks_catches_a_real_deprecation(fake_module, monkeypatch):
     """Confirms G2's fetch/reduce machinery works against the Databricks provider too, not
-    just AWS (docs/g2_scope.md #3) -- proven, not disclosed. `databricks_mws_credentials`'s
+    just AWS -- proven, not disclosed. `databricks_mws_credentials`'s
     `account_id` attribute is deprecated on the real, live Databricks provider (Databricks'
     own docs: it should come from the provider instance instead) -- modules/databricks-
     workspace/main.tf already knows this and deliberately avoids setting it (see the comment
@@ -865,7 +865,7 @@ def test_real_aws_clean_module_is_not_blocking(fake_module, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# gate_content()/gate_module() parity (docs/phase6_step1_authoring_scope.md section 2, proof-bar
+# gate_content()/gate_module() parity (, proof-bar
 # item 3): the refactor split gate_module()'s disk-read from its linting logic into a thin
 # wrapper calling gate_content() -- this proves the split changed NOTHING about the verdict,
 # against every one of this repo's 16 real, currently-pinned modules, not a synthetic sample.
@@ -888,7 +888,7 @@ def test_gate_content_is_byte_identical_to_gate_module_for_every_real_module(mod
 
 
 # ---------------------------------------------------------------------------
-# G2 per-module "is clean" (docs/phase6_step5_teardown_scope.md section 1.3): the parity test
+# G2 per-module "is clean": the parity test
 # above proves the two call paths AGREE with each other -- it does not itself assert either one
 # is actually clean. That every real module passes G2 today was, until this test, an inference
 # ("they're pinned, so they must be clean") rather than a regression-tested fact. This is a real

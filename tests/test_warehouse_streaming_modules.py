@@ -1,5 +1,5 @@
 """
-Sprint 3 (MINUS-148..152): Snowflake, Unity Catalog/Delta, MWAA, MSK, Iceberg maintenance.
+Sprint 3: Snowflake, Unity Catalog/Delta, MWAA, MSK, Iceberg maintenance.
 
 All five were validated against the installed provider schemas (AWS v6.60.0, databricks) during
 development. What is asserted here is the security and correctness properties that are easy to
@@ -41,7 +41,7 @@ def test_each_new_module_is_reachable_by_keyword():
         assert expected in ids[:3], f"{phrasing!r} -> {ids[:3]}"
 
 
-# --- MINUS-148: Snowflake -------------------------------------------------------------------
+# --- Snowflake ------------------------------------------------------------------------------
 
 def test_snowflake_trust_requires_an_external_id():
     """SEC-05. Snowflake's AWS account is shared across its customers, so the principal alone
@@ -82,7 +82,7 @@ def test_snowflake_module_provisions_no_snowflake_objects():
     assert 'provider "snowflake"' not in directives
 
 
-# --- MINUS-149: Unity Catalog / Delta Sharing -----------------------------------------------
+# --- Unity Catalog / Delta Sharing ----------------------------------------------------------
 
 def test_external_locations_are_per_zone_not_bucket_root():
     """Governance is granted on the location, so one root location would make a Gold grant a
@@ -128,7 +128,7 @@ def test_delta_module_declares_its_own_provider_source():
     assert 'source  = "databricks/databricks"' in _hcl("compute-databricks-delta")
 
 
-# --- MINUS-150: MWAA ------------------------------------------------------------------------
+# --- MWAA -----------------------------------------------------------------------------------
 
 def test_dag_bucket_is_versioned():
     """MWAA identifies DAG updates by S3 object version; an unversioned source bucket fails
@@ -159,7 +159,7 @@ def test_all_five_log_streams_are_enabled():
         assert stream in hcl, stream
 
 
-# --- MINUS-151: MSK -------------------------------------------------------------------------
+# --- MSK ------------------------------------------------------------------------------------
 
 def test_msk_uses_iam_auth_and_no_anonymous_access():
     """SCRAM would mean a password in a variable; unauthenticated Kafka has no read-only
@@ -194,7 +194,7 @@ def test_no_connector_role_without_a_sink_bucket():
     assert 'count              = var.sink_bucket == "" ? 0 : 1' in hcl
 
 
-# --- MINUS-152: Iceberg maintenance ---------------------------------------------------------
+# --- Iceberg maintenance --------------------------------------------------------------------
 
 def test_iceberg_maintenance_is_off_by_default():
     """Compaction rewrites data files. A maintenance job nobody asked for that rewrites Gold

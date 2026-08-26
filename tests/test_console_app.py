@@ -1,5 +1,5 @@
 """
-The visual governance console (PRD v13 FR-01, AC-01/04/07).
+The visual governance console.
 
 What is worth pinning here is not that the page renders -- Dash will render almost
 anything -- but that the console stays a READER. Its one dangerous capability is the canvas
@@ -28,7 +28,7 @@ if ROOT not in sys.path:
 from app import console_app  # noqa: E402
 
 
-# --- The four views (FR-01.1) -----------------------------------------------------------
+# --- The four views ---------------------------------------------------------------------
 
 def test_every_navigable_view_has_a_renderer():
     """PRD v13 declared four views; Flow absorbed lineage and delivery, and Access and Cost
@@ -63,7 +63,7 @@ def test_the_run_band_reports_absent_facts_as_absent(tmp_path):
     assert "absent" in text, "absent facts must carry the absence mark, not render blank"
 
 
-# --- The console is a reader (PRD v13 invariant 2) --------------------------------------
+# --- The console is a reader ------------------------------------------------------------
 
 def test_the_console_never_shells_out():
     """Invariant 2: no direct cloud mutations from the UI. The cheapest way to keep that
@@ -104,7 +104,7 @@ def test_the_bundle_callback_reports_a_refusal_instead_of_claiming_success(tmp_p
     assert not os.path.exists(str(tmp_path / "out.zip"))
 
 
-# --- Zero-emoji doctrine (AC-07) --------------------------------------------------------
+# --- Zero-emoji doctrine ----------------------------------------------------------------
 
 @pytest.mark.parametrize("relative", [
     os.path.join("app", "console_app.py"),
@@ -203,7 +203,7 @@ def test_the_step_flow_ledger_renders_as_a_table_not_a_python_repr(tmp_path):
 
 
 # ---------------------------------------------------------------------------------------
-# FR-05: the reconciliation loop is WIRED, not merely imported.
+# The reconciliation loop is WIRED, not merely imported.
 #
 # The test this replaces was `assert "main.tf" not in source or "reconciler" in source`.
 # It passed on the module docstring, which mentions the reconciler, while the console made
@@ -632,7 +632,7 @@ def test_cloud_spend_and_agent_spend_never_share_a_total():
     assert "Cloud cost" in switch and "Agents cost" in switch
 
 
-# --- FR-05.3: the one path in this console that writes ----------------------------------
+# --- The one path in this console that writes -------------------------------------------
 
 def test_a_reroute_on_a_known_resource_type_resolves_its_argument():
     plan = {"resource_changes": [

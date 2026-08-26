@@ -1,5 +1,5 @@
 """
-Autonomous agent execution sandbox (PRD v15 FR-01).
+Autonomous agent execution sandbox.
 
 Evaluates a command or a file write before an agent performs it, and refuses the ones that
 destroy work, bypass the human gate, or reach outside the run the agent is scoped to.

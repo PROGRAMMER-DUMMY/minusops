@@ -1,5 +1,5 @@
 """
-Agent flow lineage and audit-chain verification (PRD v14 FR-04, FR-05, FR-06).
+Agent flow lineage and audit-chain verification.
 
 Two things are under test here, and they fail in opposite directions.
 
@@ -64,7 +64,7 @@ def _three_records():
     ]
 
 
-# --- FR-06: hash chain verification, three states ---------------------------------------
+# --- Hash chain verification, three states ----------------------------------------------
 
 def test_an_untouched_chain_verifies(tmp_path):
     path = _chained(tmp_path, _three_records())
@@ -209,7 +209,7 @@ def test_an_unparseable_timestamp_yields_no_latency_not_a_crash(tmp_path):
     assert by_key["plan"]["latency_seconds"] is None
 
 
-# --- FR-05: decision branches -----------------------------------------------------------
+# --- Decision branches ------------------------------------------------------------------
 
 def test_decision_branches_reports_absent_when_there_is_no_decision_file(tmp_path):
     result = tracer.decision_branches(str(tmp_path))
@@ -263,7 +263,7 @@ def test_a_corrupt_decision_file_is_absent_not_a_crash(tmp_path):
     assert tracer.decision_branches(str(tmp_path))["present"] is False
 
 
-# --- FR-04: the DAG ---------------------------------------------------------------------
+# --- The DAG ----------------------------------------------------------------------------
 
 def test_every_traced_stage_becomes_a_node_and_the_edges_chain_them(tmp_path):
     path = _chained(tmp_path, _three_records())

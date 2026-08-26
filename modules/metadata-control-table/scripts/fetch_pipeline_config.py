@@ -2,7 +2,7 @@
 Runtime helper: fetch one pipeline's control-table row at Airflow DAG-parse time (or a Step
 Functions pre-execution Lambda) via a caller-supplied column mapping, so an EXISTING enterprise
 control table -- any name, any column names -- can drive dynamic DAG parameters. This is the
-PRIMARY path (PRD 6.8.4/6.8.5): MinusOps never assumes `tbl_pipeline_control_config` or any
+PRIMARY path: MinusOps never assumes `tbl_pipeline_control_config` or any
 fixed column names. `modules/metadata-control-table/main.tf`'s DynamoDB table is only the
 FALLBACK for a greenfield project with no existing table -- read it with this same helper by
 supplying an identity column_map (normalized key -> the fallback table's own key names).

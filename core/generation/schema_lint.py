@@ -1,4 +1,4 @@
-"""G2, the pre-write schema linter (docs/g2_scope.md).
+"""G2, the pre-write schema linter.
 
 Checks a module's actual resource/data-source type and attribute references against the REAL,
 LIVE provider schema (`terraform providers schema -json`) -- not a cached snapshot, not a prior
@@ -397,7 +397,7 @@ def gate_module(module_id):
 
 
 def gate_content(content, source_label):
-    """The real G2 linting entry point (docs/phase6_step1_authoring_scope.md section 2).
+    """The real G2 linting entry point.
 
     Takes raw HCL text rather than reading it off disk, so generation-time-authored content not
     yet written to any `modules/` directory gets the exact same schema check a pinned module

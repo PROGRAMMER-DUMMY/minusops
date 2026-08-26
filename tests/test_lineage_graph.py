@@ -1,5 +1,5 @@
 """
-The 5-hop Medallion lineage graph (PRD v13 FR-03).
+The 5-hop Medallion lineage graph.
 
 What this asserts is that the graph describes THIS stack, not the medallion pattern in
 general. A lineage diagram that always draws Bronze -> Silver -> Gold is a picture of the
@@ -133,7 +133,7 @@ def test_declared_columns_override_the_defaults():
     assert [c["column"] for c in masking["columns"]] == ["passport_no"]
 
 
-# --- Node inspection (FR-03.3) ---------------------------------------------------------
+# --- Node inspection -------------------------------------------------------------------
 
 def test_storage_nodes_carry_the_facts_the_inspector_panel_shows():
     graph = lg.build_lineage(_decision(FULL))

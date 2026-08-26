@@ -39,7 +39,7 @@ for _path in (_CORE_DIR, os.path.dirname(_CORE_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from . import theme  # noqa: E402
+from. import theme  # noqa: E402
 from .commands import console, cost, gate, source, use, diagram  # noqa: E402
 from .commands import runs as runs_cmd  # noqa: E402
 

@@ -1,5 +1,5 @@
 """
-Bi-directional visual reconciliation (PRD v13 FR-05).
+Bi-directional visual reconciliation.
 
 This is the most dangerous surface in the product. Everywhere else the console is a reader;
 here a drag on a canvas rewrites `terraform/main.tf`. The entire value of the deploy gate --
@@ -88,7 +88,7 @@ def test_propose_writes_no_audit_entry(run, tmp_path):
     assert not audit.exists(), "a proposal is not an event; nothing happened yet"
 
 
-# --- The review modal's contents (FR-05.2) ----------------------------------------------
+# --- The review modal's contents --------------------------------------------------------
 
 def test_the_proposal_carries_everything_the_modal_must_show(run):
     proposal = reconciler.propose(run, _change(), author="shubh")
@@ -218,7 +218,7 @@ def test_an_unwritable_audit_path_does_not_fail_a_confirmed_edit(run, tmp_path):
     assert result["files"], "the edit itself still succeeded"
 
 
-# --- Plan invalidation (FR-05.3, AC-02) -------------------------------------------------
+# --- Plan invalidation ------------------------------------------------------------------
 
 def test_a_confirmed_change_revokes_the_standing_approval(run, tmp_path, monkeypatch):
     """The approval record is DELETED, so `gate_status` reports approved: False. A separate

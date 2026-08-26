@@ -1,5 +1,5 @@
 """
-Step 9 (MINUS-113/106/115): seed, adopt, and the PR reviewer's packaging.
+Step 9: seed, adopt, and the PR reviewer's packaging.
 
 The seed tests never reach AWS. What matters is the safety contract around it -- that the
 default changes nothing, that approval is asked before anything is sent, and that an empty
@@ -21,7 +21,7 @@ _OUTPUTS = {
 }
 
 
-# --- MINUS-113: seed ----------------------------------------------------------------------
+# --- Seed ---------------------------------------------------------------------------------
 
 def test_seed_defaults_to_plan_and_sends_nothing(tmp_path, monkeypatch):
     """`minusctl` is local-only by contract. seed is the one exception, so it must not act
@@ -148,7 +148,7 @@ def test_a_failed_glue_run_surfaces_the_aws_error_message(tmp_path, monkeypatch)
     assert "SystemExit: --source_path" in result["error"]
 
 
-# --- MINUS-106: adopt ---------------------------------------------------------------------
+# --- Adopt --------------------------------------------------------------------------------
 
 _BROWNFIELD = '''
 resource "aws_s3_bucket" "legacy" {

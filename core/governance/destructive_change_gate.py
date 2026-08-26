@@ -45,7 +45,7 @@ This module makes that asymmetry an explicit, structural part of the classificat
 resource type is never autonomous-eligible, regardless of action shape, until a real Databricks
 sandbox-workspace apply equivalent to G9 exists.
 
-FAIL-CLOSED ON UNKNOWN RESOURCE TYPE (docs/g5_autonomy_boundary_scope.md). The gate is the
+FAIL-CLOSED ON UNKNOWN RESOURCE TYPE. The gate is the
 allowlist AUTO_SHIP_ELIGIBLE_TYPES, not the denylists. Gating on STATEFUL_RESOURCE_TYPES/
 IAM_RESOURCE_TYPES membership alone is an allowlist-of-DANGER, fail-OPEN by construction: a
 type in neither set produces no finding however stateful it is, so `aws_dynamodb_table`

@@ -1,6 +1,6 @@
 """
 `minusctl --help`: every command visible, grouped, described, and coloured when a human is
-looking (PRD v10 usability work order).
+looking.
 
 Before this, `build_parser()` registered five subcommands and buried the other nineteen in an
 epilog footnote. An operator reading the help screen concluded the tool was half-built, and

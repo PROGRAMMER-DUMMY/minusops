@@ -388,7 +388,7 @@ def test_the_formatted_summary_carries_no_emoji(tmp_path, fixture_file, offline,
     assert "bronze_ingestion" in text
 
 
-# --- AC-01: reached through the CLI ---------------------------------------------------
+# --- Reached through the CLI ----------------------------------------------------------
 
 def test_prove_without_execute_stays_the_offline_evidence_bundle(tmp_path, monkeypatch):
     """`minusctl prove` already meant something: the offline governance-chain evidence
@@ -447,7 +447,7 @@ def test_prove_execute_reports_a_failing_pipeline_as_a_failure(tmp_path, monkeyp
     assert code == 1
 
 
-# --- PRD v11 Step 3 (FR-03): the modular hop registry ---------------------------------
+# --- PRD v11 Step 3: the modular hop registry -----------------------------------------
 
 def test_the_registry_covers_exactly_the_declared_hop_names():
     """A hop in HOP_NAMES with no registry entry cannot be selected; a registry entry

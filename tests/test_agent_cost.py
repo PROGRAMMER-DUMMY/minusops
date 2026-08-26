@@ -1,4 +1,4 @@
-"""Token economics for the AGENTS COST view (PRD v14 WP-01).
+"""Token economics for the AGENTS COST view.
 
 The load-bearing property under test is not the arithmetic, it is the absence handling:
 a missing transcript, a step with no token_usage, and a genuinely free stdlib step must
