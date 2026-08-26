@@ -78,7 +78,13 @@ agent's environment. Verify the behaviour against your own directory before rely
     python examples/iam/verify-mfa-condition.py --live
 
 It creates one permissionless role carrying the condition, tries to assume it, reports the
-result and deletes the role.
+result and deletes the role. To measure an elevated IAM-user session and the chaining claim
+in one pass, add a TOTP code:
+
+    python examples/iam/verify-mfa-condition.py --live --chain --mfa-code 123456
+
+That elevates via sts:GetSessionToken, assumes the role, then re-assumes it from the
+resulting session to see whether the flag was inherited or re-checked.
 
 ### What has been measured, and what has not
 

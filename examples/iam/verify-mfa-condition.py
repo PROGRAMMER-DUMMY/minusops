@@ -16,6 +16,7 @@ Shells out to: sts get-caller-identity, iam create-role / delete-role, sts assum
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -34,17 +35,47 @@ TRUST = {
 }
 
 
-def aws(*args, check=False):
-    """Returns (returncode, stdout, stderr). Never raises on a non-zero exit."""
-    done = subprocess.run(["aws", *args], capture_output=True, text=True)
+def aws(*args, check=False, env=None):
+    """Returns (returncode, stdout, stderr). Never raises on a non-zero exit.
+
+    `env` overlays credential variables onto the environment for this call only.
+    """
+    done = subprocess.run(["aws", *args], capture_output=True, text=True,
+                          env={**os.environ, **env} if env else None)
     if check and done.returncode != 0:
         raise SystemExit(f"aws {' '.join(args)} failed:\n{done.stderr.strip()}")
     return done.returncode, done.stdout, done.stderr
 
 
-def identity():
-    _rc, out, err = aws("sts", "get-caller-identity", "--output", "json", check=True)
+def identity(env=None):
+    _rc, out, _err = aws("sts", "get-caller-identity", "--output", "json", check=True, env=env)
     return json.loads(out)
+
+
+def mfa_serial():
+    """The calling user's first enrolled MFA device, or None."""
+    rc, out, _err = aws("iam", "list-mfa-devices", "--output", "json")
+    devices = json.loads(out).get("MFADevices", []) if rc == 0 else []
+    return devices[0]["SerialNumber"] if devices else None
+
+
+def elevate(serial, code):
+    """Exchange a TOTP code for MFA-carrying credentials. Returns an env overlay."""
+    rc, out, err = aws("sts", "get-session-token", "--serial-number", serial,
+                       "--token-code", code, "--output", "json")
+    if rc != 0:
+        raise SystemExit(f"[mfa] get-session-token failed:\n{err.strip()}")
+    creds = json.loads(out)["Credentials"]
+    return {"AWS_ACCESS_KEY_ID": creds["AccessKeyId"],
+            "AWS_SECRET_ACCESS_KEY": creds["SecretAccessKey"],
+            "AWS_SESSION_TOKEN": creds["SessionToken"]}
+
+
+def _creds_env(assume_role_output):
+    creds = json.loads(assume_role_output)["Credentials"]
+    return {"AWS_ACCESS_KEY_ID": creds["AccessKeyId"],
+            "AWS_SECRET_ACCESS_KEY": creds["SecretAccessKey"],
+            "AWS_SESSION_TOKEN": creds["SessionToken"]}
 
 
 def classify(arn):
@@ -64,14 +95,32 @@ def classify(arn):
     return ("unrecognised", "check manually")
 
 
-def live_probe(account, method):
+def chain_probe(arn, session_env):
+    """Does the MFA flag survive role chaining? Re-assumes the role from a session that was
+    itself reached with MFA."""
+    print(f"[chain] re-assuming {TEST_ROLE} from the assumed-role session ...")
+    rc, _out, err = aws("sts", "assume-role", "--role-arn", arn,
+                        "--role-session-name", "minusops-mfa-chain", env=session_env)
+    if rc == 0:
+        return ("PROPAGATES",
+                "the second assume succeeded from a session holding no TOTP of its own. The "
+                "flag is carried by the credential, so anything running in an MFA-elevated "
+                "shell inherits it. MFA at assume time is not per-action consent.")
+    if "AccessDenied" in err or "not authorized" in err:
+        return ("DOES NOT PROPAGATE",
+                "the chained session was denied. The condition re-checks per assume rather "
+                "than being inherited, which makes it a stronger control than assumed here.")
+    return ("INCONCLUSIVE", f"the chained call failed for another reason:\n{err.strip()}")
+
+
+def live_probe(account, method, env=None, chain=False):
     trust = json.dumps(TRUST).replace("{account}", account)
     print(f"\n[live] creating {TEST_ROLE} (no permissions attached) ...")
     rc, _out, err = aws("iam", "create-role",
                         "--role-name", TEST_ROLE,
                         "--assume-role-policy-document", trust,
                         "--description", "MinusOps MFA condition probe. Safe to delete.",
-                        "--max-session-duration", "3600")
+                        "--max-session-duration", "3600", env=env)
     if rc != 0:
         if "EntityAlreadyExists" in err:
             print(f"[live] {TEST_ROLE} already exists -- reusing it.")
@@ -84,16 +133,18 @@ def live_probe(account, method):
 
     arn = f"arn:aws:iam::{account}:role/{TEST_ROLE}"
     print(f"[live] attempting sts:AssumeRole on {arn} ...")
-    rc, _out, err = aws("sts", "assume-role", "--role-arn", arn,
-                        "--role-session-name", "minusops-mfa-probe")
+    rc, out, err = aws("sts", "assume-role", "--role-arn", arn,
+                       "--role-session-name", "minusops-mfa-probe", env=env)
 
     try:
         if rc == 0:
             verdict = "SATISFIED"
-            meaning = ("your session satisfies aws:MultiFactorAuthPresent. RequireMfaOnApply "
-                       "=true will work for you -- but read the note above: the flag "
-                       "propagates through role chaining, so an agent in this same shell "
-                       "would also satisfy it.")
+            meaning = ("this session satisfies aws:MultiFactorAuthPresent, so "
+                       "RequireMfaOnApply=true works for it. Every session that has not "
+                       "elevated is denied by the same condition.")
+            if chain:
+                chain_verdict, chain_meaning = chain_probe(arn, _creds_env(out))
+                meaning += f"\n\nCHAINING: {chain_verdict}\n{chain_meaning}"
         elif "AccessDenied" in err or "not authorized" in err:
             verdict = "DENIED"
             meaning = ("this session does NOT satisfy the condition. Leave RequireMfaOnApply "
@@ -118,7 +169,7 @@ true is available to you -- at the cost of every unelevated session, CI included
         return verdict, meaning
     finally:
         print(f"[live] deleting {TEST_ROLE} ...")
-        rc, _out, err = aws("iam", "delete-role", "--role-name", TEST_ROLE)
+        rc, _out, err = aws("iam", "delete-role", "--role-name", TEST_ROLE, env=env)
         if rc != 0:
             print(f"\n  !! COULD NOT DELETE {TEST_ROLE}. Remove it by hand:\n"
                   f"     aws iam delete-role --role-name {TEST_ROLE}\n"
@@ -132,9 +183,28 @@ def main(argv=None):
     parser.add_argument("--live", action="store_true",
                         help="Create and delete one throwaway role to get a definitive "
                              "answer. Grants no permissions; touches nothing else.")
+    parser.add_argument("--mfa-code",
+                        help="TOTP code. Elevates via sts:GetSessionToken first, so the probe "
+                             "runs against an MFA-carrying session.")
+    parser.add_argument("--mfa-serial",
+                        help="MFA device ARN. Defaults to the calling user's first device.")
+    parser.add_argument("--chain", action="store_true",
+                        help="Also test whether the flag survives role chaining. Requires "
+                             "--live and a session that satisfies the condition.")
     args = parser.parse_args(argv)
 
-    who = identity()
+    env = None
+    serial = None
+    if args.mfa_code:
+        serial = args.mfa_serial or mfa_serial()
+        if not serial:
+            print("[mfa] no MFA device enrolled for this user; pass --mfa-serial",
+                  file=sys.stderr)
+            return 2
+        print(f"[mfa] elevating with {serial} ...")
+        env = elevate(serial, args.mfa_code)
+
+    who = identity(env)
     arn = who["Arn"]
     method, expectation = classify(arn)
 
@@ -144,6 +214,7 @@ def main(argv=None):
     print(f"  account       {who['Account']}")
     print(f"  identity      {arn}")
     print(f"  sign-in       {method}")
+    print(f"  elevated      {'yes, ' + serial if env else 'no'}")
     print(f"  expectation   {expectation}")
 
     if not args.live:
@@ -153,7 +224,7 @@ def main(argv=None):
         print("  deletes it. No permissions are attached to it.")
         return 0
 
-    verdict, meaning = live_probe(who["Account"], method)
+    verdict, meaning = live_probe(who["Account"], method, env=env, chain=args.chain)
     print()
     print("=" * 78)
     print(f"  VERDICT: {verdict}")
