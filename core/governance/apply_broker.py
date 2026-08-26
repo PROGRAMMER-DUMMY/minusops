@@ -1,34 +1,12 @@
 """
-Release an apply: verify, independently of the agent, that this exact plan was approved.
+Release check for an apply: was this exact plan approved by someone other than its planner?
 
-THE GAP THIS CLOSES. plan_gate already binds apply to a plan hash, and that binding is real.
-But every part of it -- the plan record, the approval record, the check -- lives on the
-machine the agent is working on, and the agent can write all three. The binding proves the
-apply matches the plan; it does not prove a human ever saw either.
+Runs in CI, after the human approval gate, against an approval record read from a store the
+plan role cannot write. Refuses on hash mismatch, self-approval, an unattributed or stale
+approval, and any record it cannot parse.
 
-WHY THIS IS NOT AN OIDC TOKEN BROKER. The obvious design is a service that mints a credential
-carrying the plan digest as a claim, so the trust policy itself refuses a mismatched apply.
-It cannot be built out of AWS primitives: an IAM trust policy matches claims in the token,
-and no CI provider issues a token carrying a digest you choose. You would have to run an
-identity provider -- and then that service is the thing worth attacking, holds the authority
-it was invented to constrain, and needs its own answer to every question asked here.
-
-So the release check runs where the agent is not: inside the CI job, after the human approval
-gate, against an approval store the agent's role cannot write. That is a weaker claim than a
-cryptographic one, and it is honest about which. What it gives you:
-
-    the runner re-derives the hash from the plan file it is about to apply
-    it reads the approval from a store the PLAN role has no PutObject on
-    it refuses on mismatch, on a stale approval, and on self-approval
-
-The runner could in principle skip the check. The runner is not the agent, does not hold the
-agent's credentials, and runs a workflow file that lives under branch protection -- so
-skipping it is a reviewable change to a protected file rather than one more tool call.
-
-TWO-PERSON IS ENFORCED HERE, NOT ASSUMED. plan_gate records `planner` and `approver`. This
-refuses when they are the same principal, which authz's "open" mode does not: an account with
-no approver allowlist configured lets one person plan and approve, and the audit record then
-shows two fields with one name in both.
+Not a token broker: an IAM trust policy matches claims in the token, and no CI provider
+issues one carrying a plan digest.
 
 Depends on: core/governance/audit_chain.py, core/governance/plan_gate.py
 Shells out to: nothing. The S3 read is the caller's, passed in.
@@ -44,9 +22,8 @@ sys.path.insert(0, _HERE)
 
 import audit_chain  # noqa: E402
 
-# An approval older than this is refused. Not because approval expires as a matter of
-# principle, but because the world moves: an approval made against last week's account state
-# was made against facts that may no longer hold, and re-approving is cheap.
+# Approvals older than this are refused: the account state they were made against may have
+# moved.
 DEFAULT_MAX_AGE_SECONDS = 24 * 3600
 
 RELEASED = "RELEASED"
@@ -72,14 +49,10 @@ def _refuse(reason, detail, **extra):
 
 def verify(plan_hash, approval, planner=None, max_age_seconds=DEFAULT_MAX_AGE_SECONDS,
            now=None):
-    """Should this apply be released? Returns a decision dict; never raises.
+    """Return a decision dict for this plan hash. Fails closed on any ambiguity; never raises.
 
-    `approval` is the record as read from the store -- a dict, or None when the store had
-    nothing for this hash. `planner` is who produced the plan, for the two-person check.
-
-    Fails closed on every ambiguity. A record that cannot be parsed, a timestamp that cannot
-    be read, an approver that cannot be identified: all refusals. The one thing this must
-    never do is release because it could not tell.
+    `approval` is the record read from the store, or None if there was none. `planner` is who
+    produced the plan, for the two-person check.
     """
     if not plan_hash:
         return _refuse("no_plan_hash", "the caller supplied no plan hash to verify")
@@ -95,7 +68,6 @@ def verify(plan_hash, approval, planner=None, max_age_seconds=DEFAULT_MAX_AGE_SE
 
     recorded = approval.get("plan_hash")
     if recorded != plan_hash:
-        # The case the whole module exists for: an approval for a DIFFERENT plan.
         return _refuse("hash_mismatch",
                        f"the approval is for plan {str(recorded)[:16]}, not {plan_hash[:16]}",
                        plan_hash=plan_hash, approved_hash=recorded)
@@ -143,20 +115,14 @@ def verify(plan_hash, approval, planner=None, max_age_seconds=DEFAULT_MAX_AGE_SE
 
 
 def _same_principal(left, right):
-    """Two names for the same person. Compares the last ARN segment, so
-    `arn:aws:sts::1:assumed-role/deploy/alice` and `alice` are recognised as one."""
+    """True if both strings name the same principal, compared on the last ARN segment."""
     def tail(value):
         return str(value).strip().rsplit("/", 1)[-1].rsplit(":", 1)[-1].lower()
     return tail(left) == tail(right)
 
 
 def record(decision, audit_path=None, operator=None):
-    """Write the release decision to the tamper-evident chain.
-
-    Both outcomes are recorded. A refused release is the more interesting entry: it says
-    someone tried to apply something that was not approved, and that is exactly the event an
-    auditor is looking for.
-    """
+    """Append the release decision, released or refused, to the tamper-evident chain."""
     path = audit_path or os.path.join(os.getcwd(), ".agents", "logs", "audit.jsonl")
     entry = {
         "timestamp": _now().isoformat(),
@@ -171,18 +137,15 @@ def record(decision, audit_path=None, operator=None):
     try:
         return audit_chain.append(path, entry)
     except OSError:
-        # A release that already happened must not be reported as failed because the log was
-        # unwritable. The same rule reconciler follows.
+        # An unwritable log must not fail a release that already happened.
         return None
 
 
 def load_approval(directory, plan_hash):
-    """Read the approval for a hash from the local gate state.
+    """Read the approval for a hash from the local gate state, or None.
 
-    The LOCAL store is the fallback, not the design. In CI the approval should be read from a
-    location the plan role cannot write -- an S3 prefix its policy denies PutObject on -- and
-    passed to verify() directly. Reading it from the same disk the agent works on proves
-    only that the file is there.
+    Fallback, not the design: this reads the same disk the agent writes. In CI, read the
+    approval from a store the plan role cannot write and pass it to verify() directly.
     """
     import plan_gate
     path = plan_gate._approved_path(directory, plan_hash)

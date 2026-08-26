@@ -72,7 +72,21 @@ shell inherits it and can assume the apply role with no prompt.
 
 **MFA at assume time proves MFA happened somewhere in the session. It is not per-action
 consent.** What makes the separation real is the credential simply not existing in the
-agent's environment. Verify the behaviour against your own directory before relying on it.
+agent's environment. Verify the behaviour against your own directory before relying on it:
+
+    python examples/iam/verify-mfa-condition.py --live
+
+It creates one permissionless role carrying the condition, tries to assume it, reports the
+result and deletes the role.
+
+### One measured result
+
+Run on 2026-08-26 against a development account, signed in as an **IAM user with long-lived
+access keys**: **DENIED**. That is the unelevated case rather than the SSO one -- access keys
+carry no MFA flag whether or not a device is enrolled -- and it is the case most CI runners
+and most local shells are in. Turning the condition on there locks out every session that has
+not called `sts:GetSessionToken` with a code first, which is the failure that gets diagnosed
+as "MFA is broken" and fixed by deleting the condition.
 
 ## What is still not covered
 
@@ -82,6 +96,9 @@ agent's environment. Verify the behaviour against your own directory before rely
 - **A human approving a 400-resource diff is rubber-stamping.** The machine review carries
   it -- SEC scan, conformance, BCM cost, and the plan hash binding what was approved to what
   runs. The gate's forced impact statement exists for the same reason.
-- **Binding a credential to a specific plan hash needs a token broker.** An IAM trust policy
-  matches OIDC claims, and no CI token carries a plan digest. That is a service to build, not
-  a policy to write.
+- **Binding a credential to a specific plan hash cannot be done in a trust policy.** An IAM
+  trust policy matches claims in the token, and no CI provider issues a token carrying a
+  digest you choose. `core/governance/apply_broker.py` closes as much of this as is
+  reachable without running an identity provider: the release check re-derives the hash in
+  CI and refuses a mismatched, stale, unattributed or self-approved plan. It runs where the
+  agent is not, which is a weaker claim than a cryptographic one.

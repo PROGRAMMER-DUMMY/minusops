@@ -1,29 +1,12 @@
 """
 MCP server: MinusOps reachable from any MCP client, over stdio.
 
-The guardrail this repo ships is a Claude Code hook. Another runtime needs its own adapter,
-and some -- Cursor, Windsurf, anything MCP-first -- have no shell-command chokepoint to put
-one in at all. MCP is the interface those clients DO speak, so exposing MinusOps as tools
-makes it reachable from all of them without an adapter each.
+Exposes the gate's verdicts, not its controls. Every tool is read-only -- `gate_status`,
+`plan_summary`, `guardrail_check`, `pillar_next`, `pillar_derive`. Nothing mutates, nothing
+approves, and `gate apply` is deliberately absent: a mutating tool would put an apply behind
+a tool call any client could make.
 
-WHAT IT EXPOSES, AND WHY THAT SET.
-
-It exposes the gate's VERDICTS, not the gate's controls. Every tool here is read-only:
-`gate_status`, `plan_summary`, `pillar_next`, `guardrail_check`. Nothing mutates, nothing
-approves, and `gate apply` is deliberately absent.
-
-That is not timidity about scope. A mutating MCP tool would put an apply behind an agent's
-tool call -- exactly the boundary the plan/apply role split exists to create -- and any
-client could invoke it. An agent that can ASK "is this approved, and what does it change?"
-is more useful than one that can approve, and it cannot be talked into anything.
-
-`guardrail_check` is the one that pays for the rest: a client with no PreToolUse hook can
-still ask whether a command would be refused, and get the rule and the reason back.
-
-PROTOCOL. JSON-RPC 2.0 over stdio, the MCP baseline: `initialize`, `tools/list`,
-`tools/call`. Standard library only, no MCP SDK -- the dependency would be the first
-third-party runtime requirement in the whole engine, for a wire format that is a hundred
-lines of dispatch.
+JSON-RPC 2.0 over stdio: `initialize`, `tools/list`, `tools/call`. Standard library only.
 
 Depends on: core/governance/plan_gate.py, core/governance/agent_guardrails.py,
     core/architecture/pillars.py, core/reporting/runs.py
@@ -45,7 +28,6 @@ import pillars  # noqa: E402
 PROTOCOL_VERSION = "2024-11-05"
 SERVER = {"name": "minusops", "version": "0.1.0"}
 
-# Every tool is read-only. See the module docstring on why apply and approve are absent.
 TOOLS = [
     {
         "name": "gate_status",
@@ -152,8 +134,7 @@ def _plan_summary(arguments):
                     counts[f"{action}:{change['type']}"] += 1
             summary["changes"] = dict(counts)
     except Exception as exc:                                   # noqa: BLE001
-        # Advisory enrichment. A missing terraform binary must not turn a status read into
-        # an error -- the recorded facts above are still worth returning.
+        # Advisory only: a missing terraform binary must not fail the status read.
         summary["classification_unavailable"] = str(exc)
     return summary
 
@@ -223,8 +204,7 @@ def handle(request):
         except KeyError as exc:
             return _error(request_id, -32602, f"missing required argument: {exc}")
         except Exception as exc:                       # noqa: BLE001
-            # Reported as a tool result with isError, not as a protocol error: the call was
-            # well-formed, the work failed, and the client should show the agent why.
+            # A tool result with isError, not a protocol error: the call was well-formed.
             return _result(request_id, {
                 "content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
                 "isError": True,
@@ -248,8 +228,7 @@ def _error(request_id, code, message):
 def serve(stdin=None, stdout=None):
     """Read line-delimited JSON-RPC from stdin, write responses to stdout.
 
-    A malformed line is answered with a parse error and the loop continues. Exiting on the
-    first bad frame would take the server down for a client's typo.
+    A malformed line is answered with a parse error; the loop continues.
     """
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout

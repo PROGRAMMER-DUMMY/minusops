@@ -23,7 +23,10 @@ Metadata:
     or false for IAM Identity Center, SAML and OIDC sessions -- STS receives no MFA assertion
     from the identity provider -- so a trust policy requiring it DENIES an SSO operator even
     after a hardware key prompt. Set it to true only if you sign in as an IAM user with
-    sts:GetSessionToken, and verify against your own directory before relying on it. Either
+    sts:GetSessionToken, and verify against your own directory before relying on it with
+    examples/iam/verify-mfa-condition.py --live. Note the second, likelier denial: a session
+    on long-lived access keys carries no MFA flag whether or not a device is enrolled, so
+    turning this on locks out every session that has not elevated first, CI included. Either
     way, MFA at assume time proves MFA happened somewhere in the session, not that a human
     approved this action: the credential simply not existing in the agent's environment is
     what makes the separation real.

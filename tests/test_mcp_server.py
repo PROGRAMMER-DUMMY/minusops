@@ -1,16 +1,7 @@
-"""The MCP server, driven over the wire it actually speaks.
-
-The failure this guards against is the one the --impact flag already demonstrated: logic that
-passes its unit tests while being unreachable through the interface anyone uses. So the tests
-below go through `handle()` with real JSON-RPC frames, and the end-to-end one runs the module
-as a subprocess over stdio.
-
-The other property asserted here is that the surface stays READ-ONLY. A mutating MCP tool
-would put an apply behind an agent's tool call -- the exact boundary the plan/apply role split
-exists to create -- and any client could invoke it.
+"""Tests for the MCP server, driven over JSON-RPC rather than through its functions.
 
 Depends on: core/integrations/mcp_server.py
-Shells out to: the server itself, over stdio (deliberately -- that is how it is invoked)
+Shells out to: the server itself, over stdio
 Used by: nothing (pytest entry point)
 """
 import json
@@ -49,7 +40,7 @@ def test_initialize_answers_with_a_protocol_version_and_tool_capability():
 
 
 def test_a_notification_gets_no_reply():
-    """Replying to a notification is a protocol violation; some clients disconnect on it."""
+    """A reply to a notification is a protocol violation."""
     assert _call("notifications/initialized") is None
 
 
@@ -76,8 +67,7 @@ def test_a_missing_required_argument_is_reported_as_such():
 
 
 def test_a_failing_tool_is_a_tool_error_not_a_protocol_error():
-    """The call was well-formed and the work failed. A protocol error hides that from the
-    agent, which then cannot see why."""
+    """A well-formed call whose work failed is a tool error, not a protocol error."""
     result = _tool("gate_status", {"dir": os.path.join(ROOT, "does-not-exist")})
     assert "isError" in result
 
@@ -85,8 +75,7 @@ def test_a_failing_tool_is_a_tool_error_not_a_protocol_error():
 # --- The surface is read-only ----------------------------------------------------------------
 
 def test_no_tool_can_mutate_infrastructure():
-    """A mutating MCP tool puts an apply behind a tool call any client can make. The
-    plan/apply role split exists precisely to keep that boundary."""
+    """No tool on the surface can mutate infrastructure."""
     names = {t["name"] for t in mcp_server.TOOLS}
     for forbidden in ("gate_apply", "apply", "gate_approve", "approve", "prove",
                       "seed", "destroy", "run"):
@@ -94,8 +83,7 @@ def test_no_tool_can_mutate_infrastructure():
 
 
 def test_every_tool_has_a_handler_and_every_handler_a_tool():
-    """A tool with no handler is advertised and unusable; a handler with no tool is
-    reachable by name while undocumented."""
+    """Every advertised tool has a handler, and every handler is advertised."""
     assert {t["name"] for t in mcp_server.TOOLS} == set(mcp_server.HANDLERS)
 
 
@@ -118,16 +106,14 @@ def test_guardrail_check_marks_the_human_gated_commands():
 
 
 def test_guardrail_check_states_its_own_limit():
-    """A client reading `allowed: false` must not conclude it is protected. The note says
-    what this is and is not, in the payload rather than only in the docs."""
+    """The payload states what the check is and is not."""
     payload = _payload(_tool("guardrail_check", {"command": "ls"}))
     assert "not a sandbox" in payload["note"]
     assert "IAM credential" in payload["note"]
 
 
 def test_guardrail_check_does_not_run_the_command(tmp_path):
-    """It checks. A tool that executed what it was asked to evaluate would be the worst
-    possible version of this."""
+    """The check evaluates a command without running it."""
     canary = tmp_path / "canary.txt"
     canary.write_text("intact", encoding="utf-8")
     _tool("guardrail_check", {"command": f"rm {canary}"})
@@ -170,8 +156,7 @@ def test_pillar_derive_refuses_rather_than_defaulting():
 # --- End to end, over stdio ---------------------------------------------------------------------
 
 def test_the_server_speaks_json_rpc_over_stdio():
-    """Through the real process. `--impact` passed every unit test while being unreachable
-    through the CLI; the same shape of defect is possible here."""
+    """End to end, through the real process, over stdio."""
     frames = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
@@ -194,7 +179,7 @@ def test_the_server_speaks_json_rpc_over_stdio():
 
 
 def test_a_malformed_frame_does_not_take_the_server_down():
-    """A client's typo must not end the session."""
+    """A malformed frame is answered and the loop continues."""
     done = subprocess.run(
         [sys.executable, "-m", "core.integrations.mcp_server"],
         input='{not json\n{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}\n',

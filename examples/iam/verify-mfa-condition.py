@@ -1,29 +1,15 @@
-"""Does an MFA condition in a trust policy work with YOUR sign-in method?
+"""Does an MFA condition in a trust policy work with your sign-in method?
 
-RUN THIS BEFORE SETTING RequireMfaOnApply=true. The whole plan/apply split rests on the
-answer, and the answer depends on how your operators authenticate -- not on anything this
-repository can determine.
+Run before setting RequireMfaOnApply=true. `aws:MultiFactorAuthPresent` is absent or false
+for IAM Identity Center, SAML and OIDC sessions, and for any session on long-lived access
+keys, so a trust policy requiring it denies those operators outright.
 
-WHAT IS IN DOUBT. `aws:MultiFactorAuthPresent` is reported to be absent or false for IAM
-Identity Center, SAML and OIDC sessions, because AWS STS receives no MFA assertion from the
-identity provider. If that holds for your directory, a trust policy requiring it DENIES an
-SSO operator even after a hardware key prompt -- and the natural reaction is to delete the
-condition, which is the wrong direction. Better to know now.
-
-The second half is not in doubt and is not tested here: where the flag DOES populate, it
-propagates through role chaining. A session derived from MFA-authenticated credentials
-carries it, so an agent running inside your authenticated shell inherits it and can assume
-the apply role with no prompt. MFA at assume time proves MFA happened somewhere in the
-session; it is not per-action consent. What makes the separation real is the credential not
-existing in the agent's environment.
-
-    python examples/iam/verify-mfa-condition.py             # read-only: posture only
+    python examples/iam/verify-mfa-condition.py             # read-only: reports sign-in method
     python examples/iam/verify-mfa-condition.py --live      # creates and DELETES one role
 
-The read-only pass tells you which sign-in method you are using. The --live pass is the only
-definitive answer: it creates one throwaway role whose trust policy carries the condition,
-attempts to assume it, reports the result, and deletes the role. It grants no permissions and
-touches nothing else. If it cannot clean up it says so, loudly, with the name to remove.
+The --live pass creates one throwaway role carrying the condition, attempts to assume it,
+reports the result, and deletes the role. It grants no permissions and touches nothing else.
+If it cannot delete the role it says so, with the name to remove.
 
 Depends on: the `aws` CLI
 Shells out to: sts get-caller-identity, iam create-role / delete-role, sts assume-role
@@ -77,7 +63,7 @@ def classify(arn):
     return ("unrecognised", "check manually")
 
 
-def live_probe(account):
+def live_probe(account, method):
     trust = json.dumps(TRUST).replace("{account}", account)
     print(f"\n[live] creating {TEST_ROLE} (no permissions attached) ...")
     rc, _out, err = aws("iam", "create-role",
@@ -109,9 +95,22 @@ def live_probe(account):
                        "would also satisfy it.")
         elif "AccessDenied" in err or "not authorized" in err:
             verdict = "DENIED"
-            meaning = ("your session does NOT satisfy the condition. Leave RequireMfaOnApply "
-                       "at false: turning it on locks this sign-in method out of the apply "
-                       "role entirely.")
+            meaning = ("this session does NOT satisfy the condition. Leave RequireMfaOnApply "
+                       "at false: turning it on locks this session out of the apply role "
+                       "entirely.")
+            if method == "IAM user":
+                # Access keys never carry the flag, so a DENIED here cannot distinguish an
+                # unenrolled user from an unelevated session.
+                meaning += """
+
+You are an IAM user, so this is the UNELEVATED case and not the SSO one: long-lived
+access keys carry no MFA flag at all. If a device is enrolled, elevate and re-run to
+get the answer that actually decides the setting:
+
+    aws sts get-session-token --serial-number <mfa-arn> --token-code <code>
+
+then export the three returned values and run --live again. If that says SATISFIED,
+true is available to you -- at the cost of every unelevated session, CI included."""
         else:
             verdict = "INCONCLUSIVE"
             meaning = f"the call failed for another reason:\n{err.strip()}"
@@ -153,7 +152,7 @@ def main(argv=None):
         print("  deletes it. No permissions are attached to it.")
         return 0
 
-    verdict, meaning = live_probe(who["Account"])
+    verdict, meaning = live_probe(who["Account"], method)
     print()
     print("=" * 78)
     print(f"  VERDICT: {verdict}")
