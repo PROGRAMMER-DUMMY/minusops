@@ -165,14 +165,49 @@ def gate_wiring(run_root, tf_dir):
                 # sometimes deliberate -- so it is reported, not blocked on.
                 unwired.append(f"{label}.{field}")
 
+    isolated = _isolated_modules(blocks)
+
     if missing:
         return _result(GATES[1], BLOCKED,
                        "module inputs required for the pipeline to run are absent: "
                        + ", ".join(sorted(missing)),
-                       {"missing": sorted(missing), "literal_only": sorted(unwired)})
-    return _result(GATES[1], PASS,
-                   f"{len(blocks)} module blocks; every cross-module input present",
-                   {"modules": sorted(blocks), "literal_only": sorted(unwired)})
+                       {"missing": sorted(missing), "literal_only": sorted(unwired),
+                        "isolated": isolated})
+
+    message = f"{len(blocks)} module blocks; every cross-module input present"
+    if isolated:
+        # Reported, never blocked. A module can legitimately be consumed outside Terraform
+        # -- an operator attaching to the VPC by hand later -- so this is a fact the reviewer
+        # weighs, not a defect the gate decides.
+        message += (". Composed but connected to nothing: "
+                    + ", ".join(isolated))
+    return _result(GATES[1], PASS, message,
+                   {"modules": sorted(blocks), "literal_only": sorted(unwired),
+                    "isolated": isolated})
+
+
+def _isolated_modules(blocks):
+    """Modules with no edge in EITHER direction. The other half of the wiring question.
+
+    gate_wiring asks whether a module that NEEDS an input has it. This asks whether a
+    composed module is connected to the stack at all -- a VPC with four subnets, a NAT
+    gateway and an IGW that nothing attaches to plans clean, applies clean, and bills every
+    month. No plan-level check sees it, because every resource in it is created exactly as
+    declared.
+
+    Un-consumed alone is the wrong test: a quality gate, an orchestrator and a table-format
+    module are all terminal by design and produce nothing another module reads. Flagging
+    those buries the one module that is genuinely detached.
+    """
+    isolated = []
+    for label in sorted(blocks):
+        consumed = any(f"module.{label}." in body
+                       for other, body in blocks.items() if other != label)
+        consumes = any(f"module.{other}." in blocks[label]
+                       for other in blocks if other != label)
+        if not consumed and not consumes:
+            isolated.append(label)
+    return isolated
 
 
 # --- G3: security -------------------------------------------------------------------------

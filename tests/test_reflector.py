@@ -251,3 +251,96 @@ def test_missing_base_run_files_are_not_an_error(tmp_path):
     inherited = synthesizer.inherit_from_run(str(root))
     assert inherited["values"] == {}
     assert "nothing inheritable" in synthesizer.format_inheritance(inherited)
+
+
+# --- The other direction of the wiring question -----------------------------------------
+#
+# gate_wiring asked whether a module that NEEDS an input has it. Nothing asked whether a
+# composed module is connected to the stack at all. Un-consumed alone is the wrong test: a
+# quality gate and an orchestrator are terminal by design, and flagging them buries the one
+# module that is genuinely detached. A VPC with four subnets, a NAT gateway and an IGW that
+# nothing attaches to plans clean, applies clean, and bills every month -- and no plan-level
+# check can see it, because every resource in it is created exactly as declared.
+
+def _write_main(tmp_path, hcl):
+    tf = tmp_path / "terraform"
+    tf.mkdir(exist_ok=True)
+    (tf / "main.tf").write_text(hcl, encoding="utf-8")
+    return str(tf)
+
+
+def test_a_module_connected_to_nothing_is_reported(tmp_path):
+    tf_dir = _write_main(tmp_path, '''
+module "storage_medallion_s3" {
+  source = "./modules/storage-medallion-s3"
+  name_prefix = var.name_prefix
+}
+
+module "networking_vpc" {
+  source = "./modules/networking-vpc"
+  name_prefix = var.name_prefix
+}
+
+module "query_athena" {
+  source = "./modules/query-athena"
+  gold_bucket = module.storage_medallion_s3.bucket_names["gold"]
+}
+''')
+    result = reflector.gate_wiring(str(tmp_path), tf_dir)
+
+    assert "networking_vpc" in result["evidence"]["isolated"]
+    assert "storage_medallion_s3" not in result["evidence"]["isolated"]
+
+
+def test_an_isolated_module_is_reported_but_never_blocks(tmp_path):
+    """A module can legitimately be consumed outside Terraform -- someone attaching to the
+    VPC by hand later. This is a fact the reviewer weighs, not a defect the gate decides."""
+    tf_dir = _write_main(tmp_path, '''
+module "networking_vpc" {
+  source = "./modules/networking-vpc"
+}
+''')
+    result = reflector.gate_wiring(str(tmp_path), tf_dir)
+
+    assert result["status"] != "blocked"
+    assert "connected to nothing" in result["detail"]
+
+
+def test_a_fully_wired_stack_reports_nothing_isolated(tmp_path):
+    tf_dir = _write_main(tmp_path, '''
+module "storage_medallion_s3" {
+  source = "./modules/storage-medallion-s3"
+  kms = module.query_athena.key
+}
+
+module "query_athena" {
+  source = "./modules/query-athena"
+  gold_bucket = module.storage_medallion_s3.bucket_names["gold"]
+}
+''')
+    result = reflector.gate_wiring(str(tmp_path), tf_dir)
+
+    assert result["evidence"]["isolated"] == []
+
+
+def test_a_terminal_module_is_not_mistaken_for_an_isolated_one(tmp_path):
+    """A quality gate consumes storage and produces nothing another module reads. That is a
+    leaf, not a detached module, and reporting it hides the one that matters."""
+    tf_dir = _write_main(tmp_path, '''
+module "storage_medallion_s3" {
+  source = "./modules/storage-medallion-s3"
+}
+
+module "dq_great_expectations" {
+  source = "./modules/dq-great-expectations"
+  target_buckets = values(module.storage_medallion_s3.bucket_names)
+}
+
+module "networking_vpc" {
+  source = "./modules/networking-vpc"
+  az_count = 2
+}
+''')
+    result = reflector.gate_wiring(str(tmp_path), tf_dir)
+
+    assert result["evidence"]["isolated"] == ["networking_vpc"]
