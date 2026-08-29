@@ -59,6 +59,10 @@ SOURCES = {
     "orchestration":
         "https://aws.amazon.com/blogs/big-data/choosing-the-right-workflow-orchestration-"
         "service-for-your-use-case-amazon-mwaa-and-aws-step-functions/",
+    "ecr_immutability":
+        "https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-tag-mutability.html",
+    "codeartifact_token":
+        "https://docs.aws.amazon.com/codeartifact/latest/ug/tokens-authentication.html",
 }
 
 # worker type -> (vCPU, memory GB, disk GB, DPU). AWS Glue worker-types documentation.
@@ -679,11 +683,26 @@ PILLARS = (
         "AWS CodeArtifact"),
        ("core/generation/cicd.py",),
        depth={
-           "*": (
-               "Is the artifact traceable to the commit that produced it?",
-               "Is one artifact promoted through environments, or rebuilt per environment? "
-               "Rebuilding means production runs something staging never did."),
+           "ECR and an immutable S3 artifact bucket, digest-verified": (
+               "Are image tags immutable? A mutable tag means the digest you approved is "
+               "not the digest that runs.",
+               "Does scan-on-push block the deploy on a critical finding, or only record it?",
+               "Who pulls it -- this account only, or is a cross-account policy needed?"),
+           "JFrog Artifactory": (
+               "What is the base URL and the repository key?",
+               "Which Secrets Manager ARN holds the credential? A token passed as a "
+               "Terraform variable lands in the plan and in state (FM-02).",
+               "Local, remote or virtual repository? A virtual repo can resolve to an "
+               "upstream nobody reviewed."),
+           "AWS CodeArtifact": (
+               "Which domain and repository?",
+               "Is there an upstream to public PyPI or npm, and is that upstream allowed "
+               "to reach production?",
+               "A CodeArtifact auth token lasts 12 hours at most. Is the whole pipeline, "
+               "including any manual approval wait, shorter than the token?"),
        },
+       informs=("cicd", "proving"),
+       derives="artifact_promotion_plan",
        forgotten="Build once, deploy many. A per-environment rebuild untests the testing."),
 
     _p(16, 4, "criticality", "Business criticality tier",
@@ -755,8 +774,55 @@ ALIASES = {
 
 # The facts a derivation can consume. Anything not in here is a pillar CHOICE, not an input
 # to arithmetic, and no amount of it will produce a worker count.
+# The pillar 15 answer, mapped to the repository constant core/generation/cicd.py renders a
+# publish stage for. Without this the interview records a preference that selects nothing.
+ARTIFACT_REPO_BY_CHOICE = {
+    "ECR and an immutable S3 artifact bucket, digest-verified": "ecr",
+    "JFrog Artifactory": "artifactory",
+    "AWS CodeArtifact": "codeartifact",
+}
+
+
+def artifact_repo_for(choice):
+    """The cicd.py artifact repository a pillar 15 answer selects, or None."""
+    return ARTIFACT_REPO_BY_CHOICE.get((choice or "").strip())
+
+
+def artifact_promotion_plan(artifact_repo=None, immutable_tags=None, rebuild_per_env=None):
+    """Whether the stated artifact setup can promote one build through environments.
+
+    Build once, deploy many is a property of the whole chain, not of the repository. A
+    mutable tag and a per-environment rebuild each break it on their own, and both are
+    ordinary defaults rather than mistakes anyone makes deliberately.
+    """
+    if not artifact_repo:
+        return _undetermined("no artifact repository was chosen")
+
+    if artifact_repo not in ("ecr", "artifactory", "codeartifact", "s3"):
+        return _undetermined(f"unknown artifact repository {artifact_repo!r}")
+
+    result = {"determinable": True, "artifact_repo": artifact_repo}
+    breaks = []
+
+    if rebuild_per_env is True:
+        breaks.append("the artifact is rebuilt per environment, so production runs a build "
+                      "that staging never tested")
+    if artifact_repo == "ecr" and immutable_tags is False:
+        breaks.append("ECR tags are mutable, so the digest approved at the gate is not "
+                      "necessarily the digest that runs")
+        result["source"] = SOURCES["ecr_immutability"]
+    if rebuild_per_env is None:
+        return _undetermined("it is unstated whether the artifact is rebuilt per environment")
+
+    result["verdict"] = "BREAKS_PROMOTION" if breaks else "PROMOTABLE"
+    result["because"] = ("; ".join(breaks) if breaks else
+                         "one build is published once and promoted by digest")
+    return result
+
+
 FACT_KEYS = ("daily_gb", "partitions_per_day", "read_pattern", "transform_shape", "shuffle",
-             "runs_per_day", "events_per_sec", "avg_record_kb", "has_spark_skills")
+             "runs_per_day", "events_per_sec", "avg_record_kb", "has_spark_skills",
+             "artifact_repo", "immutable_tags", "rebuild_per_env")
 
 
 def derive(facts):
@@ -783,6 +849,10 @@ def derive(facts):
     out["worker_sizing"] = glue_worker_plan(
         facts.get("daily_gb"), facts.get("shuffle") or "wide",
         facts.get("runs_per_day") or DEFAULT_RUNS_PER_DAY)
+
+    out["artifacts"] = artifact_promotion_plan(
+        facts.get("artifact_repo"), facts.get("immutable_tags"),
+        facts.get("rebuild_per_env"))
 
     return out
 

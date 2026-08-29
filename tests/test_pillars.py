@@ -245,3 +245,91 @@ def test_the_cli_lists_all_eighteen():
     done = _run("list", "--json")
     assert done.returncode == 0, done.stderr
     assert len(json.loads(done.stdout)) == 18
+
+
+# --- Pillar 15: an answer that selects something ----------------------------------------
+#
+# Every pillar from 13 on carried `depth={"*": (...)}` -- follow-ups that apply whatever you
+# answered. This module's own docstring calls that out: "a follow-up that applies to every
+# answer is just another top-level question". Worse, pillar 15 had derives=None and
+# informs=(), so the answer was recorded and then read by nothing. `cicd.py` has rendered a
+# publish stage for all four repositories the whole time; the interview simply never chose
+# one.
+
+def test_pillar_15_branches_on_the_answer_rather_than_asking_everyone_the_same_thing():
+    artifacts = next(p for p in pillars.PILLARS if p["key"] == "artifacts")
+
+    assert "*" not in artifacts["depth"], "the follow-ups still apply to every answer"
+    assert set(artifacts["depth"]) == set(artifacts["options"])
+
+
+def test_every_depth_key_is_an_option_that_can_actually_be_chosen():
+    """A branch keyed on a string no option produces is unreachable, and nothing says so."""
+    unreachable = []
+    for pillar in pillars.PILLARS:
+        for key in pillar["depth"]:
+            if key != "*" and key not in pillar["options"]:
+                unreachable.append(f"{pillar['key']}: {key!r}")
+
+    assert not unreachable, "\n".join(unreachable)
+
+
+def test_every_artifact_option_selects_a_repository_cicd_can_render():
+    """The wiring. Without it the interview records a preference that generates nothing."""
+    import sys, os
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core", "generation"))
+    import cicd
+
+    artifacts = next(p for p in pillars.PILLARS if p["key"] == "artifacts")
+    for option in artifacts["options"]:
+        repo = pillars.artifact_repo_for(option)
+        assert repo in cicd.ARTIFACT_REPOS, f"{option!r} selects {repo!r}"
+
+
+def test_an_unrecognised_artifact_answer_selects_nothing_rather_than_a_default():
+    assert pillars.artifact_repo_for("something else entirely") is None
+    assert pillars.artifact_repo_for("") is None
+    assert pillars.artifact_repo_for(None) is None
+
+
+def test_promotion_is_undetermined_until_the_repository_is_chosen():
+    assert pillars.artifact_promotion_plan()["determinable"] is False
+
+
+def test_promotion_is_undetermined_while_the_rebuild_question_is_unanswered():
+    """Silence is not a 'no'. Rebuilding per environment is a common default, so treating an
+    unstated answer as promotable would report the usual mistake as safe."""
+    result = pillars.artifact_promotion_plan("ecr", immutable_tags=True)
+
+    assert result["determinable"] is False
+    assert "rebuilt per environment" in result["reason"]
+
+
+def test_a_per_environment_rebuild_breaks_promotion():
+    result = pillars.artifact_promotion_plan("artifactory", rebuild_per_env=True)
+
+    assert result["verdict"] == "BREAKS_PROMOTION"
+    assert "staging never tested" in result["because"]
+
+
+def test_a_mutable_ecr_tag_breaks_promotion_and_cites_why():
+    result = pillars.artifact_promotion_plan("ecr", immutable_tags=False,
+                                             rebuild_per_env=False)
+
+    assert result["verdict"] == "BREAKS_PROMOTION"
+    assert "digest approved at the gate" in result["because"]
+    assert result["source"].startswith("https://docs.aws.amazon.com/AmazonECR/")
+
+
+def test_one_build_promoted_by_digest_passes():
+    result = pillars.artifact_promotion_plan("ecr", immutable_tags=True,
+                                             rebuild_per_env=False)
+
+    assert result["verdict"] == "PROMOTABLE"
+
+
+def test_derive_reports_the_artifact_verdict_alongside_the_others():
+    out = pillars.derive({"artifact_repo": "codeartifact", "rebuild_per_env": False})
+
+    assert out["artifacts"]["verdict"] == "PROMOTABLE"
