@@ -13,22 +13,16 @@ def test_resolve_stencil():
     assert "aws4.s3" in drawio_generator.resolve_stencil("aws_s3_bucket")
     assert "aws4.glue" in drawio_generator.resolve_stencil("aws_glue_job")
     assert "aws4.iam" in drawio_generator.resolve_stencil("aws_iam_role")
-    assert "azure2.storage" in drawio_generator.resolve_stencil("azurerm_storage_account")
-    assert "gcp2.bigquery" in drawio_generator.resolve_stencil("google_bigquery_dataset")
     assert "aws4.snowflake" in drawio_generator.resolve_stencil("snowflake_database")
+    assert "aws4.databricks" in drawio_generator.resolve_stencil("databricks_catalog")
 
-def test_discover_clusters():
-    plan = {
-        "resource_changes": [
-            {"type": "aws_vpc", "address": "aws_vpc.main"},
-            {"type": "aws_subnet", "address": "aws_subnet.pub"},
-            {"type": "aws_s3_bucket", "address": "aws_s3_bucket.data"}
-        ]
-    }
-    clusters = drawio_generator.discover_clusters(plan)
-    assert len(clusters["vpc"]) == 1
-    assert len(clusters["subnets"]) == 1
-    assert len(clusters["storage"]) == 1
+
+def test_resolve_stencil_has_no_azure_or_gcp_branch():
+    """base.get_provider raises ValueError for anything but AWS. A stencil for a provider
+    the product refuses to talk to is a claim of support that does not exist."""
+    assert drawio_generator.resolve_stencil("azurerm_storage_account") == "shape=mxgraph.aws4.resource;"
+    assert drawio_generator.resolve_stencil("google_bigquery_dataset") == "shape=mxgraph.aws4.resource;"
+
 
 def test_extract_node_metadata():
     res = {
@@ -183,23 +177,39 @@ def _two_hop_plan():
     }
 
 
-def test_the_ledger_protocol_is_derived_from_the_resources_not_a_constant():
-    """Invariant 2 (Zero Hardcoding). Every hop previously reported protocol HTTPS,
-    latency 100ms, safeguards TLS 1.2+ regardless of what the hop actually was -- an S3
-    read is not HTTPS with a 100ms budget, and a table of constants is decoration."""
-    edges = drawio_generator.discover_flow_edges(_two_hop_plan())
-    ledger = drawio_generator.generate_flow_ledger(edges)
+def _wired_plan():
+    """A plan whose Glue job states the paths it reads from and writes to."""
+    def rc(address, rtype, after):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": after}}
+    return {"resource_changes": [
+        rc('aws_s3_bucket.zones["raw"]', "aws_s3_bucket", {"bucket": "lake-raw"}),
+        rc('aws_s3_bucket.zones["curated"]', "aws_s3_bucket", {"bucket": "lake-curated"}),
+        rc("aws_glue_job.etl", "aws_glue_job", {
+            "default_arguments": {"--source_path": "s3://lake-raw/data/",
+                                  "--target_path": "s3://lake-curated/data/"},
+            "worker_type": "G.1X", "number_of_workers": 4}),
+    ]}
 
-    assert len(ledger) >= 2
-    protocols = {row["protocol"] for row in ledger}
-    assert len(protocols) > 1, f"every hop reported the same protocol: {protocols}"
+
+def test_the_ledger_states_only_what_the_plan_declares():
+    """The protocol, latency and safeguard columns were produced by matching a substring
+    against the TARGET address, so a KMS key referenced by an Athena workgroup was reported
+    as carrying JDBC/SQL at seconds-per-query. A diagram that invents a transport claim is
+    the same defect as a report that invents a price."""
+    ledger = drawio_generator.generate_flow_ledger(
+        drawio_generator.discover_data_edges(_wired_plan()))
+
+    assert ledger
+    for row in ledger:
+        assert set(row) == {"hop", "source", "target"}
 
 
 def test_the_markdown_ledger_export_exists_and_is_a_table():
     """FR-06.2 asks for a Markdown export for PR comments; only a list of dicts existed."""
-    edges = drawio_generator.discover_flow_edges(_two_hop_plan())
-
-    markdown = drawio_generator.generate_flow_ledger_markdown(edges)
+    markdown = drawio_generator.generate_flow_ledger_markdown(
+        drawio_generator.discover_data_edges(_wired_plan()))
 
     assert markdown.startswith("|")
     assert "| :--- |" in markdown
@@ -209,7 +219,7 @@ def test_the_markdown_ledger_export_exists_and_is_a_table():
 def test_the_markdown_ledger_says_so_rather_than_emitting_an_empty_table():
     markdown = drawio_generator.generate_flow_ledger_markdown([])
 
-    assert "no flow" in markdown.lower()
+    assert "no data flow" in markdown.lower()
 
 
 # --- No format may be a stub ------------------------------------------------------------
@@ -367,66 +377,117 @@ def test_node_labels_are_short_enough_not_to_run_into_the_next_column():
         assert "verticalLabelPosition=bottom" in cell.get("style", "")
 
 
-# --- Flow edges must be traced, never assumed ------------------------------------------
+# --- Edges are data movement, never a Terraform dependency ------------------------------
 #
-# discover_flow_edges carried the comment "Simple mock extraction for now" and chained
-# resources by their ADJACENCY IN THE PLAN FILE. Every consumer treated the result as a
-# traced data flow: the canvas drew arrows, and generate_flow_ledger dressed each hop in a
-# protocol, a latency budget and a list of safeguards. A gold bucket "flowing" into a KMS
-# key is not a data flow, and presenting one on a governance surface is the exact claim this
-# product exists to refuse.
+# Edges used to come from `configuration` references, which record what Terraform must
+# create first -- not what carries data. A KMS key is referenced by every encrypted bucket
+# and every workgroup, so the medallion spine was buried under fifty confident arrows that
+# no byte ever travels.
 
-def _plan_with_references():
-    """A plan whose `configuration` records real module-to-module references."""
-    def rc(address, rtype):
-        return {"address": address, "type": rtype, "mode": "managed",
-                "name": address.split(".")[-1],
-                "change": {"actions": ["create"], "after": {}}}
-    return {
-        # DELIBERATELY not in flow order. Listed in flow order, plan-file adjacency and
-        # the real references coincide, and a test asserting the real edges passes on the
-        # mock -- proving nothing.
-        "resource_changes": [
-            rc("module.query.aws_athena_workgroup.wg", "aws_athena_workgroup"),
-            rc("module.storage.aws_s3_bucket.bronze", "aws_s3_bucket"),
-            rc("module.compute.aws_glue_job.etl", "aws_glue_job"),
-        ],
-        "configuration": {"root_module": {"module_calls": {
-            "storage": {"expressions": {}},
-            "compute": {"expressions": {
-                "source_bucket_arn": {"references": ["module.storage.bronze_arn",
-                                                     "module.storage"]}}},
-            "query": {"expressions": {
-                "database": {"references": ["module.compute.catalog", "module.compute"]}}},
-        }}},
-    }
-
-
-def test_flow_edges_come_from_declared_references():
-    edges = drawio_generator.discover_flow_edges(_plan_with_references())
+def test_data_edges_come_from_the_paths_the_job_declares():
+    edges = drawio_generator.discover_data_edges(_wired_plan())
 
     pairs = {(e["source"], e["target"]) for e in edges}
-    assert ("module.storage.aws_s3_bucket.bronze",
-            "module.compute.aws_glue_job.etl") in pairs, pairs
-    assert ("module.compute.aws_glue_job.etl",
-            "module.query.aws_athena_workgroup.wg") in pairs, pairs
-    assert len(edges) == 2, f"invented an edge nothing references: {pairs}"
+    assert ('aws_s3_bucket.zones["raw"]', "aws_glue_job.etl") in pairs, pairs
+    assert ("aws_glue_job.etl", 'aws_s3_bucket.zones["curated"]') in pairs, pairs
+    assert len(edges) == 2, f"invented an edge no argument declares: {pairs}"
 
 
-def test_a_plan_with_no_configuration_yields_no_edges_rather_than_a_guessed_chain():
-    """Without `configuration` there is nothing to trace. Emitting a chain anyway is how a
-    ten-resource plan grew nine confident hops that no reference supports."""
-    plan = {"resource_changes": _plan_with_references()["resource_changes"]}
+def test_a_dependency_reference_is_not_drawn_as_a_data_flow():
+    """The KMS key that encrypts the results bucket does not send data to the workgroup."""
+    plan = {"resource_changes": [
+        {"address": "aws_kms_key.cmk", "type": "aws_kms_key", "mode": "managed",
+         "name": "cmk", "change": {"actions": ["create"], "after": {}}},
+        {"address": "aws_athena_workgroup.wg", "type": "aws_athena_workgroup",
+         "mode": "managed", "name": "wg", "change": {"actions": ["create"], "after": {}}},
+    ], "configuration": {"root_module": {"resources": [
+        {"address": "aws_athena_workgroup.wg", "type": "aws_athena_workgroup", "name": "wg",
+         "expressions": {"configuration": {"references": ["aws_kms_key.cmk"]}}},
+    ]}}}
 
-    assert drawio_generator.discover_flow_edges(plan) == []
+    assert drawio_generator.discover_data_edges(plan) == []
 
 
-def test_the_ledger_says_nothing_rather_than_describing_untraced_hops():
-    plan = {"resource_changes": _plan_with_references()["resource_changes"]}
+def test_a_plan_that_declares_no_paths_yields_no_edges_and_says_so():
+    """The Glue jobs in a hand-authored stack often carry only --job-bookmark-option. That
+    stack has no declared data flow, and reporting one would be a guess."""
+    plan = {"resource_changes": [
+        {"address": "aws_glue_job.etl", "type": "aws_glue_job", "mode": "managed",
+         "name": "etl", "change": {"actions": ["create"], "after": {
+             "default_arguments": {"--job-bookmark-option": "job-bookmark-enable"}}}},
+    ]}
     bundle = drawio_generator.generate_drawio_from_plan(plan)
 
     assert bundle["ledger"] == []
-    assert "no flow" in bundle["ledger_markdown"].lower()
+    assert "no data flow" in bundle["ledger_markdown"].lower()
+
+
+# --- A bucket is one node, not five -----------------------------------------------------
+
+def _configured_bucket_plan():
+    def rc(address, rtype, after=None):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": after or {}}}
+    return {
+        "resource_changes": [
+            rc("aws_s3_bucket.gold", "aws_s3_bucket", {"bucket": "lake-gold"}),
+            rc("aws_s3_bucket_versioning.gold", "aws_s3_bucket_versioning"),
+            rc("aws_s3_bucket_server_side_encryption_configuration.gold",
+               "aws_s3_bucket_server_side_encryption_configuration"),
+            rc("aws_kms_alias.lake", "aws_kms_alias"),
+        ],
+        "configuration": {"root_module": {"resources": [
+            {"address": "aws_s3_bucket_versioning.gold", "type": "aws_s3_bucket_versioning",
+             "name": "gold", "expressions": {"bucket": {"references": ["aws_s3_bucket.gold"]}}},
+            {"address": "aws_s3_bucket_server_side_encryption_configuration.gold",
+             "type": "aws_s3_bucket_server_side_encryption_configuration", "name": "gold",
+             "expressions": {"bucket": {"references": ["aws_s3_bucket.gold"]}}},
+        ]}},
+    }
+
+
+def test_bucket_configuration_resources_are_not_drawn_as_their_own_nodes():
+    """Versioning, public-access-block, SSE and lifecycle are properties of a bucket. Drawn
+    as peers they turn one medallion zone into five stacked cards."""
+    positions = _node_positions(
+        drawio_generator.generate_drawio_from_plan(_configured_bucket_plan())["xml"])
+
+    assert set(positions) == {"aws_s3_bucket.gold"}
+
+
+def test_a_folded_resource_becomes_a_badge_on_the_bucket_it_configures():
+    """The badge has to come from the resource that carries the fact. Reading the bucket's
+    own attributes would report an unencrypted bucket as encrypted whenever a sibling SSE
+    resource existed for a different bucket."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_configured_bucket_plan())["xml"]
+
+    node = [c for c in ET.fromstring(xml_text).iter("mxCell")
+            if c.get("tooltip") == "aws_s3_bucket.gold"][0]
+
+    assert "encrypted" in node.get("value")
+    assert "versioned" in node.get("value")
+
+
+def test_a_bucket_with_no_encryption_resource_gets_no_encrypted_badge():
+    plan = {"resource_changes": [
+        {"address": "aws_s3_bucket.plain", "type": "aws_s3_bucket", "mode": "managed",
+         "name": "plain", "change": {"actions": ["create"], "after": {"bucket": "b"}}}]}
+    xml_text = drawio_generator.generate_drawio_from_plan(plan)["xml"]
+
+    node = [c for c in ET.fromstring(xml_text).iter("mxCell")
+            if c.get("tooltip") == "aws_s3_bucket.plain"][0]
+
+    assert "encrypted" not in node.get("value")
+
+
+def test_capacity_badges_come_from_the_plan():
+    xml_text = drawio_generator.generate_drawio_from_plan(_wired_plan())["xml"]
+
+    node = [c for c in ET.fromstring(xml_text).iter("mxCell")
+            if c.get("tooltip") == "aws_glue_job.etl"][0]
+
+    assert "G.1X x4" in node.get("value")
 
 
 # --- Reading a diagram back: the input side of FR-05.1 ----------------------------------

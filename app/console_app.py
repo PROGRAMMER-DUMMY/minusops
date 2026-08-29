@@ -1186,13 +1186,11 @@ def _ledger_table(ledger):
     """The step-flow ledger.
 
     `generate_flow_ledger()` returns a list of dicts, not text -- rendering it with html.Pre
-    prints a Python repr on the page. Its protocol/latency/safeguard values are the same
-    constants for every hop today, so they are shown as declared defaults rather than as
-    measurements of this pipeline.
+    prints a Python repr on the page.
     """
     if not ledger:
-        return html.P("No flow hops discovered in this plan.", className="muted")
-    columns = ("hop", "source", "target", "protocol", "latency", "safeguards")
+        return html.P("No data flow is declared in this plan.", className="muted")
+    columns = ("hop", "source", "target")
     return html.Table(className="table", children=[
         html.Thead(html.Tr([html.Th(c.title()) for c in columns])),
         html.Tbody([html.Tr([html.Td(str(row.get(c, "-"))) for c in columns])
