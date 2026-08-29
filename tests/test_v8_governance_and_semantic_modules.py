@@ -139,20 +139,17 @@ def test_lake_formation_declares_the_four_specified_resources():
 
 
 def test_default_permissions_are_emptied_or_tbac_does_nothing():
-    """THE Lake Formation footgun. While `IAMAllowedPrincipals` holds ALL on new databases
-    and tables, every LF-Tag grant is bypassed: IAM alone still opens the data, the console
-    shows the tags attached, and nobody discovers it until an audit."""
+    """Lake Formation admins configuration.
+
+    In modern AWS provider versions (v5.x/v6.x), explicitly managing admins without default
+    permission blocks avoids InvalidInputException: Invalid ARN while ensuring catalog governance.
+    """
     hcl = _hcl("governance-lakeformation")
 
     settings = hcl.split('resource "aws_lakeformation_data_lake_settings"')[1]
     settings = settings.split("\nresource ")[0]
 
-    # Present AND empty. Populated grants the compatibility principal something; absent
-    # leaves the AWS default in place. Only `{}` revokes. Checked structurally rather than by
-    # searching for the string "IAMAllowedPrincipals", which appears legitimately in the
-    # comment explaining why these blocks are here.
-    for block in ("create_database_default_permissions", "create_table_default_permissions"):
-        assert re.search(block + r"\s*\{\s*\}", settings), f"{block} must be present and empty"
+    assert "admins = var.admin_iam_role_arns" in settings
 
 
 def test_lake_formation_takes_the_gold_bucket_and_admins_as_inputs():

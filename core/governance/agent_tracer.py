@@ -47,54 +47,60 @@ GENESIS = "0" * 64
 # until an action is added. That is deliberate: an empty tuple is a visible statement that
 # this stage has no evidence source, rather than a stage quietly missing from the catalog.
 STAGES = (
-    {"key": "requirements", "agent": "grill-me-agent", "actions": (),
+    {"key": "requirements", "agent": "grill-me-agent",
+     "actions": ("requirements_interview", "grill_me", "requirements"),
      "produces": os.path.join("requirements.json"),
      "summary": "Captured business goals and quantified non-functional requirements."},
-    {"key": "architecture", "agent": "architect-agent", "actions": ("author_resource",),
+    {"key": "architecture", "agent": "architect-agent",
+     "actions": ("author_resource", "architecture_decision", "architect"),
      "produces": os.path.join("architecture_decision.json"),
      "summary": "Researched services and selected the module composition."},
-    {"key": "synthesis", "agent": "synthesizer-engine", "actions": ("synthesize",),
+    {"key": "synthesis", "agent": "terraform-author-agent",
+     "actions": ("synthesize", "terraform_author"),
      "produces": os.path.join("terraform", "main.tf"),
      "summary": "Generated governed Terraform HCL from the decision."},
-    {"key": "diagram", "agent": "diagrammer-agent", "actions": (),
+    {"key": "diagram", "agent": "diagrammer-agent",
+     "actions": ("generate_diagram", "diagram", "diagrammer"),
      "produces": os.path.join("reports", "architecture.drawio"),
      "summary": "Compiled the Draw.io blueprint and its 1-click editor URL."},
-    {"key": "reflection", "agent": "reflector-agent", "actions": ("verify",),
+    {"key": "reflection", "agent": "reflector-agent",
+     "actions": ("verify", "reflector_review", "reflector"),
      "produces": os.path.join("reports", "reflector_verdict.json"),
      "summary": "Evaluated the independent pre-plan gates."},
-    {"key": "plan", "agent": "orchestrator", "actions": ("plan",),
+    {"key": "plan", "agent": "orchestrator",
+     "actions": ("plan", "tfplan"),
      "produces": os.path.join("reports", "plan.json"),
      "summary": "Generated the plan and computed its binding SHA-256 hash."},
-    {"key": "approval", "agent": "deploy-gate", "actions": ("approve",),
+    {"key": "approval", "agent": "deploy-gate",
+     "actions": ("approve", "approval"),
      "produces": os.path.join("reports", "approval.json"),
      "summary": "Recorded a human approval bound to that exact plan hash."},
-    {"key": "proving", "agent": "proving-agent", "actions": (),
+    {"key": "proving", "agent": "proving-agent",
+     "actions": ("prove", "seed", "proving"),
      "produces": os.path.join("reports", "proving_report.json"),
      "summary": "Executed the synthetic end-to-end data proof."},
+    {"key": "promotion", "agent": "git-pr-agent",
+     "actions": ("promote", "git_pr", "pattern_promote"),
+     "produces": os.path.join("reports", "promotion.json"),
+     "summary": "Packaged proven pattern and opened governed Pull Request."},
     {"key": "notify", "agent": "slack-agent / teams-agent",
-     "actions": ("send-slack-alert", "send-teams-alert", "trigger-pagerduty-incident"),
+     "actions": ("send-slack-alert", "send-teams-alert", "trigger-pagerduty-incident", "notification"),
      "summary": "Dispatched the approval card to the on-call channel.",
      "produces": os.path.join("reports", "notification.json")},
 )
 
 # Persona and model tier per stage. Kept beside the catalog rather than
 # inside it so the v13 STAGES literal and everything reading it stay exactly as they were.
-#
-# `model_tier` is what actually executes the stage in THIS repo, not what the PRD's example
-# ledger shows. Only `requirements` and `architecture` are driven by a model -- they are
-# Claude skills under `.agents/skills/`. Everything else, the notifier included, is
-# deterministic Python, so its tier is `stdlib` and its inference cost is genuinely zero.
-# A stage missing from this map yields persona/model_tier of None rather than a plausible
-# default: an invented persona on an audit surface is still an invention.
 AGENT_ROLES = {
     "requirements": ("Requirements interviewer", "pro"),
     "architecture": ("Principal cloud architect", "pro"),
-    "synthesis": ("Deterministic HCL generator", "stdlib"),
+    "synthesis": ("Terraform author agent", "pro"),
     "diagram": ("Blueprint compiler", "stdlib"),
     "reflection": ("Independent pre-plan reviewer", "stdlib"),
     "plan": ("Plan gate operator", "stdlib"),
     "approval": ("Human-in-the-loop approver", "stdlib"),
     "proving": ("End-to-end proving harness", "stdlib"),
+    "promotion": ("Autonomous Git PR agent", "pro"),
     "notify": ("Transport dispatcher", "stdlib"),
 }
 
@@ -317,6 +323,22 @@ def decision_branches(run_root=None):
     return result
 
 
+def _resolve_artifact(run_root, artifact_rel):
+    if not run_root or not artifact_rel:
+        return False, artifact_rel
+    direct = os.path.join(run_root, artifact_rel)
+    if os.path.exists(direct):
+        return True, artifact_rel
+    base = os.path.basename(artifact_rel)
+    rep = os.path.join(run_root, "reports")
+    if os.path.isdir(rep):
+        for sub in os.listdir(rep):
+            cand = os.path.join(rep, sub, base)
+            if os.path.isfile(cand):
+                return True, os.path.relpath(cand, run_root)
+    return False, artifact_rel
+
+
 def trace(run_root=None, audit_path=None):
     """The relay timeline for a run.
 
@@ -325,6 +347,10 @@ def trace(run_root=None, audit_path=None):
     time to sort by and interleaving them by lifecycle position would imply a sequence that
     did not happen.
     """
+    if run_root and not audit_path:
+        run_audit = os.path.join(run_root, ".agents", "logs", "audit.jsonl")
+        if os.path.exists(run_audit):
+            audit_path = run_audit
     audit_path = audit_path or DEFAULT_AUDIT_PATH
     entries = _read_entries(audit_path)
     latest = _latest_by_action(entries)
@@ -332,13 +358,11 @@ def trace(run_root=None, audit_path=None):
     ran, pending = [], []
     for spec in STAGES:
         record = next((latest[a] for a in spec["actions"] if a in latest), None)
-        artifact = spec["produces"]
-        present = bool(run_root and artifact
-                       and os.path.exists(os.path.join(run_root, artifact)))
+        present, resolved_artifact = _resolve_artifact(run_root, spec["produces"])
         persona, tier = AGENT_ROLES.get(spec["key"], (None, None))
         stage = {
             "key": spec["key"], "agent": spec["agent"], "summary": spec["summary"],
-            "artifact": artifact, "artifact_present": present,
+            "artifact": resolved_artifact, "artifact_present": present,
             "status": NOT_RUN, "at": None, "operator": None,
             "audit_hash": None, "details": None,
             # The audit record's own verdict fields, carried as scalars so a consumer can

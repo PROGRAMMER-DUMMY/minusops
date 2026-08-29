@@ -112,6 +112,49 @@ def match_patterns(requirements, min_overlap=0.5):
     return sorted(out, key=lambda x: x["reuse_score"], reverse=True)
 
 
+def promote_pattern(run_root=None, name=None, description="", skip_proof=False):
+    """
+    Promote an approved, proven architecture run to the pattern registry via Git PR.
+    """
+    import git_agent
+    if not run_root or run_root == ".":
+        try:
+            import core.cli.context as context
+            active = context.active_run()
+            if not active:
+                import runs as runs_mod
+                lr = runs_mod.latest_run()
+                if lr:
+                    active = lr.get("run_id")
+            if active:
+                run_root = os.path.join("runs", active)
+        except Exception:
+            pass
+    if not run_root:
+        run_root = "."
+
+    pr_result = git_agent.create_pattern_pull_request(
+        run_root=run_root,
+        pattern_name=name,
+        description=description,
+        skip_proof=skip_proof
+    )
+    # Also record in local registry
+    try:
+        with open(os.path.join(run_root, "architecture_decision.json"), "r", encoding="utf-8") as f:
+            decision = json.load(f)
+        capture_pattern(
+            requirements=decision.get("decision_summary", description),
+            module_ids=decision.get("selected_modules", []),
+            name=name,
+            plan_hash=pr_result.get("plan_hash"),
+            approver=pr_result.get("operator")
+        )
+    except Exception:
+        pass
+    return pr_result
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="Approved architecture-pattern registry")
@@ -125,6 +168,11 @@ def main(argv=None):
     sub.add_parser("list")
     m = sub.add_parser("match")
     m.add_argument("requirements")
+    p = sub.add_parser("promote")
+    p.add_argument("--name", required=True, help="Pattern identifier name")
+    p.add_argument("--run-root", default=".", help="Run root directory")
+    p.add_argument("--description", default="", help="Pattern business rationale")
+    p.add_argument("--skip-proof", action="store_true", help="Bypass UAT proving verification")
     args = ap.parse_args(argv)
 
     if args.cmd == "capture":
@@ -139,6 +187,13 @@ def main(argv=None):
     if args.cmd == "match":
         for p in match_patterns(args.requirements):
             print(f"[{p['reuse_score']:.2f}] {p['id']:<16} {', '.join(p.get('modules', []))}")
+        return 0
+    if args.cmd == "promote":
+        res = promote_pattern(args.run_root, args.name, args.description, skip_proof=args.skip_proof)
+        print(f"[git-agent] Created PR branch: {res['branch']}")
+        print(f"[git-agent] PR Title: {res['pr_title']}")
+        print(f"[git-agent] Plan Hash: {res['plan_hash']}")
+        print(f"[git-agent] UAT Status: {res['proving_status']}")
         return 0
     return 1
 

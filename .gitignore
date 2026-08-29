@@ -104,3 +104,14 @@ docs/REMAINING_WORK.md
 docs/minusops_v2_engineering_tickets.md
 docs/generation_engine_ground_truth_survey.md
 docs/generation_pivot_first_proof_*.md
+context/
+../context/
+DESIGN.md
+
+# minusctl diagram output, written to the invocation directory
+architecture.drawio
+architecture_url.txt
+architecture_ledger.md
+
+# dbt runtime logs
+logs/

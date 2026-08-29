@@ -383,6 +383,25 @@ def _console_script_check():
     }
 
 
+def _connectors_check():
+    """Report whether enterprise outbound connectors are wired or advisory unconfigured."""
+    connectors = {
+        "Slack": bool(os.environ.get("SLACK_WEBHOOK_URL")),
+        "Microsoft Teams": bool(os.environ.get("TEAMS_WEBHOOK_URL")),
+        "Jira": bool(os.environ.get("JIRA_BASE_URL") and os.environ.get("JIRA_TOKEN")),
+        "Confluence": bool(os.environ.get("CONFLUENCE_BASE_URL") and os.environ.get("CONFLUENCE_TOKEN")),
+        "Outlook": bool(os.environ.get("OUTLOOK_WEBHOOK_URL")),
+    }
+    configured = [k for k, v in connectors.items() if v]
+    if configured:
+        return _check("outbound connectors", "ok",
+                      f"{len(configured)} of {len(connectors)} configured ({', '.join(configured)})",
+                      "")
+    return _check("outbound connectors", "warn",
+                  "no outbound webhooks/API credentials configured (advisory only)",
+                  "Configure SLACK_WEBHOOK_URL, TEAMS_WEBHOOK_URL, or JIRA_* in configs/teams.yaml or environment to enable automated notifications.")
+
+
 def diagnose():
     """Run every check. Returns {"ok": bool, "checks": [...]} — ok is False iff any error."""
     checks = [
@@ -414,6 +433,7 @@ def diagnose():
         _emulator_check(),
         _packages_check(),
         _console_script_check(),
+        _connectors_check(),
     ]
     return {"ok": not any(c["status"] == "error" for c in checks), "checks": checks}
 

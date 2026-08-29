@@ -1,128 +1,75 @@
-# HANDOFF.md — Project Status & Handoff Ledger
+# HANDOFF.md — Architecture & Diagramming Engine Refactor
 
-> **Connected Context Map:** [`CONTEXT-MAP.md`](./CONTEXT-MAP.md)  
-> **Primary Operating Rules:** [`.agents/AGENTS.md`](.agents/AGENTS.md)  
-> **Active Implementation Branch:** `feat/minusops-enterprise-nextgen-v2`  
-> **Master Architecture Specification:** [`2026-08-17_minusterraformrunaudit.md`](./2026-08-17_minusterraformrunaudit.md)
-
----
-
-## Executive Summary
-
-**MinusOps** is a workload-agnostic, multi-cloud infrastructure control plane and governance engine for Terraform. It wraps all infrastructure mutations in a plan-bound, MFA-gated, cryptographic audit trail.
-
-This handoff ledger records the current state of the workspace, recent architectural completions, the verified directory context tree, and active operational procedures.
+> **Audience:** Claude Code / Claude Agent / Autonomous Ops Agents  
+> **Workspace:** `C:\Users\shubh\PycharmProjects\MinusTeraformCli`  
+> **Active Run:** `analytics-enterprise-serverless-lakehouse_20260829_065151`  
+> **Live Console URL:** `http://127.0.0.1:8050` (`minusctl console`)  
+> **Created:** 2026-08-29
 
 ---
 
-## Current State & Recent Milestones
+## 1. Executive Context & Mission
 
-### 0. Enterprise Next-Gen Upgrade — Branch `feat/minusops-enterprise-nextgen-v2` (2026-08-19)
+MinusOps is an enterprise, workload-agnostic cloud ops control plane that governs Terraform deployments through a cryptographic plan-hash deploy gate (`minusctl gate`), FinOps cost estimation (`minusctl cost`), and automated architecture diagramming (`minusctl diagram`).
 
-All 21 engineering tickets from the **MinusOps Enterprise v2.0 Roadmap (`MINUS-140` – `MINUS-160`)** are **implemented, tested, and verified**.
-
-* **Authoritative Progress Ledger:** [`docs/PROGRESS.md`](./docs/PROGRESS.md) Section 8.
-* **Fast Test Suite:** **770 passed**, 85 skipped across **76 test files** (100% pass rate).
-* **Module Catalog:** **24 production-grade Terraform modules** (added Snowflake, MSK, Databricks Delta, MWAA, Iceberg maintenance).
-* **Working Tree:** 100% clean after test runs.
-
-#### Enterprise v2.0 Sprints 1–4 Delivery Ledger:
-
-| Sprint | Tickets | Delivered Scope & Capabilities | Primary Files |
-| :--- | :--- | :--- | :--- |
-| **Sprint 1** | `MINUS-140`, `156`, `143`, `144`, `145` | Pytest corpus diversion (clean tree); Day-0 Doctor skill; composite GitHub Action PR Reviewer with sticky SVG/BCM comments; OIDC merge-gate plan hash re-verification. | [`tests/conftest.py`](./tests/conftest.py), [`.agents/skills/doctor/SKILL.md`](.agents/skills/doctor/SKILL.md), [`.github/actions/pr-reviewer/`](.github/actions/pr-reviewer/) |
-| **Sprint 2** | `MINUS-141`, `142`, `147`, `153` | Multi-team S3 remote state (`teams/<team_id>/<workload_id>/`); team derived from backend key (not user flags); discrete WORM S3 audit logger; sanitized team directory (`[a-z0-9-]{1,63}`). | [`core/architecture/team_resolver.py`](./core/architecture/team_resolver.py), [`core/governance/plan_gate.py`](./core/governance/plan_gate.py), [`core/governance/audit_logger.py`](./core/governance/audit_logger.py) |
-| **Sprint 3** | `MINUS-148`, `149`, `150`, `151`, `152` | Snowflake on AWS (2-sided handshake defense); Databricks Unity Catalog external locations & Delta Sharing; private MWAA Airflow; AWS MSK Kafka (IAM SASL); Iceberg table maintenance Lambda. | [`modules/warehouse-snowflake-aws/`](./modules/warehouse-snowflake-aws/), [`modules/compute-databricks-delta/`](./modules/compute-databricks-delta/), [`modules/streaming-msk-kafka/`](./modules/streaming-msk-kafka/) |
-| **Sprint 4** | `MINUS-146`, `154`, `155`, `157`, `158`, `159`, `160` | Dynamic BCM quantity derivation from requirements (15-min micro-batch cost impact); `minusctl doctor --fix` container auto-recovery; fail-closed production OPA gate; fuzzy run typo recovery with attached description tips; pre-requisite stage interception; 3-part actionable error formatting. | [`core/cost/bcm_pricing_calculator.py`](./core/cost/bcm_pricing_calculator.py), [`core/reporting/cli_diagnostics.py`](./core/reporting/cli_diagnostics.py), [`core/reporting/minusctl.py`](./core/reporting/minusctl.py) |
-
-#### Governance State Note:
-* **Plan `5cad83d9` Approval Revocation:** Approval record for `5cad83d9` was revoked and purged from disk following MINUS-146 discovery that 15-minute micro-batching requires ~$1,478/mo. The deploy gate now fails closed and requires a fresh plan/BCM/approval cycle before application.
-
-#### Deliberately Scoped Decisions:
-* **MINUS-126 & MINUS-127:** Scoped out third-party cloud provider bloat per `core/providers/base.py` AWS-only architecture. Cross-cloud ingestion uses **AWS IAM OIDC Workload Identity** (STS role assumption by GCP/Azure identities writing directly to S3).
+Your mission is to **refactor and modernize the two architecture visualization engines**:
+1. **Data Flow SVG Engine (`dataflow.svg` in `core/reporting/reporter.py`)**: Update from dark theme (`#14110f`) to the brand-aligned **MinusOps Monad Light Theme** (`#fbf7f4` background, terracotta `#d95d39` accents, clean pastel containers, high-contrast typography).
+2. **Draw.io mxGraph Engine (`architecture.drawio` in `core/reporting/drawio_generator.py`)**: Refactor layout to follow a clean horizontal 6-tier medallion data flow (Ingestion $\to$ Raw/Bronze $\xrightarrow{\text{Glue}}$ Silver/CDM $\xrightarrow{\text{Glue}}$ Gold/ARD $\to$ Consumption $\to$ Governance). Consolidate bucket attachments (versioning, lifecycle, SSE) so they do not duplicate into 20 stacked cards.
 
 ---
 
-### 1. Comprehensive Context Tree & Documentation Overhaul
-The workspace is maintained with **14 dedicated, non-monolithic `CONTEXT-[folder].md` files** covering every subpackage, module, policy, test suite, and tool.
-* **Master Map**: Connected to [`CONTEXT-MAP.md`](./CONTEXT-MAP.md) at the repository root.
-* **Zero Specification Drift**: All context files are audited against disk code with 100% full-file coverage and `file://` markdown links.
+## 2. Key Codebase Files & Subsystems
+
+| File Path | Role & What to Change |
+| :--- | :--- |
+| [`core/reporting/reporter.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/reporter.py) | **`build_dataflow_svg()`**: Update color palette to Monad Light theme (`#fbf7f4`, `#ffffff`, `#d95d39`, `#1e293b`, `#64748b`). |
+| [`core/reporting/drawio_generator.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/reporting/drawio_generator.py) | **`generate_drawio_from_plan()`**: Produce clean Left-to-Right medallion swimlanes with official AWS-4 stencils, consolidated storage cards, and collision-free geometry. |
+| [`core/architecture/architecture_model.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/core/architecture/architecture_model.py) | Shared 6-layer resource classification taxonomy (`ingestion`, `storage`, `catalog`, `processing`, `consumption`, `governance`). |
+| [`tests/test_drawio_generator.py`](file:///C:/Users/shubh/PycharmProjects/MinusTeraformCli/tests/test_drawio_generator.py) | Unit test suite guarding 1-click URL round-trip, XML validity, and non-overlapping layout invariants. |
 
 ---
 
-## Workspace Context Directory Map
+## 3. Reference Architecture Specifications & Assets
 
-| Directory | Context File | Description |
-| :--- | :--- | :--- |
-| **Root Tree** | [`CONTEXT-MAP.md`](./CONTEXT-MAP.md) | Master context tree & maintenance operating guide |
-| `core/` | [`core/CONTEXT-core.md`](./core/CONTEXT-core.md) | Governance & synthesis engine index |
-| `core/governance/` | [`core/governance/CONTEXT-governance.md`](./core/governance/CONTEXT-governance.md) | Deploy gates, approvals, audit chains, drift & source guards |
-| `core/generation/` | [`core/generation/CONTEXT-generation.md`](./core/generation/CONTEXT-generation.md) | IaC synthesizer, module registry & provenance |
-| `core/architecture/` | [`core/architecture/CONTEXT-architecture.md`](./core/architecture/CONTEXT-architecture.md) | Requirements gates & 6-layer architecture model |
-| `core/cost/` | [`core/cost/CONTEXT-cost.md`](./core/cost/CONTEXT-cost.md) | BCM Pricing Calculator & pricing catalog |
-| `core/reporting/` | [`core/reporting/CONTEXT-reporting.md`](./core/reporting/CONTEXT-reporting.md) | `minusctl` CLI, FinOps agent & HCL scanner |
-| `core/providers/` | [`core/providers/CONTEXT-providers.md`](./core/providers/CONTEXT-providers.md) | Multi-cloud provider abstraction (`aws`) |
-| `app/` | [`app/CONTEXT-app.md`](./app/CONTEXT-app.md) | Plotly Dash control plane web console |
-| `modules/` | [`modules/CONTEXT-modules.md`](./modules/CONTEXT-modules.md) | 21 building block Terraform modules |
-| `.agents/` | [`.agents/CONTEXT-agents.md`](.agents/CONTEXT-agents.md) | Agent operating rules & 6 decision skills (grill-me, architect, etc.) |
-| `docs/` | [`docs/CONTEXT-docs.md`](./docs/CONTEXT-docs.md) | IAM manifest, security model & docs library |
-| `policy/` | [`policy/CONTEXT-policy.md`](./policy/CONTEXT-policy.md) | Rego policy rules & stage definitions |
-| `examples/` | [`examples/CONTEXT-examples.md`](./examples/CONTEXT-examples.md) | IAM trust policies & BCM usage profiles |
-| `tests/` | [`tests/CONTEXT-tests.md`](./tests/CONTEXT-tests.md) | 72 automated pytest test suites |
-| `tools/` | [`tools/CONTEXT-tools.md`](./tools/CONTEXT-tools.md) | Environment diagnostic tools (`doctor.ps1`, `doctor.py`) |
+The user has provided three primary reference sources:
+
+1. **Friend's Production Healthcare ARD Lakehouse (`IMG_1487`)**:
+   * File path: `C:\Users\shubh\Downloads\imp_prod\IMG_1487.HEIC`
+   * Architecture topology:
+     * `Foundational Layer`: US Data Hub + RWDEx $\to$ AWS Landing.
+     * `Integrated Layer`: Airflow/Matillion pushdown $\to$ Databricks Spark Job Cluster $\to$ Staging $\to$ Integration $\to$ **9 OMOP CDM tables**.
+     * `ARD Layer`: Matillion pushdown $\to$ Databricks Analytical Cluster $\to$ **6 Domain ARD grains** $\to$ **5 Solution ARD Gold Marts**.
+     * `Governance & Controls`: S3 Glacier Lifecycle, Metadata (Delta), Decoupled BRMS (Python+Matillion), 5-Hop Lineage (Collibra), KMS CMK, IAM roles, CloudWatch.
+2. **AWS Serverless Big Data Reference Architecture**:
+   * 6-Layer Layout: Ingestion $\to$ Storage & Processing (Medallion S3) $\to$ Cataloging & Governance $\to$ Consumption (Athena, Redshift, QuickSight, SageMaker) $\to$ Security & Monitoring.
+3. **Deep Research Blueprint**:
+   * File path: `C:\Users\shubh\Downloads\Enterprise Architecture Deep Research Blueprint.md`
 
 ---
 
-## Quick Start & Common Workflows
+## 4. Execution Steps for Claude Agent
 
-### 1. Diagnostics & Pre-Flight Check
 ```bash
-minusctl doctor
-```
+# 1. Select the active workload run
+minusctl use analytics-enterprise-serverless-lakehouse_20260829_065151
 
-### 2. Requirements-First Creation Workflow
-```bash
-# 1. Gather requirements and generate run workspace
-minusctl create "create a data pipeline for ingestion and analytics"
+# 2. Run unit tests before making edits
+pytest tests/test_drawio_generator.py tests/test_reporter.py
 
-# 2. Synthesize Terraform from requirements and decision records
-python core/generation/synthesizer.py "ingest and analytics pipeline" \
-  --run <run-id> \
-  --requirements-file runs/<run-id>/requirements.json \
-  --decision-file runs/<run-id>/architecture_decision.json
-```
+# 3. Implement the light-theme palette in build_dataflow_svg() (reporter.py)
+# 4. Refactor drawio_generator.py for clean medallion layout & bucket consolidation
 
-### 3. Stage Reflector Circuit Breaker
-```bash
-python core/governance/reflector.py --run-root runs/<run-id>
-```
+# 5. Regenerate and verify the diagram
+minusctl diagram
 
-### 4. Secure Deployment Loop
-```bash
-# Verify HCL syntax and static rules
-minusctl gate verify --dir runs/<run-id>/terraform --policy-mode production
-
-# Generate plan artifact and SHA-256 hash
-minusctl gate plan --dir runs/<run-id>/terraform
-
-# Approve plan hash (HITL MFA gate)
-minusctl gate approve --dir runs/<run-id>/terraform
-
-# Apply approved plan
-minusctl gate apply --dir runs/<run-id>/terraform
-```
-
-### 5. Launch Control Plane Dashboard
-```bash
-minusctl console
-# Open http://127.0.0.1:8050
-```
-
-### 6. Run Test Suite
-```bash
-# Fast test suite (633 tests)
-pytest tests/ -m "not slow"
-
-# Complete test suite
+# 6. Verify full test suite passes
 pytest tests/
 ```
+
+---
+
+## 5. Non-Negotiable Invariants
+
+1. **Zero Emojis:** Do not emit emojis in CLI outputs, code comments, logs, or generated markdown.
+2. **Standard Library Only in `drawio_generator.py`:** No third-party graphing libraries (strictly `xml.etree.ElementTree`, `zlib`, `base64`, `urllib.parse`).
+3. **1-Click URL Compatibility:** The `#R` fragment must use standard Base64 + zlib deflate (-15 wbits) so `https://app.diagrams.net/#R...` opens in browser with zero errors.

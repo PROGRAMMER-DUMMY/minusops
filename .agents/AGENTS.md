@@ -11,15 +11,13 @@ Whenever working on this codebase, you must adhere to the following operational 
 
 * **Invoke `minusctl`, not a script path.** Every capability is a subcommand:
   `create`, `use`, `runs list|describe`, `gate {verify|plan|approve|apply}`, `cost
-  {prepare|estimate}`, `source {status|diff|anchor}`, `prove [--execute]`, `export`,
-  `audit verify`, `doctor`, plus `next`, `readiness`, `conformance`, `validate`, `package`,
-  `decision`, `accelerator`, `policy`, `reports`, `guard`, `adopt`, `seed`, `demo`.
+  {prepare|estimate|coverage}`, `source {status|diff|anchor}`, `prove [--execute]`, `export`,
+  `audit verify`, `doctor`, `derive`, `pattern {list|match|capture}`, `author`, `diagram`,
+  plus `next`, `readiness`, `conformance`, `validate`, `package`, `decision`, `accelerator`,
+  `policy`, `reports`, `guard`, `adopt`, `seed`, `demo`, `console`.
   If `minusctl` is not on PATH, `python -m core.cli.main <command>` is the identical entry
   point -- pyproject maps the console script straight to `core.cli.main:main`. Prefer the
   console script: it is what the docs, the skills and every operator instruction name.
-  A handful of capabilities have no subcommand yet (`synthesizer.py author`, `patterns.py
-  match`, `pillars.py derive`, `coverage_audit.py`); those are still invoked by path, and
-  that list is the backlog of missing subcommands rather than a second supported style.
 * **Select the run once.** `minusctl use <run-id>` writes `.minus/context.json`; every
   run-scoped command then defaults to it. With no active run and no explicit `--dir`/`--run`,
   those commands REFUSE. Do not work around that by passing the newest run -- if you are not

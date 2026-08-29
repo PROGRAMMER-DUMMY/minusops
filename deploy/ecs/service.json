@@ -1,0 +1,26 @@
+{
+  "cluster": "minusops-control-plane",
+  "serviceName": "minusops-console-service",
+  "taskDefinition": "minusops-console",
+  "desiredCount": 2,
+  "launchType": "FARGATE",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": [
+        "subnet-private-az1",
+        "subnet-private-az2"
+      ],
+      "securityGroups": [
+        "sg-minusops-console-internal"
+      ],
+      "assignPublicIp": "DISABLED"
+    }
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "arn:aws:elasticloadbalancing:<region>:<account-id>:targetgroup/minusops-console-tg/xxxxxx",
+      "containerName": "console",
+      "containerPort": 8050
+    }
+  ]
+}

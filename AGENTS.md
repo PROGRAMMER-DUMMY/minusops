@@ -1,394 +1,144 @@
-# AGENTS.md — Operating Guide for CLI Agents
+# AGENTS.md — Operating Guide for Autonomous CLI Agents
 
-> **Audience:** Any autonomous coding/ops CLI agent working in this repo — `agy` (Antigravity), `codex`, `claude code`, or similar.
-> **Purpose:** Tell you (the agent) *what you can do here*, *which tools to reach for*, *when and how to fetch documentation*, and *the safety rules you must never break*.
+> **Audience:** Any autonomous coding/ops CLI agent working in this repo — gy (Antigravity), codex, claude code, or similar.
+> **Purpose:** Authoritative operating instructions: active workflows, tools, documentation resolution, and non-negotiable governance invariants.
 >
-> Read this file first. Then load the project-local agent context listed in **Mandatory Agent Context** below. For the canonical list of doc links, see the **Documentation Redirect Rule** at the bottom and [`docs/information_library.md`](./docs/information_library.md).
+> Read this file first. Then load the project-local agent context listed in **Mandatory Agent Context** below. For doc lookups, see [docs/information_library.md](./docs/information_library.md).
 
 ---
 
-## 0. Mandatory Agent Context
+## 0. Mandatory Agent Context & Execution Standard
 
-Agents that support only a single root instruction file must treat the files below as part of this `AGENTS.md` operating guide. Read the relevant files before acting; do not assume another CLI will auto-discover `.agents/`.
+Agents supporting only a single root instruction file must treat the files below as part of this AGENTS.md guide:
 
-Always read:
+### Core Workspace Rules
+- [.agents/AGENTS.md](./.agents/AGENTS.md) — workspace safety rules, HITL constraints, zero-emoji policy, and autonomous execution standards.
 
-- [`.agents/AGENTS.md`](./.agents/AGENTS.md) — workspace safety rules, HITL constraints, and skill activation requirements.
+### Autonomous Lifecycle Roadmap (The 7-Step Sequence)
+For any infrastructure creation or modification lifecycle, follow the strict 7-step sequence:
+1. **[1] Requirements Grilling (grill-me)** — Gather functional + non-functional requirements across all 18 pillars (core/architecture/pillars.py), one question at a time with recommended defaults.
+2. **[2] ADR Formulation (rchitecture_decision.json)** — Formulate and record the Architecture Decision Record with explicit rationale and trade-offs.
+3. **[3] Architecture Synthesis (synthesizer.py)** — Compose vetted modules (core/generation/modules.py) into governed Terraform.
+4. **[4] Diagram & Lineage Generation (diagram_generator.py)** — Generate Draw.io architecture diagrams and data lineage, providing 1-click browser view links (https://app.diagrams.net/#R...).
+5. **[5] Reflector Review (eflector.py)** — Run independent stage review to verify readiness and schema conformance.
+6. **[6] Plan Gate & BCM Costing (minusctl gate & minusctl cost)** — Execute erify -> plan (producing a SHA256 plan hash) and run BCM Pricing Calculator cost estimation.
+7. **[7] Human-in-the-Loop Approval & Audited Apply** — Present the plan diff, cost forecast, and diagram for human approval before executing apply.
 
-Production creation is requirements-first. If a project-local skill still describes
-`aws-data-pipeline-standard` as the production-ready blueprint or tells you to run
-`minusctl create ... --generate`, treat that as stale demo-fixture guidance and follow
-this file instead.
+### Decision & Execution Skills (.agents/skills/)
+Activate the relevant skill when its trigger applies:
+- [.agents/skills/grill-me/SKILL.md](./.agents/skills/grill-me/SKILL.md) — **The mandatory front door for any build/create request**: gather full functional + non-functional requirements (18 pillars) before generating Terraform.
+- [.agents/skills/architect/SKILL.md](./.agents/skills/architect/SKILL.md) — Research current cloud services/reference architectures, compose vetted modules, and govern through the deploy gate.
+- [.agents/skills/terraform-orchestrator/SKILL.md](./.agents/skills/terraform-orchestrator/SKILL.md) — Before any deployment, Terraform plan/apply workflow, state lock handling, or infrastructure mutation proposal.
+- [.agents/skills/pipeline-optimizer/SKILL.md](./.agents/skills/pipeline-optimizer/SKILL.md) — Before scanning, optimizing, or proposing remediation for Terraform/data-pipeline infrastructure.
+- [.agents/skills/resolve-ambiguity/SKILL.md](./.agents/skills/resolve-ambiguity/SKILL.md) — When a request is unclear, underspecified, too broad, or presents incompatible trade-offs.
+- [.agents/skills/doctor/SKILL.md](./.agents/skills/doctor/SKILL.md) — Pre-flight environment diagnostics (binaries, credentials, lockfiles, connectors).
+- [.agents/skills/context-graph/SKILL.md](./.agents/skills/context-graph/SKILL.md) — When maintaining, auditing, or synchronizing file-by-file context trees (CONTEXT-MAP.md).
+- [.agents/skills/integration-guide/SKILL.md](./.agents/skills/integration-guide/SKILL.md) — Before adding or modifying CLI subcommands, Terraform modules, outbound hooks, or subagents.
 
-Read these skill files when their trigger applies:
+### Transport Subagents (.agents/subagents/)
+To send outbound notifications, activate the matching single-shot transport subagent. Each dispatches exactly one message through core/integrations/ and terminates:
+- [.agents/subagents/slack-agent.md](./.agents/subagents/slack-agent.md) — P1 pipeline incidents and plan-approval cards.
+- [.agents/subagents/teams-agent.md](./.agents/subagents/teams-agent.md) — Data-quality failures and quarantine alerts.
+- [.agents/subagents/outlook-agent.md](./.agents/subagents/outlook-agent.md) — Executive FinOps email reports with attached spreadsheets.
+- [.agents/subagents/confluence-agent.md](./.agents/subagents/confluence-agent.md) — Living architecture documentation pages.
+- [.agents/subagents/jira-agent.md](./.agents/subagents/jira-agent.md) — Governed change-management tickets (one ticket per invocation).
 
-- [`.agents/skills/terraform-orchestrator/SKILL.md`](./.agents/skills/terraform-orchestrator/SKILL.md) — before any deployment, Terraform plan/apply workflow, state lock handling, or infrastructure mutation proposal.
-- [`.agents/skills/pipeline-optimizer/SKILL.md`](./.agents/skills/pipeline-optimizer/SKILL.md) — before scanning, optimizing, or proposing remediation for Terraform/data-pipeline infrastructure.
-- [`.agents/skills/resolve-ambiguity/SKILL.md`](./.agents/skills/resolve-ambiguity/SKILL.md) — when a request is unclear, underspecified, too broad, too simple for hidden risk, or supports incompatible outcomes.
-- [`.agents/skills/grill-me/SKILL.md`](./.agents/skills/grill-me/SKILL.md) — **the mandatory front door for any build/create request**: gather full functional + non-functional requirements (one question at a time) before generating; also when the user asks to be grilled or to resolve a decision tree.
-- [`.agents/skills/architect/SKILL.md`](./.agents/skills/architect/SKILL.md) — after requirements are gathered: research current services/reference architectures, choose the best-fit, compose vetted modules (`core/generation/modules.py` + `core/generation/synthesizer.py`), and govern through the deploy gate. The path for any scenario the demo blueprint doesn't fit.
-- [`.agents/skills/context-graph/SKILL.md`](./.agents/skills/context-graph/SKILL.md) — when maintaining, auditing, or synchronizing file-by-file context documentation (`CONTEXT-MAP.md` and `CONTEXT-[folder].md`) across the repository.
-- [`.agents/skills/integration-guide/SKILL.md`](./.agents/skills/integration-guide/SKILL.md) — before adding or modifying CLI subcommands, Terraform modules, outbound integration hooks, or autonomous subagents.
-
-Read these subagent manifests when a notification must be sent. Each dispatches exactly one
-message through `core/integrations/` and stops:
-
-- [`.agents/subagents/slack-agent.md`](./.agents/subagents/slack-agent.md) - P1 pipeline incidents and plan-approval cards.
-- [`.agents/subagents/teams-agent.md`](./.agents/subagents/teams-agent.md) - data-quality failures and quarantine alerts.
-- [`.agents/subagents/outlook-agent.md`](./.agents/subagents/outlook-agent.md) - executive FinOps email with the generated `.xlsx` attached.
-- [`.agents/subagents/confluence-agent.md`](./.agents/subagents/confluence-agent.md) - living architecture documentation pages.
-- [`.agents/subagents/jira-agent.md`](./.agents/subagents/jira-agent.md) - change tickets for a governed deploy, one ticket per invocation.
-
-Three rules bind all four. Never accept, echo, or log a webhook URL or token: they are bearer
-credentials and the hook resolves them itself. A denied approval is a denial, not a failure,
-and is never retried. And `ok` is not `sent` - an unconfigured channel returns
-`{"ok": true, "sent": false}`, so reporting delivery on `ok` alone is a false green.
-
-If your agent runtime has explicit skill auto-discovery, these files may load automatically. If not, manually read the matching `SKILL.md` before taking action.
-
----
-
-## 1. What this repo is
-
-A **multi-cloud, workload-agnostic ops control plane.** Each enterprise installs it and runs it against their *own* cloud with their *own* credentials and their *own* Terraform — nothing is hosted by us, and **no example architecture is bundled**. The repo is purely the engine:
-
-- **A cloud-agnostic governance core** (`core/`) — deploy gating, approval, audit, FinOps, and a **provider abstraction** (`core/providers/`) so the same engine runs on AWS, Azure, or GCP. Select the active cloud with the `MINUS_CLOUD` env var (default `aws`).
-
-Because there is no bundled IaC, **every tool that acts on infrastructure requires an explicit `--dir` / `--source-dir`** — the caller always says *which* Terraform directory to govern. The governance core **never calls a cloud CLI directly** — only through a `CloudProvider`. Terraform + the cloud CLI are your universal hands; every change is governed by MFA-gated, plan-bound, audited deploys.
+**Three Inviolable Rules for Subagents:**
+1. Never accept, echo, or log a webhook URL or token: they are bearer credentials and the hook resolves them securely.
+2. A denied approval is a terminal denial, not a failure, and is never retried.
+3. An unconfigured connector returns {"ok": true, "sent": false} — reporting delivery on ok alone is a false positive.
 
 ---
 
-## 2. Repository map
+## 1. Control Plane Architecture
 
-```
+MinusOps is a **workload-agnostic cloud ops control plane.** Each enterprise installs and executes it against their *own* cloud with their *own* credentials and their *own* Terraform — nothing is hosted externally, and **no example architecture is bundled**.
+
+- **Governance Core (core/)** — Deploy gating, cryptographic plan-hash approval, audit logging, BCM FinOps pricing, and a provider abstraction (core/providers/).
+- **Active Provider (core/providers/aws.py)** — AWS is the primary production provider (selected via MINUS_CLOUD=aws). The provider interface (core/providers/base.py) enforces a strict fail-closed contract on unconfigured clouds.
+- **Run-Centric Context (.minus/context.json)** — Workspaces are isolated per workload run (uns/<run-id>/). Selecting an active run with minusctl use <run-id> automatically anchors gate, cost, source, prove, xport, and diagram commands without typing manual directory flags.
+
+---
+
+## 2. Repository Map
+
+`
 .
-├── AGENTS.md                       # ← you are here (universal agent entry point)
-├── README.md  ·  requirements.txt
+├── AGENTS.md                       # Master operating guide for autonomous agents
+├── README.md  ·  requirements.txt  ·  LICENSE  ·  SECURITY.md  ·  CONTRIBUTING.md
 │
-├── core/                           # CLOUD-AGNOSTIC GOVERNANCE ENGINE
-│   ├── plan_gate.py                # deploy gate: verify → plan → dir/hash approval → apply
-│   ├── approval.py                 # approval gate: gatekeeper | auto-approve (audited)
-│   ├── audit_logger.py             # append-only audit trail (.agents/logs/audit.jsonl)
-│   ├── intent_resolver.py          # short creation intent → requirements-first run path
-│   ├── blueprints.py               # approved blueprint registry
-│   ├── finops_agent.py             # live cost intelligence (provider-driven) + gated notify
-│   ├── health_checker.py           # live health probes
-│   ├── optimize_analyzer.py        # HCL scanner (SEC/COST/OBS) → markdown report
-│   ├── budget_calculator.py        # cost estimator (BCM Pricing Calculator API required for reports)
-│   ├── reporter.py                 # versioned deploy report (plan + cost + architecture), keyed by plan-hash
-│   └── providers/                  # CLOUD ABSTRACTION — pick via MINUS_CLOUD
-│       ├── base.py                 # CloudProvider interface + get_provider()
-│       ├── aws.py                  # AWS impl (Cost Explorer / anomalies / tags / identity)
-│       └── azure.py · gcp.py       # scaffolds (degrade gracefully until implemented)
+├── core/                           # CLOUD GOVERNANCE & SYNTHESIS ENGINE
+│   ├── cli/                        # Unified minusctl command surface (main.py, context.py, commands/*)
+│   ├── governance/                 # Deploy gate (plan_gate.py), approval.py, audit_logger.py, reflector.py
+│   ├── generation/                 # Synthesizer (synthesizer.py), modules.py, patterns.py, workflow.py
+│   ├── architecture/               # 18-pillar engine (pillars.py), discovery.py, diagram_generator.py
+│   ├── cost/                       # BCM Pricing Calculator (bcm_pricing_calculator.py), coverage_audit.py
+│   ├── reporting/                  # doctor.py, finops_agent.py, health_checker.py, plan_inspector.py, runs.py
+│   ├── integrations/               # base_hook.py, slack_hook.py, teams_hook.py, jira_hook.py, confluence_hook.py, outlook_hook.py
+│   └── providers/                  # Cloud provider abstraction (base.py), AWS implementation (aws.py)
 │
-├── app/console_app.py              # visual governance console, scoped to one run (Plotly Dash)
+├── app/console_app.py              # Visual governance console (Plotly Dash, Monad Design System)
 │
-├── tests/                          # pytest suite (gate hash/approval invariants, scanner rules)
+├── deploy/                         # 24/7 console cluster runtime assets
+│   ├── k8s/                        # Kubernetes / EKS manifests (serviceaccount, deployment, service, ingress)
+│   └── ecs/                        # AWS ECS Fargate manifests (task-definition.json, service.json, iam_roles.tf)
 │
-├── docs/                           # information_library · documentation_ledger
-│   │                               #   enterprise_iam_manifest · architecture_svg_spec · pricing_catalog_support
-├── tools/doctor.ps1                # env diagnostics (Windows-only, superseded by `minusctl doctor`)
-│
-├── .agents/                        # agent skill manifests + runtime logs
-│   ├── AGENTS.md                   # agy workspace rules (subset of this file)
-│   ├── skills/terraform-orchestrator/SKILL.md
-│   ├── skills/pipeline-optimizer/SKILL.md
-│   ├── skills/resolve-ambiguity/SKILL.md
-│   ├── skills/grill-me/SKILL.md
-│   └── logs/                       # audit.jsonl, reports (gitignored, created on demand)
-│
-└── .github/workflows/deploy.yml    # generic OIDC CI: you pass tf_dir → validate → (gated) plan → apply
-```
-
-> **No bundled Terraform.** This repo holds the engine only. You bring the `.tf`; every
-> infrastructure tool takes an explicit `--dir` / `--source-dir`. (You are responsible for
-> provisioning the governance IAM the gate relies on — a read-only FinOps role and an
-> MFA-gated deploy role — in your own account.)
+├── tests/                          # Automated pytest test suites
+├── docs/                           # information_library.md, documentation_ledger.md, enterprise_iam_manifest.md
+└── .agents/                        # Skill manifests, subagent transports, and audit logs
+`
 
 ---
 
-## 3. What you are capable of here
+## 3. Autonomous Capabilities & Unified CLI Surface
 
-All paths are relative to the repo root. Select the cloud with `MINUS_CLOUD={aws|azure|gcp}` (default `aws`).
+Execute capabilities using the minusctl command surface (python -m core.cli.main if not installed on PATH):
 
-**Use `minusctl` rather than a script path.** After `pip install -e .` it is on PATH; without
-an install, `minusctl <command>` is the same entry point. The script paths below
-still work and the engines are unchanged -- `minusctl` is a front door, not a rewrite -- but the
-subcommand is the stable name and the path is an implementation detail.
-
-**Select a run once, then stop typing `--dir`.** `minusctl use <run-id>` records the active run
-in `.minus/context.json`; `gate`, `cost`, `source`, `prove` and `export` all default to it.
-Nothing is guessed: with no active run and no explicit flag, those commands refuse rather than
-falling back to the newest run, because "most recently generated" is not the same thing as
-"the one you are working on".
-
-```
-minusctl create "governed lakehouse for clickstream" --name clickstream --domain marketing --orchestrator mwaa
-minusctl use marketing-clickstream-mwaa_20260822_111530
-minusctl runs describe                 # full specification card for the active run
-minusctl gate plan                     # no --dir needed
-minusctl cost estimate                 # BCM estimate into the active run's reports/
-minusctl prove --execute               # live 5-hop data proof (mutating; approval-gated)
-minusctl export --target-repo ../marketing-analytics --dest-dir pipelines/clickstream --generate-workflow
-```
-
-| Capability | How you do it | Primary tool |
+| Capability | Command | Primary Module |
 | :--- | :--- | :--- |
-| **Operator workflow** | `minusctl create "<request>" --name <workload> --domain <domain>`, then complete `runs/<run-id>/requirements.json`, record `architecture_decision.json`, synthesize Terraform, and run `minusctl next` / `readiness` / `package` | Safe unified CLI |
-| **Create run workspace** | `minusctl create "<request>" --name <workload>` (semantic id `<domain>-<workload>-<orchestrator>_<timestamp>`; registers the run in `runs/INDEX.md`) | `core/reporting/runs.py` |
-| **Resolve request to run** | `python core/generation/workflow.py resolve "<request>"` creates a requirements-first run and never emits production Terraform from demo fixtures | `core/generation/workflow.py` |
-| **No-cloud demo** | `python core/generation/demo.py governed-data-pipeline --owner data-platform --daily-data-gb 50` | Generates run Terraform + synthetic plan report without Terraform/AWS |
-| **Provision / change infra** | Generate or edit HCL in `runs/<run-id>/terraform/`, then run the deploy gate (§6.1) | `core/governance/plan_gate.py` + Terraform |
-| **Detect manual source edits** | `minusctl source status` / `minusctl source diff` (defaults to the active run; `minusctl source anchor` is the only write) | Generated-source baseline guard |
-| **Inspect generated reports** | `python core/reporting/plan_inspector.py services --latest`, `resources --latest`, `roles --latest`, `diff --latest` | Report and drift explorer |
-| **Inspect live state** | `aws <service> <describe/list/get>` (or `az`/`gcloud`) — read-only, safe | cloud CLI |
-| **Health diagnostics** | `python core/reporting/health_checker.py` | cloud CLI probes |
-| **Scan infra for issues** | `python core/reporting/optimize_analyzer.py --source-dir <dir>` | HCL scanner |
-| **Estimate cost** | `python core/cost/budget_calculator.py` (BCM Pricing Calculator API required for reportable costs) | Pricing API |
-| **Prepare BCM estimate** | `minusctl cost prepare --account-id <account>` (no AWS calls) | BCM payload generator |
-| **Run BCM estimate** | `minusctl cost estimate --mode gatekeeper` (AWS-side effect; approval required). The only source of a reportable cost total -- nothing else in MinusOps computes one | BCM Pricing Calculator API |
-| **Analyze live spend / anomalies** | `python core/reporting/finops_agent.py [--cost \| --anomalies \| --correlate]` (via active provider) | `core/providers/` |
-| **View the governance console (UI)** | `minusctl console` → http://127.0.0.1:8050 (`pip install -r requirements.txt`); non-local binds require `MINUS_DASH_TOKEN` | Plotly Dash |
-| **Notify (Slack/Jira), gated** | `core/reporting/finops_agent.py --notify-slack \| --notify-jira --approval-mode {gatekeeper\|auto-approve}` | `approval.py` gate |
-| **Gate any side effect** | `python core/governance/approval.py --action <a> --details <d> --mode {gatekeeper\|auto-approve}` | HITL / auto + audit |
-| **Resolve creation intent** | `python core/generation/intent_resolver.py "create a data pipeline"` | requirements-first resolver |
-| **Validate blueprints** | `python core/generation/intent_resolver.py --validate-blueprints` | blueprint schema validator |
-| **Clarify ambiguous work** | Read `.agents/skills/resolve-ambiguity/SKILL.md`, then ask one targeted question with a recommended answer | `resolve-ambiguity` skill |
-| **Stress-test a plan** | Read `.agents/skills/grill-me/SKILL.md`, then interview one decision at a time until major branches are resolved | `grill-me` skill |
-| **Audit an action** | `python core/governance/audit_logger.py --action <a> --details <d>` | append to tamper-evident `audit.jsonl` |
-| **Verify the audit chain** | `minusctl audit verify` | hash-chain integrity check |
-| **Adopt existing Terraform** | `minusctl adopt --dir <dir> [--anchor]` (inventory + SEC scan; `--anchor` is the only write) | `core/reporting/adopt.py` |
-| **Prove a stack end to end** | `minusctl prove` (offline governance evidence) / `minusctl prove --execute` (**mutates AWS**: the 5-hop data proof -- ingest, transform, data quality, quarantine, serving -- routed through `approval.py`, writes a tamper-evident `reports/<plan-hash>/proving_report.json`). `minusctl seed --execute` is the older 3-hop form | `core/reporting/seed.py` |
-| **Independent stage review** | `python core/governance/reflector.py --run-root runs/<id>` (read-only; exit 2 when blocked) | `core/governance/reflector.py` |
-| **Diagnose local env** | `minusctl doctor [--json]` (cross-platform; exit 1 when a check is `error`) | `core/reporting/doctor.py` |
-| **Select the active run** | `minusctl use <run-id>`; `minusctl runs list [--domain <d>] [--tier dev\|test\|uat\|prod] [--orchestrator <o>]` marks it `[*]`, `minusctl runs describe` prints its full specification card. Run-resolution order: explicit `--run`/`--dir`, then the run directory you are standing in, then the active context, then **refusal** -- never "the newest run" | `core/cli/context.py` |
-| **Run the deploy gate** | `minusctl gate {verify\|plan\|approve\|apply}` (defaults to the active run; `--destroy` plans a governed teardown; `--with-telemetry` correlates detected drift with CloudTrail identity and Glue failure signatures -- read-only, advisory, off by default; `--role-arn <arn>` makes `approve` refuse unless the active session is that role). `minusctl gate status` reads recorded verdicts without invoking Terraform | `core/governance/plan_gate.py` |
-| **Export to a domain repo** | `minusctl export --target-repo <path> --dest-dir pipelines/<name> [--generate-workflow]` (local file copy only; never touches AWS) | `core/reporting/export.py` |
-| **Explain a failure** | `minusctl diagnose --run <id>` (or `--error "<text>"`) -- evidence, root cause, evaluated options with cost RATIOS, and the next command. Offline and network-free by default; `--with-telemetry` adds CloudTrail/Glue context, fail-open. Exit 1 when no signature matched | `core/reporting/incident_diagnostics.py` |
+| **Workspace Creation** | minusctl create "<request>" --name <workload> --domain <domain> | core/reporting/runs.py |
+| **Active Run Selection** | minusctl use <run-id> | core/cli/context.py |
+| **Workspace Inspection** | minusctl runs list, minusctl runs describe | core/reporting/runs.py |
+| **Deploy Gate Lifecycle** | minusctl gate {verify\|plan\|approve\|apply\|status} | core/governance/plan_gate.py |
+| **BCM Cost Estimation** | minusctl cost {prepare\|estimate} | core/cost/bcm_pricing_calculator.py |
+| **Cost Coverage Audit** | minusctl cost coverage | core/cost/coverage_audit.py |
+| **Architecture Synthesis** | minusctl author <resource_type> --file <path> [--justification <text>] | core/generation/synthesizer.py |
+| **Pattern Registry** | minusctl pattern {list\|match\|capture} | core/generation/patterns.py |
+| **Fact Inference** | minusctl derive daily_gb=100 partitions_per_day=24 | core/architecture/pillars.py |
+| **Draw.io Diagramming** | minusctl diagram [--run <id>] | core/architecture/diagram_generator.py |
+| **Source Drift Baseline** | minusctl source {status\|diff\|anchor} | core/reporting/source_guard.py |
+| **5-Hop Data Proof** | minusctl prove [--execute] (Execute mutates AWS; approval-gated) | core/reporting/seed.py |
+| **Environment Pre-flight**| minusctl doctor [--json] | core/reporting/doctor.py |
+| **Stage Reflector** | python core/governance/reflector.py --run-root runs/<id> | core/governance/reflector.py |
+| **Handoff Export** | minusctl export --target-repo <path> --dest-dir pipelines/<name> | core/reporting/export.py |
+| **Incident Diagnosis** | minusctl diagnose [--run <id>] [--error "<text>"] | core/reporting/incident_diagnostics.py |
+| **Visual Console** | minusctl console -> http://127.0.0.1:8050 | pp/console_app.py |
 
+---
 
-### 3.1 Project-local decision skills
+## 4. Documentation Lookup Protocol
 
-Use the repo-local skills under `.agents/skills/` when the user's request is unclear or design-heavy:
+Verify parameters against official provider schemas rather than relying on memory. Lookup URLs follow deterministic formulas:
 
-- **`grill-me`** — **the mandatory front door for build/create requests.** Gather full functional + non-functional requirements (functional who/what/how + the ISO 25010 / FURPS+ non-functional checklist, quantified, MoSCoW-scoped), one question at a time with a recommended default; cross-question contradictions and flag missing pieces. Also use for stress-testing a plan.
-- **`architect`** — after `grill-me`, for any scenario the demo blueprint doesn't fit: research current services / reference architectures, choose the best-fit, **compose vetted modules** into governed Terraform, and run it through the deploy gate. Replaces hand-writing a blueprint per scenario.
-- **`resolve-ambiguity`** — for genuinely ambiguous points (which cloud/region, an incompatible-outcomes fork). One targeted question with a recommendation. Not a substitute for `grill-me`'s requirements interrogation.
-- **`context-graph`** — for auditing, updating, and synchronizing file-by-file context trees (`CONTEXT-MAP.md` and `CONTEXT-[folder].md`) across the repository without documentation drift.
-- **`integration-guide`** — for adding or customizing CLI subcommands, Terraform modules, outbound integration hooks, and autonomous subagents per [`docs/extensibility_and_integration_guide.md`](./docs/extensibility_and_integration_guide.md).
-
-Do not use these skills to slow down clear, low-risk work — but a request to *provision infrastructure* is never low-risk, so it always starts with `grill-me`.
-
-### 3.2 Architecture synthesis (composition over monolithic blueprints)
-
-The production path is **requirements → research → compose → govern**, not a single fixed recipe
-(every company differs on orchestrator, architecture pattern, data-quality, schema enforcement):
-
-| Step | Tool |
+| Need | Target URL Formula |
 | :--- | :--- |
-| Gather requirements | `grill-me` skill |
-| Resolve authoritative sources for a service | `python core/architecture/discovery.py <topic> --resource <aws_type>` (Registry/CLI/pricing URLs) |
-| Match requirements to vetted modules | `python core/generation/modules.py match "<requirements>"` |
-| Compose modules into a governed Terraform workspace | `python core/generation/synthesizer.py "<requirements>" --run <run-id> --requirements-file <run>/requirements.json --decision-file <run>/architecture_decision.json` |
-| Govern the composed Terraform | the §6.1 deploy gate (`plan_gate verify/plan/approve/apply`) |
-| Reuse an approved composition | `python core/generation/patterns.py match "<requirements>"`; capture after approval with `patterns.py capture` |
+| **Terraform AWS Resource** | https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/<type_without_aws_prefix> |
+| **Terraform AWS Data Source** | https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/<type_without_aws_prefix> |
+| **AWS CLI Command** | https://awscli.amazonaws.com/v2/documentation/api/latest/reference/<service>/<action>.html |
+| **BCM Pricing API** | ws bcm-pricing-calculator create-workload-estimate ... |
+| **Well-Architected Guidance** | https://developer.hashicorp.com/well-architected-framework |
 
-`aws-data-pipeline-standard` (`core/generation/blueprints.py`, `terraform_generator.py`) is the **demo/cached
-fixture** that powers `minusctl demo` and the golden tests — not the production generator.
-
----
-
-## 4. When and how to fetch documentation
-
-You are expected to **verify against official docs rather than rely on memory** for: Terraform resource arguments, AWS CLI command flags, service quotas, live pricing, secure architecture, and provider-specific design guidance. The full link catalog lives in [`information_library.md`](./docs/information_library.md) — that is the **redirect target**; always resolve doc lookups through it.
-
-### 4.1 WHEN to fetch (triggers)
-
-Fetch docs **before acting**, not after a failure, whenever you are about to:
-
-- **Write or modify a Terraform resource** → confirm required/optional arguments and defaults against the AWS Provider Registry. Never guess an argument name.
-- **Run an unfamiliar AWS CLI command** → confirm the exact subcommand, flags, and `--query`/output shape.
-- **Quote or compute a price** → fetch live rates via the Pricing API/CLI; do not hardcode prices you "remember."
-- **Hit a provider/CLI error** you don't fully understand → look up the resource/command page and the relevant AWS developer guide before retrying. **Do not retry blindly** (see §5).
-- **Design IAM, networking, encryption, storage, retention, or analytics access** → consult the Well-Architected / service security guides.
-- **Use a provider or CLI not already covered by the repo** → find its official docs, verify the local version first, then add the source to [`information_library.md`](./docs/information_library.md) and any direct URL pattern to [`documentation_ledger.md`](./docs/documentation_ledger.md).
-
-If you can answer confidently from a file already in this repo (e.g. an existing `.tf` shows the pattern), you don't need to fetch — reuse the in-repo pattern.
-
-### 4.2 HOW to fetch — construct direct URLs (no UI clicking)
-
-Per [`documentation_ledger.md`](./docs/documentation_ledger.md), these portals have **predictable URL structures**. Build the URL and `WebFetch` it directly instead of crawling a sidebar:
-
-| Need | URL formula |
-| :--- | :--- |
-| **Provider discovery** | `https://registry.terraform.io/browse/providers` |
-| **Terraform resource** | `https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/<type_without_aws_prefix>` |
-| **Terraform data source** | `https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/<type_without_aws_prefix>` |
-| **AWS CLI landing/reference** | `https://docs.aws.amazon.com/cli/latest/` |
-| **AWS CLI command** | `https://awscli.amazonaws.com/v2/documentation/api/latest/reference/<service>/<action>.html` |
-| **BCM estimate (CLI)** | `aws bcm-pricing-calculator create-workload-estimate ...` then add usage lines and read the workload estimate |
-| **Supporting live price (CLI)** | `aws pricing get-products --service-code <Code> --filters "Type=TERM_MATCH,Field=<f>,Value=<v>" --region us-east-1` |
-| **Raw price index (JSON)** | `https://pricing.us-east-1.amazonaws.com/offers-v1.0/aws/<ServiceCode>/current/index.json` |
-| **Secure architecture guidance** | `https://developer.hashicorp.com/well-architected-framework` |
-
-Examples: `aws_glue_job` → `.../resources/glue_job`; `aws s3api head-bucket` → `.../reference/s3api/head-bucket.html`.
-
-### 4.2.1 Version matching
-
-Before using external docs for a CLI or provider, check the configured/local version when feasible:
-
-- AWS CLI: `aws --version`; if the online docs differ, prefer `aws <service> <command> help` or the installed botocore service model for exact input shapes.
-- Terraform CLI/provider: `terraform version`, `.terraform.lock.hcl`, and `terraform providers`; prefer docs matching the locked provider version for a target `--dir`.
-- Other CLIs/providers: use their official version command and official docs. If the source is missing from the repo, add it to the library before relying on it.
-
-### 4.3 Fetch decision flow
-
-```
-Need a fact about an AWS resource / CLI flag / price?
-        │
-        ├─ Is it already demonstrated in an existing repo file?  ──► reuse that pattern (no fetch)
-        │
-        ├─ Is it a Terraform resource arg?  ──► registry.terraform.io/.../resources/<type>
-        ├─ Is it an AWS CLI flag/shape?     ──► awscli.../reference/<service>/<action>.html
-        ├─ Is it reportable cost?           ──► BCM Pricing Calculator API (gated; no offline pricing)
-        ├─ Is it a supporting SKU price?    ──► aws pricing get-products
-        ├─ Is it secure architecture?       ──► HashiCorp/AWS Well-Architected docs
-        └─ Is it a new provider/CLI?        ──► official source discovery, version check, then update docs library
-```
+**Resolution Order:**
+1. In-repo validated pattern (modules/).
+2. Catalog entry in [docs/information_library.md](./docs/information_library.md).
+3. Direct URL lookup via [docs/documentation_ledger.md](./docs/documentation_ledger.md).
 
 ---
 
-## 5. Safety rules (non-negotiable)
+## 5. Non-Negotiable Safety Rules & Invariants
 
-These mirror [`.agents/AGENTS.md`](./.agents/AGENTS.md) and [`enterprise_iam_manifest.md`](./docs/enterprise_iam_manifest.md). They are load-bearing — treat them as hard constraints.
-
-1. **No mutating actions without explicit human review.** You are forbidden from running `terraform apply`, `terraform destroy`, `terraform state <mutating>`, `terraform force-unlock`, or mutating `git` (`push`, `reset`, `rebase`) — and any mutating `aws` call (`create-*`, `delete-*`, `put-*`, `modify-*`, `terminate-*`, `run-*`) — until the user has reviewed and approved. Side effects in the agent scripts (notifications, ticket creation) must route through `approval.py` (`gatekeeper` by default; `auto-approve` only when durably authorised — see §6.4).
-2. **Read before write.** `aws describe-* / list-* / get-*`, `terraform plan`, `terraform validate`, `head-bucket`, `get-caller-identity` are safe and may be run freely to gather state.
-3. **Dry-run first.** Always produce `terraform plan -out=tfplan` (or an API `--dry-run`) and present the diff *before* asking for approval.
-4. **Audit every consequential action.** Log it via `audit_logger.py` to `.agents/logs/audit.jsonl` *before* proposing execution.
-5. **Pass the security scan.** Before proposing infra changes for the live stack, run `optimize_analyzer.py --source-dir <your-dir>`; resolve `SEC-*` findings (esp. `SEC-02` wildcard IAM) to zero. For production, set `MINUS_POLICY_MODE=production` or pass `--policy-mode production`; the gate then requires checkov or tfsec on PATH and blocks on external findings too. No wildcard `Resource = "*"` for S3/KMS/DynamoDB. Prefer one dedicated least-privilege role per service.
-6. **Don't retry blindly on failure.** Extract the error, look up the doc (§4), write a troubleshooting note, and ask for help if human intervention is needed.
-7. **Deploys go through the plan-gate.** `core/governance/plan_gate.py` enforces verify → plan → **directory-bound plan-hash approval** → apply-the-exact-plan, with a full audit trail. Any `.tf` change produces a new hash, which voids the prior approval and forces a fresh review. Approval records are stored per Terraform directory and plan hash so concurrent plans cannot overwrite each other. The gate **never handles secrets** — authenticate via the cloud CLI first (`aws sso login`, or assume your MFA-gated deploy role); MFA is enforced by that role's trust policy and `apply` uses the ambient credential chain. Use it for every infrastructure change.
-8. **Verify before deleting/overwriting.** If a target's contents contradict how it was described, surface that instead of proceeding.
-
----
-
-## 6. Core workflows
-
-### 6.1 Secure deployment loop (`core/governance/plan_gate.py`)
-
-```
-1. Verify   →  plan_gate.py verify  --dir <template> [--policy-mode production]
-                                                        (fmt + validate + native SEC scan; production requires external scanner evidence)
-2. Plan     →  plan_gate.py plan    --dir <template>   (terraform plan -out=tfplan + record dir-bound plan-hash)
-3. Approve  →  plan_gate.py approve --dir <template> --mfa-arn <arn> [--role-arn <deploy-role>]
-                                                       (review + MFA → one-shot session bound to the hash)
-4. Apply    →  plan_gate.py apply   --dir <template>   (hash must match → apply tfplan → creds wiped)
-5. Verify   →  health_checker.py                       (post-deploy smoke tests)
-
-   Any .tf change → new plan-hash → prior approval void → fresh MFA required.
-   Plan/approval state is scoped by Terraform directory to avoid cross-workload collisions.
-   `plan_gate.py run …` chains all stages; `--mode auto-approve` skips the y/N (still MFA + hash-bound).
-```
-
-### 6.2 Optimization loop (from `pipeline-optimizer` SKILL)
-
-```
-1. Scan       →  optimize_analyzer.py --source-dir <dir>   → artifacts/review/optimization_report.md
-2. Present    →  show the markdown findings table to the user
-3. Refactor   →  on approval, draft a Terraform plan applying the fixes  → re-enter 6.1
-```
-
-### 6.3 Cost estimation
-
-```
-budget_calculator.py        # cost guidance only — never computes or hardcodes a total
-# Reportable enterprise costs require AWS BCM Pricing Calculator API evidence.
-# BCM estimate creation is an AWS-side effect and must be explicitly approved.
-# If BCM pricing is unavailable, show "cost unavailable" and the required bcm-pricing-calculator commands.
-
-# Safe BCM workflow:
-# 1. prepare: write bcm-create-workload-estimate.json, bcm-usage.json, bcm-commands.json
-# 2. review: replace REVIEW_REQUIRED usageType/operation/account fields with approved values
-# 3. run: pass through approval.py, create the BCM workload estimate, add usage, read the estimate
-```
-
-### 6.4 FinOps investigation (live account — `finops_agent.py`)
-
-```
---cost          # spend by service + month-over-month   (aws ce get-cost-and-usage)
---anomalies     # active cost anomalies                 (aws ce get-anomalies — see cost_anomaly.tf)
---correlate     # root-cause via CloudTrail + tag owner  (aws cloudtrail lookup-events, tagging api)
---notify-slack | --notify-jira   --approval-mode {gatekeeper | auto-approve}
-```
-
-Read flags (`--cost/--anomalies/--correlate`) are safe and need no approval. The
-`--notify-*` actions are **side effects** and always pass through `approval.py`.
-
-**Approval modes (the gate for every side effect):**
-- `gatekeeper` — require explicit human approval; **fail-closed** if no interactive terminal.
-- `auto-approve` — proceed unattended (still audited to `audit.jsonl`).
-
-Use `gatekeeper` by default. Only use `auto-approve` for low-risk, idempotent actions the
-user has durably authorised (e.g. a scheduled read-only report). Never `auto-approve`
-infrastructure mutations — those still go through the §6.1 deployment loop.
-
-### 6.5 Deploy report & architecture diagram
-
-After a plan, a versioned **deploy report** is produced under `runs/<run-id>/reports/<plan-hash>/`
-when the Terraform directory is inside a run workspace; otherwise it falls back to
-`artifacts/reports/<plan-hash>/`. The report contains a plan summary of what's
-added/changed/destroyed, live-pricing cost status, the architecture
-diagram, Plan PDF, Cost PDF, and raw JSON evidence). The report is **keyed by plan-hash**, so each
-report is tied to exactly one plan; `git` versions the `.tf`, the plan-hash versions the report.
-
-**Enterprise report format is binding:**
-- Every major report section starts on a new PDF page.
-- Include a report index/table of contents near the front.
-- Use consistent page background, bordered panels, padding, and margins across plan and cost PDFs.
-- Plan PDFs must include metadata, blueprint inputs, architecture, services/resources, IAM/security/governance, cost status, Terraform package structure, outputs, approval/drift status, planned changes, and artifact index.
-- Cost PDFs must use AWS BCM Pricing Calculator API evidence. Do not publish offline fallback pricing. BCM estimate creation/update is an AWS-side effect and must be explicitly approved. If BCM pricing is unavailable, show "cost unavailable" plus the required `aws bcm-pricing-calculator ...` commands.
-- New reports include reviewable BCM payload files. Do not run `bcm_pricing_calculator.py run` until the user approves the exact AWS-side estimate creation and all `REVIEW_REQUIRED` placeholders are resolved.
-- Generated Terraform workspaces include `.minus/baseline.json` and `.minus/source_snapshot/`.
-  Use `source_guard.py status|diff --dir <terraform-dir>` to show manual edits before a plan
-  exists. After a report exists, `plan_inspector.py status|diff --latest` compares the current
-  Terraform files against the plan-bound source snapshot.
-
-**The architecture diagram is LLM-generated and MUST conform to the spec — this is binding:**
-- [`docs/architecture_svg_spec.md`](./docs/architecture_svg_spec.md) — the structure, tiers,
-  node schema, palette, and must-haves. **Any agent (agy, Claude, Codex) that draws the diagram
-  follows this exactly**, so the output is structurally identical across tools.
-- [`docs/architecture_svg_skeleton.svg`](./docs/architecture_svg_skeleton.svg) — start from this
-  empty frame; inject nodes/edges/module-boxes into the fixed tier groups. Do not move bands,
-  rename ids, or change the palette. Run the §8 self-check before emitting.
-
----
-
-## 7. Environment & conventions
-
-- **Active cloud:** set `MINUS_CLOUD={aws|azure|gcp}` (default `aws`). The governance core, FinOps agent, and dashboard all read it and route through `core/providers/`. AWS is fully implemented; azure/gcp are scaffolds that degrade gracefully.
-- **Console exposure:** `app/console_app.py` is localhost-only by default. If you pass `--host 0.0.0.0` (or set `CONSOLE_HOST`), also set a strong `MINUS_DASH_TOKEN`; startup refuses remote binds without it, and every request is rejected without it once one is set.
-- **Module assets:** released wheels and Docker images include `modules/`, required `docs/`, examples, and `.agents/skills`. Set `MINUSOPS_MODULES_DIR` only when intentionally replacing the packaged module library with a client-specific one.
-- **OS:** cross-platform (Windows / macOS / Linux). Default shell here is **PowerShell**; a Bash (POSIX) tool is also available — use the right syntax per shell.
-- **Credentials:** never handled by our code. The cloud CLI's own credential chain is used (`aws sso login` / `aws configure` / assumed role). Prefer SSO so no long-term secret lands on disk.
-- **Approver RBAC:** set `MINUS_OPERATOR` (the acting principal; wire to SSO/OIDC or CI actor) and `MINUS_APPROVERS` (comma-separated allowlist) or `.minus/approvers.json`. With no allowlist the gates run in recorded "open" mode — never use open mode for production. See [`docs/security_model.md`](./docs/security_model.md) and [`docs/operations_runbook.md`](./docs/operations_runbook.md).
-- **Region/defaults:** none are bundled — your Terraform owns its own region, environment, and tagging. The engine reads `MINUS_CLOUD` and your CLI's configured region; it does not inject provider defaults.
-- **Git:** this **is** a git repo. Work on a branch; commit/push only when asked.
-- **Before touching infra:** run `minusctl doctor` to confirm Terraform, the cloud CLI, credentials, and the policy tooling are present. It also warns when the active credentials are long-term or root, which is exactly the posture an unattended auto-approve run must not have.
-
----
-
-## 8. Documentation Redirect Rule
-
-**Whenever you need AWS / Terraform / pricing documentation, do not search from memory or the open web first — resolve the lookup through the repo's curated index:**
-
--> **[`docs/information_library.md`](./docs/information_library.md)** — ranked, curated catalog of every official portal (Terraform Registry & CLI, AWS CLI v2, AWS service dev guides, Pricing Calculator, Well-Architected, Glue/EMR/Databricks/Step Functions/Athena).
-
--> **[`docs/documentation_ledger.md`](./docs/documentation_ledger.md)** — the URL-construction formulas in §4.2 for jumping straight to a resource/command/price page without UI clicking.
-
-Resolution order for any doc need:
-1. **In-repo pattern** (existing `.tf` / script) → reuse it.
-2. **`information_library.md`** → pick the authoritative portal for the topic.
-3. **`documentation_ledger.md` formula** → build the direct URL and `WebFetch` it.
-4. Only if all the above miss → general web search.
-```
+1. **Zero Ambient Mutation:** Never execute 	erraform apply, 	erraform destroy, destructive S3 mutations, or mutating git commands without explicit human approval.
+2. **Directory-Bound Plan-Hash Integrity:** All deploys must flow through minusctl gate {verify|plan|approve|apply}. An approval is strictly bound to a SHA256 plan hash; any configuration change voids the approval and forces a fresh review.
+3. **No Credential Leaks:** Bearer tokens, webhook URLs, and cloud secrets must never be echoed, printed in logs, stored in git, or displayed in the console UI.
+4. **No Emojis in Agent Output:** Never emit unicode emojis in CLI messages, logs, markdown artifacts, or UI components.
+5. **Fail-Closed Gate:** Unmapped security checks or unpriced billable resources are reported as explicit gaps rather than silently approved.

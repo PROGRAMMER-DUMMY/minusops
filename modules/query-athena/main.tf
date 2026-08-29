@@ -164,15 +164,15 @@ resource "aws_glue_catalog_table" "projected_gold" {
   table_type    = "EXTERNAL_TABLE"
 
   parameters = {
-    EXTERNAL            = "TRUE"
-    "classification"    = "parquet"
+    EXTERNAL             = "TRUE"
+    "classification"     = "parquet"
     "projection.enabled" = "true"
 
     # `NOW` is not a placeholder to replace -- Athena resolves it per query, so the range
     # never needs maintaining as time passes.
-    "projection.date.type"   = "date"
-    "projection.date.range"  = "${var.projection_start_date},NOW"
-    "projection.date.format" = var.projection_date_format
+    "projection.date.type"          = "date"
+    "projection.date.range"         = "${var.projection_start_date},NOW"
+    "projection.date.format"        = var.projection_date_format
     "projection.date.interval"      = "1"
     "projection.date.interval.unit" = "DAYS"
 
@@ -210,6 +210,10 @@ output "catalog_database" {
 
 output "workgroup_name" {
   value = aws_athena_workgroup.this.name
+}
+
+output "workgroup_arn" {
+  value = aws_athena_workgroup.this.arn
 }
 
 output "results_bucket" {

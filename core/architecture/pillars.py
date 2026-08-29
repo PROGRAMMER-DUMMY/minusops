@@ -745,6 +745,11 @@ BY_ID = {p["id"]: p for p in PILLARS}
 PILLAR_IDS = tuple(p["id"] for p in PILLARS)
 PILLAR_KEYS = tuple(p["key"] for p in PILLARS)
 
+# Aliases for backwards compatibility with earlier documentation and prompts
+ALIASES = {
+    "runtime_dependencies": "runtime_packages",
+}
+
 
 # --- Putting it together ----------------------------------------------------------------
 
@@ -804,7 +809,8 @@ def next_pillar(answered=(), facts=None):
 
 def question_for(key, facts=None):
     """One pillar, rendered with its derived recommendation and its depth follow-ups."""
-    pillar = BY_KEY.get(key) or BY_ID.get(key)
+    actual_key = ALIASES.get(key, key)
+    pillar = BY_KEY.get(actual_key) or BY_ID.get(actual_key)
     if not pillar:
         raise KeyError(f"no such pillar: {key!r}")
 
@@ -833,7 +839,8 @@ def depth_for(key, chosen_option):
     a follow-up that fits every answer belongs at the top level rather than in the depth of
     one branch.
     """
-    pillar = BY_KEY.get(key) or BY_ID.get(key)
+    actual_key = ALIASES.get(key, key)
+    pillar = BY_KEY.get(actual_key) or BY_ID.get(actual_key)
     if not pillar:
         raise KeyError(f"no such pillar: {key!r}")
     depth = pillar["depth"] or {}

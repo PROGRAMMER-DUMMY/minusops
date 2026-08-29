@@ -13,21 +13,54 @@ def add_parser(subparsers):
     parser.add_argument("--json", action="store_true", help="Structured JSON output containing file paths and the 1-click URL")
     parser.set_defaults(func=run)
 
+import core.cli.context as context
+
+
+def _find_plan(root):
+    if not root:
+        return {}
+    for candidate in (
+        os.path.join(root, "plan.json"),
+        os.path.join(root, "reports", "plan.json"),
+    ):
+        if os.path.isfile(candidate):
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    reports_dir = os.path.join(root, "reports") if os.path.isdir(os.path.join(root, "reports")) else root
+    if os.path.isdir(reports_dir):
+        subdirs = [os.path.join(reports_dir, d) for d in os.listdir(reports_dir)
+                   if os.path.isdir(os.path.join(reports_dir, d))]
+        subdirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        for s in subdirs:
+            candidate = os.path.join(s, "plan.json")
+            if os.path.isfile(candidate):
+                try:
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+    return {}
+
+
 def run(args):
     # Retrieve plan json
     plan_json = {}
-    
+
     if args.dir:
-        plan_file = os.path.join(args.dir, "plan.json")
-        if os.path.exists(plan_file):
-            with open(plan_file, "r") as f:
-                plan_json = json.load(f)
+        plan_json = _find_plan(args.dir)
     elif args.run:
-        plan_file = os.path.join("runs", args.run, "reports", "plan.json")
-        if os.path.exists(plan_file):
-            with open(plan_file, "r") as f:
-                plan_json = json.load(f)
-                
+        plan_json = _find_plan(os.path.join("runs", args.run))
+    else:
+        try:
+            active_run = context.active_run()
+            if active_run:
+                plan_json = _find_plan(os.path.join("runs", active_run))
+        except Exception:
+            pass
+
     result = generate_drawio_from_plan(plan_json)
     
     if args.json:

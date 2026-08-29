@@ -17,11 +17,11 @@ from .. import context as cli_context
 # CLI verb -> engine stage. `estimate` reads better than `run` at the call site and `run`
 # already means something else in this CLI.
 _STAGES = {"prepare": "prepare", "estimate": "run", "scenario": "scenario",
-           "actuals": "actuals", "scale-curve": "scale-curve"}
+           "actuals": "actuals", "scale-curve": "scale-curve", "coverage": "coverage"}
 
 
 def add_parser(sub):
-    parser = sub.add_parser("cost", help="AWS BCM Pricing Calculator: prepare, estimate")
+    parser = sub.add_parser("cost", help="AWS BCM Pricing Calculator: prepare, estimate, coverage")
     parser.add_argument("action", choices=sorted(_STAGES))
     parser.add_argument("--run", help="run id (defaults to the active run)")
     parser.add_argument("--report-dir", help="defaults to the active run's reports/")
@@ -45,6 +45,10 @@ def run(args):
         except cli_context.ContextError as exc:
             print(f"[ERR] {exc}")
             return 1
+
+    if args.action == "coverage":
+        import coverage_audit
+        return coverage_audit.main(["audit", "--report-dir", report_dir])
 
     argv = [_STAGES[args.action], "--report-dir", report_dir]
     if args.action == "prepare" and args.account_id:

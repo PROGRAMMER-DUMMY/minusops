@@ -313,7 +313,7 @@ output "budget_topic_arn" {
 resource "aws_budgets_budget" "monthly" {
   name         = "${var.name_prefix}-monthly"
   budget_type  = "COST"
-  limit_amount = tostring(var.monthly_budget_usd)
+  limit_amount = tostring(var.monthly_budget_usd > 0 ? var.monthly_budget_usd : 300)
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
@@ -336,7 +336,7 @@ resource "aws_cloudwatch_metric_alarm" "spend" {
   namespace           = "AWS/Billing"
   period              = 21600
   statistic           = "Maximum"
-  threshold           = var.monthly_budget_usd
+  threshold           = var.monthly_budget_usd > 0 ? var.monthly_budget_usd : 300
   alarm_description   = "Estimated charges exceeded the monthly budget for ${var.name_prefix}."
   alarm_actions       = [aws_sns_topic.budget.arn]
   dimensions          = { Currency = "USD" }

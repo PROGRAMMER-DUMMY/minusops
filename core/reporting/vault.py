@@ -37,20 +37,31 @@ CATEGORIES = (
      "documents": ("executive_project_summary.xlsx", "pipeline_detailed_ledger.xlsx")},
     {"key": "evidence", "title": "Signed governance evidence", "preview": "text",
      "documents": ("proving_report.json", "manifest.json", "plan.json")},
-    {"key": "package", "title": "Handoff package", "preview": "text",
-     "documents": ("enterprise-package.md",)},
+    {"key": "package", "title": "Handoff package & CI/CD", "preview": "text",
+     "documents": ("enterprise-package.md", "pre-merge.yml", "deploy.yml")},
 )
 
 # Where each document may live inside a run workspace, in search order.
-_SEARCH_DIRS = ("reports", "", os.path.join("reports", "bundle"), "bcm")
+_SEARCH_DIRS = ("reports", "", os.path.join("reports", "bundle"), "bcm", os.path.join("cicd", ".github", "workflows"))
 
 
 def _locate(run_root, name):
+    if not run_root:
+        return None
     for relative in _SEARCH_DIRS:
         candidate = os.path.join(run_root, relative, name) if relative else \
             os.path.join(run_root, name)
         if os.path.isfile(candidate):
             return candidate
+    reports_dir = os.path.join(run_root, "reports")
+    if os.path.isdir(reports_dir):
+        subdirs = [os.path.join(reports_dir, d) for d in os.listdir(reports_dir)
+                   if os.path.isdir(os.path.join(reports_dir, d))]
+        subdirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        for s in subdirs:
+            candidate = os.path.join(s, name)
+            if os.path.isfile(candidate):
+                return candidate
     return None
 
 

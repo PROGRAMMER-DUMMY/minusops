@@ -36,6 +36,7 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 > `governance-lakeformation`'s "lake formation" started matching every "data lake" request).
 
 | [`cicd.py`](./cicd.py) | CI/CD synthesis | 4-lane pre-merge validation, reusable feed factory, Jenkins parity, and the exported per-pipeline deploy workflow (`render_pipeline_workflow`, FR-04) whose `paths:` filter keeps one pipeline's commit from planning every sibling in a shared domain repo; OIDC only, never a static key. Renders text and writes without overwriting |
+| [`git_agent.py`](./git_agent.py) | Pattern promotion & PR agent | Automated Git PR agent (`minusctl pattern promote`) verifying UAT proofs, branch creation, commit creation, and pull request generation |
 | [`knowledge_diff.py`](./knowledge_diff.py) | Structural schema claim builder | Extracts deterministic `schema` claims from live provider schemas for `knowledge_store` |
 
 ---

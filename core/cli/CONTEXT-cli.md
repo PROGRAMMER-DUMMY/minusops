@@ -149,6 +149,16 @@ interpolates, or defaults a cost.
 Fronts [`source_guard.py`](../governance/source_guard.py). `anchor` is the only write and is
 opt-in: anchoring a drifted directory is how an unreviewed manual edit becomes the baseline.
 
+### [`author.py`](./commands/author.py)
+Fronts [`synthesizer.py`](../generation/synthesizer.py). Author novel resources with live provider schema verification and justification tracking.
+
+### [`derive.py`](./commands/derive.py)
+Fronts [`pillars.py`](../architecture/pillars.py). Deterministic fact inference engine computing architectural conclusions from quantitative inputs.
+
+### [`pattern.py`](./commands/pattern.py)
+Fronts [`patterns.py`](../generation/patterns.py) and [`git_agent.py`](../generation/git_agent.py). Pattern matching, capture, and automated Git promotion (`pattern promote`).
+
+
 ---
 
 ## Code Hygiene Audit

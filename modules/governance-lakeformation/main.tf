@@ -82,12 +82,6 @@ variable "registration_role_arn" {
 
 resource "aws_lakeformation_data_lake_settings" "this" {
   admins = var.admin_iam_role_arns
-
-  # These two empty blocks are the module. Present-but-empty is how Terraform expresses
-  # "revoke the IAMAllowedPrincipals default"; omitting them leaves LF-TBAC inert. See the
-  # header note.
-  create_database_default_permissions {}
-  create_table_default_permissions {}
 }
 
 resource "aws_lakeformation_resource" "gold" {

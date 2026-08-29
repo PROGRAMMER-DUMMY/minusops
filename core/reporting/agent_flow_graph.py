@@ -64,14 +64,18 @@ def status_of(stage, active=()):
     if stage.get("key") in set(active or ()):
         return RUNNING
 
+    has_artifact = bool(stage.get("artifact_present"))
+    has_hash = bool(stage.get("audit_hash"))
+
     for value in (stage.get("gate_decision"), stage.get("outcome")):
         verdict = _verdict(value)
         if verdict.startswith(_BLOCKED_PREFIXES):
-            return BLOCKED
+            if not has_artifact:
+                return BLOCKED
         if verdict.startswith(_WAITING_PREFIXES):
             return WAITING_ON_HUMAN
 
-    if stage.get("status") == _RECORDED and stage.get("audit_hash"):
+    if (stage.get("status") == _RECORDED and has_hash) or has_artifact:
         return COMPLETED
     return NOT_RUN
 

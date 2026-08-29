@@ -1252,25 +1252,24 @@ def build_inspect_html(manifest, plan, report_files=(), drift_status="CURRENT", 
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Inspect {esc(manifest.get('short', ''))}</title>
 <style>
-@page{{size:A4;margin:10mm;background:#14110f}}
-body{{background:#14110f;color:#fbf7f4;font-family:Inter,system-ui,sans-serif;margin:0;padding:28px;
--webkit-print-color-adjust:exact;print-color-adjust:exact}}
-h1{{font-size:24px;margin:0 0 8px}}.sub{{color:#b09c93;font-family:Consolas,monospace;margin-bottom:20px}}
-h2{{display:inline;font-size:15px;margin:0;font-weight:600}}
-details{{background:#1c1714;border:1px solid rgba(217,93,57,.18);border-radius:12px;margin-bottom:14px;
-break-inside:avoid-page}}
-summary{{cursor:pointer;padding:14px 18px;font-size:15px;list-style:none;display:flex;
-justify-content:space-between;align-items:baseline}}
+@page{{size:A4;margin:12mm 14mm;background:#ffffff}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#ffffff;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;margin:0;padding:24px;
+-webkit-print-color-adjust:exact;print-color-adjust:exact;font-size:13px;line-height:1.5}}
+h1{{font-size:24px;margin:0 0 6px;color:#111827;font-weight:700}}
+.sub{{color:#6b7280;font-family:Consolas,monospace;margin-bottom:20px;font-size:12px}}
+h2{{display:inline;font-size:15px;margin:0;font-weight:600;color:#1e3a8a}}
+details{{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:14px;break-inside:avoid-page}}
+summary{{cursor:pointer;padding:12px 16px;font-size:14px;list-style:none;display:flex;justify-content:space-between;align-items:baseline;font-weight:600}}
 summary::-webkit-details-marker{{display:none}}
-summary .meta{{color:#b09c93;font:500 12px Consolas,monospace}}
-details[open] summary{{border-bottom:1px solid rgba(255,255,255,.06)}}
-table{{width:100%;border-collapse:collapse}}
-th,td{{text-align:left;border-bottom:1px solid rgba(255,255,255,.06);padding:9px 14px;font-size:12px;vertical-align:top}}
-th{{color:#b09c93;text-transform:uppercase;font-size:10.5px;letter-spacing:.08em}}
+summary .meta{{color:#6b7280;font:500 12px Consolas,monospace}}
+details[open] summary{{border-bottom:1px solid #e5e7eb}}
+table{{width:100%;border-collapse:collapse;background:#ffffff}}
+th,td{{text-align:left;border-bottom:1px solid #e5e7eb;padding:8px 12px;font-size:12px;vertical-align:top;color:#374151}}
+th{{background:#f3f4f6;color:#4b5563;text-transform:uppercase;font-size:10px;letter-spacing:.08em;font-weight:600}}
 td{{font-family:Consolas,monospace;word-break:break-word}}
-pre{{padding:14px 18px;overflow:hidden;white-space:pre-wrap;line-height:1.45;font-size:11.5px;color:#e8e2dc;margin:0}}
-.note{{color:#b09c93;font-size:11.5px;background:#1c1714;border:1px solid rgba(212,163,115,.22);
-border-radius:8px;padding:10px 12px}}
+pre{{padding:12px 16px;overflow:hidden;white-space:pre-wrap;line-height:1.45;font-size:11.5px;color:#1f2937;margin:0;background:#ffffff}}
+.note{{color:#166534;font-size:11.5px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px 12px;margin-top:12px}}
 </style></head><body>
 <h1>Report inspection</h1>
 <div class="sub">plan {esc(manifest.get('short', ''))} · {esc(manifest.get('template', ''))} ·
@@ -1888,42 +1887,42 @@ def build_html(template, cloud, short_hash, ts, rows, counts, cost, svg, plan=No
 
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Plan Report - {esc(template)}</title><style>
-@page{{size:A4;margin:0;background:#14110f}}
+@page{{size:A4;margin:12mm 14mm;background:#ffffff}}
 *{{box-sizing:border-box;margin:0;padding:0}}
-html,body{{min-height:100%;background:#14110f;color:#f5efe9;font-family:Inter,Segoe UI,Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+html,body{{min-height:100%;background:#ffffff;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 body{{padding:0}}
 .mono{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;font-size:.8rem}}
-h1{{font-size:1.65rem;font-weight:720;line-height:1.15}}h2{{font-size:1.02rem;margin:1rem 0 .55rem;color:#e8b58f}}h3{{font-size:.9rem;margin:.85rem 0 .3rem;color:#d4a373}}
-.sub{{color:#b8a79e;font-family:Consolas,ui-monospace,monospace;font-size:.78rem;margin-top:.35rem}}
-.page{{page-break-after:always;min-height:1122px;padding:42px 46px;background:#14110f}}.page:last-child{{page-break-after:auto}}
-.header{{border-bottom:1px solid rgba(212,163,115,.26);padding-bottom:14px;margin-bottom:16px}}
-.panel{{background:#1c1714;border:1px solid rgba(212,163,115,.22);border-radius:8px;padding:1rem;margin-top:.85rem}}
-.section-no{{color:#d4a373;font-family:Consolas,ui-monospace,monospace;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem}}
-.architecture{{padding:.25rem;background:#14110f;border:none}}
+h1{{font-size:1.65rem;font-weight:700;line-height:1.2;color:#111827}}h2{{font-size:1.05rem;margin:1.2rem 0 .55rem;color:#1e3a8a;font-weight:600}}h3{{font-size:.92rem;margin:1rem 0 .35rem;color:#374151;font-weight:600}}
+.sub{{color:#6b7280;font-family:Consolas,ui-monospace,monospace;font-size:.78rem;margin-top:.35rem}}
+.page{{page-break-after:always;min-height:1080px;padding:36px 40px;background:#ffffff}}.page:last-child{{page-break-after:auto}}
+.header{{border-bottom:2px solid #2b59d1;padding-bottom:12px;margin-bottom:16px}}
+.panel{{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:1rem;margin-top:.85rem}}
+.section-no{{color:#2b59d1;font-family:Consolas,ui-monospace,monospace;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem;font-weight:600}}
+.architecture{{padding:.25rem;background:#ffffff;border:none}}
 svg{{width:100%;height:auto;display:block}}
-table{{width:100%;border-collapse:collapse;margin-top:.5rem}}
-th,td{{text-align:left;padding:.45rem .5rem;border-bottom:1px solid rgba(255,255,255,.07);font-size:.78rem;vertical-align:top}}
-th{{color:#b8a79e;text-transform:uppercase;font-size:.64rem;letter-spacing:.06em}}
-.badge{{padding:.12rem .5rem;border-radius:20px;font-size:.72rem;font-weight:600}}
-.badge.create{{background:rgba(141,161,137,.18);color:#8da189}}
-.badge.update{{background:rgba(203,154,62,.18);color:#cb9a3e}}
-.badge.delete{{background:rgba(217,93,57,.18);color:#d95d39}}
-.badge.no-op{{background:rgba(176,156,147,.15);color:#b09c93}}
+table{{width:100%;border-collapse:collapse;margin-top:.5rem;background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden}}
+th,td{{text-align:left;padding:.5rem .6rem;border-bottom:1px solid #e5e7eb;font-size:.78rem;vertical-align:top;color:#374151}}
+th{{background:#f3f4f6;color:#4b5563;text-transform:uppercase;font-size:.66rem;letter-spacing:.06em;font-weight:600}}
+.badge{{padding:.14rem .5rem;border-radius:20px;font-size:.72rem;font-weight:600}}
+.badge.create{{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}}
+.badge.update{{background:#fffbeb;color:#92400e;border:1px solid #fde68a}}
+.badge.delete{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca}}
+.badge.no-op{{background:#f3f4f6;color:#4b5563;border:1px solid #e5e7eb}}
 .kpis{{display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem}}
-.kpi{{background:#181411;border:1px solid rgba(212,163,115,.18);border-radius:8px;padding:.8rem}}
-.kl{{color:#b8a79e;font-size:.64rem;text-transform:uppercase;letter-spacing:.05em}}
-.kv{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;font-size:1.2rem;margin-top:.35rem}}
-.counts span{{margin-right:1rem;font-family:Consolas,ui-monospace,monospace}}
-.muted{{color:#b8a79e}}.small{{font-size:.74rem;margin-top:.55rem}}.flow{{line-height:1.55;color:#d8c8bf;margin-top:.45rem;font-size:.86rem}}
-code{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;color:#f5efe9;font-size:.78rem}}
-footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid rgba(212,163,115,.18);color:#7d7068;font-size:.72rem}}
+.kpi{{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:.8rem}}
+.kl{{color:#6b7280;font-size:.64rem;text-transform:uppercase;letter-spacing:.05em;font-weight:600}}
+.kv{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;font-size:1.2rem;margin-top:.35rem;color:#111827}}
+.counts span{{margin-right:1rem;font-family:Consolas,ui-monospace,monospace;font-weight:600}}
+.muted{{color:#6b7280}}.small{{font-size:.74rem;margin-top:.55rem}}.flow{{line-height:1.55;color:#374151;margin-top:.45rem;font-size:.86rem}}
+code{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;color:#111827;background:#f3f4f6;padding:2px 4px;border-radius:4px;font-size:.78rem}}
+footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:.72rem}}
 </style></head><body>
 <section class="page cover">
 <div class="header"><div class="section-no">Cover</div><h1>Terraform Plan Report</h1>
 <div class="sub">{esc(template)} | {esc(cloud)} | plan {esc(short_hash)} | {esc(ts)}</div></div>
-<div class="counts panel"><span style="color:#8da189">+{counts['create']} create</span>
-<span style="color:#cb9a3e">~{counts['update']} update</span>
-<span style="color:#d95d39">-{counts['delete']} delete</span>
+<div class="counts panel"><span style="color:#059669">+{counts['create']} create</span>
+<span style="color:#d97706">~{counts['update']} update</span>
+<span style="color:#dc2626">-{counts['delete']} delete</span>
 <span class="muted">{counts['no-op']} no-op</span></div>
 <div class="panel"><p class="flow">This report is a review artifact for a Terraform plan. It is not an apply approval and it does not create cloud resources. Deployment remains blocked until the plan gate records approval for this exact plan hash.</p></div>
 </section>
@@ -2068,9 +2067,9 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         priced_at = cost.get("priced_at") or ts
 
         def card(label, val):
-            return (f'<div style="background:#1c1714;border:1px solid rgba(212,163,115,.22);border-radius:8px;padding:12px">'
-                    f'<span style="display:block;color:#b8a79e;font-size:10px;text-transform:uppercase;letter-spacing:.05em">{esc(label)}</span>'
-                    f'<strong style="display:block;margin-top:5px;font-size:15px;color:#f5efe9">{esc(val)}</strong></div>')
+            return (f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px">'
+                    f'<span style="display:block;color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:600">{esc(label)}</span>'
+                    f'<strong style="display:block;margin-top:5px;font-size:15px;color:#111827">{esc(val)}</strong></div>')
 
         cards = ('<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0">'
                  + card("Monthly total", f"${total:,.2f}" if total is not None else "provided by BCM")
@@ -2107,7 +2106,7 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         for svc in cost.get("not_estimated_services") or []:
             citation = pricing_catalog.rate_citation_for_service_code(svc)
             message = citation or "not estimated — no reviewed catalog usage line for this service"
-            rows += (f'<tr style="color:#b8a79e"><td>{esc(svc)}</td>'
+            rows += (f'<tr style="color:#6b7280"><td>{esc(svc)}</td>'
                      f'<td colspan="4">{esc(message)}</td>'
                      '<td class="money">unpriced</td><td class="money">-</td></tr>')
 
@@ -2119,8 +2118,8 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
             w = max(2, round(c / total * 100))
             drivers += (f'<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:12px">'
                         f'<span>{esc(it.get("serviceCode") or "-")}</span><span class="money">${c:,.2f} · {c / total * 100:.1f}%</span></div>'
-                        f'<div style="background:#231d19;border-radius:5px;height:8px;margin-top:3px">'
-                        f'<div style="width:{w}%;height:8px;border-radius:5px;background:#d95d39"></div></div></div>')
+                        f'<div style="background:#e5e7eb;border-radius:5px;height:8px;margin-top:3px">'
+                        f'<div style="width:{w}%;height:8px;border-radius:5px;background:#2b59d1"></div></div></div>')
 
         assumptions = cost.get("assumptions") or {}
         assume_html = (_kv_table(assumptions.items()) if assumptions
@@ -2132,7 +2131,7 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         budget = cost.get("monthly_budget_usd")
         if budget and total is not None:
             util = total / budget * 100
-            tone = "#8da189" if util <= 80 else "#cb9a3e" if util <= 100 else "#d95d39"
+            tone = "#059669" if util <= 80 else "#d97706" if util <= 100 else "#dc2626"
             verdict = ("within budget" if util <= 80 else
                        "approaching budget" if util <= 100 else "EXCEEDS BUDGET")
             budget_html = (
@@ -2141,7 +2140,7 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
                 f'<b>${budget:,.2f}/mo</b> — <b style="color:{tone}">{util:.0f}% · {verdict}</b>. '
                 "Both numbers are real: the forecast is AWS BCM's, the budget is the "
                 "aws_budgets_budget this plan provisions.</p>"
-                f'<div style="background:#231d19;border-radius:6px;height:10px;margin:8px 0 14px">'
+                f'<div style="background:#e5e7eb;border-radius:6px;height:10px;margin:8px 0 14px">'
                 f'<div style="width:{min(100, max(2, util)):.0f}%;height:10px;border-radius:6px;background:{tone}"></div></div>')
 
         # Unit economics for the data domain: cost per GB processed, derived strictly from
@@ -2242,23 +2241,25 @@ def _simple_report_html(title, template, cloud, short_hash, ts, body):
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>{html.escape(title)} - {html.escape(template)}</title>
 <style>
-@page{{size:A4;margin:0;background:#14110f}}
-*{{box-sizing:border-box}}
-html,body{{min-height:100%;background:#14110f;color:#f5efe9;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-body{{font-family:Inter,Segoe UI,Arial,sans-serif;padding:34px 38px;line-height:1.42}}
-h1{{font-size:27px;margin:0 0 4px 0;line-height:1.15}}h2{{font-size:17px;margin:24px 0 8px;color:#e8b58f}}
-.sub{{color:#b8a79e;font-family:Consolas,ui-monospace,monospace;margin-bottom:22px;font-size:12px}}
-table{{width:100%;border-collapse:collapse;margin-top:10px;background:#1c1714;border:1px solid rgba(212,163,115,.20);border-radius:8px;overflow:hidden}}
-th,td{{text-align:left;border-bottom:1px solid rgba(255,255,255,.07);padding:8px;font-size:11.5px;vertical-align:top}}
-th{{font-size:9.5px;text-transform:uppercase;color:#b8a79e;letter-spacing:.05em}}.money{{font-family:Consolas,ui-monospace,monospace;text-align:right;white-space:nowrap}}
-.summary{{display:grid;grid-template-columns:1fr 1fr 2fr;gap:10px;margin:18px 0}}
-.summary div{{background:#1c1714;border:1px solid rgba(212,163,115,.22);border-radius:8px;padding:12px}}
-.summary span{{display:block;color:#b8a79e;font-size:10px;text-transform:uppercase;letter-spacing:.05em}}
-.summary strong{{display:block;margin-top:5px;font-size:16px;color:#f5efe9}}
-.total td{{font-weight:700;background:#231d19}}
-.note{{margin-top:18px;color:#b8a79e;font-size:11.5px;background:#1c1714;border:1px solid rgba(212,163,115,.22);border-radius:8px;padding:12px}}
-code{{font-family:Consolas,ui-monospace,monospace;font-size:10.5px;color:#f5efe9}}
-pre{{background:#1c1714;padding:14px;border-radius:8px;white-space:pre-wrap;border:1px solid rgba(212,163,115,.22)}}
+@page{{size:A4;margin:12mm 14mm;background:#ffffff}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{min-height:100%;background:#ffffff;color:#1f2937;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;padding:28px 32px;line-height:1.45;font-size:13px}}
+h1{{font-size:26px;margin:0 0 4px 0;line-height:1.2;color:#111827;font-weight:700}}
+h2{{font-size:16px;margin:20px 0 8px;color:#1e3a8a;font-weight:600}}
+.sub{{color:#6b7280;font-family:Consolas,ui-monospace,monospace;margin-bottom:18px;font-size:12px}}
+table{{width:100%;border-collapse:collapse;margin-top:10px;background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden}}
+th,td{{text-align:left;border-bottom:1px solid #e5e7eb;padding:8px 10px;font-size:11.5px;vertical-align:top;color:#374151}}
+th{{background:#f3f4f6;font-size:10px;text-transform:uppercase;color:#4b5563;letter-spacing:.05em;font-weight:600}}
+.money{{font-family:Consolas,ui-monospace,monospace;text-align:right;white-space:nowrap}}
+.summary{{display:grid;grid-template-columns:1fr 1fr 2fr;gap:10px;margin:16px 0}}
+.summary div{{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px}}
+.summary span{{display:block;color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}}
+.summary strong{{display:block;margin-top:5px;font-size:16px;color:#111827}}
+.total td{{font-weight:700;background:#f3f4f6}}
+.note{{margin-top:16px;color:#374151;font-size:11.5px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px}}
+code{{font-family:Consolas,ui-monospace,monospace;font-size:10.5px;color:#111827;background:#f3f4f6;padding:2px 4px;border-radius:4px}}
+pre{{background:#f9fafb;padding:14px;border-radius:8px;white-space:pre-wrap;border:1px solid #e5e7eb;color:#1f2937;font-family:Consolas,monospace;font-size:11px}}
 </style></head><body>
 <h1>{html.escape(title)} - {html.escape(template)}</h1>
 <div class="sub">{html.escape(cloud)} | plan {html.escape(short_hash)} | {html.escape(ts)}</div>

@@ -1213,7 +1213,7 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
         dst = os.path.join(dst_modules, m["id"])
         if os.path.isdir(dst):
             shutil.rmtree(dst)
-        shutil.copytree(src, dst)
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".terraform*", ".git*", "__pycache__", "*.pyc"))
 
     def _w(name, text):
         with open(os.path.join(out_dir, name), "w", encoding="utf-8", newline="\n") as f:

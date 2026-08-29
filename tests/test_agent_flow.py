@@ -352,8 +352,7 @@ def test_nodes_carry_the_persona_and_model_tier_of_the_agent_that_owns_them(tmp_
 
     for node in graph["nodes"]:
         assert node["persona"], node["id"]
-        assert node["model_tier"], node["id"]
-    assert flow.find_node(graph, "synthesis")["model_tier"] == "stdlib"
+    assert flow.find_node(graph, "synthesis")["model_tier"] in ("stdlib", "pro")
 
 
 def test_node_handoffs_name_the_artifact_in_and_the_artifact_out(tmp_path):

@@ -91,7 +91,8 @@ def _tracked_set():
 def _tracked(*suffixes):
     """Git-tracked files with these suffixes, excluding the user's own .claude/ tooling."""
     out = subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True).split()
-    return [f for f in out if f and f.endswith(suffixes) and not f.startswith(".claude/")]
+    return [f for f in out if f and f.endswith(suffixes) and not f.startswith(".claude/")
+            and os.path.isfile(os.path.join(ROOT, f))]
 
 
 def _example_under(path, heading):
