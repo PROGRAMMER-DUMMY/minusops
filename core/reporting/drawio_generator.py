@@ -283,10 +283,6 @@ def decode_drawio_url(url):
     return urllib.parse.unquote(inflated)
 
 
-_LAYER_ORDER = list(architecture_model.CANONICAL_LAYERS) + ["other"]
-_COLUMN_WIDTH = 380
-_ROW_HEIGHT = 160
-
 _LABEL_STYLE = ("verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;"
                 "whiteSpace=wrap;overflow=hidden;fontSize=11;fontColor=#1e293b;fontStyle=1;")
 
@@ -299,6 +295,14 @@ _LAYER_COLORS = {
     "governance": "#DD344C",
     "other": "#64748b",
 }
+
+_SLOT_WIDTH = 190
+_STACK_HEIGHT = 110
+_ORIGIN_X = 80
+_Y_CATALOG = 80
+_Y_SPINE = 260
+_Y_ORCHESTRATION = 420
+_Y_GOVERNANCE = 560
 
 
 def node_label(address, badges=()):
@@ -326,41 +330,111 @@ def _badge_text(meta, folded):
     return badges
 
 
+def _role_of(res):
+    return architecture_model.classify_role(res.get("type", ""), "", res.get("name", ""))
+
+
 def _layer_of(res):
-    role = architecture_model.classify_role(res.get("type", ""), "", res.get("name", ""))
-    return architecture_model.layer_of(role)
+    return architecture_model.layer_of(_role_of(res))
 
 
-def _columns(resources):
-    columns = {}
+def _instance_key(address):
+    match = re.search(r'\["([^"]+)"\]', address or "")
+    return match.group(1) if match else ""
+
+
+def _by_layer(resources):
+    layers = {}
     for res in resources:
-        columns.setdefault(_layer_of(res), []).append(res.get("address"))
-    return columns
+        layers.setdefault(_layer_of(res), []).append(res)
+    return layers
+
+
+def _spine_groups(layers):
+    """The alternating zone / transform sequence, ordered by medallion stage."""
+    zones = sorted(layers.get("storage", []),
+                   key=lambda r: (architecture_model.stage_rank(
+                       _instance_key(r.get("address")), r.get("name", "")),
+                       r.get("address") or ""))
+    transforms = [r for r in layers.get("processing", []) if _role_of(r) != "orchestrate"]
+
+    groups = []
+    for index, zone in enumerate(zones):
+        groups.append([zone])
+        if index < len(transforms) and index < len(zones) - 1:
+            groups.append([transforms[index]])
+    remaining = transforms[max(0, len(zones) - 1):]
+    groups.extend([res] for res in remaining)
+    return groups
+
+
+def _stack(addresses, x, y, positions):
+    for index, address in enumerate(addresses):
+        positions[address] = (x, y + index * _STACK_HEIGHT)
 
 
 def layout_positions(resources):
-    """Return {address: (x, y)} plus the layer headers, keyed by canonical layer."""
-    columns = _columns(resources)
-    positions, headers = {}, []
-    current_x = 60
+    """Return {address: (x, y)} plus the bands to draw around them.
 
-    for layer in [name for name in _LAYER_ORDER if name in columns]:
-        addresses = columns[layer]
-        use_two_columns = len(addresses) > 2
-        layer_width = _COLUMN_WIDTH if use_two_columns else 240
-        headers.append((layer, current_x, layer_width))
+    Flow layers run left to right with the medallion zones ordered by stage and the
+    transforms sitting between them. Cataloging sits above the spine, security and
+    monitoring below it, matching the AWS analytics reference architecture.
+    """
+    layers = _by_layer(resources)
+    positions, bands = {}, []
+    x = _ORIGIN_X
 
+    ingestion = [r.get("address") for r in layers.get("ingestion", [])]
+    if ingestion:
+        _stack(ingestion, x, _Y_SPINE, positions)
+        bands.append(("ingestion", x - 20, _Y_SPINE - 50, _SLOT_WIDTH,
+                      len(ingestion) * _STACK_HEIGHT + 70))
+        x += _SLOT_WIDTH
+
+    spine_start = x
+    for group in _spine_groups(layers):
+        _stack([r.get("address") for r in group], x, _Y_SPINE, positions)
+        x += _SLOT_WIDTH
+
+    orchestration = [r.get("address") for r in layers.get("processing", [])
+                     if r.get("address") not in positions]
+    for index, address in enumerate(orchestration):
+        positions[address] = (spine_start + index * _SLOT_WIDTH, _Y_ORCHESTRATION)
+
+    spine_width = max(x - spine_start, _SLOT_WIDTH)
+    if x > spine_start:
+        height = (_Y_ORCHESTRATION - _Y_SPINE + 120) if orchestration else 170
+        bands.append(("storage", spine_start - 20, _Y_SPINE - 50, spine_width, height))
+
+    consumption = [r.get("address") for r in layers.get("consumption", [])]
+    if consumption:
+        _stack(consumption, x, _Y_SPINE, positions)
+        bands.append(("consumption", x - 20, _Y_SPINE - 50, _SLOT_WIDTH,
+                      len(consumption) * _STACK_HEIGHT + 70))
+        x += _SLOT_WIDTH
+
+    total_width = max(x - _ORIGIN_X, _SLOT_WIDTH)
+    per_row = max(1, total_width // _SLOT_WIDTH)
+
+    def band(layer, addresses, origin_x, top, width=None):
+        if not addresses:
+            return
         for index, address in enumerate(addresses):
-            if use_two_columns:
-                x = current_x + 30 + (index % 2) * 180
-                y = 80 + (index // 2) * _ROW_HEIGHT
-            else:
-                x = current_x + 85
-                y = 80 + index * _ROW_HEIGHT
-            positions[address] = (x, y)
-        current_x += layer_width + 50
+            positions[address] = (origin_x + (index % per_row) * _SLOT_WIDTH,
+                                  top + (index // per_row) * _STACK_HEIGHT)
+        rows = (len(addresses) + per_row - 1) // per_row
+        bands.append((layer, origin_x - 20, top - 50,
+                      width or min(len(addresses), per_row) * _SLOT_WIDTH,
+                      rows * _STACK_HEIGHT + 70))
 
-    return positions, [(layer, x) for layer, x, _ in headers]
+    band("catalog", [r.get("address") for r in layers.get("catalog", [])],
+         spine_start, _Y_CATALOG)
+    band("governance",
+         [r.get("address") for r in layers.get("governance", [])]
+         + [r.get("address") for r in layers.get("other", [])],
+         _ORIGIN_X, _Y_GOVERNANCE, width=total_width)
+
+    return positions, bands
 
 
 def _create_mxgraph_xml(page_width=1800, page_height=1000):
@@ -377,25 +451,30 @@ def _create_mxgraph_xml(page_width=1800, page_height=1000):
     return model, root
 
 
-def _append_layer_boxes(root, headers, columns):
-    for layer, x in headers:
-        addresses = columns.get(layer, [])
-        use_two_columns = len(addresses) > 2
-        layer_width = _COLUMN_WIDTH if use_two_columns else 240
-        rows = ((len(addresses) + 1) // 2) if use_two_columns else max(1, len(addresses))
+_BAND_LABELS = {
+    "ingestion": "INGESTION",
+    "storage": "STORAGE, PROCESSING",
+    "catalog": "CATALOGING, GOVERNANCE &amp; SEARCH",
+    "consumption": "CONSUMPTION",
+    "governance": "SECURITY &amp; MONITORING",
+}
+
+
+def _append_bands(root, bands):
+    for layer, x, y, width, height in bands:
         container = ET.SubElement(root, "mxCell", {
             "id": f"layer_box_{layer}",
-            "value": f"<b>{layer.upper()} TIER</b>",
+            "value": f"<b>{_BAND_LABELS.get(layer, layer.upper())}</b>",
             "style": (f"swimlane;startSize=28;fillColor=none;strokeColor="
                       f"{_LAYER_COLORS.get(layer, '#64748b')};strokeWidth=1.5;"
                       "fontColor=#1e293b;fontStyle=1;fontSize=12;rounded=1;arcSize=8;"
-                      "container=1;collapsible=0;dropTarget=1;"),
+                      "dashed=1;dashPattern=6 4;container=0;collapsible=0;"),
             "vertex": "1",
             "parent": "1",
         })
         ET.SubElement(container, "mxGeometry", {
-            "x": str(x), "y": "30", "width": str(layer_width),
-            "height": str(max(280, 80 + rows * _ROW_HEIGHT)), "as": "geometry",
+            "x": str(x), "y": str(y), "width": str(width), "height": str(height),
+            "as": "geometry",
         })
 
 
@@ -404,14 +483,14 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
     resources = [r for r in (plan_json.get("resource_changes", []) if plan_json else [])
                  if r.get("mode") == "managed" and not is_folded(r.get("type", ""))]
 
-    positions, headers = layout_positions(resources)
+    positions, bands = layout_positions(resources)
     badges = fold_badges(plan_json, [r.get("address") for r in resources])
 
     max_x = max([x for x, _ in positions.values()], default=800)
     max_y = max([y for _, y in positions.values()], default=600)
     model, root = _create_mxgraph_xml(max(1800, max_x + 350), max(1000, max_y + 250))
 
-    _append_layer_boxes(root, headers, _columns(resources))
+    _append_bands(root, bands)
 
     node_map = {}
     for index, res in enumerate(resources):

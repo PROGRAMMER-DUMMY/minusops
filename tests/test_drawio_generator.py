@@ -346,7 +346,21 @@ def test_the_canvas_lays_resources_out_by_layer_not_in_one_tall_column():
     assert width > height, f"the diagram is still taller than it is wide ({width}x{height})"
 
 
-def test_resources_in_the_same_layer_share_a_column():
+def test_the_medallion_zones_run_left_to_right_in_stage_order():
+    """architecture_model.stage_rank has ranked landing/raw/bronze/clean/silver/curated/gold
+    since the model was written; the layout never called it, so the zones stacked in plan
+    order and the spine the reference architecture is built around was invisible."""
+    positions = _node_positions(
+        drawio_generator.generate_drawio_from_plan(_layered_plan())["xml"])
+
+    bronze = positions["module.storage.aws_s3_bucket.bronze"]
+    gold = positions["module.storage.aws_s3_bucket.gold"]
+
+    assert bronze[0] < gold[0], "gold is not downstream of bronze"
+    assert bronze[1] == gold[1], "the zones are not on one horizontal spine"
+
+
+def test_a_transform_sits_between_the_zones_it_moves_data_across():
     positions = _node_positions(
         drawio_generator.generate_drawio_from_plan(_layered_plan())["xml"])
 
@@ -354,9 +368,80 @@ def test_resources_in_the_same_layer_share_a_column():
     gold = positions["module.storage.aws_s3_bucket.gold"]
     etl = positions["module.compute.aws_glue_job.etl"]
 
-    assert bronze[0] == gold[0], "two storage buckets landed in different columns"
-    assert bronze[1] != gold[1], "two storage buckets landed on top of each other"
-    assert etl[0] != bronze[0], "processing and storage share a column"
+    assert bronze[0] < etl[0] < gold[0], "the transform is not on the spine"
+
+
+def test_consumption_is_downstream_of_every_storage_zone():
+    positions = _node_positions(
+        drawio_generator.generate_drawio_from_plan(_layered_plan())["xml"])
+
+    workgroup = positions["module.query.aws_athena_workgroup.analysts"]
+    zones = [positions["module.storage.aws_s3_bucket.bronze"],
+             positions["module.storage.aws_s3_bucket.gold"]]
+
+    assert all(zone[0] < workgroup[0] for zone in zones)
+
+
+def _band_geometry(xml_text):
+    bands = {}
+    for cell in ET.fromstring(xml_text).iter("mxCell"):
+        cell_id = cell.get("id") or ""
+        if not cell_id.startswith("layer_box_"):
+            continue
+        geom = cell.find("mxGeometry")
+        bands[cell_id[len("layer_box_"):]] = (float(geom.get("x")), float(geom.get("y")),
+                                              float(geom.get("width")))
+    return bands
+
+
+def _banded_plan():
+    def rc(address, rtype):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": {}}}
+    return {"resource_changes": [
+        rc('aws_s3_bucket.zones["raw"]', "aws_s3_bucket"),
+        rc('aws_s3_bucket.zones["curated"]', "aws_s3_bucket"),
+        rc("aws_glue_job.etl", "aws_glue_job"),
+        rc("aws_glue_catalog_database.gold", "aws_glue_catalog_database"),
+        rc("aws_athena_workgroup.analysts", "aws_athena_workgroup"),
+        rc("aws_kms_key.lake", "aws_kms_key"),
+        rc("aws_cloudwatch_metric_alarm.failures", "aws_cloudwatch_metric_alarm"),
+    ]}
+
+
+def test_cataloging_sits_above_the_spine_and_security_below_it():
+    """The reference architecture gives three spatial roles, not six equal columns: flow
+    left to right, cataloging drawn above arrowing down, security a full-width band at the
+    bottom. Six columns put IAM and KMS beside the consumption tier competing for the same
+    visual weight."""
+    bands = _band_geometry(drawio_generator.generate_drawio_from_plan(_banded_plan())["xml"])
+
+    assert bands["catalog"][1] < bands["storage"][1], "cataloging is not above the spine"
+    assert bands["governance"][1] > bands["storage"][1], "security is not below the spine"
+
+
+def test_the_security_band_spans_the_whole_diagram():
+    bands = _band_geometry(drawio_generator.generate_drawio_from_plan(_banded_plan())["xml"])
+
+    assert bands["governance"][2] >= bands["storage"][2]
+
+
+def test_nothing_in_the_security_band_carries_an_edge():
+    """In the reference the security layer is a legend, not a participant in the flow. It
+    had twenty edges crossing back into storage, which is what made the canvas unreadable."""
+    bundle = drawio_generator.generate_drawio_from_plan(_banded_plan())
+    xml_text = bundle["xml"]
+
+    governance = {c.get("id") for c in ET.fromstring(xml_text).iter("mxCell")
+                  if c.get("tooltip") in ("aws_kms_key.lake",
+                                          "aws_cloudwatch_metric_alarm.failures")}
+    endpoints = set()
+    for cell in ET.fromstring(xml_text).iter("mxCell"):
+        if cell.get("edge") == "1":
+            endpoints |= {cell.get("source"), cell.get("target")}
+
+    assert governance and not (governance & endpoints)
 
 
 def test_node_labels_are_short_enough_not_to_run_into_the_next_column():
