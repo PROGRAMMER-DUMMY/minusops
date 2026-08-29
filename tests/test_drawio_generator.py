@@ -1,3 +1,4 @@
+import itertools
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -382,15 +383,15 @@ def test_consumption_is_downstream_of_every_storage_zone():
     assert all(zone[0] < workgroup[0] for zone in zones)
 
 
-def _band_geometry(xml_text):
+def _band_geometry(xml_text, full=False):
     bands = {}
     for cell in ET.fromstring(xml_text).iter("mxCell"):
         cell_id = cell.get("id") or ""
         if not cell_id.startswith("layer_box_"):
             continue
         geom = cell.find("mxGeometry")
-        bands[cell_id[len("layer_box_"):]] = (float(geom.get("x")), float(geom.get("y")),
-                                              float(geom.get("width")))
+        box = tuple(float(geom.get(k)) for k in ("x", "y", "width", "height"))
+        bands[cell_id[len("layer_box_"):]] = box if full else box[:3]
     return bands
 
 
@@ -419,6 +420,41 @@ def test_cataloging_sits_above_the_spine_and_security_below_it():
 
     assert bands["catalog"][1] < bands["storage"][1], "cataloging is not above the spine"
     assert bands["governance"][1] > bands["storage"][1], "security is not below the spine"
+
+
+def _crowded_plan():
+    """More catalog and consumption resources than fit on one row of each band."""
+    def rc(index, rtype, prefix):
+        address = f"{rtype}.{prefix}{index}"
+        return {"address": address, "type": rtype, "mode": "managed", "name": f"{prefix}{index}",
+                "change": {"actions": ["create"], "after": {}}}
+    changes = [rc(0, "aws_s3_bucket", "zone"), rc(0, "aws_glue_job", "etl")]
+    changes += [rc(i, "aws_glue_catalog_database", "cat") for i in range(9)]
+    changes += [rc(i, "aws_athena_workgroup", "wg") for i in range(4)]
+    changes += [rc(i, "aws_iam_role", "role") for i in range(12)]
+    return {"resource_changes": changes}
+
+
+def test_no_two_bands_overlap():
+    """The band offsets were fixed constants, so a catalog layer that wrapped to a second
+    row grew straight through the spine below it -- 110px of overlap on a real run, with
+    every node-level assertion still passing because the NODES cleared each other."""
+    bands = _band_geometry(
+        drawio_generator.generate_drawio_from_plan(_crowded_plan())["xml"], full=True)
+
+    for (left, a), (right, b) in itertools.combinations(bands.items(), 2):
+        horizontal = a[0] < b[0] + b[2] and b[0] < a[0] + a[2]
+        vertical = a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+        assert not (horizontal and vertical), f"{left} overlaps {right}: {a} {b}"
+
+
+def test_every_node_sits_inside_a_band():
+    xml_text = drawio_generator.generate_drawio_from_plan(_crowded_plan())["xml"]
+    bands = _band_geometry(xml_text, full=True).values()
+
+    for address, (x, y) in _node_positions(xml_text).items():
+        assert any(bx <= x and by <= y and x + 68 <= bx + bw and y + 68 <= by + bh
+                   for bx, by, bw, bh in bands), f"{address} escaped every band"
 
 
 def test_the_security_band_spans_the_whole_diagram():

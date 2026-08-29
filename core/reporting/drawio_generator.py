@@ -299,10 +299,10 @@ _LAYER_COLORS = {
 _SLOT_WIDTH = 190
 _STACK_HEIGHT = 110
 _ORIGIN_X = 80
-_Y_CATALOG = 80
-_Y_SPINE = 260
-_Y_ORCHESTRATION = 420
-_Y_GOVERNANCE = 560
+_MARGIN_Y = 30
+_LABEL_STRIP = 50
+_BAND_PAD = 20
+_GUTTER = 60
 
 
 def node_label(address, badges=()):
@@ -368,9 +368,12 @@ def _spine_groups(layers):
     return groups
 
 
-def _stack(addresses, x, y, positions):
-    for index, address in enumerate(addresses):
-        positions[address] = (x, y + index * _STACK_HEIGHT)
+def _band_height(rows):
+    return _LABEL_STRIP + max(1, rows) * _STACK_HEIGHT + _BAND_PAD
+
+
+def _addresses(resources):
+    return [r.get("address") for r in resources]
 
 
 def layout_positions(resources):
@@ -378,61 +381,77 @@ def layout_positions(resources):
 
     Flow layers run left to right with the medallion zones ordered by stage and the
     transforms sitting between them. Cataloging sits above the spine, security and
-    monitoring below it, matching the AWS analytics reference architecture.
+    monitoring below it, matching the AWS analytics reference architecture. Every band
+    height is derived from what the band holds, so a band never grows into its neighbour.
     """
     layers = _by_layer(resources)
     positions, bands = {}, []
-    x = _ORIGIN_X
 
-    ingestion = [r.get("address") for r in layers.get("ingestion", [])]
-    if ingestion:
-        _stack(ingestion, x, _Y_SPINE, positions)
-        bands.append(("ingestion", x - 20, _Y_SPINE - 50, _SLOT_WIDTH,
-                      len(ingestion) * _STACK_HEIGHT + 70))
-        x += _SLOT_WIDTH
+    ingestion = _addresses(layers.get("ingestion", []))
+    groups = _spine_groups(layers)
+    consumption = _addresses(layers.get("consumption", []))
+    catalog = _addresses(layers.get("catalog", []))
+    footer = _addresses(layers.get("governance", [])) + _addresses(layers.get("other", []))
 
-    spine_start = x
-    for group in _spine_groups(layers):
-        _stack([r.get("address") for r in group], x, _Y_SPINE, positions)
-        x += _SLOT_WIDTH
-
-    orchestration = [r.get("address") for r in layers.get("processing", [])
-                     if r.get("address") not in positions]
-    for index, address in enumerate(orchestration):
-        positions[address] = (spine_start + index * _SLOT_WIDTH, _Y_ORCHESTRATION)
-
-    spine_width = max(x - spine_start, _SLOT_WIDTH)
-    if x > spine_start:
-        height = (_Y_ORCHESTRATION - _Y_SPINE + 120) if orchestration else 170
-        bands.append(("storage", spine_start - 20, _Y_SPINE - 50, spine_width, height))
-
-    consumption = [r.get("address") for r in layers.get("consumption", [])]
+    columns = ([ingestion] if ingestion else []) + [_addresses(group) for group in groups]
+    spine_start = _ORIGIN_X + (_SLOT_WIDTH if ingestion else 0)
+    spine_end = spine_start + _SLOT_WIDTH * len(groups)
     if consumption:
-        _stack(consumption, x, _Y_SPINE, positions)
-        bands.append(("consumption", x - 20, _Y_SPINE - 50, _SLOT_WIDTH,
-                      len(consumption) * _STACK_HEIGHT + 70))
-        x += _SLOT_WIDTH
-
-    total_width = max(x - _ORIGIN_X, _SLOT_WIDTH)
+        columns.append(consumption)
+    total_width = max(_SLOT_WIDTH * len(columns), _SLOT_WIDTH)
     per_row = max(1, total_width // _SLOT_WIDTH)
 
-    def band(layer, addresses, origin_x, top, width=None):
-        if not addresses:
-            return
+    def place(addresses, origin_x, top, wrap):
         for index, address in enumerate(addresses):
-            positions[address] = (origin_x + (index % per_row) * _SLOT_WIDTH,
-                                  top + (index // per_row) * _STACK_HEIGHT)
-        rows = (len(addresses) + per_row - 1) // per_row
-        bands.append((layer, origin_x - 20, top - 50,
-                      width or min(len(addresses), per_row) * _SLOT_WIDTH,
-                      rows * _STACK_HEIGHT + 70))
+            positions[address] = (origin_x + (index % wrap) * _SLOT_WIDTH,
+                                  top + (index // wrap) * _STACK_HEIGHT)
+        return (len(addresses) + wrap - 1) // wrap
 
-    band("catalog", [r.get("address") for r in layers.get("catalog", [])],
-         spine_start, _Y_CATALOG)
-    band("governance",
-         [r.get("address") for r in layers.get("governance", [])]
-         + [r.get("address") for r in layers.get("other", [])],
-         _ORIGIN_X, _Y_GOVERNANCE, width=total_width)
+    top = _MARGIN_Y
+    if catalog:
+        rows = place(catalog, spine_start, top + _LABEL_STRIP, per_row)
+        bands.append(("catalog", spine_start - 20, top,
+                      min(len(catalog), per_row) * _SLOT_WIDTH, _band_height(rows)))
+        top += _band_height(rows) + _GUTTER
+
+    node_top = top + _LABEL_STRIP
+    depth = max([len(column) for column in columns] or [1])
+
+    if ingestion:
+        place(ingestion, _ORIGIN_X, node_top, 1)
+    for index, group in enumerate(groups):
+        place(_addresses(group), spine_start + index * _SLOT_WIDTH, node_top, 1)
+
+    orchestration = [address for address in _addresses(layers.get("processing", []))
+                     if address not in positions]
+    orchestration_rows = 0
+    if orchestration:
+        orchestration_rows = place(orchestration, spine_start,
+                                   node_top + depth * _STACK_HEIGHT,
+                                   max(1, len(groups) or 1))
+
+    spine_rows = depth + orchestration_rows
+    if ingestion:
+        bands.append(("ingestion", _ORIGIN_X - 20, top, _SLOT_WIDTH,
+                      _band_height(len(ingestion))))
+    if groups:
+        bands.append(("storage", spine_start - 20, top,
+                      max(spine_end - spine_start, _SLOT_WIDTH), _band_height(spine_rows)))
+    if consumption:
+        place(consumption, spine_end, node_top, 1)
+        bands.append(("consumption", spine_end - 20, top, _SLOT_WIDTH,
+                      _band_height(len(consumption))))
+
+    flow_bottom = top + max(_band_height(rows) for rows in
+                            ([spine_rows] if groups else [])
+                            + ([len(ingestion)] if ingestion else [])
+                            + ([len(consumption)] if consumption else [1]))
+
+    if footer:
+        governance_top = flow_bottom + _GUTTER
+        rows = place(footer, _ORIGIN_X, governance_top + _LABEL_STRIP, per_row)
+        bands.append(("governance", _ORIGIN_X - 20, governance_top, total_width,
+                      _band_height(rows)))
 
     return positions, bands
 
