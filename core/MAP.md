@@ -13,7 +13,7 @@ core/
   cost/          AWS BCM is the only source of a reportable number
   reporting/     turns a plan into something a human can read and run
   integrations/  approval-gated outbound hooks (Slack, Teams, SMTP, Confluence, Jira)
-  providers/     one CloudProvider interface per cloud (aws implemented; azure/gcp scaffolds)
+  providers/     AWS access -- identity, credential posture, Cost Explorer, pricing
 ```
 
 ## generation/ — composition
@@ -75,11 +75,15 @@ core/
 | `minusctl.py` | Operator-facing CLI. Never mutates infrastructure itself. |
 | `toolpath.py` | Cross-platform discovery of external CLIs (terraform, aws). |
 
-## providers/ — cloud abstraction (unchanged by this restructure)
+## providers/ — AWS access
 
-`base.py` (the `CloudProvider` contract) + `aws.py` (implemented) + `azure.py` / `gcp.py`
-(scaffolds). Selected via `MINUS_CLOUD`. Already its own subpackage before this restructure;
-nothing here moved.
+`base.py` (`get_provider()`, `active_cloud()`) + `aws.py` (`AWSProvider`).
+
+**AWS-only, deliberately.** The `azure.py` / `gcp.py` scaffolds and the one-implementation
+`CloudProvider` ABC were deleted when multi-cloud left scope; `get_provider("azure")` raises
+`ValueError`. `base.py`'s own docstring is the authority here -- this file described the
+scaffolds for months after they were removed, and an external research pass read that
+description and reported multi-cloud support the product does not have.
 
 ---
 

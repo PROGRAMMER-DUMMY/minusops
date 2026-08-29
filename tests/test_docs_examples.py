@@ -329,3 +329,86 @@ def test_no_emoji_in_tracked_sources(suffix):
 
     assert not offenders, (
         f"{len(offenders)} lines carry emoji in {suffix} files: " + "; ".join(offenders))
+
+
+# --- A document may not advertise a pillar capability the registry lacks ----------------
+#
+# `console_app.py` claimed the 18-pillar engine covered "schema evolution rules (EVOLVE,
+# FREEZE, DISCARD_ROW)". No such pillar exists and no such constant is defined anywhere. An
+# external research pass read that sentence, expanded it into a four-row policy table mapping
+# each constant to a medallion zone, and cited the repository as its source. A false claim
+# inside the running console is worse than one in a README: it is read as the product
+# describing itself.
+
+PILLARS_SRC = os.path.join(ROOT, "core", "architecture", "pillars.py")
+
+# Generic domain vocabulary that may appear beside a pillar sentence without naming a pillar
+# constant. Additions are a reviewed one-line edit, which is the point.
+_GENERIC_CAPS = {
+    "AWS", "GCP", "JSON", "YAML", "HCL", "CLI", "API", "URL", "SLA", "SLO", "DAG", "ETL",
+    "ELT", "IAM", "KMS", "SSE", "CMK", "PII", "PHI", "RBAC", "SQL", "DPU", "RPU", "MFA",
+    "OIDC", "SHA256", "STS", "VPC", "DMS", "SFTP", "CDC", "MSK", "EMR", "BCM", "FINOPS",
+    "TBAC", "DQ", "DR", "CI", "CD", "MINUS", "PRD", "ADR", "FM", "TODO", "NOTE", "OK",
+    "README", "MAP", "CONTEXT", "AGENTS", "SKILL",
+    "ANY", "ISO", "IEC", "FURPS", "NFR", "FR",
+}
+_CAPS_TOKEN = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
+
+
+def _pillar_vocabulary():
+    with open(PILLARS_SRC, encoding="utf-8") as handle:
+        return handle.read()
+
+
+@pytest.mark.parametrize("relpath", [
+    os.path.join("app", "console_app.py"),
+    os.path.join("core", "architecture", "pillars.py"),
+    os.path.join(".agents", "skills", "grill-me", "SKILL.md"),
+])
+def test_no_document_advertises_a_pillar_constant_the_registry_lacks(relpath):
+    path = os.path.join(ROOT, relpath)
+    if not os.path.isfile(path):
+        pytest.skip(f"{relpath} not present")
+
+    vocabulary = _pillar_vocabulary()
+    with open(path, encoding="utf-8") as handle:
+        lines = handle.readlines()
+
+    invented = []
+    for number, line in enumerate(lines, 1):
+        if "pillar" not in line.lower():
+            continue
+        for token in _CAPS_TOKEN.findall(line):
+            if token in _GENERIC_CAPS or token in vocabulary:
+                continue
+            invented.append(f"{relpath}:{number} names {token!r}, absent from pillars.py")
+
+    assert not invented, "\n".join(invented)
+
+
+def test_a_pillar_count_claim_matches_the_registry():
+    """"18-Pillar" appears in the console, the skill and the agent docs. If a pillar is added
+    or removed, every one of those numbers becomes wrong silently."""
+    import sys
+    sys.path.insert(0, os.path.join(ROOT, "core", "architecture"))
+    import pillars
+
+    claimed = re.compile(r"\b(\d+)[- ]?[Pp]illar")
+    tracked = subprocess.run(["git", "ls-files", "*.py", "*.md"], cwd=ROOT,
+                             capture_output=True, text=True).stdout.split()
+    # An append-only ledger records what was true at each step; a count there
+    # is history, not a present-tense claim.
+    tracked = [f for f in tracked if not f.endswith("docs/PROGRESS.md")]
+    wrong = []
+    for relpath in tracked:
+        path = os.path.join(ROOT, relpath)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for count in claimed.findall(text):
+            if int(count) != len(pillars.PILLARS):
+                wrong.append(f"{relpath} claims {count} pillars; registry has {len(pillars.PILLARS)}")
+
+    assert not wrong, "\n".join(sorted(set(wrong)))
