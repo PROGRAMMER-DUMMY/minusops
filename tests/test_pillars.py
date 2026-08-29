@@ -396,3 +396,89 @@ def test_derive_reports_the_serving_verdict():
     out = pillars.derive({"consumer_group_count": 1})
 
     assert out["serving"]["verdict"] == "SINGLE_CONSUMER"
+
+
+# --- Pillars 14 and 17: the answer has to reach something --------------------------------
+#
+# Neither of these gets option-keyed depth, and that is deliberate. `depth_for` makes an
+# option branch REPLACE the shared one, so branching pillar 14 would delete six load-bearing
+# questions -- OIDC versus static keys, where secrets live, whether the lock file is
+# committed -- that genuinely apply to all three platforms. Their defect was never shallow
+# questions; it was derives=None and informs=(), so the answers reached nothing.
+
+def test_every_cicd_option_either_selects_an_engine_or_says_it_renders_none():
+    import sys, os
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core", "generation"))
+    import cicd
+
+    pillar = pillars.BY_KEY["cicd"]
+    for option in pillar["options"]:
+        assert option in pillars.CICD_ENGINE_BY_CHOICE, f"{option!r} maps to nothing"
+        engine = pillars.cicd_engine_for(option)
+        assert engine is None or engine in (cicd.GITHUB, cicd.JENKINS)
+
+
+def test_an_unrenderable_platform_says_so_rather_than_defaulting_to_github():
+    """GitLab and Azure DevOps are real choices the generator does not render. Quietly
+    selecting the GitHub renderer because it is first would hand someone a workflow file for
+    a platform they do not use."""
+    result = pillars.cicd_delivery_plan("GitLab CI or Azure DevOps")
+
+    assert result["verdict"] == "NOT_GENERATED"
+    assert result["engine"] is None
+    assert "written by hand" in result["because"]
+
+
+def test_a_static_key_in_ci_is_reported_as_the_failure_mode_it_is():
+    result = pillars.cicd_delivery_plan("GitHub Actions with AWS OIDC federation",
+                                        uses_oidc=False)
+
+    assert result["verdict"] == "STATIC_CREDENTIALS"
+    assert "FM-01" in result["because"]
+
+
+def test_a_generated_platform_names_its_engine():
+    result = pillars.cicd_delivery_plan("Jenkins on private agents with instance profiles")
+
+    assert result["verdict"] == "GENERATED"
+    assert result["engine"] == "jenkins"
+
+
+def test_alert_routing_is_undetermined_until_the_routes_are_counted():
+    assert pillars.alert_routing_plan()["determinable"] is False
+
+
+def test_one_topic_means_muting_a_noisy_job_mutes_the_budget_too():
+    result = pillars.alert_routing_plan(route_count=1)
+
+    assert result["verdict"] == "CONSOLIDATED"
+    assert "mutes the other two" in result["because"]
+
+
+def test_a_budget_alarm_reaching_on_call_is_reported_separately_from_the_split():
+    """Three routes and a budget that still pages is a routed stack that wakes the wrong
+    person. One verdict cannot carry both facts."""
+    result = pillars.alert_routing_plan(route_count=3, budget_reaches_oncall=True)
+
+    assert result["verdict"] == "SPLIT"
+    assert result["budget_routing"] == "PAGES_ON_CALL"
+
+
+def test_unstated_retention_is_never_expire_and_says_so():
+    """CloudWatch's default bills forever, so silence here is a cost with no owner."""
+    assert pillars.alert_routing_plan(route_count=3)["retention"] == "UNSTATED"
+    assert pillars.alert_routing_plan(route_count=3, log_retention_days=0)["retention"] == "NEVER_EXPIRES"
+    assert pillars.alert_routing_plan(route_count=3, log_retention_days=30)["retention"] == "BOUNDED"
+
+
+def test_derive_now_reports_a_verdict_for_every_wired_pillar():
+    out = pillars.derive({
+        "consumer_group_count": 2, "consumer_scopes_differ": True,
+        "artifact_repo": "ecr", "immutable_tags": True, "rebuild_per_env": False,
+        "cicd_platform": "GitHub Actions with AWS OIDC federation", "cicd_uses_oidc": True,
+        "alert_routes": 3, "log_retention_days": 30,
+    })
+
+    for key in ("serving", "artifacts", "cicd", "alerting"):
+        assert out[key]["determinable"] is True, key

@@ -671,6 +671,8 @@ PILLARS = (
         "Jenkins on private agents with instance profiles",
         "GitLab CI or Azure DevOps"),
        ("core/generation/cicd.py",),
+       informs=("artifacts", "proving"),
+       derives="cicd_delivery_plan",
        depth={
            "*": (
                "Control plane hosting -- how is MinusOps itself driven? An operator laptop "
@@ -749,6 +751,8 @@ PILLARS = (
         "One consolidated topic",
         "External webhook to Slack or PagerDuty"),
        ("governance-observability",),
+       informs=("criticality",),
+       derives="alert_routing_plan",
        depth={
            "*": (
                "Three questions, not one: who is paged when the job CRASHES, who is told "
@@ -838,6 +842,86 @@ def artifact_promotion_plan(artifact_repo=None, immutable_tags=None, rebuild_per
     return result
 
 
+# Pillar 14 offers three platforms and core/generation/cicd.py renders two. The third is not
+# a gap in the interview -- it is a real option some organisations are on -- so it maps to
+# None and the derivation says what that means, rather than the option quietly selecting the
+# GitHub renderer because it happens to be first.
+CICD_ENGINE_BY_CHOICE = {
+    "GitHub Actions with AWS OIDC federation": "github",
+    "Jenkins on private agents with instance profiles": "jenkins",
+    "GitLab CI or Azure DevOps": None,
+}
+
+
+def cicd_engine_for(choice):
+    """The cicd.py engine a pillar 14 answer selects, or None when it renders none."""
+    return CICD_ENGINE_BY_CHOICE.get((choice or "").strip())
+
+
+def cicd_delivery_plan(platform=None, uses_oidc=None):
+    """What the chosen CI platform can and cannot be generated for."""
+    if not platform:
+        return _undetermined("no CI platform was chosen")
+    if platform not in CICD_ENGINE_BY_CHOICE:
+        return _undetermined(f"unknown CI platform {platform!r}")
+
+    engine = CICD_ENGINE_BY_CHOICE[platform]
+    result = {"determinable": True, "platform": platform, "engine": engine}
+
+    if engine is None:
+        result["verdict"] = "NOT_GENERATED"
+        result["because"] = ("cicd.py renders GitHub Actions and Jenkins. This platform gets "
+                             "the Terraform and the deploy gate, and its pipeline is written "
+                             "by hand against the same minusctl commands the Jenkinsfile uses")
+        return result
+
+    if uses_oidc is False:
+        result["verdict"] = "STATIC_CREDENTIALS"
+        result["because"] = ("a long-term key in CI is FM-01, and the deploy gate warns on "
+                             "an AKIA prefix for the same reason")
+    else:
+        result["verdict"] = "GENERATED"
+        result["because"] = f"cicd.py renders a {engine} pipeline with OIDC federation"
+    return result
+
+
+def alert_routing_plan(route_count=None, budget_reaches_oncall=None, log_retention_days=None):
+    """Whether alerts reach someone who can act, and whether logs stop billing.
+
+    Routing and retention are reported apart because they fail independently: a perfectly
+    routed stack still bills forever on never-expire log groups, and a stack with sane
+    retention still wakes the wrong person.
+    """
+    if route_count in (None, ""):
+        return _undetermined("the number of alert routes was not stated")
+    routes = int(route_count)
+
+    result = {"determinable": True, "routes": routes}
+    if routes <= 1:
+        result["verdict"] = "CONSOLIDATED"
+        result["because"] = ("one topic carries crashes, data quality and spend, so muting a "
+                             "noisy job mutes the other two with it")
+    else:
+        result["verdict"] = "SPLIT"
+        result["because"] = f"{routes} routes, so a spend threshold does not page on-call"
+
+    if budget_reaches_oncall is True:
+        result["budget_routing"] = "PAGES_ON_CALL"
+        result["budget_because"] = "a spend threshold is not an incident and must not wake anyone"
+
+    if log_retention_days in (None, ""):
+        result["retention"] = "UNSTATED"
+        result["retention_because"] = ("CloudWatch defaults to never-expire, which bills "
+                                       "forever and was nobody's decision")
+    elif int(log_retention_days) <= 0:
+        result["retention"] = "NEVER_EXPIRES"
+        result["retention_because"] = "never-expire is a cost with no owner"
+    else:
+        result["retention"] = "BOUNDED"
+
+    return result
+
+
 def consumer_access_plan(group_count=None, scopes_differ=None, all_attributed=None):
     """Whether splitting Gold access by consumer group buys least privilege or only labels.
 
@@ -881,7 +965,9 @@ def consumer_access_plan(group_count=None, scopes_differ=None, all_attributed=No
 FACT_KEYS = ("daily_gb", "partitions_per_day", "read_pattern", "transform_shape", "shuffle",
              "runs_per_day", "events_per_sec", "avg_record_kb", "has_spark_skills",
              "artifact_repo", "immutable_tags", "rebuild_per_env",
-             "consumer_group_count", "consumer_scopes_differ", "consumers_all_attributed")
+             "consumer_group_count", "consumer_scopes_differ", "consumers_all_attributed",
+             "cicd_platform", "cicd_uses_oidc",
+             "alert_routes", "budget_reaches_oncall", "log_retention_days")
 
 
 def derive(facts):
@@ -916,6 +1002,13 @@ def derive(facts):
     out["serving"] = consumer_access_plan(
         facts.get("consumer_group_count"), facts.get("consumer_scopes_differ"),
         facts.get("consumers_all_attributed"))
+
+    out["cicd"] = cicd_delivery_plan(
+        facts.get("cicd_platform"), facts.get("cicd_uses_oidc"))
+
+    out["alerting"] = alert_routing_plan(
+        facts.get("alert_routes"), facts.get("budget_reaches_oncall"),
+        facts.get("log_retention_days"))
 
     return out
 
