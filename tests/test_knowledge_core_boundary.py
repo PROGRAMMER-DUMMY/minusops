@@ -1,3 +1,16 @@
+"""
+The knowledge core imports nothing beyond the standard library and schema_watch.
+
+An import-graph test rather than a behaviour one. The boundary is easy to breach by accident
+and impossible to notice: a single module-level import of the NLI verifier would pull a model
+runtime into a control plane whose base install has no runtime dependencies. The AST walk
+descends into try/except -- where such an import usually hides -- but not into function
+bodies, since a lazy import inside a function is the sanctioned escape hatch.
+
+Depends on: core/generation/knowledge_*.py (read as source, not imported)
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import ast
 import glob
 import os

@@ -1,3 +1,15 @@
+"""
+The requirements gate, and every way of getting past it that must not work.
+
+Deferral is the interesting half. A real deferral carries a reason and counts as answered; a
+bare "deferred", a lazy "TBD", or deferring every axis at once does not. Without that, the
+gate is a formality anyone can satisfy by typing placeholder text, and the record it produces
+reads as reviewed.
+
+Depends on: core/architecture/requirements.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import copy
 import pytest
 

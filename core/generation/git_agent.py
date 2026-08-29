@@ -1,3 +1,18 @@
+"""
+Promote an approved composition to the pattern registry through a pull request.
+
+Behind `minusctl pattern promote`. A pattern is a composition someone already deployed and
+reviewed, so promotion refuses to run on a run that cannot show its work: no run directory,
+no plan, or no proving report and no explicit --skip-proof. The refusals are the feature --
+a registry of patterns nobody proved is a registry of guesses that later runs will reuse.
+
+Writes a branch, a commit and a PR; it never merges one. The reviewed-composition claim is
+made by the human who approves the PR, not by this module.
+
+Depends on: nothing in-repo (standard library only)
+Shells out to: git, and `gh` for the pull request
+Used by: core/cli/commands/pattern.py, tests/test_pattern_promotion.py
+"""
 import os
 import json
 import re

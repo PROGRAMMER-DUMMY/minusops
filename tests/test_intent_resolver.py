@@ -1,3 +1,14 @@
+"""
+A creation request reaches the requirements gate, never a deploy.
+
+The routing property is the point: "build me a data pipeline" must land on REQUIREMENTS and
+an operational phrase must not. An unknown request asks for clarification rather than picking
+the nearest blueprint, because guessing here starts a run against infrastructure nobody named.
+
+Depends on: core/generation/intent_resolver.py, core/generation/blueprints.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import blueprints
 import intent_resolver
 

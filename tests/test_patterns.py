@@ -1,3 +1,15 @@
+"""
+Pattern reuse is scored against the modules a request names, not against token noise.
+
+The regression this guards is subtle and silent: `match_modules` scores a single shared token
+at 1, so every module added to the catalog grew the Jaccard denominator and pushed every
+stored pattern's reuse score down. Approved compositions stopped being offered one at a time,
+with nothing reporting it.
+
+Depends on: core/generation/patterns.py, core/generation/modules.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import patterns
 
 

@@ -57,8 +57,8 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Core composition engine. Assembles catalog modules and generation-time authored novel resources into a governed Terraform workspace.
 * **Key Functions & Classes:**
-  * `synthesize(requirements_text, spec=None, decision=None, ...)` ([L1173-L1262](./synthesizer.py#L1173-L1262)): Main entrypoint. Validates gates (`requirements.py`, `architecture_decision.py`), resolves novel resources, copies modules, renders root HCL (`main.tf`, `variables.tf`, `providers.tf`, `versions.tf`), writes manifests, and updates workflow records.
-  * `compose(module_ids, name_prefix, out_dir, ..., state_backend=None)` ([L625-L761](./synthesizer.py#L625-L761)): Copies module assets, auto-wires module inputs, renders root HCL, writes authored resources/modules, formats output with `terraform fmt`, and generates `COMPOSITION.md`.
+  * [`synthesize(requirements_text, spec=None, decision=None, ...)`](./synthesizer.py): Main entrypoint. Validates gates (`requirements.py`, `architecture_decision.py`), resolves novel resources, copies modules, renders root HCL (`main.tf`, `variables.tf`, `providers.tf`, `versions.tf`), writes manifests, and updates workflow records.
+  * [`compose(module_ids, name_prefix, out_dir, ..., state_backend=None)`](./synthesizer.py): Copies module assets, auto-wires module inputs, renders root HCL, writes authored resources/modules, formats output with `terraform fmt`, and generates `COMPOSITION.md`.
   * `_render_backend(state_backend, name_prefix, run_id)` / `_BACKEND_TEMPLATE`: Emits the S3 remote-state block (MINUS-104), or `""` when no state bucket was supplied. **Opt-in on purpose:** a `backend "s3"` block makes `terraform init` fail until the bucket exists, so emitting one by default would break every local and test run. Locking uses S3-native `use_lockfile`, **not** a DynamoDB table -- HashiCorp deprecated DynamoDB locking ("will be removed in a future minor version"), so generating a table would ship a removal deadline to every operator. The key is directory-bound, `<name_prefix>/<run_id>/terraform.tfstate` (MINUS-134), so pipelines sharing one state bucket cannot collide on a key or block each other's lock (TerraShark FM-03). Reached via `synthesizer.py --state-bucket <b> [--state-region <r>]`; `--state-region` without `--state-bucket` is refused.
   * `_render_outputs(present_ids)` / `_OUTPUT_BLOCKS`: Writes `outputs.tf`, emitting only the outputs whose module is actually present (an output referencing an absent module is a hard `terraform validate` failure). Exists because the values a caller cannot compute at synthesis time -- anything containing the AWS account id or the run hash -- have to be readable after apply; `src/dbt/README-dbt.md` and `minusctl seed` both consume them instead of re-deriving bucket names by string surgery.
   * **dbt integration (MINUS-119/120):** `dbt_schema(name_prefix)`, `_dbt_profiles()`, `_dbt_project()`, `write_dbt_project(project_dir, name_prefix)`, `transform_engine(decision)`, `DBT_ENGINE`.
@@ -76,10 +76,10 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
     - New root variables backing it: `glue_worker_type`, `glue_number_of_workers`, `retention_days`, `monthly_budget_usd`, `cost_center`, `data_classification`. Wiring these also cleared the `worker_type` / `number_of_workers` / `retention_days` REVIEW items every composed stack used to carry.
   * **Mandatory tags (MINUS-132):** the provider's `default_tags` now stamps `managed_by`, `owner`, `environment`, `run_id`, merging in `cost_center` / `data_classification` **only when set** -- an empty tag value looks allocated in Cost Explorer while carrying no owner. `variables.tf` carries a `check "mandatory_tags_present"` block requiring both for `staging`/`prod`. **A `check` block warns; it does not fail the plan.** Cross-variable `validation` (which would hard-fail) needs Terraform >= 1.9 and `required_version` here is `">= 1.5"`; raising the floor would break operators on 1.5-1.8 to gain an error over a warning. Hard enforcement today is the deploy gate, not Terraform.
   * `_module_args(...)` auto-wiring added in Step 2/3: `storage-medallion-s3.force_destroy = var.environment == "dev"` (MINUS-101); `compute-glue-etl` gains `data_buckets = values(module.storage_medallion_s3.bucket_names)`, `kms_key_arn`, `source_bucket = ...["bronze"]`, `target_bucket = ...["silver"]` (MINUS-108/109). All four leave the module's REVIEW list, so a synthesized run is runnable without hand-editing.
-  * `assemble_authoring_context(resource_type, justification, requirements_text, provider="aws")` ([L340-L376](./synthesizer.py#L340-L376)): Assembles live schema, grounding examples, and knowledge claims for an authoring agent.
-  * `remember_claim(...)` ([L267-L325](./synthesizer.py#L267-L325)): Validates and persists researched claims into `knowledge_store` and JSONL corpus. Protects against prompt injections and fake price markers.
-  * `_validate_novel_resources(decision, authored_content, ...)` ([L1009-L1170](./synthesizer.py#L1009-L1170)): Fail-closed validator for authored resources using `schema_lint.gate_content()`.
-  * `AuthoredContentRejected(ValueError)` ([L993-L1006](./synthesizer.py#L993-L1006)): Exception carrying structured rejection reasons and G2 lint findings.
+  * [`assemble_authoring_context(resource_type, justification, requirements_text, provider="aws")`](./synthesizer.py): Assembles live schema, grounding examples, and knowledge claims for an authoring agent.
+  * [`remember_claim(...)`](./synthesizer.py): Validates and persists researched claims into `knowledge_store` and JSONL corpus. Protects against prompt injections and fake price markers.
+  * [`_validate_novel_resources(decision, authored_content, ...)`](./synthesizer.py): Fail-closed validator for authored resources using `schema_lint.gate_content()`.
+  * [`AuthoredContentRejected(ValueError)`](./synthesizer.py): Exception carrying structured rejection reasons and G2 lint findings.
 * **Inputs / Outputs:**
   * *Inputs:* Requirements text, spec dictionary, decision dictionary, output directory, authored content maps.
   * *Outputs:* Composed Terraform workspace files, `COMPOSITION.md`, `minus-generated.json`, source guard baseline.
@@ -95,11 +95,11 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Catalog registry of small, composable Terraform modules stored under `modules/<id>/`.
 * **Key Functions & Classes:**
-  * `MODULES` ([L74-L222](./modules.py#L74-L222)): Immutable list of catalog module definitions (ID, category, title, satisfies keywords, services, inputs, provides).
-  * `match_modules(requirements, min_score=1)` ([L247-L273](./modules.py#L247-L273)): Scores modules against free-text requirements based on keyword overlap with `satisfies` phrases.
-  * `derive_module_ids(requirements_data)` ([L352-L419](./modules.py#L352-L419)): Deterministically extracts module recommendations from explicit `data_pipeline` and `latency` fields in `requirements.json`.
-  * `retrieve_grounding_examples(requirements, top_n=3)` ([L276-L308](./modules.py#L276-L308)): Retrieves top-N module `main.tf` source code snippets as RAG grounding context for authoring agents.
-  * `validate_modules()` ([L430-L448](./modules.py#L430-L448)): Validates schema completeness and verifies on-disk existence of `modules/<id>/main.tf`.
+  * [`MODULES`](./modules.py): Immutable list of catalog module definitions (ID, category, title, satisfies keywords, services, inputs, provides).
+  * [`match_modules(requirements, min_score=1)`](./modules.py): Scores modules against free-text requirements based on keyword overlap with `satisfies` phrases.
+  * [`derive_module_ids(requirements_data)`](./modules.py): Deterministically extracts module recommendations from explicit `data_pipeline` and `latency` fields in `requirements.json`.
+  * [`retrieve_grounding_examples(requirements, top_n=3)`](./modules.py): Retrieves top-N module `main.tf` source code snippets as RAG grounding context for authoring agents.
+  * [`validate_modules()`](./modules.py): Validates schema completeness and verifies on-disk existence of `modules/<id>/main.tf`.
 * **Inputs / Outputs:**
   * *Inputs:* Free-text requirements strings, `requirements.json` dictionaries, module IDs.
   * *Outputs:* Lists of matched/scored module dicts, grounding example dicts, or validation error lists.
@@ -113,10 +113,10 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Manages module catalog versioning, content hashing, and provenance tracking (`PROVENANCE.json`).
 * **Key Functions & Classes:**
-  * `content_hash(module_dir)` ([L65-L79](./module_provenance.py#L65-L79)): Calculates deterministic SHA-256 hash over module directory contents (excluding `PROVENANCE.json`).
-  * `pin(module_id, source, ...)` ([L102-L159](./module_provenance.py#L102-L159)): Bumps version counter, records content hash, source, G2 findings, and writes upgrade reports into `upgrades/`.
-  * `verify(module_id)` ([L162-L170](./module_provenance.py#L162-L170)): Compares current content hash against recorded `PROVENANCE.json` to detect unpinned drift.
-  * `show(module_id)` ([L86-L92](./module_provenance.py#L86-L92)): Loads recorded `PROVENANCE.json` for a module.
+  * [`content_hash(module_dir)`](./module_provenance.py): Calculates deterministic SHA-256 hash over module directory contents (excluding `PROVENANCE.json`).
+  * [`pin(module_id, source, ...)`](./module_provenance.py): Bumps version counter, records content hash, source, G2 findings, and writes upgrade reports into `upgrades/`.
+  * [`verify(module_id)`](./module_provenance.py): Compares current content hash against recorded `PROVENANCE.json` to detect unpinned drift.
+  * [`show(module_id)`](./module_provenance.py): Loads recorded `PROVENANCE.json` for a module.
 * **Inputs / Outputs:**
   * *Inputs:* Module ID, source description, provider version, G2 lint findings.
   * *Outputs:* `PROVENANCE.json` record, upgrade report JSON, verification status boolean.
@@ -131,9 +131,9 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Registry for product blueprints (specifically `aws-data-pipeline-standard` demo fixture).
 * **Key Functions & Classes:**
-  * `BLUEPRINTS` ([L32-L115](./blueprints.py#L32-L115)): Registered blueprint metadata list.
-  * `validate_blueprint(blueprint)` ([L122-L166](./blueprints.py#L122-L166)) / `validate_blueprints()` ([L169-L182](./blueprints.py#L169-L182)): Checks required blueprint fields, inputs, choices, and non-empty strings.
-  * `match_blueprints(query, cloud=None)` ([L202-L238](./blueprints.py#L202-L238)): Scores blueprints against natural language queries using alias and service matches.
+  * [`BLUEPRINTS`](./blueprints.py): Registered blueprint metadata list.
+  * [`validate_blueprint(blueprint)`](./blueprints.py) / [`validate_blueprints()`](./blueprints.py): Checks required blueprint fields, inputs, choices, and non-empty strings.
+  * [`match_blueprints(query, cloud=None)`](./blueprints.py): Scores blueprints against natural language queries using alias and service matches.
 * **Inputs / Outputs:**
   * *Inputs:* Query string, cloud filter, blueprint ID.
   * *Outputs:* Matched blueprint dicts, deep copies of blueprint definitions, validation error maps.
@@ -147,9 +147,9 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Reviewable architecture accelerators generating complete `requirements.json` and `architecture_decision.json` starting points.
 * **Key Functions & Classes:**
-  * `lakehouse_requirements(owner=..., daily_data_gb=..., latency=...)` ([L44-L84](./accelerators.py#L44-L84)): Generates pre-populated requirements record for an AWS Lakehouse.
-  * `lakehouse_decision(requirements_file=..., streaming=..., daily_data_gb=...)` ([L87-L180](./accelerators.py#L87-L180)): Generates architecture decision record, selecting scale-appropriate modules (compaction for TB, Iceberg for PB). Satisfies the TerraShark 4-part output contract (MINUS-136): it populates `validation` (validate + SEC scan + conformance + BCM evidence), `rollback` (hash-bound gate, `--destroy`, source-snapshot revert), and the `failure_modes` it designs against (`FM-01`, `FM-03`, `FM-05`) alongside `assumptions` and `alternatives`. Without these the accelerator's own output would no longer pass `architecture_decision.validate()`.
-  * `write_lakehouse(run, ...)` ([L167-L188](./accelerators.py#L167-L188)): Writes both records into a run workspace.
+  * [`lakehouse_requirements(owner=..., daily_data_gb=..., latency=...)`](./accelerators.py): Generates pre-populated requirements record for an AWS Lakehouse.
+  * [`lakehouse_decision(requirements_file=..., streaming=..., daily_data_gb=...)`](./accelerators.py): Generates architecture decision record, selecting scale-appropriate modules (compaction for TB, Iceberg for PB). Satisfies the TerraShark 4-part output contract (MINUS-136): it populates `validation` (validate + SEC scan + conformance + BCM evidence), `rollback` (hash-bound gate, `--destroy`, source-snapshot revert), and the `failure_modes` it designs against (`FM-01`, `FM-03`, `FM-05`) alongside `assumptions` and `alternatives`. Without these the accelerator's own output would no longer pass `architecture_decision.validate()`.
+  * [`write_lakehouse(run, ...)`](./accelerators.py): Writes both records into a run workspace.
 * **Inputs / Outputs:**
   * *Inputs:* Run dictionary, owner string, daily data GB, streaming flag.
   * *Outputs:* Written `requirements.json`, `architecture_decision.json`, and next command hint.
@@ -163,9 +163,9 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Enterprise intent classifier that turns user requests into safe product decisions (`REQUIREMENTS` vs `OPERATION`).
 * **Key Functions & Classes:**
-  * `is_creation_request(query)` ([L73-L100](./intent_resolver.py#L73-L100)): Classifies request by matching infrastructure terms and checking against interrogative ("what", "show") or operational ("deploy", "destroy") veto terms.
-  * `resolve(query, cloud=None)` ([L110-L149](./intent_resolver.py#L110-L149)): Maps creation queries to `REQUIREMENTS` intent and operational queries to `OPERATION`.
-  * `format_resolution(result)` ([L152-L184](./intent_resolver.py#L152-L184)): Formats resolution output for CLI display.
+  * [`is_creation_request(query)`](./intent_resolver.py): Classifies request by matching infrastructure terms and checking against interrogative ("what", "show") or operational ("deploy", "destroy") veto terms.
+  * [`resolve(query, cloud=None)`](./intent_resolver.py): Maps creation queries to `REQUIREMENTS` intent and operational queries to `OPERATION`.
+  * [`format_resolution(result)`](./intent_resolver.py): Formats resolution output for CLI display.
 * **Inputs / Outputs:**
   * *Inputs:* Query string, optional cloud name.
   * *Outputs:* Resolution dictionary with intent, confidence, recommendation, and safe next actions.
@@ -179,9 +179,9 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Persistence registry for approved, deployed architecture compositions (`.minus/patterns.json`).
 * **Key Functions & Classes:**
-  * `capture_pattern(requirements, module_ids, name=..., plan_hash=..., approver=...)` ([L45-L59](./patterns.py#L45-L59)): Saves approved composition pattern.
-  * `match_patterns(requirements, min_overlap=0.5)` ([L76-L88](./patterns.py#L76-L88)): Calculates Jaccard similarity between candidate module sets and historical patterns to recommend proven compositions.
-  * `load_patterns()` ([L25-L34](./patterns.py#L25-L34)): Reads patterns from `.minus/patterns.json`.
+  * [`capture_pattern(requirements, module_ids, name=..., plan_hash=..., approver=...)`](./patterns.py): Saves approved composition pattern.
+  * [`match_patterns(requirements, min_overlap=0.5)`](./patterns.py): Calculates Jaccard similarity between candidate module sets and historical patterns to recommend proven compositions.
+  * [`load_patterns()`](./patterns.py): Reads patterns from `.minus/patterns.json`.
 * **Inputs / Outputs:**
   * *Inputs:* Requirements string, list of module IDs, plan hash, approver name.
   * *Outputs:* Stored pattern dictionary, list of matched patterns with `reuse_score`.
@@ -195,8 +195,8 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Orchestrates the request-to-run workflow, creating run workspaces and seeding `requirements.json`.
 * **Key Functions & Classes:**
-  * `resolve_to_run(query, cloud=..., inputs=..., generate=False)` ([L54-L89](./workflow.py#L54-L89)): Calls `intent_resolver.resolve()`, creates a run directory via `runs.py`, seeds `requirements.json` with the goal, and blocks direct generation.
-  * `format_result(record)` ([L92-L121](./workflow.py#L92-L121)): Prepares human-readable summary of the run creation status.
+  * [`resolve_to_run(query, cloud=..., inputs=..., generate=False)`](./workflow.py): Calls `intent_resolver.resolve()`, creates a run directory via `runs.py`, seeds `requirements.json` with the goal, and blocks direct generation.
+  * [`format_result(record)`](./workflow.py): Prepares human-readable summary of the run creation status.
 * **Inputs / Outputs:**
   * *Inputs:* User query string, cloud filter, inputs dictionary, generate flag.
   * *Outputs:* Run record dictionary (`workflow.json`), populated run workspace.
@@ -211,8 +211,8 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Generates static Terraform HCL files for the demo fixture blueprint (`aws-data-pipeline-standard`).
 * **Key Functions & Classes:**
-  * `generate(blueprint, inputs, terraform_dir)` ([L32-L36](./terraform_generator.py#L32-L36)): Dispatcher validating blueprint ID.
-  * `generate_aws_data_pipeline(inputs, terraform_dir)` ([L39-L395](./terraform_generator.py#L39-L395)): Writes `main.tf`, `provider.tf`, `variables.tf`, `kms.tf`, `s3.tf`, `iam.tf`, `glue.tf`, `scripts.tf`, `step_functions.tf`, `athena.tf`, `monitoring.tf`, and `outputs.tf`. Also writes source guard baseline.
+  * [`generate(blueprint, inputs, terraform_dir)`](./terraform_generator.py): Dispatcher validating blueprint ID.
+  * [`generate_aws_data_pipeline(inputs, terraform_dir)`](./terraform_generator.py): Writes `main.tf`, `provider.tf`, `variables.tf`, `kms.tf`, `s3.tf`, `iam.tf`, `glue.tf`, `scripts.tf`, `step_functions.tf`, `athena.tf`, `monitoring.tf`, and `outputs.tf`. Also writes source guard baseline.
 * **Inputs / Outputs:**
   * *Inputs:* Blueprint dict, inputs dict (`owner`, `daily_data_gb`, `environment`, `region`), output terraform directory.
   * *Outputs:* Written `.tf` files and `minus-generated.json` manifest.
@@ -226,8 +226,8 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Standalone orchestrator for no-cloud demos. Generates Terraform, builds synthetic plan JSON, and triggers reports without contacting AWS or running Terraform CLI.
 * **Key Functions & Classes:**
-  * `governed_data_pipeline(owner, daily_data_gb)` ([L100-L132](./demo.py#L100-L132)): Runs `runs.new_run()`, calls `terraform_generator.generate()`, generates `synthetic_plan()`, and invokes `reporter.generate_from_plan_json()`.
-  * `synthetic_plan(tf_dir, inputs)` ([L65-L97](./demo.py#L65-L97)): Generates synthetic `terraform show -json` structure matching standard resource types.
+  * [`governed_data_pipeline(owner, daily_data_gb)`](./demo.py): Runs `runs.new_run()`, calls `terraform_generator.generate()`, generates `synthetic_plan()`, and invokes `reporter.generate_from_plan_json()`.
+  * [`synthetic_plan(tf_dir, inputs)`](./demo.py): Generates synthetic `terraform show -json` structure matching standard resource types.
 * **Inputs / Outputs:**
   * *Inputs:* Owner string, daily data GB number.
   * *Outputs:* Complete run directory with synthetic plan JSON, reports, and workflow record.
@@ -241,11 +241,11 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Pre-write G2 schema linter. Validates HCL attribute references, types, deprecations, and required fields against live `terraform providers schema -json`.
 * **Key Functions & Classes:**
-  * `gate_content(content, source_label)` ([L398-L561](./schema_lint.py#L398-L561)): Core G2 linter. Parses top-level blocks, scans assigned attributes (`_scan_body`), extracts references (`extract_references`), and checks against live provider schema.
-  * `gate_module(module_id)` ([L376-L395](./schema_lint.py#L376-L395)): Reads `modules/<module_id>/main.tf` and passes content to `gate_content()`.
-  * `iter_hcl_blocks(content)` ([L69-L74](./schema_lint.py#L69-L74)): Yields top-level resource and data blocks using depth-aware brace matching (`_matching_brace`).
-  * `_scan_body(body, prefix="")` ([L77-L138](./schema_lint.py#L77-L138)): Recursively scans block bodies for assigned attributes and flags unparseable `dynamic` blocks.
-  * `_extract_assigned_values(body, prefix="")` ([L204-L249](./schema_lint.py#L204-L249)): Extracts assigned RHS text for literal shape inference (`_infer_literal_shape`).
+  * [`gate_content(content, source_label)`](./schema_lint.py): Core G2 linter. Parses top-level blocks, scans assigned attributes (`_scan_body`), extracts references (`extract_references`), and checks against live provider schema.
+  * [`gate_module(module_id)`](./schema_lint.py): Reads `modules/<module_id>/main.tf` and passes content to `gate_content()`.
+  * [`iter_hcl_blocks(content)`](./schema_lint.py): Yields top-level resource and data blocks using depth-aware brace matching (`_matching_brace`).
+  * [`_scan_body(body, prefix="")`](./schema_lint.py): Recursively scans block bodies for assigned attributes and flags unparseable `dynamic` blocks.
+  * [`_extract_assigned_values(body, prefix="")`](./schema_lint.py): Extracts assigned RHS text for literal shape inference (`_infer_literal_shape`).
 * **Inputs / Outputs:**
   * *Inputs:* Raw HCL content string or module ID, source label string.
   * *Outputs:* Dict `{"blocking": bool, "findings": [...], "warnings": [...], "schema_hash": str}`.
@@ -260,11 +260,11 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** CI provider schema-diff watcher. Detects provider schema drift (attribute deprecations, version bumps, type removals) for catalog modules.
 * **Key Functions & Classes:**
-  * `run_provider(provider, ...)` ([L260-L330](./schema_watch.py#L260-L330)): Fetches live schema, extracts types used by catalog modules (`used_types`), diffs against `schema-snapshot.json`, writes timestamped diff reports, and logs to `audit.jsonl`.
-  * `get_type_schema(provider, type_name, kind="resource")` ([L139-L170](./schema_watch.py#L139-L170)): Returns raw schema block for a single resource/data source type.
-  * `used_types(modules_dir, provider)` ([L76-L87](./schema_watch.py#L76-L87)): Scans `modules/*/main.tf` to identify active resource types.
-  * `_fetch_schema(provider, workdir)` ([L90-L136](./schema_watch.py#L90-L136)): Runs `terraform init` and `terraform providers schema -json` in a temporary directory.
-  * `_diff(old_snapshot, reduced, used_keys)` ([L204-L228](./schema_watch.py#L204-L228)): Compares current reduced schema against previous snapshot.
+  * [`run_provider(provider, ...)`](./schema_watch.py): Fetches live schema, extracts types used by catalog modules (`used_types`), diffs against `schema-snapshot.json`, writes timestamped diff reports, and logs to `audit.jsonl`.
+  * [`get_type_schema(provider, type_name, kind="resource")`](./schema_watch.py): Returns raw schema block for a single resource/data source type.
+  * [`used_types(modules_dir, provider)`](./schema_watch.py): Scans `modules/*/main.tf` to identify active resource types.
+  * [`_fetch_schema(provider, workdir)`](./schema_watch.py): Runs `terraform init` and `terraform providers schema -json` in a temporary directory.
+  * [`_diff(old_snapshot, reduced, used_keys)`](./schema_watch.py): Compares current reduced schema against previous snapshot.
 * **Inputs / Outputs:**
   * *Inputs:* Provider name ("aws", "databricks"), optional output paths.
   * *Outputs:* `schema-snapshot.json`, diff report JSON, audit event entry, tuple `(findings, new_of_interest)`.
@@ -278,11 +278,11 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Bi-temporal SQLite store and JSONL corpus for facts, claims, and agent adjudications (`claims.db` & `claims/*.jsonl`).
 * **Key Functions & Classes:**
-  * `init_db(path)` ([L57-L70](./knowledge_store.py#L57-L70)): Creates SQLite tables (`claims`, `claim_adjudications`), indexes, and enables WAL mode.
-  * `insert_claim(conn, ...)` ([L78-L107](./knowledge_store.py#L78-L107)): Inserts a bi-temporal claim (`valid_from`, `observed_at`, `ingested_at`, `scope`, `content_hash`).
-  * `invalidate_claim(conn, claim_id, *, valid_until, ...)` ([L141-L159](./knowledge_store.py#L141-L159)): Marks a claim as invalidated by a newer claim.
-  * `resolve(conn, resource_type, attribute=None)` ([L195-L281](./knowledge_store.py#L195-L281)): Determines winning claim or `needs_review` status based on bi-temporal freshness clauses, string agreement, and delegated agent verdicts.
-  * `export_jsonl(conn, root)` ([L326-L377](./knowledge_store.py#L326-L377)) / `import_jsonl(conn, root)` ([L380-L438](./knowledge_store.py#L380-L438)): Serializes SQLite state to git-committable sharded JSONL files (`<type>.jsonl`, `_adjudications.jsonl`) and rebuilds cache.
+  * [`init_db(path)`](./knowledge_store.py): Creates SQLite tables (`claims`, `claim_adjudications`), indexes, and enables WAL mode.
+  * [`insert_claim(conn, ...)`](./knowledge_store.py): Inserts a bi-temporal claim (`valid_from`, `observed_at`, `ingested_at`, `scope`, `content_hash`).
+  * [`invalidate_claim(conn, claim_id, *, valid_until, ...)`](./knowledge_store.py): Marks a claim as invalidated by a newer claim.
+  * [`resolve(conn, resource_type, attribute=None)`](./knowledge_store.py): Determines winning claim or `needs_review` status based on bi-temporal freshness clauses, string agreement, and delegated agent verdicts.
+  * [`export_jsonl(conn, root)`](./knowledge_store.py) / [`import_jsonl(conn, root)`](./knowledge_store.py): Serializes SQLite state to git-committable sharded JSONL files (`<type>.jsonl`, `_adjudications.jsonl`) and rebuilds cache.
 * **Inputs / Outputs:**
   * *Inputs:* SQLite connection, claim attributes, corpus directory path.
   * *Outputs:* Claim ID int, resolution dict, sharded JSONL files.
@@ -296,7 +296,7 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Re-fetches live schemas to check for degradation, invalidating stale claims and inserting fresh ones in `knowledge_store`.
 * **Key Functions & Classes:**
-  * `check_and_refresh(conn, provider, resource_type, kind="resource")` ([L27-L101](./knowledge_degradation.py#L27-L101)): Fetches fresh claims via `knowledge_diff.schema_claims_for_type()`, inserts new claims, invalidates old claims (`valid_until=valid_from`), and handles removed attributes.
+  * [`check_and_refresh(conn, provider, resource_type, kind="resource")`](./knowledge_degradation.py): Fetches fresh claims via `knowledge_diff.schema_claims_for_type()`, inserts new claims, invalidates old claims (`valid_until=valid_from`), and handles removed attributes.
 * **Inputs / Outputs:**
   * *Inputs:* SQLite connection, provider, resource type, resource kind.
   * *Outputs:* Summary dictionary `{"resource_type": ..., "inserted": [...], "invalidated": [...], "removed_attributes": [...], "skipped_removed_attribute_check": bool}`.
@@ -310,8 +310,8 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Manages agent-delegation hand-offs when `resolve()` encounters conflicting or `needs_review` claims.
 * **Key Functions & Classes:**
-  * `build_delegation_request(conn, resource_type, attribute)` ([L17-L39](./knowledge_delegation.py#L17-L39)): Packages conflicting claims into a structured hand-off payload for the driving agent.
-  * `record_delegation_verdict(conn, resource_type, attribute, ...)` ([L42-L150](./knowledge_delegation.py#L42-L150)): Inserts agent verdict as a new `agent_delegated` claim and writes `claim_adjudications` linkage in a single transaction.
+  * [`build_delegation_request(conn, resource_type, attribute)`](./knowledge_delegation.py): Packages conflicting claims into a structured hand-off payload for the driving agent.
+  * [`record_delegation_verdict(conn, resource_type, attribute, ...)`](./knowledge_delegation.py): Inserts agent verdict as a new `agent_delegated` claim and writes `claim_adjudications` linkage in a single transaction.
 * **Inputs / Outputs:**
   * *Inputs:* SQLite connection, resource type, attribute, adjudication IDs list, ISO timestamps.
   * *Outputs:* Delegation request dictionary or newly created verdict claim ID int.
@@ -325,7 +325,7 @@ Instead of deploying static monolithic blueprints, MinusOps composes vetted modu
 
 * **Exact Purpose:** Converts live provider schema blocks into deterministic structural `schema` claim dictionaries.
 * **Key Functions & Classes:**
-  * `schema_claims_for_type(provider, resource_type, observed_at=None, kind="resource")` ([L18-L46](./knowledge_diff.py#L18-L46)): Uses `schema_watch._fetch_schema()` to extract required/deprecated/optional flags per attribute and format claim dictionaries.
+  * [`schema_claims_for_type(provider, resource_type, observed_at=None, kind="resource")`](./knowledge_diff.py): Uses `schema_watch._fetch_schema()` to extract required/deprecated/optional flags per attribute and format claim dictionaries.
 * **Inputs / Outputs:**
   * *Inputs:* Provider, resource_type, optional `observed_at` timestamp string, kind string.
   * *Outputs:* List of claim dictionaries ready for `knowledge_store.insert_claim()`.

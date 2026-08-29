@@ -1,3 +1,15 @@
+"""
+The four honest states every plan resource is sorted into, and the refusal to drop one.
+
+auto_priced, catalog_mapped_needs_usage, confirmed_free, unresolved. The last is why this
+exists: a resource type nobody mapped must surface as a gap rather than silently vanish from
+the cost report, because a total that omits a service reads exactly like a total that
+includes it.
+
+Depends on: core/cost/coverage_audit.py, core/providers/base.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import json
 
 import coverage_audit as ca

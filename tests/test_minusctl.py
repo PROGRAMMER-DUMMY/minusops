@@ -1,3 +1,14 @@
+"""
+The operator CLI end to end, including the subcommands that must NOT touch infrastructure.
+
+`minusctl` is local-only by contract with one stated exception (`seed --execute`), so these
+assert the safe surface: create writes requirements first, guard detects a manual edit,
+package and prove write their artifacts, and nothing here reaches AWS or runs an apply.
+
+Depends on: core/reporting/minusctl.py, core/generation/workflow.py, core/providers/base.py
+Shells out to: nothing (subprocess boundaries are stubbed)
+Used by: nothing (pytest entry point)
+"""
 import io
 import json
 import os

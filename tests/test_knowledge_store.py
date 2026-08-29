@@ -1,3 +1,16 @@
+"""
+Bi-temporal claims: what wins, what is refused, and what round-trips.
+
+`resolve()` has produced three separate silent-wrong-answer bugs, all of them comparison
+errors rather than crashes, so the tests here lean on ordering and equality edge cases:
+identical timestamps, an invalidated claim that must stop winning, a naive datetime that must
+be rejected rather than coerced. Treat any change to resolve() as high-risk and write the
+failing test first.
+
+Depends on: core/generation/knowledge_store.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import os
 import sqlite3
 

@@ -1,3 +1,19 @@
+"""
+The canvas: what it draws, what it refuses to claim, and whether the URL actually opens.
+
+Three groups, and the middle one is the reason this file is long. The URL tests decode the
+way diagrams.net does -- atob, inflateRaw, decodeURIComponent -- because a Python round trip
+that decodes what it encoded is self-consistent and proved nothing about the browser; two
+real defects (the urlsafe alphabet, and a raw percent sign) passed a green suite. The edge
+tests assert what is NOT drawn: a Terraform dependency is not data movement, and a
+walkthrough step may not use a verb the plan does not support. The layout tests assert
+geometry, because a band that grows through its neighbour breaks nothing a node-level
+assertion can see.
+
+Depends on: core/reporting/drawio_generator.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import itertools
 import os
 import sys

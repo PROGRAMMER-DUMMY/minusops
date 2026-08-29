@@ -1,3 +1,15 @@
+"""
+BCM payload preparation, usage derivation, and the placeholders that must not survive it.
+
+`REVIEW_REQUIRED` is the load-bearing string in this file. A usage payload that reaches the
+BCM API with one still in it produces a number that looks evidenced and is not, which is the
+single failure the whole cost subsystem is arranged to prevent -- so `validate_usage` must
+reject it and `derive_usage` must fill it from stated inputs rather than leave it.
+
+Depends on: core/cost/bcm_pricing_calculator.py, core/providers/base.py
+Shells out to: nothing (the AWS CLI is stubbed)
+Used by: nothing (pytest entry point)
+"""
 import json
 import os
 

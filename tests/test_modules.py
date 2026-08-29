@@ -1,3 +1,16 @@
+"""
+The module registry, and where it resolves module assets from.
+
+Half of this file is path resolution, which looks incidental and is not: the same code runs
+from a source checkout and from an installed wheel, and `output_root` resolving into
+site-packages would write a run workspace inside the installed package. The rest is registry
+validity and keyword matching -- a weak-signal ranker whose scores must not be read as
+selection.
+
+Depends on: core/generation/modules.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import json
 import os
 

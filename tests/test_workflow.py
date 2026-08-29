@@ -1,3 +1,13 @@
+"""
+The request-to-run entry point creates a requirements record and refuses to generate.
+
+Two tests holding one line: `resolve_to_run(generate=True)` must still refuse, because the
+requirements-first rule is worth nothing if the flag that skips it exists.
+
+Depends on: core/generation/workflow.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import os
 
 import workflow

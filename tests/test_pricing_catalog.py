@@ -1,3 +1,15 @@
+"""
+Resource-type to serviceCode mapping, and the longest-prefix rule that makes it correct.
+
+`aws_kinesis_firehose_delivery_stream` must not resolve through the `aws_kinesis` prefix:
+Firehose and Data Streams are billed differently, so a shorter prefix winning is a wrong
+price rather than a missing one. Free-resource matching is asserted in both directions,
+because a billable type wrongly called free disappears from the cost report entirely.
+
+Depends on: core/cost/pricing_catalog.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import json
 
 import pricing_catalog as pc

@@ -1,3 +1,16 @@
+"""
+The architecture decision gate, and the four-part contract it will not pass without.
+
+The record exists to make synthesis explain itself, so the tests are mostly REFUSALS: a
+template is incomplete until researched, an unknown module id is rejected rather than
+recorded, and a record naming neither modules nor novel resources does not validate. The
+TerraShark contract (assumptions, tradeoffs, validation, rollback) is checked here because a
+record that cannot say how a design is proven or undone is the one that reaches production.
+
+Depends on: core/architecture/architecture_decision.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import architecture_decision as archdec
 
 

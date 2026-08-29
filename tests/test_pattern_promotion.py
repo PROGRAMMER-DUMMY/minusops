@@ -1,3 +1,14 @@
+"""
+Promotion refuses every run that cannot show its work.
+
+Four of the five tests are refusals: no run, no plan, no proving report without an explicit
+skip. A pattern registry is reused by later runs, so a composition promoted without evidence
+propagates -- the failure is not this run, it is the three that copy it.
+
+Depends on: core/generation/git_agent.py, core/generation/patterns.py
+Shells out to: nothing (git and gh are stubbed)
+Used by: nothing (pytest entry point)
+"""
 import pytest
 import os
 import json

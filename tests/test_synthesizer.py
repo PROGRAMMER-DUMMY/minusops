@@ -1,3 +1,16 @@
+"""
+Composition: what gets wired, what gets refused, and what must stay byte-identical.
+
+The byte-identical assertions are deliberate. A root template that shifts when an unrelated
+module is added means every composed stack produces a different plan hash for the same
+architecture, and the gate's whole binding rests on that hash being stable. The refusals
+cover the two gates -- incomplete requirements and an incomplete decision record -- plus
+authored content that fails G2 schema linting.
+
+Depends on: core/generation/synthesizer.py, modules.py, architecture_decision.py, runs.py
+Shells out to: terraform fmt where available; the slow-marked cases run terraform
+Used by: nothing (pytest entry point)
+"""
 import json
 import os
 

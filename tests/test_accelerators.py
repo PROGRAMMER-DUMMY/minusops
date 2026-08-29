@@ -1,3 +1,15 @@
+"""
+The lakehouse accelerator writes a complete starting point, and refuses to overwrite one.
+
+An accelerator that produced a HALF-filled requirements record would be worse than none: the
+gate would pass on fields nobody chose. So the assertions are that both records validate
+outright, that the streaming module appears only when asked for, and that writing over an
+existing run needs `force`.
+
+Depends on: core/generation/accelerators.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import os
 
 import accelerators
