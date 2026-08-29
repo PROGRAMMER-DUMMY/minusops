@@ -156,7 +156,7 @@ Generation in MinusOps is **requirements-first** and bound to reviewed records (
 
 ### 8. [`pillars.py`](./pillars.py)
 
-* **Exact Purpose:** the 18-pillar interview catalogue, and the arithmetic that makes each
+* **Exact Purpose:** the 19-pillar interview catalogue, and the arithmetic that makes each
   later question specific to the answers already given.
 * **Two things, and the split matters:** `PILLARS` is data -- question, options, what each
   option maps to in the module registry, and the `depth` follow-ups that only become
@@ -170,6 +170,12 @@ Generation in MinusOps is **requirements-first** and bound to reviewed records (
   which is why the quarantine follow-ups are not asked of someone who chose fail-fast.
 * **Wired pillars carry `derives` and `informs`:** an answer that reaches no derivation and
   informs no later pillar is recorded and then read by nothing.
+* **Pillar 0 is a report, not a choice.** Residency, mandated key management, retention floors
+  and spend ceilings are set above the team; AWS's own guidance places RTO, RPO and residency
+  with the business and the architect downstream of them. It is asked first because every
+  later option list is bounded by the answer, and an architect who picks a region a policy
+  already fixed has produced a contradiction rather than a decision. It maps to no module --
+  a constraint is not a thing to provision.
 * **Tests:** [`tests/test_pillars.py`](../../tests/test_pillars.py).
 
 ---

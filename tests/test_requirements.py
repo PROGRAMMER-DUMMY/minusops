@@ -178,13 +178,13 @@ def _complete():
 
 
 
-# --- The 18 pillars (additive; the interview's answers get a home) -----------------------
+# --- The 19 pillars (additive; the interview's answers get a home) -----------------------
 
 def test_the_template_has_a_slot_for_every_pillar():
     """18 asked, 16 slots, 2 driving generation was the gap. Every pillar now lands."""
     blank = reqgate.template()
     assert set(blank["pillars"]) == set(reqgate.PILLAR_KEYS)
-    assert len(blank["pillars"]) == 18
+    assert len(blank["pillars"]) == 19
 
 
 def test_a_pillar_slot_carries_the_choice_and_the_operators_own_words():
@@ -207,7 +207,7 @@ def test_unanswered_pillars_names_what_the_interview_still_owes():
     unanswered = reqgate.unanswered_pillars(record)
     assert "ingestion_source" not in unanswered
     assert "worker_sizing" in unanswered
-    assert len(unanswered) == 17
+    assert len(unanswered) == 18
 
 
 def test_a_lazy_pillar_deferral_does_not_count_as_answered():

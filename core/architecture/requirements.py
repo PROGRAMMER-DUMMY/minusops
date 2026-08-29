@@ -30,7 +30,7 @@ which is "feeds a generator":
      answers.
 
      `pillar_facts` extends that set rather than replacing it. It holds the numeric answers
-     the 18-pillar interview collects -- partition granularity, read pattern, transform shape,
+     the 19-pillar interview collects -- partition granularity, read pattern, transform shape,
      runs per day, event rate, record size -- which core/architecture/pillars.py turns into a
      worker plan, an object-size verdict and a shard count. Before it existed the interview
      asked eighteen questions into a record with sixteen unrelated slots, so half the answers
@@ -210,9 +210,9 @@ def validate_data_pipeline(data):
     return (not missing), missing
 
 
-# --- The 18 pillars ---------------------------------------------------------------------
+# --- The 19 pillars ---------------------------------------------------------------------
 #
-# The interview asked 18 questions and the record had 16 slots, none of which matched them.
+# The interview asked 19 questions and the record had 16 slots, none of which matched them.
 # Half the answers had nowhere to land, which is why a module like security-iam-scoped came
 # out with two wired inputs and six REVIEW markers: the operator answered the Lake Formation
 # question and the answer went nowhere.
@@ -231,7 +231,7 @@ def validate_pillars(data):
     block = (data or {}).get("pillars") or {}
     if not isinstance(block, dict):
         return False, ["pillars (not an object)"]
-    problems = [f"pillars.{key} is not one of the 18 pillars"
+    problems = [f"pillars.{key} is not one of the 19 pillars"
                 for key in block if key not in PILLAR_KEYS]
     problems.extend(f"pillars.{key}" for key in unanswered_pillars(data))
     return (not problems), problems

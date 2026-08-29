@@ -1,5 +1,5 @@
 """
-The 18 pillars, and the arithmetic that makes each later question specific.
+The 19 pillars, and the arithmetic that makes each later question specific.
 
 The tests that matter here are the REFUSALS and the BANDS.
 
@@ -27,15 +27,59 @@ import pillars
 
 # --- The catalogue ----------------------------------------------------------------------
 
-def test_there_are_eighteen_pillars_numbered_one_to_eighteen():
-    assert len(pillars.PILLARS) == 18
-    assert pillars.PILLAR_IDS == tuple(range(1, 19))
+def test_there_are_nineteen_pillars_numbered_zero_to_eighteen():
+    assert len(pillars.PILLARS) == 19
+    assert pillars.PILLAR_IDS == tuple(range(0, 19))
 
 
 def test_every_pillar_carries_depth_follow_ups():
     """The flat list was the defect. A pillar with no depth is a pillar back to being a form."""
     without = [p["key"] for p in pillars.PILLARS if not p["depth"]]
     assert not without, f"pillars with no follow-ups: {without}"
+
+
+def test_every_informs_target_is_a_real_pillar():
+    """`informs` is what lets the interview say why it is asking. A key that resolves to no
+    pillar is a link into nothing, and nothing raises when it is followed."""
+    dangling = [(p["key"], target) for p in pillars.PILLARS for target in p["informs"]
+                if target not in pillars.BY_KEY]
+    assert not dangling, f"informs pointing at no pillar: {dangling}"
+
+
+def test_the_interview_asks_what_is_already_fixed_before_it_asks_for_a_choice():
+    """Residency, key policy, retention and spend are set above the team. An architect asked
+    to pick one has been handed a decision that was already made somewhere else."""
+    first = pillars.next_pillar([])
+    assert first["key"] == "policy_baseline"
+    assert first["phase"] == 0
+
+    constrained = set(pillars.BY_KEY["policy_baseline"]["informs"])
+    assert {"network", "disaster_recovery"} <= constrained
+
+
+def test_the_policy_pillar_branches_on_whether_the_policy_is_written_down():
+    """An unwritten policy and an absent one lead somewhere different: one needs a person
+    named to confirm it, the other needs an owner appointed. A shared follow-up list cannot
+    say that."""
+    written = pillars.depth_for(
+        "policy_baseline", "A written policy document exists and is in hand")
+    none = pillars.depth_for(
+        "policy_baseline", "Nothing is fixed -- this team sets its own constraints")
+    assert written and none and written != none
+
+
+def test_the_cicd_pillar_asks_whether_application_code_is_in_scope():
+    """Terraform apply is the whole delivery path for infrastructure and only part of one for
+    an application. Which of the two this is decides whether the CI answer is complete."""
+    follow_ups = " ".join(pillars.depth_for("cicd", "GitHub Actions with AWS OIDC federation"))
+    assert "application code" in follow_ups
+
+
+def test_the_network_pillar_offers_not_having_a_vpc():
+    """Glue S3-to-S3, Athena and Firehose need no VPC. An option list where every answer
+    provisions one cannot produce the correct answer for those stacks."""
+    options = " ".join(pillars.BY_KEY["network"]["options"]).lower()
+    assert "no vpc" in options
 
 
 def test_every_pillar_names_what_is_usually_forgotten():
@@ -201,8 +245,8 @@ def test_the_spark_factor_is_labelled_as_this_projects_assumption():
 # --- Interview flow ------------------------------------------------------------------------
 
 def test_next_pillar_walks_in_order_and_ends():
-    assert pillars.next_pillar([])["key"] == "ingestion_source"
-    assert pillars.next_pillar(["ingestion_source"])["key"] == "storage_format"
+    assert pillars.next_pillar([])["key"] == "policy_baseline"
+    assert pillars.next_pillar(["policy_baseline"])["key"] == "ingestion_source"
     assert pillars.next_pillar(pillars.PILLAR_KEYS) is None
 
 
@@ -241,10 +285,10 @@ def test_the_cli_refuses_an_unknown_fact_rather_than_ignoring_it():
     assert "unknown fact" in (done.stderr + done.stdout)
 
 
-def test_the_cli_lists_all_eighteen():
+def test_the_cli_lists_all_nineteen():
     done = _run("list", "--json")
     assert done.returncode == 0, done.stderr
-    assert len(json.loads(done.stdout)) == 18
+    assert len(json.loads(done.stdout)) == 19
 
 
 # --- Pillar 15: an answer that selects something ----------------------------------------

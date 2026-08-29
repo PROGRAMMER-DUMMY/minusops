@@ -156,7 +156,7 @@ def _pillar_next(arguments):
     rendered = pillars.next_pillar(arguments.get("answered") or [],
                                    arguments.get("facts") or {})
     return rendered if rendered is not None else {"complete": True,
-                                                  "message": "All 18 pillars are answered."}
+                                                  "message": "All 19 pillars are answered."}
 
 
 def _pillar_derive(arguments):

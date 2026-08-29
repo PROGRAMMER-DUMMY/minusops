@@ -1,7 +1,7 @@
 """
-The 18 enterprise pillars, and the arithmetic that makes each later question specific.
+The 19 enterprise pillars, and the arithmetic that makes each later question specific.
 
-A questionnaire that asks the same 18 questions in the same words regardless of what was
+A questionnaire that asks the same 19 questions in the same words regardless of what was
 already said is a form, not an interview. The operator says "8 GB a day, hourly partitions"
 in pillar 3 and the interview carries on offering the same three storage options it would
 have offered for 8 TB -- when what that answer actually implies is 85 MB per partition,
@@ -383,6 +383,7 @@ def _p(number, phase, key, title, question, options, maps_to, depth, informs=(),
 
 
 PHASES = {
+    0: "Fixed constraints",
     1: "Ingestion, storage and data quality",
     2: "Compute, sizing and runtime",
     3: "Network, accounts and governance",
@@ -390,6 +391,43 @@ PHASES = {
 }
 
 PILLARS = (
+    _p(0, 0, "policy_baseline", "Fixed policy and prior decisions",
+       "What is already decided above this team, before any design starts?",
+       ("A written policy document exists and is in hand",
+        "Policies exist but are conveyed verbally or by precedent",
+        "Nothing is fixed -- this team sets its own constraints"),
+       (),
+       depth={
+           "A written policy document exists and is in hand": (
+               "Which regions does it permit? Residency is a legal boundary, not a latency "
+               "preference, and it decides pillar 11 before pillar 11 is asked.",
+               "Does it mandate customer-managed KMS keys, or is SSE-S3 accepted?",
+               "What is the minimum retention, and what is the maximum? A floor and a ceiling "
+               "from two different policies is the contradiction to surface now.",
+               "Is there a spend ceiling, and is it a hard stop or an alerting threshold?",
+               "When was it last reviewed? A policy citing a decommissioned region is quoted "
+               "for years after it stops being true."),
+           "Policies exist but are conveyed verbally or by precedent": (
+               "Name the person who confirms each one. An unwritten constraint is discovered "
+               "at the audit, by which time the data has already landed in the wrong region.",
+               "Which of residency, key management, retention and spend can they confirm "
+               "today, and which need escalation?",
+               "Is precedent being read off an existing stack? Copying what the last project "
+               "did carries its exceptions forward as though they were policy."),
+           "Nothing is fixed -- this team sets its own constraints": (
+               "Who signs off on residency and retention, given no one has? Business sets "
+               "recovery and residency targets; an architect choosing them is filling a gap, "
+               "and the gap should be recorded as such.",
+               "Is this workload in scope for PCI DSS, HIPAA or an equivalent? Neither "
+               "mandates network segmentation, but both change what the scope of an audit is.",
+               "Where will these constraints be written down so the next project inherits "
+               "them rather than re-deciding them?"),
+       },
+       informs=("network", "disaster_recovery", "governance_access", "account_topology"),
+       forgotten=("That these are inputs, not choices. An architect who picks a region, a key "
+                  "policy or a retention period that leadership already fixed has not made a "
+                  "decision, they have created a contradiction nobody will see until audit.")),
+
     _p(1, 1, "ingestion_source", "Ingestion source and delivery protocol",
        "Where does the data come from today, and how does it arrive?",
        ("Batch files landing in S3 (CSV, JSON, Parquet)",
@@ -566,12 +604,19 @@ PILLARS = (
 
     _p(9, 3, "network", "Availability zones, subnets and endpoints",
        "How should networking be laid out?",
-       ("Private multi-AZ VPC with an S3 gateway endpoint",
+       ("No VPC -- every component is a managed service reached over its AWS endpoint",
+        "Private multi-AZ VPC with an S3 gateway endpoint",
         "Two AZs, one shared NAT gateway, S3 gateway endpoint",
         "Attach to existing corporate subnets"),
        ("networking-vpc",),
        depth={
            "*": (
+               "Which component forces a VPC? Glue S3-to-S3, Athena and Firehose need none. "
+               "MWAA, Redshift Serverless and any JDBC source do. Name the one that does, or "
+               "the VPC is a NAT gateway billing by the hour for nothing.",
+               "Is the CIDR yours to allocate, or does a central network account own it? If a "
+               "platform team provisions and shares the VPC, the corporate-subnets answer is "
+               "the only one you are allowed to give.",
                "Is the S3 gateway endpoint present? Without it every lake read is billed as "
                "NAT traffic. Nothing fails; it only shows up on the invoice.",
                "Which other services need endpoints -- Secrets Manager, KMS, CloudWatch?",
@@ -675,6 +720,11 @@ PILLARS = (
        derives="cicd_delivery_plan",
        depth={
            "*": (
+               "Does this pipeline deploy application code, or only data infrastructure? "
+               "Terraform plan and apply is the whole delivery path for infrastructure. "
+               "Application code adds an image build, a registry and a rollout mechanism -- "
+               "Helm, Argo CD, a canary step -- that MinusOps does not generate. Naming it "
+               "now decides whether the CI answer is a complete delivery path or a partial one.",
                "Control plane hosting -- how is MinusOps itself driven? An operator laptop "
                "on the CLI, a CI runner, or in-cluster on EKS. They need different "
                "credentials and different artifacts: a laptop uses the ambient CLI chain, a "
@@ -1105,7 +1155,7 @@ def _facts_from(pairs):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="The 18 enterprise pillars and the sizing they imply.")
+        description="The 19 enterprise pillars and the sizing they imply.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     listing = sub.add_parser("list", help="Every pillar, by phase.")
@@ -1157,7 +1207,7 @@ def main(argv=None):
         answered = [a for a in args.answered.split(",") if a.strip()]
         rendered = next_pillar(answered, facts)
         if rendered is None:
-            print("All 18 pillars are answered.")
+            print("All 19 pillars are answered.")
             return 0
         if args.json:
             print(json.dumps(rendered, indent=2))

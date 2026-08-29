@@ -174,7 +174,7 @@ This document provides exhaustive context for all test files, test suites, and t
   reference nodes that exist, an empty stack producing an empty graph rather than a default
   one, and plan-derived facts replacing the pattern's defaults with `facts_source` recording
   which is which.
-- [`tests/test_pillars.py`](./test_pillars.py): The 18-pillar catalogue and its arithmetic.
+- [`tests/test_pillars.py`](./test_pillars.py): The 19-pillar catalogue and its arithmetic.
   The tests that matter are the REFUSALS (no volume means no worker count) and the BANDS (an
   object above the target is not described as inside it), plus the wiring guards -- a depth
   branch keyed on a string no option produces is unreachable, and an option that selects no

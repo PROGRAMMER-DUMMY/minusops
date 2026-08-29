@@ -124,7 +124,7 @@ def test_guardrail_check_does_not_run_the_command(tmp_path):
 
 def test_pillar_next_returns_the_first_question_with_its_options():
     payload = _payload(_tool("pillar_next", {}))
-    assert payload["key"] == "ingestion_source"
+    assert payload["key"] == "policy_baseline"
     assert payload["options"] and payload["depth"]
 
 

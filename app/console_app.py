@@ -2104,7 +2104,7 @@ def view_docs(state):
     return html.Div([
         html.Div(className="card periwinkle", style={"marginBottom": "24px"}, children=[
             html.H2("MinusOps Comprehensive Architecture & CLI Documentation Hub"),
-            html.P("Authoritative operational reference covering the unified minusctl command surface, the 6-stage governance console, the 18-pillar autonomous lifecycle, and multi-agent transport handshakes.", className="hint"),
+            html.P("Authoritative operational reference covering the unified minusctl command surface, the 6-stage governance console, the 19-pillar autonomous lifecycle, and multi-agent transport handshakes.", className="hint"),
         ]),
 
         html.H2("1. Unified CLI Surface (minusctl Reference)"),
@@ -2133,7 +2133,7 @@ def view_docs(state):
         html.P("MinusOps enforces a strict, fail-closed 7-step execution sequence before any infrastructure mutation occurs:", className="hint"),
         html.Div(className="card", style={"marginBottom": "20px"}, children=[
             html.Ol(style={"paddingLeft": "20px", "lineHeight": "1.8", "fontSize": "13px"}, children=[
-                html.Li([html.B("[1] Requirements Grilling (grill-me): "), "Interrogates all 18 enterprise data pillars (ingestion, medallion storage, schema evolution, compute sizing, quarantine, and FinOps) one decision at a time."]),
+                html.Li([html.B("[1] Requirements Grilling (grill-me): "), "Interrogates all 19 enterprise data pillars (ingestion, medallion storage, schema evolution, compute sizing, quarantine, and FinOps) one decision at a time."]),
                 html.Li([html.B("[2] ADR Formulation (architecture_decision.json): "), "Formulates the Architecture Decision Record satisfying the 4-part contract (Assumptions, Trade-offs, Validation, Rollback) and mitigating TerraShark failure modes FM-01..05."]),
                 html.Li([html.B("[3] Architecture Synthesis (synthesizer.py): "), "Composes vetted, production-tested module blocks (core/generation/modules.py) into governed Terraform code."]),
                 html.Li([html.B("[4] Diagram & Lineage Generation (diagram_generator.py): "), "Generates Draw.io architecture diagrams, SVG assets, and 1-click browser view links (https://app.diagrams.net/#R...)."]),
@@ -2329,7 +2329,7 @@ def view_about(state):
             html.H3("System Design, Engineering & Core Invariants"),
             html.P("To solve these systemic enterprise failures, I engineered the MinusOps control plane from the ground up:", style={"marginTop": "8px", "lineHeight": "1.6"}),
             html.Ul(style={"paddingLeft": "20px", "marginTop": "8px", "lineHeight": "1.8"}, children=[
-                html.Li([html.B("1. 18-Pillar Requirements Engine (core/architecture/pillars.py): "), "Built an interactive interview across four phases: ingestion source and protocol, medallion storage format and partitioning, data quality assertions with quarantine routing, compute engine and worker sizing, orchestration cadence, network and access topology, then serving, CI/CD, criticality and alerting. Answers derive quantitative facts -- worker counts, shard counts, object sizes -- against published service capacities, and map to the catalog modules each choice implies."]),
+                html.Li([html.B("1. 19-Pillar Requirements Engine (core/architecture/pillars.py): "), "Built an interactive interview across five phases, beginning with the policy constraints already fixed above the team -- residency, mandated key management, retention floors, spend ceilings -- then ingestion source and protocol, medallion storage format and partitioning, data quality assertions with quarantine routing, compute engine and worker sizing, orchestration cadence, network and access topology, then serving, CI/CD, criticality and alerting. Answers derive quantitative facts -- worker counts, shard counts, object sizes -- against published service capacities, and map to the catalog modules each choice implies."]),
                 html.Li([html.B("2. Live Schema Synthesis (core/generation/synthesizer.py): "), "Engineered a synthesis engine that composes validated, production-grade module blocks (core/generation/modules.py) against authoritative HashiCorp schemas rather than guessing parameters."]),
                 html.Li([html.B("3. Fail-Closed Deploy Gate (core/governance/plan_gate.py): "), "Implemented a 4-stage deploy loop (verify -> plan -> approve -> apply) bound to a SHA256 plan hash. Any manual or upstream change revokes the standing approval."]),
                 html.Li([html.B("4. Authenticated FinOps & BCM Calculator (core/cost/): "), "Integrated the AWS BCM Pricing Calculator API and engineered coverage_audit.py to ensure 100% of discovered plan resources are classified into verified pricing SKUs."]),

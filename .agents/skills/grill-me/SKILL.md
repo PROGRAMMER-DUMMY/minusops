@@ -65,7 +65,7 @@ A rough back-of-envelope - requests/sec, storage per day, bandwidth, concurrency
 single-node vs. distributed compute, caching and CDN, sharding, and batch vs. streaming. Do it
 *before* choosing an architecture, not after.
 
-## Step 3.4 - The 18 enterprise pillars (data pipelines only)
+## Step 3.4 - The 19 enterprise pillars (data pipelines only)
 
 Skip this for a web backend or an internal tool. For a **data pipeline**, Steps 0-3 stop short
 of the answers the generator actually needs, and the gap is not academic: the 2026-08-17 live
@@ -77,20 +77,28 @@ where the data comes from or what triggers the job.
 options, the modules each option maps to, and the follow-ups. Read them from there:
 
 ```bash
-python core/architecture/pillars.py list                  # all 18, by phase
+python core/architecture/pillars.py list                  # all 19, by phase
 python core/architecture/pillars.py next --answered ingestion_source,storage_format
 python core/architecture/pillars.py show partitioning daily_gb=50 partitions_per_day=24
 ```
 
 ### Ask them in order, and derive as you go
 
-**Pillar 1 is question one.** Everything downstream is shaped by it, and a lake with no
-inbound path is the one failure that cannot be fixed after the fact.
+**Pillar 0 is question one, and it is not a choice.** Residency, key management, retention
+floors and spend ceilings are set above the team -- AWS's own guidance puts RTO, RPO and
+residency with the business, and the architect translating them. Asking an architect to pick
+a region a policy already fixed does not produce a decision, it produces a contradiction that
+surfaces at audit. Establish what is already fixed, then treat it as the boundary every later
+answer must fall inside.
 
-The pillars are grouped into four phases:
+**Pillar 1 is the first real choice.** Everything downstream is shaped by it, and a lake with
+no inbound path is the one failure that cannot be fixed after the fact.
+
+The pillars are grouped into five phases:
 
 | Phase | Pillars | Covers |
 | :--- | :--- | :--- |
+| 0 | 0 | Fixed policy: residency, mandated key management, retention floors, spend ceilings |
 | 1 | 1-4 | Ingestion source, medallion storage and format, partitioning and retention, data quality and quarantine |
 | 2 | 5-8 | Compute engine, worker sizing, runtime packages, orchestration |
 | 3 | 9-12 | Multi-AZ networking, account boundaries, multi-region DR, fine-grained access control |

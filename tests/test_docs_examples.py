@@ -333,7 +333,7 @@ def test_no_emoji_in_tracked_sources(suffix):
 
 # --- A document may not advertise a pillar capability the registry lacks ----------------
 #
-# `console_app.py` claimed the 18-pillar engine covered "schema evolution rules (EVOLVE,
+# `console_app.py` claimed the 19-pillar engine covered "schema evolution rules (EVOLVE,
 # FREEZE, DISCARD_ROW)". No such pillar exists and no such constant is defined anywhere. An
 # external research pass read that sentence, expanded it into a four-row policy table mapping
 # each constant to a medallion zone, and cited the repository as its source. A false claim
@@ -387,7 +387,7 @@ def test_no_document_advertises_a_pillar_constant_the_registry_lacks(relpath):
 
 
 def test_a_pillar_count_claim_matches_the_registry():
-    """"18-Pillar" appears in the console, the skill and the agent docs. If a pillar is added
+    """"19-Pillar" appears in the console, the skill and the agent docs. If a pillar is added
     or removed, every one of those numbers becomes wrong silently."""
     import sys
     sys.path.insert(0, os.path.join(ROOT, "core", "architecture"))

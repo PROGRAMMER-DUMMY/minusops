@@ -16,7 +16,7 @@ Agents supporting only a single root instruction file must treat the files below
 
 ### Autonomous Lifecycle Roadmap (The 7-Step Sequence)
 For any infrastructure creation or modification lifecycle, follow the strict 7-step sequence:
-1. **[1] Requirements Grilling (grill-me)** — Gather functional + non-functional requirements across all 18 pillars (core/architecture/pillars.py), one question at a time with recommended defaults.
+1. **[1] Requirements Grilling (grill-me)** — Gather functional + non-functional requirements across all 19 pillars (core/architecture/pillars.py), one question at a time with recommended defaults.
 2. **[2] ADR Formulation (rchitecture_decision.json)** — Formulate and record the Architecture Decision Record with explicit rationale and trade-offs.
 3. **[3] Architecture Synthesis (synthesizer.py)** — Compose vetted modules (core/generation/modules.py) into governed Terraform.
 4. **[4] Diagram & Lineage Generation (diagram_generator.py)** — Generate Draw.io architecture diagrams and data lineage, providing 1-click browser view links (https://app.diagrams.net/#R...).
@@ -26,7 +26,7 @@ For any infrastructure creation or modification lifecycle, follow the strict 7-s
 
 ### Decision & Execution Skills (.agents/skills/)
 Activate the relevant skill when its trigger applies:
-- [.agents/skills/grill-me/SKILL.md](./.agents/skills/grill-me/SKILL.md) — **The mandatory front door for any build/create request**: gather full functional + non-functional requirements (18 pillars) before generating Terraform.
+- [.agents/skills/grill-me/SKILL.md](./.agents/skills/grill-me/SKILL.md) — **The mandatory front door for any build/create request**: gather full functional + non-functional requirements (19 pillars) before generating Terraform.
 - [.agents/skills/architect/SKILL.md](./.agents/skills/architect/SKILL.md) — Research current cloud services/reference architectures, compose vetted modules, and govern through the deploy gate.
 - [.agents/skills/terraform-orchestrator/SKILL.md](./.agents/skills/terraform-orchestrator/SKILL.md) — Before any deployment, Terraform plan/apply workflow, state lock handling, or infrastructure mutation proposal.
 - [.agents/skills/pipeline-optimizer/SKILL.md](./.agents/skills/pipeline-optimizer/SKILL.md) — Before scanning, optimizing, or proposing remediation for Terraform/data-pipeline infrastructure.
@@ -71,7 +71,7 @@ MinusOps is a **workload-agnostic cloud ops control plane.** Each enterprise ins
 │   ├── cli/                        # Unified minusctl command surface (main.py, context.py, commands/*)
 │   ├── governance/                 # Deploy gate (plan_gate.py), approval.py, audit_logger.py, reflector.py
 │   ├── generation/                 # Synthesizer (synthesizer.py), modules.py, patterns.py, workflow.py
-│   ├── architecture/               # 18-pillar engine (pillars.py), discovery.py, diagram_generator.py
+│   ├── architecture/               # 19-pillar engine (pillars.py), discovery.py, diagram_generator.py
 │   ├── cost/                       # BCM Pricing Calculator (bcm_pricing_calculator.py), coverage_audit.py
 │   ├── reporting/                  # doctor.py, finops_agent.py, health_checker.py, plan_inspector.py, runs.py
 │   ├── integrations/               # base_hook.py, slack_hook.py, teams_hook.py, jira_hook.py, confluence_hook.py, outlook_hook.py
