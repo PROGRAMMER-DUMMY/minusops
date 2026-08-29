@@ -639,12 +639,30 @@ PILLARS = (
        ("query-athena", "consumption-redshift-serverless", "dbt-semantic-layer",
         "cube-semantic-layer"),
        depth={
-           "*": (
-               "How many concurrent readers at peak?",
-               "Is there a latency expectation for a dashboard load, as a number?",
-               "Does an LLM or text-to-SQL agent query this? That raises the cost of an "
-               "unbounded scan and argues for a semantic layer with defined metrics."),
+           "Athena over Gold Iceberg tables": (
+               "Which groups query it -- analysts, data science, modelling -- and does each "
+               "need a different Gold prefix? One role shared between them is the wildcard "
+               "least privilege exists to refuse, wearing a narrower name.",
+               "What is the per-query scan ceiling for each group? An analyst exploring and "
+               "a scheduled dashboard do not want the same limit.",
+               "Does each group carry its own cost centre, or is all query spend one line "
+               "nobody can attribute?"),
+           "Redshift Serverless with an RPU usage limit": (
+               "Base and maximum RPU, and which groups share the workgroup?",
+               "On a usage-limit breach, log or deactivate? Deactivate takes BI offline "
+               "mid-quarter-close.",
+               "Is anyone loading INTO Redshift, or is it read-only over Spectrum? A writer "
+               "needs a different policy from every reader."),
+           "A semantic layer (dbt MetricFlow or Cube)": (
+               "Who owns the metric definitions -- one platform team, or each consumer "
+               "group? Two owners of one metric is the problem a semantic layer removes.",
+               "Does the layer enforce access, or inherit it from the lake? A layer that "
+               "answers a query the lake would refuse is a bypass, not a cache.",
+               "Are pre-aggregations built per group or shared? Cube's entire cost argument "
+               "is the cache; without one it re-scans the lake per dashboard refresh."),
        },
+       informs=("governance_access", "criticality", "alerting"),
+       derives="consumer_access_plan",
        forgotten="A scan limit. Serverless query engines have no natural cost ceiling."),
 
     _p(14, 4, "cicd", "CI/CD pipeline, control plane hosting and secrets",
@@ -820,9 +838,50 @@ def artifact_promotion_plan(artifact_repo=None, immutable_tags=None, rebuild_per
     return result
 
 
+def consumer_access_plan(group_count=None, scopes_differ=None, all_attributed=None):
+    """Whether splitting Gold access by consumer group buys least privilege or only labels.
+
+    `security-iam-scoped` renders one policy per group. That is worth doing when the groups
+    read different prefixes; when they all read the same one it is the same grant under
+    several names, which reads as least privilege in an audit and is not.
+    """
+    if group_count in (None, ""):
+        return _undetermined("the number of consumer groups was not stated")
+    count = int(group_count)
+    if count < 1:
+        return _undetermined("a stack with no reader has no serving layer to scope")
+
+    result = {"determinable": True, "group_count": count}
+
+    if count == 1:
+        result["verdict"] = "SINGLE_CONSUMER"
+        result["because"] = "one group reads Gold; the scalar inputs cover it"
+    elif scopes_differ is None:
+        return _undetermined("it is unstated whether the groups read different prefixes")
+    elif scopes_differ:
+        result["verdict"] = "SCOPED"
+        result["because"] = f"{count} groups read different prefixes, so a policy each is a real boundary"
+    else:
+        result["verdict"] = "SHARED_SCOPE"
+        result["because"] = (f"{count} groups all read the same prefix, so per-group policies "
+                             "label the access rather than narrow it")
+
+    # Separate from the verdict: a correctly scoped split can still be unattributable, and an
+    # unscoped one can still be billed properly. They are different failures.
+    if all_attributed is False:
+        result["attribution"] = "PARTIAL"
+        result["attribution_because"] = ("at least one group carries no cost centre, so its "
+                                         "spend cannot be separated in Cost Explorer")
+    elif all_attributed is True:
+        result["attribution"] = "COMPLETE"
+
+    return result
+
+
 FACT_KEYS = ("daily_gb", "partitions_per_day", "read_pattern", "transform_shape", "shuffle",
              "runs_per_day", "events_per_sec", "avg_record_kb", "has_spark_skills",
-             "artifact_repo", "immutable_tags", "rebuild_per_env")
+             "artifact_repo", "immutable_tags", "rebuild_per_env",
+             "consumer_group_count", "consumer_scopes_differ", "consumers_all_attributed")
 
 
 def derive(facts):
@@ -853,6 +912,10 @@ def derive(facts):
     out["artifacts"] = artifact_promotion_plan(
         facts.get("artifact_repo"), facts.get("immutable_tags"),
         facts.get("rebuild_per_env"))
+
+    out["serving"] = consumer_access_plan(
+        facts.get("consumer_group_count"), facts.get("consumer_scopes_differ"),
+        facts.get("consumers_all_attributed"))
 
     return out
 

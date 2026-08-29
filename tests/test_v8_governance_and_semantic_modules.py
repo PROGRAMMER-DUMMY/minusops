@@ -184,7 +184,9 @@ def test_the_policy_grants_no_wildcard_resource():
         stripped = line.strip()
         if stripped.startswith("resources"):
             assert '"*"' not in stripped, f"wildcard resource: {stripped}"
-            assert "var.gold_bucket_arn" in stripped or "var." in stripped or "local." in stripped
+            # A resource must be a reference, never a literal. `each.value.` is one: the
+            # per-consumer-group statements resolve it from var.consumers.
+            assert any(ref in stripped for ref in ("var.", "local.", "each.value.")), stripped
 
 
 def test_kms_decrypt_is_scoped_to_the_given_key():
@@ -415,3 +417,79 @@ def test_the_module_is_valid_terraform(module_id, tmp_path):
     result = subprocess.run([terraform, f"-chdir={work}", "validate", "-no-color"],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- Per-consumer-group access and budgets (pillar 13) ----------------------------------
+
+def test_the_iam_module_takes_a_map_of_consumer_groups():
+    hcl = _hcl("security-iam-scoped")
+
+    assert 'variable "consumers"' in hcl
+    assert "for_each = var.consumers" in hcl
+
+
+def test_the_two_consumer_models_are_mutually_exclusive():
+    """Set both and you get the scalar policy IN ADDITION to every per-group policy, which
+    is strictly more access than either model alone -- while looking like a migration."""
+    hcl = _hcl("security-iam-scoped")
+
+    block = hcl.split('resource "terraform_data" "one_consumer_model_only"')[1]
+    block = block.split("\nresource ")[0]
+    condition = next(line for line in block.splitlines()
+                     if line.strip().startswith("condition "))
+    assert "var.consumers" in condition
+    assert "var.trusted_external_principals" in condition
+
+
+def test_every_consumer_group_needs_its_own_external_id():
+    """The confused-deputy guard has to be per group. One group with an external ID does not
+    protect a sibling that has none."""
+    hcl = _hcl("security-iam-scoped")
+
+    block = hcl.split('resource "terraform_data" "group_external_id_required"')[1]
+    assert "for_each = var.consumers" in block
+    assert "each.value.external_id" in block
+    assert "each.value.trusted_external_principals" in block
+
+
+def test_a_group_policy_is_scoped_to_that_groups_prefixes():
+    hcl = _hcl("security-iam-scoped")
+
+    assert "each.value.gold_prefixes" in hcl
+    assert "each.value.athena_workgroup_arn" in hcl
+
+
+def test_an_empty_cost_centre_is_omitted_rather_than_written_as_a_blank_tag():
+    """A blank cost_center reads as allocated in Cost Explorer while carrying no owner."""
+    hcl = _hcl("security-iam-scoped")
+
+    assert 'each.value.cost_center == "" ? {} :' in hcl
+
+
+def test_a_consumer_budget_filters_on_that_groups_cost_centre():
+    hcl = _hcl("governance-observability")
+
+    assert 'variable "consumer_budgets"' in hcl
+    block = hcl.split('resource "aws_budgets_budget" "consumer"')[1]
+    assert "cost_filter" in block
+    assert "TagKeyValue" in block
+    assert "each.value.cost_center" in block
+
+
+def test_a_consumer_budget_does_not_page_on_call():
+    """Same doctrine as the stack budget: a spend threshold is not an incident."""
+    hcl = _hcl("governance-observability")
+
+    block = hcl.split('resource "aws_budgets_budget" "consumer"')[1]
+    assert "aws_sns_topic.budget.arn" in block
+    assert "aws_sns_topic.alerts" not in block
+
+
+def test_the_cost_allocation_tag_prerequisite_is_stated_in_the_module():
+    """A CostFilter on a tag reports zero until that tag is activated as a cost allocation
+    tag in the payer account -- a console action Terraform cannot perform. A budget reporting
+    zero looks exactly like a team spending nothing."""
+    hcl = _hcl("governance-observability")
+
+    assert "cost allocation tag" in hcl
+    assert "payer account" in hcl

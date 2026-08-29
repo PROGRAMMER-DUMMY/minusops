@@ -333,3 +333,66 @@ def test_derive_reports_the_artifact_verdict_alongside_the_others():
     out = pillars.derive({"artifact_repo": "codeartifact", "rebuild_per_env": False})
 
     assert out["artifacts"]["verdict"] == "PROMOTABLE"
+
+
+# --- Pillar 13: who reads it, not just what they read it with ---------------------------
+#
+# The options were engines -- Athena, Redshift, a semantic layer -- so the answer to "who
+# reads the output" was a product name. The audience was never recorded, which is why
+# security-iam-scoped provisioned exactly one consumer role and governance-observability
+# exactly one budget: nothing upstream knew there were several groups.
+
+def test_pillar_13_branches_on_the_engine_and_asks_who_reads_it():
+    serving = next(p for p in pillars.PILLARS if p["key"] == "serving")
+
+    assert "*" not in serving["depth"]
+    assert set(serving["depth"]) == set(serving["options"])
+    assert any("groups" in q for branch in serving["depth"].values() for q in branch)
+
+
+def test_consumer_access_is_undetermined_until_the_groups_are_counted():
+    assert pillars.consumer_access_plan()["determinable"] is False
+
+
+def test_one_consumer_needs_no_per_group_split():
+    result = pillars.consumer_access_plan(group_count=1)
+
+    assert result["verdict"] == "SINGLE_CONSUMER"
+
+
+def test_several_groups_reading_one_prefix_is_labelling_not_least_privilege():
+    """The failure this catches. Three roles over the same grant read as least privilege in
+    an audit and narrow nothing."""
+    result = pillars.consumer_access_plan(group_count=3, scopes_differ=False)
+
+    assert result["verdict"] == "SHARED_SCOPE"
+    assert "label the access rather than narrow it" in result["because"]
+
+
+def test_several_groups_reading_different_prefixes_is_a_real_boundary():
+    result = pillars.consumer_access_plan(group_count=3, scopes_differ=True)
+
+    assert result["verdict"] == "SCOPED"
+
+
+def test_whether_scopes_differ_is_asked_rather_than_assumed():
+    result = pillars.consumer_access_plan(group_count=2)
+
+    assert result["determinable"] is False
+    assert "different prefixes" in result["reason"]
+
+
+def test_attribution_is_reported_separately_from_the_access_verdict():
+    """A correctly scoped split can still be unbillable, and an unscoped one can still be
+    billed properly. Collapsing them into one verdict loses which is wrong."""
+    result = pillars.consumer_access_plan(group_count=3, scopes_differ=True,
+                                          all_attributed=False)
+
+    assert result["verdict"] == "SCOPED"
+    assert result["attribution"] == "PARTIAL"
+
+
+def test_derive_reports_the_serving_verdict():
+    out = pillars.derive({"consumer_group_count": 1})
+
+    assert out["serving"]["verdict"] == "SINGLE_CONSUMER"

@@ -350,3 +350,55 @@ output "budget_name" {
 output "alerts_topic_arn" {
   value = local.effective_topic_arn
 }
+
+# --- Per-consumer-group budgets (pillar 13) ---------------------------------------------
+#
+# The monthly budget above covers the whole stack. It cannot answer "which team spent it",
+# which is the question that actually gets asked when a bill moves. A budget per consumer
+# group, filtered on that group's cost centre tag, can.
+#
+# EXTERNAL PREREQUISITE, and it is not satisfiable from Terraform: a CostFilter on a tag
+# works only once that tag is activated as a cost allocation tag in the PAYER account, which
+# is a console or billing-API action. Until then these budgets are created and report zero.
+# That is stated here rather than discovered, because a budget reporting zero looks identical
+# to a team spending nothing.
+
+variable "consumer_budgets" {
+  type = map(object({
+    cost_center      = string
+    monthly_usd      = number
+    notify_emails    = optional(list(string), [])
+  }))
+  default     = {}
+  description = "Consumer group name => its cost centre tag value and monthly ceiling. Requires the cost_center tag to be activated as a cost allocation tag in the payer account."
+}
+
+resource "aws_budgets_budget" "consumer" {
+  for_each = var.consumer_budgets
+
+  name         = "${var.name_prefix}-${each.key}-monthly"
+  budget_type  = "COST"
+  limit_amount = tostring(each.value.monthly_usd)
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_filter {
+    name   = "TagKeyValue"
+    values = ["user:cost_center$${each.value.cost_center}"]
+  }
+
+  notification {
+    comparison_operator = "GREATER_THAN"
+    threshold           = 80
+    threshold_type      = "PERCENTAGE"
+    notification_type   = "ACTUAL"
+    # Same doctrine as the stack budget: the group's own owner, never the on-call topic.
+    subscriber_email_addresses = length(each.value.notify_emails) > 0 ? each.value.notify_emails : var.budget_owner_emails
+    subscriber_sns_topic_arns  = [aws_sns_topic.budget.arn]
+  }
+}
+
+output "consumer_budget_names" {
+  value       = { for k, b in aws_budgets_budget.consumer : k => b.name }
+  description = "Consumer group name => its budget name. Empty until consumer_budgets is set."
+}
