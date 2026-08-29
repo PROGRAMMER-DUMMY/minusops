@@ -156,6 +156,12 @@ def _base_address(address):
     return re.sub(r'\[[^\]]*\]$', "", address or "")
 
 
+def _module_of(address):
+    """`module.storage.aws_s3_bucket.bronze` -> `storage`. A root resource has no module."""
+    parts = (address or "").split(".")
+    return parts[1] if len(parts) > 2 and parts[0] == "module" else ""
+
+
 _S3_URI = re.compile(r"s3://([^/]+)")
 
 
@@ -456,6 +462,136 @@ def layout_positions(resources):
     return positions, bands
 
 
+def deployment_containment(plan_json):
+    """Which resource sits inside which subnet, and which sits inside no subnet at all.
+
+    Nesting comes from a resource's own subnet reference, never from its type. A service that
+    names two subnets is placed at VPC level rather than in the first one: it spans them, and
+    drawing it inside one would state a placement the plan does not.
+    """
+    resources = [r for r in (plan_json or {}).get("resource_changes", [])
+                 if r.get("mode") == "managed" and not is_folded(r.get("type", ""))]
+    by_type = {}
+    for res in resources:
+        by_type.setdefault(res.get("type"), []).append(res.get("address"))
+
+    vpc = (by_type.get("aws_vpc") or [None])[0]
+    subnets = list(by_type.get("aws_subnet") or [])
+    expressions = {r.get("address") or f"{r.get('type')}.{r.get('name')}":
+                   r.get("expressions", {}) for r in _config_resources(plan_json)}
+
+    placed = {subnet: [] for subnet in subnets}
+    spanning, regional = [], []
+
+    # A composed stack wires subnets through module OUTPUTS, so a root-level reference to
+    # aws_subnet never appears. The dependency then names a module, not a subnet -- which is
+    # genuinely all the plan says, so those land at VPC level rather than being placed in a
+    # subnet chosen for them.
+    vpc_module = _module_of(vpc) if vpc else ""
+    module_consumers = set()
+    if vpc_module:
+        for consumer, producers in architecture_model.module_dependencies(plan_json).items():
+            if vpc_module in producers:
+                module_consumers.add(consumer)
+
+    for res in resources:
+        address = res.get("address")
+        if address == vpc or address in placed:
+            continue
+        refs = set(_extract_expr_refs(expressions.get(_base_address(address), {})))
+        touched = [s for s in subnets if _base_address(s) in refs or s in refs]
+        if len(touched) == 1:
+            placed[touched[0]].append(address)
+        elif touched or _module_of(address) in module_consumers:
+            spanning.append(address)
+        else:
+            regional.append(address)
+
+    return {"vpc": vpc, "subnets": placed, "spanning": spanning, "regional": regional}
+
+
+_CONTAINER_STYLE = ("rounded=1;arcSize=4;fillColor=none;strokeColor={stroke};strokeWidth=2;"
+                    "dashed={dashed};dashPattern=8 4;verticalAlign=top;align=left;"
+                    "spacingLeft=12;spacingTop=6;fontSize=12;fontStyle=1;fontColor={stroke};"
+                    "container=1;collapsible=0;")
+
+_CLOUD_STROKE = "#232F3E"
+_VPC_STROKE = "#8C4FFF"
+_SUBNET_STROKE = "#01A88D"
+
+
+def _container(root, parent, cell_id, label, x, y, width, height, stroke, dashed=0):
+    cell = ET.SubElement(root, "mxCell", {
+        "id": cell_id, "value": label,
+        "style": _CONTAINER_STYLE.format(stroke=stroke, dashed=dashed),
+        "vertex": "1", "parent": parent,
+    })
+    ET.SubElement(cell, "mxGeometry", {
+        "x": str(x), "y": str(y), "width": str(width), "height": str(height),
+        "as": "geometry"})
+    return cell_id
+
+
+def _append_deployment(root, containment, by_address, badges):
+    """The deployment page: AWS Cloud > VPC > subnet > service, nested for real.
+
+    Child geometry is relative to its container, which is why this cannot reuse the logical
+    page's absolute positions.
+    """
+    subnets = containment["subnets"]
+    spanning, regional = containment["spanning"], containment["regional"]
+
+    subnet_rows = max([len(v) for v in subnets.values()] or [0])
+    subnet_h = _LABEL_STRIP + max(1, subnet_rows) * _STACK_HEIGHT
+    vpc_w = max(len(subnets), 1) * (_SLOT_WIDTH + 20) + 40
+    vpc_h = _LABEL_STRIP + subnet_h + (_STACK_HEIGHT if spanning else 0) + 40
+    regional_rows = (len(regional) + 2) // 3
+    cloud_w = vpc_w + 3 * _SLOT_WIDTH + 80
+    cloud_h = max(vpc_h, _LABEL_STRIP + regional_rows * _STACK_HEIGHT) + 80
+
+    cloud = _container(root, "1", "layer_box_cloud", "<b>AWS Cloud</b>",
+                       40, 40, cloud_w, cloud_h, _CLOUD_STROKE)
+
+    def node(parent, address, x, y, index):
+        res = by_address.get(address, {})
+        cell = ET.SubElement(root, "mxCell", {
+            "id": f"dep_node_{index}",
+            "value": node_label(address, _badge_text(extract_node_metadata(res),
+                                                     badges.get(address, set()))),
+            "tooltip": address,
+            "style": resolve_stencil(res.get("type")) + _LABEL_STYLE,
+            "vertex": "1", "parent": parent,
+        })
+        ET.SubElement(cell, "mxGeometry", {
+            "x": str(x), "y": str(y), "width": "68", "height": "68", "as": "geometry"})
+
+    index = 0
+    if containment["vpc"]:
+        vpc = _container(root, cloud, "layer_box_vpc",
+                         f"<b>VPC</b> {containment['vpc'].rsplit('.', 1)[-1]}",
+                         30, _LABEL_STRIP, vpc_w, vpc_h, _VPC_STROKE)
+        for position, (subnet, members) in enumerate(sorted(subnets.items())):
+            box = _container(root, vpc, f"layer_box_subnet_{position}",
+                             subnet.rsplit(".", 1)[-1],
+                             20 + position * (_SLOT_WIDTH + 20), _LABEL_STRIP,
+                             _SLOT_WIDTH, subnet_h, _SUBNET_STROKE, dashed=1)
+            for row, address in enumerate(members):
+                node(box, address, 60, _LABEL_STRIP + row * _STACK_HEIGHT, index)
+                index += 1
+        for column, address in enumerate(spanning):
+            node(vpc, address, 20 + column * _SLOT_WIDTH, _LABEL_STRIP + subnet_h + 20, index)
+            index += 1
+
+    # Regional services sit inside the cloud boundary and outside the VPC, which is where
+    # S3, KMS and Athena actually are. Drawing them inside the VPC would be a network
+    # placement the plan does not state.
+    origin_x = (vpc_w + 60) if containment["vpc"] else 30
+    for position, address in enumerate(regional):
+        node(cloud, address, origin_x + (position % 3) * _SLOT_WIDTH,
+             _LABEL_STRIP + (position // 3) * _STACK_HEIGHT, index)
+        index += 1
+
+
 def _create_mxgraph_xml(page_width=1800, page_height=1000):
     model = ET.Element("mxGraphModel", {
         "dx": "1600", "dy": "1000", "grid": "1", "gridSize": "10",
@@ -551,22 +687,52 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
         })
         ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
 
-    xml_str = ET.tostring(model, encoding="utf-8", xml_declaration=False).decode("utf-8")
+    logical = ET.tostring(model, encoding="utf-8", xml_declaration=False).decode("utf-8")
+
+    # The deployment page is emitted only when the stack actually provisions a VPC. An empty
+    # VPC container is a picture of infrastructure that does not exist, and the same doctrine
+    # lineage_graph.py applies to its own nodes.
+    containment = deployment_containment(plan_json)
+    pages = [("Logical", logical)]
+    if containment["vpc"]:
+        model2, root2 = _create_mxgraph_xml(2200, 1400)
+        _append_deployment(root2, containment,
+                           {r.get("address"): r for r in resources}, badges)
+        pages.append(("Deployment", ET.tostring(
+            model2, encoding="utf-8", xml_declaration=False).decode("utf-8")))
+
+    xml_str = "".join(
+        ['<mxfile host="app.diagrams.net">']
+        + [f'<diagram name="{name}">{body}</diagram>' for name, body in pages]
+        + ["</mxfile>"])
+
     return {
         "xml": xml_str,
         "url": encode_drawio_url(xml_str),
+        "pages": [name for name, _ in pages],
         "ledger": generate_flow_ledger(edges),
         "ledger_markdown": generate_flow_ledger_markdown(edges),
     }
 
 
 def parse_graph(xml_text):
-    """Read a diagram back into {"nodes": {id: address}, "edges": {id: {source, target}}}."""
+    """Read a diagram back into {"nodes": {id: address}, "edges": {id: {source, target}}}.
+
+    Only the FIRST page is read. Reconciliation compares what the operator edited against
+    what was generated, and the operator edits the logical page; merging the deployment
+    page's cells in would report every regional service as a second copy of itself.
+    """
     nodes, edges = {}, {}
     try:
         root = ET.fromstring(xml_text or "")
     except ET.ParseError:
         return {"nodes": nodes, "edges": edges}
+
+    if root.tag == "mxfile":
+        first = root.find("diagram")
+        if first is None:
+            return {"nodes": nodes, "edges": edges}
+        root = first
 
     for cell in root.iter("mxCell"):
         cell_id = cell.get("id") or ""

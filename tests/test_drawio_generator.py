@@ -70,9 +70,11 @@ def test_generate_drawio_from_plan():
     assert "url" in result
     assert "ledger" in result
     
-    # Check if we generated valid XML
+    # An mxfile wrapping one page per view. A stack with no VPC gets the logical page alone.
     root = ET.fromstring(result["xml"])
-    assert root.tag == "mxGraphModel"
+    assert root.tag == "mxfile"
+    assert [d.get("name") for d in root.findall("diagram")] == ["Logical"]
+    assert root.find("diagram/mxGraphModel") is not None
 
 def test_no_external_dependencies():
     import ast
@@ -651,3 +653,92 @@ def test_parse_graph_carries_no_geometry_so_moving_a_box_is_not_a_change():
 
 def test_parse_graph_survives_a_diagram_it_cannot_read():
     assert drawio_generator.parse_graph("not xml at all") == {"nodes": {}, "edges": {}}
+
+
+# --- The deployment page: containment, not a flat row -----------------------------------
+#
+# Every cell was parented to "1". A plan with a VPC, four subnets, a NAT and an IGW drew all
+# six as 68px icons in the security band, which is the one place none of them belong.
+
+def _networked_plan():
+    def rc(address, rtype, expressions=None):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": {}}}, {
+                "address": address, "type": rtype, "name": address.split(".")[-1],
+                "expressions": expressions or {}}
+
+    pairs = [
+        rc("aws_vpc.main", "aws_vpc"),
+        rc("aws_subnet.private[0]", "aws_subnet",
+           {"vpc_id": {"references": ["aws_vpc.main"]}}),
+        rc("aws_subnet.public[0]", "aws_subnet",
+           {"vpc_id": {"references": ["aws_vpc.main"]}}),
+        rc("aws_mwaa_environment.airflow", "aws_mwaa_environment",
+           {"subnet_ids": {"references": ["aws_subnet.private[0]"]}}),
+        rc("aws_nat_gateway.nat", "aws_nat_gateway",
+           {"subnet_id": {"references": ["aws_subnet.public[0]"]}}),
+        rc("aws_emr_cluster.spark", "aws_emr_cluster",
+           {"subnet_ids": {"references": ["aws_subnet.private[0]", "aws_subnet.public[0]"]}}),
+        rc("aws_s3_bucket.gold", "aws_s3_bucket"),
+        rc("aws_kms_key.lake", "aws_kms_key"),
+    ]
+    return {"resource_changes": [a for a, _ in pairs],
+            "configuration": {"root_module": {"resources": [b for _, b in pairs]}}}
+
+
+def test_a_service_nests_into_the_subnet_it_names():
+    containment = drawio_generator.deployment_containment(_networked_plan())
+
+    assert containment["vpc"] == "aws_vpc.main"
+    assert "aws_mwaa_environment.airflow" in containment["subnets"]["aws_subnet.private[0]"]
+    assert "aws_nat_gateway.nat" in containment["subnets"]["aws_subnet.public[0]"]
+
+
+def test_a_service_naming_two_subnets_is_not_drawn_inside_one_of_them():
+    """It spans them. Placing it in the first would state a placement the plan does not."""
+    containment = drawio_generator.deployment_containment(_networked_plan())
+
+    assert "aws_emr_cluster.spark" in containment["spanning"]
+    for members in containment["subnets"].values():
+        assert "aws_emr_cluster.spark" not in members
+
+
+def test_s3_and_kms_are_regional_rather_than_inside_the_vpc():
+    """They are not in the VPC, and every reference diagram draws them outside it."""
+    containment = drawio_generator.deployment_containment(_networked_plan())
+
+    assert set(containment["regional"]) >= {"aws_s3_bucket.gold", "aws_kms_key.lake"}
+
+
+def test_the_deployment_page_is_emitted_only_when_a_vpc_exists():
+    with_vpc = drawio_generator.generate_drawio_from_plan(_networked_plan())
+    without = drawio_generator.generate_drawio_from_plan(_layered_plan())
+
+    assert with_vpc["pages"] == ["Logical", "Deployment"]
+    assert without["pages"] == ["Logical"]
+
+
+def test_the_deployment_page_nests_cells_instead_of_parenting_everything_to_one():
+    xml_text = drawio_generator.generate_drawio_from_plan(_networked_plan())["xml"]
+    deployment = ET.fromstring(xml_text).findall("diagram")[1]
+
+    parents = {c.get("id"): c.get("parent") for c in deployment.iter("mxCell")}
+    subnet_ids = [i for i in parents if (i or "").startswith("layer_box_subnet_")]
+
+    assert parents["layer_box_vpc"] == "layer_box_cloud"
+    assert subnet_ids and all(parents[s] == "layer_box_vpc" for s in subnet_ids)
+
+    nested = [i for i, p in parents.items()
+              if (i or "").startswith("dep_node_") and p in subnet_ids]
+    assert nested, "no service was placed inside a subnet"
+
+
+def test_parse_graph_reads_the_logical_page_only():
+    """Reconciliation compares what the operator edited against what was generated, and the
+    operator edits the logical page. Merging both would report every regional service twice."""
+    bundle = drawio_generator.generate_drawio_from_plan(_networked_plan())
+
+    addresses = list(drawio_generator.parse_graph(bundle["xml"])["nodes"].values())
+
+    assert addresses.count("aws_s3_bucket.gold") == 1
