@@ -462,6 +462,46 @@ def layout_positions(resources):
     return positions, bands
 
 
+_STEP_STYLE = ("rounded=1;arcSize=6;whiteSpace=wrap;html=1;align=left;verticalAlign=top;"
+               "spacing=8;fontSize=11;fontColor=#1e293b;fillColor=#f8fafc;"
+               "strokeColor=#cbd5e1;")
+
+
+def walkthrough_steps(edges, by_address):
+    """One numbered step per declared hop, in the words the plan supports.
+
+    Derived, never written. "Glue validates and cleans the records" is a sentence about a
+    job we know exists and whose behaviour we do not know; what the plan states is which
+    paths it reads and writes, and how big it is.
+    """
+    if not edges:
+        return ["This plan declares no data flow. No resource states a source or target "
+                "path, so there is no hop to describe -- the arrows are absent because the "
+                "wiring is, not because the diagram is incomplete."]
+
+    steps = []
+    for edge in edges:
+        target = by_address.get(edge["target"], {})
+        meta = extract_node_metadata(target)
+        capacity = _badge_text(meta, set())
+        detail = f" ({', '.join(sorted(capacity))})" if capacity else ""
+        steps.append(f"{edge['source']} to {edge['target']}{detail}")
+    return steps
+
+
+def _append_walkthrough(root, steps, x, y, width):
+    for index, text in enumerate(steps, 1):
+        cell = ET.SubElement(root, "mxCell", {
+            "id": f"legend_step_{index}",
+            "value": f"<b>{index}.</b> {text}" if len(steps) > 1 or "declares no" not in text
+                     else text,
+            "style": _STEP_STYLE, "vertex": "1", "parent": "1",
+        })
+        ET.SubElement(cell, "mxGeometry", {
+            "x": str(x), "y": str(y + (index - 1) * 54), "width": str(width),
+            "height": "46", "as": "geometry"})
+
+
 def deployment_containment(plan_json):
     """Which resource sits inside which subnet, and which sits inside no subnet at all.
 
@@ -687,6 +727,12 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
         })
         ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
 
+    steps = walkthrough_steps(edges, {r.get("address"): r for r in resources})
+    bottom = max([y + h for _, _, y, _, h in bands],
+                 default=_MARGIN_Y + _band_height(1))
+    _append_walkthrough(root, steps, _ORIGIN_X - 20, bottom + _GUTTER,
+                        max(max_x - _ORIGIN_X + 200, 600))
+
     logical = ET.tostring(model, encoding="utf-8", xml_declaration=False).decode("utf-8")
 
     # The deployment page is emitted only when the stack actually provisions a VPC. An empty
@@ -736,7 +782,7 @@ def parse_graph(xml_text):
 
     for cell in root.iter("mxCell"):
         cell_id = cell.get("id") or ""
-        if cell_id.startswith("layer_"):
+        if cell_id.startswith("layer_") or cell_id.startswith("legend_"):
             continue
         if cell.get("vertex") == "1":
             nodes[cell_id] = cell.get("tooltip") or cell.get("value") or cell_id

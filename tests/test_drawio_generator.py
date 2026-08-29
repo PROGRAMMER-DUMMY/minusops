@@ -322,8 +322,9 @@ def _node_positions(xml_text):
     import xml.etree.ElementTree as ET
     positions = {}
     for cell in ET.fromstring(xml_text).iter("mxCell"):
-        # The column headers are vertices too; they are labels, not resources.
-        if cell.get("vertex") != "1" or (cell.get("id") or "").startswith("layer_"):
+        # Band boxes and walkthrough steps are vertices too; both are captions.
+        cell_id = cell.get("id") or ""
+        if cell.get("vertex") != "1" or cell_id.startswith(("layer_", "legend_")):
             continue
         geom = cell.find("mxGeometry")
         # Keyed by the full address, which lives on the tooltip -- the visible label is
@@ -490,7 +491,8 @@ def test_node_labels_are_short_enough_not_to_run_into_the_next_column():
 
     import xml.etree.ElementTree as ET
     nodes = [c for c in ET.fromstring(xml_text).iter("mxCell")
-             if c.get("vertex") == "1" and not (c.get("id") or "").startswith("layer_")]
+             if c.get("vertex") == "1"
+             and not (c.get("id") or "").startswith(("layer_", "legend_"))]
 
     assert nodes
     for cell in nodes:
@@ -742,3 +744,60 @@ def test_parse_graph_reads_the_logical_page_only():
     addresses = list(drawio_generator.parse_graph(bundle["xml"])["nodes"].values())
 
     assert addresses.count("aws_s3_bucket.gold") == 1
+
+
+# --- The walkthrough beneath the canvas -------------------------------------------------
+#
+# AWS numbers the groups in its reference diagrams so the arrows stay clean and a numbered
+# note carries the sentence. The trap is that the sentence has to be DERIVED: "Glue validates
+# and cleans the records" is a claim about behaviour we do not know, from a plan that states
+# only which paths the job reads and writes.
+
+def test_a_step_states_the_paths_rather_than_the_behaviour():
+    steps = drawio_generator.walkthrough_steps(
+        drawio_generator.discover_data_edges(_wired_plan()),
+        {r["address"]: r for r in _wired_plan()["resource_changes"]})
+
+    assert len(steps) == 2
+    joined = " ".join(steps).lower()
+    for invented in ("validate", "clean", "enrich", "transform the", "ensures"):
+        assert invented not in joined, f"the walkthrough claims {invented!r}"
+
+
+def test_a_step_carries_the_capacity_the_plan_states():
+    steps = drawio_generator.walkthrough_steps(
+        drawio_generator.discover_data_edges(_wired_plan()),
+        {r["address"]: r for r in _wired_plan()["resource_changes"]})
+
+    assert any("G.1X x4" in step for step in steps)
+
+
+def test_a_plan_with_no_declared_flow_says_the_wiring_is_absent_not_the_diagram():
+    steps = drawio_generator.walkthrough_steps([], {})
+
+    assert len(steps) == 1
+    assert "no data flow" in steps[0]
+    assert "wiring is" in steps[0]
+
+
+def test_the_steps_are_drawn_below_every_band():
+    xml_text = drawio_generator.generate_drawio_from_plan(_banded_plan())["xml"]
+    root = ET.fromstring(xml_text)
+
+    bands = _band_geometry(xml_text, full=True)
+    lowest = max(y + h for _, y, _, h in bands.values())
+    steps = [c for c in root.iter("mxCell") if (c.get("id") or "").startswith("legend_step_")]
+
+    assert steps
+    for cell in steps:
+        assert float(cell.find("mxGeometry").get("y")) >= lowest
+
+
+def test_parse_graph_ignores_the_walkthrough_the_generator_draws():
+    """A step box is a caption. Reporting one as a removed resource would put noise into an
+    unbypassable review, exactly as a deleted band header would."""
+    bundle = drawio_generator.generate_drawio_from_plan(_wired_plan())
+
+    graph = drawio_generator.parse_graph(bundle["xml"])
+
+    assert not any(k.startswith("legend_") for k in graph["nodes"])
