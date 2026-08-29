@@ -99,6 +99,168 @@ _DEFAULT_PII = (
 _LAKE_FORMATION = "governance-lakeformation"
 
 
+# --- Plan-derived facts -------------------------------------------------------------------
+#
+# Everything in _NODES above is the medallion PATTERN's default: 90 days to Glacier because
+# that is storage-medallion-s3's default, `ingest_date=YYYY/MM/DD` because that is the shape
+# the module suggests. None of it is a claim about the stack in front of you.
+#
+# When a plan is supplied, the facts it actually states replace the pattern's, and every node
+# says which it is carrying. A partitioning scheme no plan states stays absent rather than
+# being filled in from the pattern -- an auditor reads a rendered fact as a fact.
+
+# Zone key on a medallion bucket -> the lineage node it stands for.
+_ZONE_NODE = {"raw": "bronze", "bronze": "bronze", "landing": "bronze",
+              "cleaned": "silver", "clean": "silver", "silver": "silver", "stage": "silver",
+              "curated": "gold", "gold": "gold", "presentation": "gold"}
+
+
+def _instance_key(address):
+    start = (address or "").rfind('["')
+    return (address or "")[start + 2:-2] if start != -1 else ""
+
+
+def _managed(plan_json):
+    return [r for r in (plan_json or {}).get("resource_changes", [])
+            if r.get("mode") == "managed"]
+
+
+def _refs(expressions):
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "references" in node:
+                found.extend(node["references"])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(expressions)
+    return found
+
+
+def _base(address):
+    cut = (address or "").rfind('["')
+    return (address or "")[:cut] if cut != -1 else (address or "")
+
+
+def _config_resources_deep(plan_json):
+    """Every configured resource, including inside module calls.
+
+    A composed stack keeps its resources under configuration.root_module.module_calls, so a
+    lookup that reads root_module.resources alone finds nothing for exactly the stacks this
+    product generates.
+    """
+    out = []
+
+    def walk(module, prefix):
+        for res in module.get("resources", []) or []:
+            entry = dict(res)
+            name = f"{res.get('type')}.{res.get('name')}"
+            entry["address"] = f"{prefix}{res.get('address') or name}"
+            out.append(entry)
+        for call, body in (module.get("module_calls") or {}).items():
+            walk((body or {}).get("module") or {}, f"{prefix}module.{call}.")
+
+    walk((plan_json or {}).get("configuration", {}).get("root_module", {}) or {}, "")
+    return out
+
+
+def _module_prefix(address):
+    """`module.a.module.b.aws_s3_bucket.x` -> `module.a.module.b.` (empty at the root)."""
+    parts = (address or "").split(".")
+    out = []
+    while len(parts) > 2 and parts[0] == "module":
+        out += parts[:2]
+        parts = parts[2:]
+    return (".".join(out) + ".") if out else ""
+
+
+def _lifecycle_summary(after):
+    """What a lifecycle rule actually states, transition or expiry. None when it states no day."""
+    for rule in after.get("rule") or []:
+        for transition in (rule or {}).get("transition") or []:
+            if (transition or {}).get("days"):
+                cls = (transition.get("storage_class") or "a colder class").title()
+                return f"Transitions to {cls} after {transition['days']} days"
+        for expiry in (rule or {}).get("expiration") or []:
+            if (expiry or {}).get("days"):
+                return f"Expires after {expiry['days']} days"
+    return None
+
+
+def plan_facts(plan_json):
+    """Per lineage node, the storage facts THIS plan states. An absent key is unstated."""
+    resources = _managed(plan_json)
+    config = {r["address"]: r for r in _config_resources_deep(plan_json)}
+
+    buckets, facts = {}, {}
+    for res in resources:
+        if res.get("type") != "aws_s3_bucket":
+            continue
+        # A medallion bucket is identified by its for_each zone key; the quarantine
+        # bucket is a named resource, so it is identified by that name.
+        node = (_ZONE_NODE.get(_instance_key(res.get("address")).lower())
+                or ("quarantine" if res.get("address", "").endswith(".quarantine") else None))
+        if not node:
+            continue
+        buckets[res.get("address")] = node
+        after = (res.get("change") or {}).get("after") or {}
+        entry = facts.setdefault(node, {})
+        entry["label"] = f"S3 {node.title()} -- {after.get('bucket') or res.get('address')}"
+        entry["facts_source"] = "plan"
+
+    # Encryption and retention live on separate resources, each resolved through its own
+    # reference back to the bucket. Those references are module-LOCAL, so they only match
+    # once the referring resource's own module prefix is put back on the front.
+    for res in resources:
+        rtype = res.get("type")
+        if rtype not in ("aws_s3_bucket_server_side_encryption_configuration",
+                         "aws_s3_bucket_lifecycle_configuration"):
+            continue
+        address = res.get("address")
+        prefix = _module_prefix(address)
+        declared = config.get(_base(address), {}).get("expressions", {})
+        after = (res.get("change") or {}).get("after") or {}
+        # A for_each'd config resource refers to its bucket by BASE address; the two
+        # share an instance key, so `...sse.zone["bronze"]` configures `...bucket.zone["bronze"]`
+        # and not all three zones at once.
+        key = _instance_key(address)
+        suffix = f'["{key}"]' if key else ""
+        targets = {buckets.get(prefix + ref + suffix) or buckets.get(prefix + ref)
+                   for ref in _refs(declared)}
+        targets.discard(None)
+        # A module that for_each'es the buckets themselves refers to `each.value`, so no
+        # reference names a bucket at all. The instance keys are the same set by
+        # construction, so same module plus same key identifies it without guessing.
+        if not targets and key:
+            targets = {node for addr, node in buckets.items()
+                       if addr.startswith(prefix) and _instance_key(addr) == key}
+        for node in targets:
+            entry = facts.setdefault(node, {})
+            if rtype.endswith("server_side_encryption_configuration"):
+                entry["encryption"] = _encryption_summary(after)
+            else:
+                summary = _lifecycle_summary(after)
+                if summary:
+                    entry["retention"] = summary
+    return facts
+
+
+def _encryption_summary(after):
+    for rule in after.get("rule") or []:
+        for default in (rule or {}).get("apply_server_side_encryption_by_default") or []:
+            algorithm = (default or {}).get("sse_algorithm")
+            if algorithm == "aws:kms":
+                return "SSE-KMS (customer managed key)"
+            if algorithm:
+                return f"{algorithm} (S3 managed)"
+    return "Server-side encryption configured"
+
+
 def _selected(decision):
     decision = decision or {}
     modules = decision.get("selected_modules") or decision.get("modules") or []
@@ -128,7 +290,18 @@ def build_lineage(decision=None, plan_json=None):
             seen.add(node_id)
             order.append(node_id)
 
-    nodes = [dict(id=node_id, **_NODES[node_id]) for node_id in order]
+    derived = plan_facts(plan_json) if plan_json else {}
+    nodes = []
+    for node_id in order:
+        node = dict(id=node_id, **_NODES[node_id])
+        node.setdefault("facts_source", "pattern default")
+        if node_id in derived:
+            # A stated fact replaces the pattern's; one the plan never states is dropped
+            # rather than left showing the pattern's value under a "plan" label.
+            for key in ("partitioning", "table_format", "retention", "encryption"):
+                node.pop(key, None)
+            node.update(derived[node_id])
+        nodes.append(node)
     edges = [dict(**{"from": src, "to": dst}, label=label, branch=branch)
              for src, dst, label, branch in _EDGES if src in seen and dst in seen]
 
@@ -136,12 +309,20 @@ def build_lineage(decision=None, plan_json=None):
 
 
 def _modules_from_plan(plan_json):
-    """Module ids referenced by a plan's resource addresses (`module.<id>....`)."""
+    """Module ids referenced by a plan's resource addresses (`module.<id>....`).
+
+    A Terraform address segment cannot contain a hyphen, so `storage-medallion-s3` appears as
+    `module.storage_medallion_s3`. Returning the address form matched nothing in _REQUIRES,
+    which is keyed by catalog id -- so the plan-only path silently produced an empty graph
+    and only a decision record ever populated one.
+    """
     found = set()
     for change in (plan_json or {}).get("resource_changes", []) or []:
         address = str(change.get("address", ""))
         if address.startswith("module."):
-            found.add(address.split(".")[1])
+            segment = address.split(".")[1]
+            found.add(segment)
+            found.add(segment.replace("_", "-"))
     return found
 
 

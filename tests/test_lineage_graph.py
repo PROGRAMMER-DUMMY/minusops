@@ -177,3 +177,98 @@ def test_the_graph_carries_no_emoji():
     import re
     payload = json.dumps(lg.build_lineage(_decision(FULL)), ensure_ascii=False)
     assert not re.search("[\U0001F000-\U0001FAFF\u2600-\u27BF]", payload)
+
+
+# --- Plan-derived facts versus the pattern's defaults ------------------------------------
+#
+# Every attribute in _NODES is the medallion PATTERN's default: 90 days to Glacier because
+# that is storage-medallion-s3's default, `ingest_date=YYYY/MM/DD` because that is the shape
+# the module suggests. Rendered on a governance surface with no provenance, an auditor reads
+# each one as a fact about the stack in front of them.
+
+def _composed_plan():
+    """A module-composed medallion stack, shaped the way the synthesizer emits one."""
+    def bucket(zone, name):
+        return {"address": f'module.storage_medallion_s3.aws_s3_bucket.zone["{zone}"]',
+                "type": "aws_s3_bucket", "mode": "managed", "name": "zone",
+                "change": {"actions": ["create"], "after": {"bucket": name}}}
+
+    def sse(zone):
+        return {"address": ('module.storage_medallion_s3.'
+                            f'aws_s3_bucket_server_side_encryption_configuration.zone["{zone}"]'),
+                "type": "aws_s3_bucket_server_side_encryption_configuration",
+                "mode": "managed", "name": "zone",
+                "change": {"actions": ["create"], "after": {"rule": [
+                    {"apply_server_side_encryption_by_default": [
+                        {"sse_algorithm": "aws:kms"}]}]}}}
+
+    def lifecycle(zone, days):
+        return {"address": ('module.storage_medallion_s3.'
+                            f'aws_s3_bucket_lifecycle_configuration.zone["{zone}"]'),
+                "type": "aws_s3_bucket_lifecycle_configuration", "mode": "managed",
+                "name": "zone",
+                "change": {"actions": ["create"], "after": {"rule": [
+                    {"transition": [{"days": days, "storage_class": "GLACIER"}]}]}}}
+
+    changes = []
+    for zone, name in (("bronze", "lake-bronze"), ("silver", "lake-silver"),
+                       ("gold", "lake-gold")):
+        changes += [bucket(zone, name), sse(zone), lifecycle(zone, 30)]
+    changes.append({"address": "module.compute_glue_etl.aws_glue_job.etl",
+                    "type": "aws_glue_job", "mode": "managed", "name": "etl",
+                    "change": {"actions": ["create"], "after": {}}})
+    changes.append({"address": "module.query_athena.aws_athena_workgroup.wg",
+                    "type": "aws_athena_workgroup", "mode": "managed", "name": "wg",
+                    "change": {"actions": ["create"], "after": {}}})
+
+    return {"resource_changes": changes,
+            "configuration": {"root_module": {"module_calls": {
+                "storage_medallion_s3": {"module": {"resources": [
+                    {"type": "aws_s3_bucket_server_side_encryption_configuration",
+                     "name": "zone",
+                     "expressions": {"bucket": {"references": ["each.value.id", "each.value"]}}},
+                    {"type": "aws_s3_bucket_lifecycle_configuration", "name": "zone",
+                     "expressions": {"bucket": {"references": ["each.value.id", "each.value"]}}},
+                ]}},
+            }}}}
+
+
+def test_a_plan_only_call_populates_the_graph():
+    """A Terraform address segment cannot contain a hyphen, so `storage-medallion-s3` appears
+    as `module.storage_medallion_s3`. Matching the address form against catalog ids produced
+    an empty graph from any plan, and only a decision record ever populated one."""
+    graph = lg.build_lineage(decision=None, plan_json=_composed_plan())
+
+    assert [n["id"] for n in graph["nodes"]]
+
+
+def test_a_dataset_node_carries_the_bucket_the_plan_names():
+    graph = lg.build_lineage(decision=None, plan_json=_composed_plan())
+
+    assert "lake-gold" in lg.find_node(graph, "gold")["label"]
+
+
+def test_stated_retention_replaces_the_patterns_ninety_days():
+    """The module default is 90. This plan says 30, and the panel must say 30."""
+    graph = lg.build_lineage(decision=None, plan_json=_composed_plan())
+
+    assert "30 days" in lg.find_node(graph, "bronze")["retention"]
+    assert "90" not in lg.find_node(graph, "bronze")["retention"]
+
+
+def test_a_node_says_whether_its_facts_came_from_the_plan_or_the_pattern():
+    from_plan = lg.build_lineage(decision=None, plan_json=_composed_plan())
+    from_pattern = lg.build_lineage(_decision(FULL))
+
+    assert lg.find_node(from_plan, "gold")["facts_source"] == "plan"
+    assert lg.find_node(from_pattern, "gold")["facts_source"] == "pattern default"
+
+
+def test_a_fact_the_plan_never_states_is_dropped_rather_than_shown_as_planned():
+    """Partitioning is not derivable from a plan. Leaving the pattern's value in place under
+    a "plan" label is the exact defect this change exists to remove."""
+    graph = lg.build_lineage(decision=None, plan_json=_composed_plan())
+    gold = lg.find_node(graph, "gold")
+
+    assert gold["facts_source"] == "plan"
+    assert not gold.get("partitioning")
