@@ -158,6 +158,15 @@ Fronts [`pillars.py`](../architecture/pillars.py). Deterministic fact inference 
 ### [`pattern.py`](./commands/pattern.py)
 Fronts [`patterns.py`](../generation/patterns.py) and [`git_agent.py`](../generation/git_agent.py). Pattern matching, capture, and automated Git promotion (`pattern promote`).
 
+### [`diagram.py`](./commands/diagram.py)
+Fronts [`drawio_generator.py`](../reporting/drawio_generator.py). Resolves a `plan.json`
+from `--dir`, `--run`, or the active context and writes `architecture.drawio`,
+`architecture_url.txt`, and `architecture_ledger.md` into `--out-dir` (the working
+directory by default, which is why those three names are git-ignored at the repo root).
+
+Every `--format` writes a file. `ledger` was once an advertised format that wrote nothing
+and still exited 0 -- the operator had no way to tell it had not worked.
+
 
 ---
 

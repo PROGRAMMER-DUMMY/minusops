@@ -79,10 +79,10 @@ def reports_root_for_dir(dir_):
 
 # --- tier map (mirrors docs/architecture_svg_spec.md §5) -------------------
 TIERS = ["sources", "storage", "compute", "orchestration", "observability", "security"]
-TIER_HUE = {"sources": "#d4a373", "storage": "#d95d39", "compute": "#e8825f",
-            "orchestration": "#8da189", "observability": "#cb9a3e", "security": "#b09c93"}
+TIER_HUE = {"sources": "#b45309", "storage": "#d95d39", "compute": "#e8825f",
+            "orchestration": "#8da189", "observability": "#cb9a3e", "security": "#64748b"}
 TIER_X = {"sources": 24, "storage": 272, "compute": 520, "orchestration": 768, "observability": 1016}
-ACTION_TINT = {"create": "#8da189", "update": "#cb9a3e", "delete": "#d95d39", "no-op": "#b09c93"}
+ACTION_TINT = {"create": "#8da189", "update": "#cb9a3e", "delete": "#d95d39", "no-op": "#64748b"}
 
 
 def _tier_for(rtype):
@@ -274,9 +274,9 @@ def _generic_flow(by_tier, pos, node_h, visible_tiers):
 
 
 _SEV_ORDER = ("HIGH", "MEDIUM", "LOW", "EXTERNAL")
-_SEV_COLOR = {"HIGH": "#d95d39", "MEDIUM": "#cb9a3e", "LOW": "#8da189", "EXTERNAL": "#b09c93"}
-_LOCK = ('<rect x="0" y="5" width="13" height="9" rx="2" fill="none" stroke="#d4a373" stroke-width="1.3"/>'
-         '<path d="M2.5,5 V3.2 a4,4 0 0 1 8,0 V5" fill="none" stroke="#d4a373" stroke-width="1.3"/>')
+_SEV_COLOR = {"HIGH": "#d95d39", "MEDIUM": "#cb9a3e", "LOW": "#8da189", "EXTERNAL": "#64748b"}
+_LOCK = ('<rect x="0" y="5" width="13" height="9" rx="2" fill="none" stroke="#b45309" stroke-width="1.3"/>'
+         '<path d="M2.5,5 V3.2 a4,4 0 0 1 8,0 V5" fill="none" stroke="#b45309" stroke-width="1.3"/>')
 
 # Inline, self-contained service glyphs (generic — not AWS's trademarked icon set), drawn
 # in an ~18x18 local frame. Stroked in the tier hue so they stay on-palette and embed in PDFs.
@@ -336,11 +336,11 @@ def _icon_for(rtype):
 
 def _component_box(x, y, w, h, hue, title, sub, action, findings, locked, address, esc, icon="cube", detail=""):
     """One service component box (collapses a service + its config into a single node)."""
-    tint = ACTION_TINT.get(action, "#b09c93")
+    tint = ACTION_TINT.get(action, "#64748b")
     df = f' data-findings="{esc(",".join(f["id"] for f in findings))}"' if findings else ""
     out = [
         f'<g class="node" data-address="{esc(address)}" data-action="{esc(action)}"{df} transform="translate({x},{y})">',
-        f'<rect class="card" width="{w}" height="{h}" rx="12" fill="#1c1714" stroke="{hue}" stroke-width="1.6"/>',
+        f'<rect class="card" width="{w}" height="{h}" rx="12" fill="#ffffff" stroke="{hue}" stroke-width="1.6"/>',
         f'<rect width="4" height="{h}" rx="2" fill="{tint}"/>',
         _icon(icon, hue, 16, h // 2 - 9),
     ]
@@ -362,7 +362,7 @@ def _component_box(x, y, w, h, hue, title, sub, action, findings, locked, addres
         label = top["id"] + (f" +{len(findings) - 1}" if len(findings) > 1 else "")
         bw = 10 + len(label) * 6
         out.append(f'<g transform="translate({w - bw - 8},{h - 22})">'
-                   f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], "#b09c93")}"/>'
+                   f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], "#64748b")}"/>'
                    f'<text class="badge" x="{bw // 2}" y="10" text-anchor="middle">{esc(label)}</text></g>')
     out.append('</g>')
     return "".join(out)
@@ -377,7 +377,7 @@ def _ortho_edge(b1, b2, kind="data", channel=None):
     """
     x1, y1, w1, h1 = b1
     x2, y2, w2, h2 = b2
-    color = "#8da189" if kind == "ctrl" else "#fbf7f4"
+    color = "#8da189" if kind == "ctrl" else "#1e293b"
     dash = ' stroke-dasharray="6 5"' if kind == "ctrl" else ''
     if channel is not None:
         sx, sy = x1 + w1 // 2, y1
@@ -443,7 +443,7 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
         "iam": (640, 404, 152, 72), "cw": (840, 404, 152, 72), "budget": (1040, 404, 152, 72),
     }
     META = {
-        "source": ("#d4a373", "Batch Source", "external files", "inbox"),
+        "source": ("#b45309", "Batch Source", "external files", "inbox"),
         "bronze": ("#d95d39", "S3 Bronze", "raw landing", "bucket"),
         "silver": ("#d95d39", "S3 Silver", "cleaned", "bucket"),
         "gold": ("#d95d39", "S3 Gold", "curated", "bucket"),
@@ -452,9 +452,9 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
         "glue2": ("#e8825f", "Glue Job", "silver to gold", "gears"),
         "athena": ("#8da189", "Athena", "query gold", "search"),
         "sfn": ("#8da189", "Step Functions", "starts & waits Glue", "workflow"),
-        "catalog": ("#b09c93", "Glue Catalog", "table metadata", "book"),
-        "kms": ("#b09c93", "KMS", "CMK encryption", "key"),
-        "iam": ("#b09c93", "IAM", "scoped roles", "shield"),
+        "catalog": ("#64748b", "Glue Catalog", "table metadata", "book"),
+        "kms": ("#64748b", "KMS", "CMK encryption", "key"),
+        "iam": ("#64748b", "IAM", "scoped roles", "shield"),
         "cw": ("#cb9a3e", "CloudWatch", "failure alarm", "bell"),
         "budget": ("#cb9a3e", "Budget", "spend guardrail", "coin"),
     }
@@ -511,25 +511,25 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
         'and per-resource security/cost findings overlaid.</desc>',
         '<defs>'
         '<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
-        'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#fbf7f4"/></marker>'
+        'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1e293b"/></marker>'
         '<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">'
         '<path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.06)" stroke-width="0.5"/></pattern>'
         '<style>'
-        '.title{font:600 22px Outfit,system-ui,sans-serif;fill:#fbf7f4}'
-        '.sub{font:500 12px "JetBrains Mono",ui-monospace,monospace;fill:#b09c93}'
-        '.tier-h{font:600 12px Outfit,system-ui,sans-serif;fill:#fbf7f4;letter-spacing:.12em}'
-        '.n-type{font:600 13px Inter,system-ui,sans-serif;fill:#fbf7f4}'
-        '.n-name{font:400 11px "JetBrains Mono",ui-monospace,monospace;fill:#b09c93}'
-        '.n-meta{font:500 9px "JetBrains Mono",ui-monospace,monospace;fill:#d4a373}'
-        '.badge{font:600 9px Inter,system-ui,sans-serif;fill:#14110f}'
-        '.legend{font:500 11px Inter,system-ui,sans-serif;fill:#b09c93}'
-        '.p-l{font:600 9px Inter,system-ui,sans-serif;fill:#b09c93;letter-spacing:.06em}'
-        '.p-v{font:600 13px Inter,system-ui,sans-serif;fill:#fbf7f4}'
-        '.swim{fill:#1c1714;fill-opacity:.3;stroke:rgba(217,93,57,.14)}'
+        '.title{font:600 22px Outfit,system-ui,sans-serif;fill:#1e293b}'
+        '.sub{font:500 12px "JetBrains Mono",ui-monospace,monospace;fill:#64748b}'
+        '.tier-h{font:600 12px Outfit,system-ui,sans-serif;fill:#1e293b;letter-spacing:.12em}'
+        '.n-type{font:600 13px Inter,system-ui,sans-serif;fill:#1e293b}'
+        '.n-name{font:400 11px "JetBrains Mono",ui-monospace,monospace;fill:#64748b}'
+        '.n-meta{font:500 9px "JetBrains Mono",ui-monospace,monospace;fill:#b45309}'
+        '.badge{font:600 9px Inter,system-ui,sans-serif;fill:#ffffff}'
+        '.legend{font:500 11px Inter,system-ui,sans-serif;fill:#64748b}'
+        '.p-l{font:600 9px Inter,system-ui,sans-serif;fill:#64748b;letter-spacing:.06em}'
+        '.p-v{font:600 13px Inter,system-ui,sans-serif;fill:#1e293b}'
+        '.swim{fill:#ffffff;fill-opacity:.75;stroke:rgba(217,93,57,.14)}'
         '</style></defs>',
-        '<g id="bg"><rect x="0" y="0" width="1280" height="760" fill="#14110f"/>'
+        '<g id="bg"><rect x="0" y="0" width="1280" height="760" fill="#fbf7f4"/>'
         '<rect x="0" y="0" width="1280" height="760" fill="url(#grid)"/></g>',
-        '<g id="titlebar"><rect x="0" y="0" width="1280" height="64" fill="#1c1714"/>'
+        '<g id="titlebar"><rect x="0" y="0" width="1280" height="64" fill="#ffffff"/>'
         '<rect x="0" y="63" width="1280" height="1" fill="rgba(217,93,57,.18)"/>'
         f'<text class="title" x="24" y="34">{esc(template)}</text>'
         f'<text class="sub" x="24" y="52">{esc(cloud)} · plan {esc(short_hash)} · {esc(ts)}</text></g>',
@@ -602,7 +602,7 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
     parts.append('<g id="posture"><text class="tier-h" x="24" y="500">DEPLOYMENT POSTURE</text>')
     cw, cx, cy = 194, 24, 510
     for label, val in cells:
-        parts.append(f'<rect x="{cx}" y="{cy}" width="{cw}" height="74" rx="10" fill="#1c1714" '
+        parts.append(f'<rect x="{cx}" y="{cy}" width="{cw}" height="74" rx="10" fill="#ffffff" '
                      f'fill-opacity="0.6" stroke="rgba(217,93,57,.16)"/>'
                      f'<text class="p-l" x="{cx + 14}" y="{cy + 28}">{esc(label.upper())}</text>'
                      f'<text class="p-v" x="{cx + 14}" y="{cy + 52}">{esc(_fit_text(str(val), 22))}</text>')
@@ -611,7 +611,7 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
 
     # legend (same key set as the grid layout)
     parts.append('<g id="legend">'
-                 '<line x1="24" y1="700" x2="58" y2="700" stroke="#fbf7f4" stroke-width="1.6" marker-end="url(#arrow)"/>'
+                 '<line x1="24" y1="700" x2="58" y2="700" stroke="#1e293b" stroke-width="1.6" marker-end="url(#arrow)"/>'
                  '<text class="legend" x="64" y="704">data flow</text>'
                  '<line x1="146" y1="700" x2="180" y2="700" stroke="#8da189" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
                  '<text class="legend" x="186" y="704">control</text>'
@@ -688,21 +688,21 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         'markers, and a per-resource overlay of security/cost/observability findings.</desc>',
         '<defs>'
         '<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
-        'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#fbf7f4"/></marker>'
+        'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1e293b"/></marker>'
         '<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">'
         '<path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.06)" stroke-width="0.5"/></pattern>'
         '<style>'
-        '.title{font:600 22px Outfit,system-ui,sans-serif;fill:#fbf7f4}'
-        '.sub{font:500 12px "JetBrains Mono",ui-monospace,monospace;fill:#b09c93}'
-        '.tier-h{font:600 13px Outfit,system-ui,sans-serif;fill:#fbf7f4;letter-spacing:.12em}'
-        '.n-type{font:600 12px Inter,system-ui,sans-serif;fill:#fbf7f4}'
-        '.n-name{font:400 11px "JetBrains Mono",ui-monospace,monospace;fill:#b09c93}'
-        '.badge{font:600 9px Inter,system-ui,sans-serif;fill:#14110f}'
-        '.legend{font:500 11px Inter,system-ui,sans-serif;fill:#b09c93}'
+        '.title{font:600 22px Outfit,system-ui,sans-serif;fill:#1e293b}'
+        '.sub{font:500 12px "JetBrains Mono",ui-monospace,monospace;fill:#64748b}'
+        '.tier-h{font:600 13px Outfit,system-ui,sans-serif;fill:#1e293b;letter-spacing:.12em}'
+        '.n-type{font:600 12px Inter,system-ui,sans-serif;fill:#1e293b}'
+        '.n-name{font:400 11px "JetBrains Mono",ui-monospace,monospace;fill:#64748b}'
+        '.badge{font:600 9px Inter,system-ui,sans-serif;fill:#ffffff}'
+        '.legend{font:500 11px Inter,system-ui,sans-serif;fill:#64748b}'
         '</style></defs>',
-        f'<g id="bg"><rect x="0" y="0" width="1280" height="{total_h}" fill="#14110f"/>'
+        f'<g id="bg"><rect x="0" y="0" width="1280" height="{total_h}" fill="#fbf7f4"/>'
         f'<rect x="0" y="0" width="1280" height="{total_h}" fill="url(#grid)"/></g>',
-        '<g id="titlebar"><rect x="0" y="0" width="1280" height="64" fill="#1c1714"/>'
+        '<g id="titlebar"><rect x="0" y="0" width="1280" height="64" fill="#ffffff"/>'
         '<rect x="0" y="63" width="1280" height="1" fill="rgba(217,93,57,.18)"/>'
         f'<text class="title" x="24" y="34">{esc(template)}</text>'
         f'<text class="sub" x="24" y="52">{esc(cloud)} · plan {esc(short_hash)} · {esc(ts)}</text></g>',
@@ -714,7 +714,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     edges = ['<g id="edges">']
     for x1, y1, x2, y2, kind in flow:
         mx = (x1 + x2) // 2
-        color = "#8da189" if kind == "ctrl" else "#fbf7f4"
+        color = "#8da189" if kind == "ctrl" else "#1e293b"
         dash = ' stroke-dasharray="6 5"' if kind == "ctrl" else ''
         edges.append(f'<path d="M{x1},{y1} C{mx},{y1} {mx},{y2} {x2},{y2}" stroke="{color}" '
                      f'stroke-width="1.6" fill="none" marker-end="url(#arrow)" opacity="0.6"{dash}/>')
@@ -729,7 +729,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         items = by_tier[t]
         y = 108
         for r in items:
-            tint = ACTION_TINT.get(r["action"], "#b09c93")
+            tint = ACTION_TINT.get(r["action"], "#64748b")
             nf = node_findings(r["address"])
             locked = has_kms and (r["type"].startswith("aws_s3_") or "athena" in r["type"]
                                   or r["type"].startswith("aws_kms"))
@@ -738,7 +738,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
             node = [
                 f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}"{df_attr} '
                 f'transform="translate({x},{y})">',
-                f'<rect class="card" width="232" height="{node_h}" rx="12" fill="#1c1714" '
+                f'<rect class="card" width="232" height="{node_h}" rx="12" fill="#ffffff" '
                 f'stroke="{TIER_HUE[t]}" stroke-width="1.5"/>',
                 f'<rect width="4" height="{node_h}" rx="2" fill="{tint}"/>',
                 _icon(_icon_for(r["type"]), TIER_HUE[t], 14, node_h // 2 - 9),
@@ -753,7 +753,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
                 bw = 10 + len(label) * 6
                 bx = (200 if locked else 224) - bw
                 node.append(f'<g transform="translate({bx},6)">'
-                            f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], "#b09c93")}"/>'
+                            f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], "#64748b")}"/>'
                             f'<text class="badge" x="{bw // 2}" y="10" text-anchor="middle">{esc(label)}</text></g>')
             node.append('</g>')
             parts.append("".join(node))
@@ -767,7 +767,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     for r in sec:
         sec_groups.setdefault(r["name"], []).append(r)
     parts.append(f'<g id="band-security"><rect x="24" y="{632 + dy}" width="1224" height="56" rx="10" fill="none" '
-                 'stroke="#b09c93" stroke-dasharray="4 4"/>'
+                 'stroke="#64748b" stroke-dasharray="4 4"/>'
                  f'<text class="tier-h" x="40" y="{654 + dy}">SECURITY &amp; IAM</text>')
     chip_cap = 6
     grouped = list(sec_groups.items())
@@ -775,12 +775,12 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         cx = 220 + i * 168
         r = members[0]
         nf = [f for m in members for f in node_findings(m["address"])]
-        stroke = _SEV_COLOR.get(nf[0]["severity"], "#b09c93") if nf else "#b09c93"
+        stroke = _SEV_COLOR.get(nf[0]["severity"], "#64748b") if nf else "#64748b"
         df_attr = f' data-findings="{esc(",".join(f["id"] for f in nf))}"' if nf else ""
         label = name + (f" ×{len(members)}" if len(members) > 1 else "")
         parts.append(
             f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}"{df_attr}>'
-            f'<rect x="{cx}" y="{646 + dy}" width="150" height="28" rx="8" fill="#1c1714" stroke="{stroke}" stroke-width="1"/>'
+            f'<rect x="{cx}" y="{646 + dy}" width="150" height="28" rx="8" fill="#ffffff" stroke="{stroke}" stroke-width="1"/>'
             f'<text class="n-name" x="{cx + 8}" y="{664 + dy}">{esc(_fit_text(label, 18))}</text></g>')
     if len(grouped) > chip_cap:
         parts.append(f'<text class="legend" x="1196" y="{664 + dy}">+{len(grouped) - chip_cap}</text>')
@@ -794,7 +794,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
                      f'<text class="legend" x="{lx + 18}" y="{713 + dy}">{t.capitalize()}</text>')
         lx += 70 + len(t) * 6
     parts.append(
-        f'<line x1="24" y1="{736 + dy}" x2="58" y2="{736 + dy}" stroke="#fbf7f4" stroke-width="1.6" marker-end="url(#arrow)"/>'
+        f'<line x1="24" y1="{736 + dy}" x2="58" y2="{736 + dy}" stroke="#1e293b" stroke-width="1.6" marker-end="url(#arrow)"/>'
         f'<text class="legend" x="64" y="{740 + dy}">data flow</text>'
         f'<line x1="146" y1="{736 + dy}" x2="180" y2="{736 + dy}" stroke="#8da189" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
         f'<text class="legend" x="186" y="{740 + dy}">control</text>'
@@ -810,9 +810,9 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     return "\n".join(parts)
 
 
-# palette constants shared by v3 (the MinusOps warm dusk palette)
-BG_C = "#14110f"; PANEL_C = "#1c1714"; PANEL2_C = "#221a16"; TEXT_C = "#fbf7f4"
-MUTED_C = "#b09c93"; FAINT_C = "#6f635c"; TERRA_C = "#d95d39"; SAND_C = "#d4a373"
+# palette constants shared by v3 (the MinusOps Monad light palette)
+BG_C = "#fbf7f4"; PANEL_C = "#ffffff"; PANEL2_C = "#f4ece6"; TEXT_C = "#1e293b"
+MUTED_C = "#64748b"; FAINT_C = "#94a3b8"; TERRA_C = "#d95d39"; SAND_C = "#b45309"
 SAGE_C = "#8da189"; GOLD_C = "#cb9a3e"
 
 # Clean display names + semantic role lines (deterministic, per resource type).

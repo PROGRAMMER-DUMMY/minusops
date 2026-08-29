@@ -23,7 +23,7 @@ This document provides an exhaustive, architectural, and operational reference f
 - [`core/reporting/toolpath.py`](./toolpath.py) — Cross-platform discovery utility for external CLIs (`terraform`, `aws`, headless browsers) without hardcoding user home paths.
 - [`core/reporting/cli_diagnostics.py`](./cli_diagnostics.py) — Agent-facing failure formatting: fuzzy run-id resolution, lifecycle stage interception, and the three-part `WHAT FAILED / WHY IT FAILED / ACTION REQUIRED` error (MINUS-157..160).
 - [`core/reporting/excel_finops_generator.py`](./excel_finops_generator.py) — Dual-tier FinOps `.xlsx` writer (executive summary + engineering ledger) built on stdlib `zipfile` + OpenXML, no third-party dependency.
-- [`core/reporting/drawio_generator.py`](./drawio_generator.py) — Dynamic Draw.io architecture diagram generator producing native editable XML (<mxGraphModel>), 1-click deflated browser URLs, and in-canvas execution ledgers (PRD v12.0).
+- [`core/reporting/drawio_generator.py`](./drawio_generator.py) — Draw.io architecture diagrams from a plan: editable mxGraphModel XML, a 1-click deflated browser URL, and the declared-hop ledger.
 
 ---
 
@@ -410,6 +410,48 @@ This document provides an exhaustive, architectural, and operational reference f
   - *Outputs:* Absolute file path string or `None`.
 - **Failure Modes:** Gracefully catches registry read errors on restricted environments and falls back to standard `shutil.which`.
 - **Architectural Role:** Guarantees reliable CLI binary discovery across Windows and POSIX environments without hardcoding user home paths.
+
+---
+
+### 11. `core/reporting/drawio_generator.py`
+- **File Link:** [`core/reporting/drawio_generator.py`](./drawio_generator.py)
+- **Exact Purpose:** renders one `plan.json` as a Draw.io canvas -- editable mxGraphModel
+  XML, a 1-click `app.diagrams.net/#R` URL, and the hop ledger.
+- **An edge is data movement, never a Terraform dependency.**
+  [`discover_data_edges`](./drawio_generator.py) reads a fixed set of data-carrying
+  arguments ([`_DATA_ARGUMENTS`](./drawio_generator.py)): Glue `--source_path` and
+  `--target_path`, the Athena result `output_location`, the Firehose destination. When the
+  value is unknown until apply, that argument's own `references` entry in `configuration`
+  resolves it -- only that argument's, never the resource's reference set. Edges used to
+  come from every declared reference, so the KMS key that encrypts a bucket appeared to
+  send it data, and the ledger dressed each such edge in a protocol and a latency budget
+  chosen by substring-matching the target address. A plan that declares no data flow now
+  reports none rather than fifty guesses.
+- **The ledger states hop, source and target.** Nothing else; a transport claim the plan
+  does not make is the same defect as an invented price.
+- **Three spatial roles, not six columns** ([`layout_positions`](./drawio_generator.py)),
+  following the AWS analytics reference architecture: flow layers left to right, cataloging
+  above the spine, security and monitoring in a full-width band beneath it that carries no
+  edges. The medallion zones are ordered by
+  [`architecture_model.stage_rank`](../architecture/architecture_model.py) and the
+  transforms sit between the zones they move data across, so the spine is derived from
+  stage and role rather than from resource names. Orchestration sits under the spine.
+- **A bucket is one node.** Versioning, public-access block, SSE, lifecycle, replication and
+  object-lock resources fold into the bucket they configure
+  ([`fold_badges`](./drawio_generator.py)) and become badges on it, resolved through that
+  resource's own `bucket` reference -- reading the bucket's attributes instead would badge
+  an unencrypted bucket whenever a sibling SSE resource existed for a different one.
+- **URL encoding is the published one:** `encodeURIComponent` then raw deflate then standard
+  base64. `atob` rejects the URL-safe alphabet and `decodeURIComponent` throws on a bare
+  percent sign, so both are round-tripped against a decoder that imitates diagrams.net.
+- **Inputs/Outputs:** *Inputs:* a `terraform show -json` plan dict. *Outputs:*
+  `{"xml", "url", "ledger", "ledger_markdown"}`.
+- **Dependencies:** standard library plus
+  [`architecture_model.py`](../architecture/architecture_model.py) for classification and
+  stage ranking. No cloud call, no Terraform invocation, no third-party graphing library.
+- **Failure Modes:** an unreadable plan yields an empty canvas rather than raising;
+  [`parse_graph`](./drawio_generator.py) returns empty node and edge maps on unparseable XML.
+- **Tests:** [`tests/test_drawio_generator.py`](../../tests/test_drawio_generator.py).
 
 ---
 
