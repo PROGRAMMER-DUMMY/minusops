@@ -224,3 +224,26 @@ caller (e.g. finops_agent --notify-slack)
   now calls in here rather than keeping its own copy; `finops_agent.py` no longer imports
   `urllib` or `approval` at all.
 - **Broken references:** None.
+### `core/integrations/connector_config.py`
+- **File Link:** [`connector_config.py`](./connector_config.py)
+- **Purpose:** persistent connector configuration under `.minus/connectors.json`, applied to
+  the live process environment, plus live health probes for Slack, Teams, Jira, Confluence
+  and Outlook.
+- **Why a probe and not a config check:** an unset webhook and a revoked webhook look
+  identical from the configuration file, and only one of them is a working integration. The
+  probe is what tells them apart before an incident does.
+- **Failure modes:** the shared result-dict contract. A probe against an unwired connector is
+  `not_configured` and `ok: True`, never an error -- see the table above for why.
+
+### `core/integrations/mcp_server.py`
+- **File Link:** [`mcp_server.py`](./mcp_server.py)
+- **Purpose:** MinusOps reachable from any MCP client over stdio. JSON-RPC 2.0 --
+  `initialize`, `tools/list`, `tools/call` -- standard library only.
+- **It exposes the gate's VERDICTS, never its controls.** Every tool is read-only:
+  `gate_status`, `plan_summary`, `guardrail_check`, `pillar_next`, `pillar_derive`. Nothing
+  mutates and nothing approves. **`gate apply` is deliberately absent** -- a mutating tool
+  here would put an infrastructure change one model call away from a human gate that exists
+  precisely to be slower than that.
+- **Failure modes:** an unknown method or tool is a JSON-RPC protocol error, not a crash; a
+  notification receives no reply, per the spec.
+- **Tests:** [`tests/test_mcp_server.py`](../../tests/test_mcp_server.py).

@@ -355,3 +355,66 @@ The `core/governance/` engine enforces state-aware, plan-bound, tamper-evident i
 - **Inputs & Outputs**: N/A.
 - **Failure Modes**: N/A.
 - **Architectural Role**: Standard Python package declaration.
+---
+
+### 17. [`agent_guardrails.py`](./agent_guardrails.py)
+
+- **Exact Purpose**: evaluates a command or a file write before an autonomous agent performs
+  it, and refuses the ones that destroy work, bypass the human gate, or reach outside the run
+  the agent is scoped to.
+- **NOT A SECURITY BOUNDARY AND NOT A SANDBOX.** It is a guardrail against a MISTAKE. A
+  reader who takes it for containment will grant an agent more than it should have, which is
+  why the module states its own limits before its capabilities.
+- **Key Functions**: `evaluate_command(command)`, `evaluate_write(path)` (which refuses every
+  path without a declared `MINUS_AGENT_RUN_ID` scope), `enforce(...)` which raises rather than
+  returning on a refusal.
+- **Failure Modes**: fail-closed. An unparseable command is refused, and a destructive command
+  hidden inside a chain (`&&`, `;`, a subshell) is caught rather than read as its first token.
+- **Tests**: [`tests/test_agent_guardrails.py`](../../tests/test_agent_guardrails.py),
+  [`tests/test_guardrails_hook.py`](../../tests/test_guardrails_hook.py), and
+  [`tests/test_guardrail_self_block.py`](../../tests/test_guardrail_self_block.py) -- which
+  asserts no MinusOps command is refused by its own guardrail, the failure that would brick
+  every agent session.
+
+---
+
+### 18. [`apply_broker.py`](./apply_broker.py)
+
+- **Exact Purpose**: the release check for an apply. Was THIS exact plan approved, by someone
+  other than the person who planned it?
+- Runs in CI after the human gate, reading an approval record from a store the plan role
+  cannot write. Refuses on hash mismatch, self-approval, an unattributed or stale approval,
+  and any record it cannot parse.
+- **Not a token broker**, and the distinction is load-bearing: an IAM trust policy matches
+  claims inside the token, and no CI provider issues one carrying a plan digest. The check
+  has to happen here because it cannot happen there.
+- **Failure Modes**: fail-closed on every branch. Self-approval is caught through the ARN as
+  well as the operator string, since the two can disagree.
+- **Tests**: [`tests/test_apply_broker.py`](../../tests/test_apply_broker.py).
+
+---
+
+### 19. [`agent_tracer.py`](./agent_tracer.py)
+
+- **Exact Purpose**: the multi-agent execution trace, read out of the audit chain.
+- **What it is NOT: a picture of the lifecycle.** The PRD names eight relay stages and the
+  audit chain records six actions. Stages like reflection and proving have no audit action
+  behind them, so every stage reports one of exactly two things: RECORDED, with the entry
+  hash that proves it, or NOT_RUN. There is no third state and no inference.
+- That rule is the proving harness's lesson applied here: a timeline showing eight green
+  nodes for a run that performed six is a false green on the surface an operator trusts most.
+- **Tests**: [`tests/test_agent_tracer.py`](../../tests/test_agent_tracer.py).
+
+---
+
+### 20. [`mfa_probe.py`](./mfa_probe.py)
+
+- **Exact Purpose**: answers whether an MFA condition in a trust policy will work with the
+  operator's actual sign-in method, BEFORE anyone sets `RequireMfaOnApply=true`.
+- **The trap it exists for**: `aws:MultiFactorAuthPresent` is absent or false for IAM
+  Identity Center, SAML and OIDC sessions, and for any session on long-lived access keys. A
+  trust policy requiring it therefore denies exactly the operators most likely to be
+  federated -- and the denial names the role, not the condition.
+- **CLI**: `minusctl iam mfa-probe` is read-only and reports the sign-in method; `--live`
+  creates and then DELETES one role to test the condition end to end.
+- **Failure Modes**: read-only by default. The live path is opt-in and cleans up after itself.

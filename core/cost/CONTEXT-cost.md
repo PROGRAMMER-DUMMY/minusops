@@ -152,3 +152,36 @@ This document provides an exhaustive, architectural, and operational reference f
 2. **Audit Classification:** `coverage_audit.py` reads a plan's `plan.json` and queries `providers.base.get_provider()` (which delegates to `pricing_catalog.py` for AWS) to verify 100% cost coverage.
 3. **Usage Derivation & Estimation:** `bcm_pricing_calculator.py` processes `plan.json`, derives usage quantities based on `DEFAULT_ASSUMPTIONS` and plan variables, generates BCM JSON payloads, and calls the AWS BCM Pricing Calculator API upon approval.
 4. **Report Refresh:** Once BCM pricing completes, `bcm_pricing_calculator.run()` triggers `reporter.refresh_cost()`, updating `cost.html`, `cost.pdf`, and `manifest.json`.
+---
+
+### 8. `core/cost/budget_alignment.py`
+- **File Link:** [`core/cost/budget_alignment.py`](./budget_alignment.py)
+- **Exact Purpose:** sizes the generated `aws_budgets_budget` from what the architecture
+  actually costs instead of a static default.
+- **The failure it closes:** a `$500` guardrail standing against a `$1,258.29/mo` BCM
+  forecast. The alarm fires on day one of every month and is muted by week two, so the one
+  control that would have caught real overspend is off before it is needed.
+- **The rule:** `guardrail = max(declared budget, BCM estimate x 1.25)`. The declared budget
+  is never silently lowered -- an operator who states a ceiling has stated a decision -- and
+  the 1.25 is headroom for the variance BCM itself does not model.
+- **Failure Modes:** no BCM evidence means no alignment. It returns the declared budget
+  unchanged rather than inventing a forecast to align against.
+
+---
+
+### 9. `core/cost/agent_cost_calculator.py`
+- **File Link:** [`core/cost/agent_cost_calculator.py`](./agent_cost_calculator.py)
+- **Exact Purpose:** token economics for the agent that drove a run -- input, output,
+  thinking and cached tokens parsed from `transcript.jsonl`, priced against a model rate
+  matrix, and attributed per step and per subagent.
+- **This is the one place in `core/cost/` that prices something locally**, and the exception
+  is deliberate: LLM token rates are published per model and do not vary by region or by
+  account, which is what makes AWS pricing unquotable without BCM. The matrix is data, and a
+  step that ran no model at all costs zero -- a real zero, asserted as such, not an absent
+  figure rendered as one.
+- **Also reports:** step latency against inference time, so a slow run can be attributed to
+  the model or to everything around it, and context-window pressure above 80% of the ceiling.
+- **Failure Modes:** an absent or unparseable transcript yields no costs rather than a
+  partial total. A per-run total assembled from half a transcript reads exactly like a
+  complete one.
+- **Tests:** [`tests/test_agent_cost.py`](../../tests/test_agent_cost.py).

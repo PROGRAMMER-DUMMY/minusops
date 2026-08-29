@@ -152,3 +152,56 @@ Generation in MinusOps is **requirements-first** and bound to reviewed records (
   * Raises `InvalidTeamId` if team or workload ID contains invalid characters, slashes, or path traversal attempts.
   * Raises `yaml.YAMLError` or `ValueError` if `teams.yaml` is malformed or invalid.
 * **Architectural Role:** Core organizational identity resolver powering multi-team remote S3 state isolation (`s3://.../teams/<team_id>/<workload_id>/`) and team-scoped deploy role enforcement (`arn:aws:iam::*:role/minusops-deploy-<team_id>`).
+---
+
+### 8. [`pillars.py`](./pillars.py)
+
+* **Exact Purpose:** the 18-pillar interview catalogue, and the arithmetic that makes each
+  later question specific to the answers already given.
+* **Two things, and the split matters:** `PILLARS` is data -- question, options, what each
+  option maps to in the module registry, and the `depth` follow-ups that only become
+  answerable once the pillar is answered. `derive()` is the arithmetic, computed over
+  published service capacities that are cited next to the sum.
+* **It never invents an input.** With no stated volume there is no recommended worker count;
+  `derive()` returns `determinable: False` naming the missing fact. A number nobody gave,
+  presented as a recommendation, is the same fabrication as a made-up price.
+* **`depth` is keyed by the option chosen.** A follow-up that fits every answer belongs at
+  the top level, and `depth_for` therefore has an option branch REPLACE the shared one --
+  which is why the quarantine follow-ups are not asked of someone who chose fail-fast.
+* **Wired pillars carry `derives` and `informs`:** an answer that reaches no derivation and
+  informs no later pillar is recorded and then read by nothing.
+* **Tests:** [`tests/test_pillars.py`](../../tests/test_pillars.py).
+
+---
+
+### 9. [`access_model.py`](./access_model.py)
+
+* **Exact Purpose:** the plan-derived IAM model behind the console's Access view -- who can
+  reach what, and where the plan stops knowing.
+* **Its one non-negotiable property:** it never infers an access relationship the plan does
+  not state. A trust policy unknown until apply, or a policy document that will not parse, is
+  reported as an explicit not-determinable marker (`resolved=False` plus a reason,
+  `statements=None`) and never as an empty list. An access screen that quietly under-reports
+  permissions is worse than no screen, and `[]` versus unreadable is exactly the distinction
+  a parser that fails soft into a default destroys.
+* **Same-account versus cross-account is not resolved by calling STS.** It is decided by the
+  account id written in the principal, or left undecided.
+* **Failure Modes:** fail-soft but counted -- a malformed entry lands in `malformed` and
+  never crashes the read.
+* **Tests:** [`tests/test_access_model.py`](../../tests/test_access_model.py).
+
+---
+
+### 10. [`reconciler.py`](./reconciler.py)
+
+* **Exact Purpose:** governed visual-to-code reconciliation. Everywhere else the console
+  reads; here a drag on a canvas rewrites `terraform/main.tf`, which makes this the one file
+  in the console that could undo the deploy gate.
+* **Two calls, and the split IS the safety property.** `propose()` is inert: it writes no
+  file, touches no decision record, and emits no audit entry -- it returns a diff for a modal
+  to show. `confirm()` writes, and only when `confirmed is True` by identity check, because
+  `confirmed="no"` is truthy and would turn a dismissed modal into an infrastructure edit.
+* **Confirming deletes the standing approval records**, so `plan_gate.gate_status()` reports
+  `approved: False`. That reuses the gate's own answer rather than adding a second staleness
+  flag that could disagree with it.
+* **Tests:** [`tests/test_reconciler.py`](../../tests/test_reconciler.py).

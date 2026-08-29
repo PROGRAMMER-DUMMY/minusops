@@ -496,3 +496,54 @@ This document provides an exhaustive, architectural, and operational reference f
 2. **Pre-Plan Optimization:** `optimize_analyzer.py` performs AST-style per-resource static scans over HCL code, producing `optimization_report.md`.
 3. **Plan & Report Bundle:** Once `terraform plan -out=tfplan` executes via `plan_gate.py`, `reporter.py` reads `tfplan`, generates `architecture.svg`, `dataflow.svg`, `report.html`, `cost.html`, invokes CDP to render `plan.pdf` / `cost.pdf` / `inspect.pdf`, and creates `manifest.json`.
 4. **Drift & Inspection:** `plan_inspector.py` calculates SHA-256 hashes of source files into `source_hashes.json` and monitors for post-plan source drift.
+---
+
+### 12. `core/reporting/lineage_graph.py`
+- **File Link:** [`core/reporting/lineage_graph.py`](./lineage_graph.py)
+- **Exact Purpose:** dataset-to-dataset lineage for a governed medallion pipeline. The
+  architecture diagram answers "what exists and how is it wired"; this answers "where does a
+  record go, and what happens to it on the way". A Glue job and a bucket are one edge on the
+  topology and three hops in the lineage, and it is the lineage an auditor asks for.
+- **A node is emitted only when the stack provisions the thing it stands for.** Drawing the
+  medallion pattern for a run with no data-quality module would put a quality gate and a
+  quarantine branch on the page for controls that do not exist, and an auditor reads a
+  rendered control as a control.
+- **Attributes are held to the same standard as nodes.** Everything in `_NODES` is the
+  PATTERN's default; a supplied plan replaces it with what that plan states -- the bucket
+  name, the SSE algorithm, the lifecycle days -- and each node carries `facts_source`. A fact
+  the plan never states (partitioning, table format) is dropped rather than left showing the
+  pattern's value under a "plan" label.
+- **Masking is the sharpest case:** `masking.enforced` is False unless Lake Formation
+  actually governs the stack, because "this column is masked" is a compliance claim and the
+  only thing that makes it true is a service enforcing it.
+- **Tests:** [`tests/test_lineage_graph.py`](../../tests/test_lineage_graph.py).
+
+---
+
+### 13. `core/reporting/agent_flow_graph.py`
+- **File Link:** [`core/reporting/agent_flow_graph.py`](./agent_flow_graph.py)
+- **Exact Purpose:** compiles what [`agent_tracer.trace()`](../governance/agent_tracer.py)
+  recorded into a directed acyclic graph the console can draw -- one node per pipeline stage,
+  one edge per handoff, a per-node status from a fixed vocabulary.
+- **It emits DATA, never markup.** A module returning HTML would have made the renderer
+  choice on the console's behalf, and would then have to be trusted to escape everything it
+  interpolates.
+- **Failure Modes:** inherits the tracer's two-state rule. A stage with no audit evidence is
+  NOT_RUN, never absent from the graph and never green.
+- **Tests:** [`tests/test_agent_flow.py`](../../tests/test_agent_flow.py).
+
+---
+
+### 14. `core/reporting/vault.py`
+- **File Link:** [`core/reporting/vault.py`](./vault.py)
+- **Exact Purpose:** the deliverables and compliance vault -- the catalog of what a run
+  produced, and the signed bundle an auditor is handed.
+- **A document catalog is read as an inventory**, so its dangerous failure is not crashing:
+  it is listing `proving_report.json` for a run that was never proven, because the reader
+  concludes the proof exists. The catalog therefore always describes what COULD exist for a
+  run and marks each entry present or absent, with a size only on the ones that are there.
+- **The bundle follows the same rule:** it archives only files that exist, refuses to produce
+  an empty zip rather than handing an auditor a zip full of nothing, and computes its
+  manifest digests over the bytes that actually shipped. A signature over anything other than
+  the archived content is worse than no signature.
+- **Tests:** [`tests/test_vault.py`](../../tests/test_vault.py).

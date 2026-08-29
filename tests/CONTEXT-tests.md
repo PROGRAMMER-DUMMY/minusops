@@ -124,3 +124,71 @@ This document provides exhaustive context for all test files, test suites, and t
 - [`tests/test_schema_watch.py`](./test_schema_watch.py): Tests continuous schema drift watching utilities.
 - [`tests/test_teardown_regression_harness.py`](./test_teardown_regression_harness.py): Regression testing harness for infrastructure teardown operations.
 - [`tests/test_verification_coverage.py`](./test_verification_coverage.py): Tests verification coverage checking tools across deployment stages.
+---
+
+## 6. Agent Governance, Console & Access Tests
+
+- [`tests/test_agent_guardrails.py`](./test_agent_guardrails.py): The autonomous-agent
+  guardrail -- destructive commands refused, the ways an agent would slip past one refused
+  too (chained commands, subshells, a rewritten path), ordinary commands allowed, and
+  `enforce` raising rather than returning on a refusal.
+- [`tests/test_guardrails_hook.py`](./test_guardrails_hook.py): The `PreToolUse` adapter --
+  the hook is registered, a destructive command is blocked, it stays blocked even when a
+  human authorized the session, and one hidden in a chain is still caught.
+- [`tests/test_guardrail_self_block.py`](./test_guardrail_self_block.py): Three tests holding
+  one property -- no MinusOps command is refused by its own guardrail. Getting this wrong
+  bricks every agent session, and the two human-gated commands are refused but NAMED as such
+  rather than reported as destructive.
+- [`tests/test_apply_broker.py`](./test_apply_broker.py): The release check -- an approval for
+  a different plan does not release this one, no approval is a refusal that names the plan, a
+  planner cannot approve their own work, and self-approval is caught through the ARN as well
+  as the operator string.
+- [`tests/test_agent_tracer.py`](./test_agent_tracer.py): The two-state rule. Every lifecycle
+  stage the PRD names is in the catalog, each declares the artifact that proves it ran, and no
+  stage is ever reported as run without an audit hash.
+- [`tests/test_agent_flow.py`](./test_agent_flow.py): The execution graph and the chain it is
+  read from -- an untouched chain verifies, a tampered record names where it broke, a deleted
+  record breaks it, and an unparseable line fails closed.
+- [`tests/test_agent_cost.py`](./test_agent_cost.py): Token economics -- tier rates match the
+  pricing matrix, a step that ran no model costs a REAL zero rather than an absent figure
+  rendered as one, and step costs are computed from the transcript rather than estimated.
+- [`tests/test_access_model.py`](./test_access_model.py): The plan-derived IAM model, and its
+  refusal to guess. An unknown trust policy is not-determinable and never an empty list, an
+  absent policy is distinguishable from an unknown one, and a role's module is derived from
+  its address when the module address is absent.
+- [`tests/test_reconciler.py`](./test_reconciler.py): The canvas-to-HCL split. `propose()`
+  touches no Terraform file, no decision record and writes no audit entry; the proposal
+  carries everything the modal must show; and the summary names both sides of the change in
+  plain English.
+- [`tests/test_vault.py`](./test_vault.py): The catalog describes what could exist and marks
+  each entry present or absent, present documents carry a size and absent ones do not, and a
+  missing run yields an empty catalog rather than a fabricated one.
+- [`tests/test_console_app.py`](./test_console_app.py): Every navigable view has a renderer
+  and renders without a run rather than raising, the run band reports absent facts as absent,
+  the console never shells out, and it writes nothing except through the vault bundle.
+- [`tests/test_console_lifecycle.py`](./test_console_lifecycle.py): Port detection that does
+  not assume something listening is ours -- our console is identified by its own response, and
+  a second launch reuses the running one rather than failing to bind.
+- [`tests/test_lineage_graph.py`](./test_lineage_graph.py): The five medallion hops for a full
+  stack, no quality gate or quarantine fork for a stack without the module, edges that only
+  reference nodes that exist, an empty stack producing an empty graph rather than a default
+  one, and plan-derived facts replacing the pattern's defaults with `facts_source` recording
+  which is which.
+- [`tests/test_pillars.py`](./test_pillars.py): The 18-pillar catalogue and its arithmetic.
+  The tests that matter are the REFUSALS (no volume means no worker count) and the BANDS (an
+  object above the target is not described as inside it), plus the wiring guards -- a depth
+  branch keyed on a string no option produces is unreachable, and an option that selects no
+  generator engine says so rather than defaulting to the first.
+- [`tests/test_pattern_promotion.py`](./test_pattern_promotion.py): Promotion refuses every
+  run that cannot show its work -- no run, no plan, no proving report without an explicit
+  skip. A registry of unproven patterns propagates into every later run that reuses one.
+- [`tests/test_mcp_server.py`](./test_mcp_server.py): The stdio MCP surface -- `initialize`
+  answers with a protocol version, a notification gets no reply, `tools/list` returns every
+  tool with a schema, and an unknown method or tool is a protocol error rather than a crash.
+- [`tests/test_mcp_gateway.py`](./test_mcp_gateway.py): The gateway controls -- PII redaction
+  over nested payloads, OPA allowing a read-only tool for an analyst while requiring step-up
+  for a mutating one, and an untrusted SPIFFE id denied by default.
+- [`tests/test_iam_policies.py`](./test_iam_policies.py): The shipped IAM examples are valid
+  policy documents, every statement carries an effect and a sid, placeholders are obvious
+  rather than plausible (a plausible one gets deployed), and the plan role can read state and
+  hold its lock without being able to write it.

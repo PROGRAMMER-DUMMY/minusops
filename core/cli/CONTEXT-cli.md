@@ -187,3 +187,6 @@ and still exited 0 -- the operator had no way to tell it had not worked.
 failure modes, `[*]` marking, the spec card, `--dir` defaulting and its refusal, stage
 pass-through, the no-subcommand-lost guard, the stdlib-only import check (NFR-02), and the
 no-emoji checks (NFR-01).
+### [`__init__.py`](./__init__.py)
+Package marker. Carries the doctrine the rest of the package is held to: this is a front
+door, not a rewrite, and imports inside it are package-relative.
