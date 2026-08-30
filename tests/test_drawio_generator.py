@@ -766,6 +766,87 @@ def test_every_band_sits_inside_the_account_boundary():
         assert y + height <= account[1] + account[3], f"{name} runs past the boundary"
 
 
+def _vpc_plan(regional_count=20):
+    def rc(address, rtype, after=None):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": after or {}}}
+    changes = [
+        rc("aws_vpc.main", "aws_vpc"),
+        rc("aws_subnet.private_a", "aws_subnet"),
+        rc("aws_mwaa_environment.orchestrator", "aws_mwaa_environment",
+           {"network_configuration": [{"subnet_ids": ["aws_subnet.private_a"]}]}),
+    ]
+    changes += [rc(f"aws_s3_bucket.support_{i}", "aws_s3_bucket")
+                for i in range(regional_count)]
+    return {"resource_changes": changes}
+
+
+def _deployment_page(xml_text):
+    pages = ET.fromstring(xml_text).findall("diagram")
+    return pages[1] if len(pages) > 1 else None
+
+
+def test_the_regional_band_wraps_wide_rather_than_stacking_in_a_column():
+    """Three services per row put forty of them fourteen rows deep beside an empty half
+    canvas. A region is not a side column."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_vpc_plan(24))["xml"]
+    page = _deployment_page(xml_text)
+    if page is None:
+        pytest.skip("this plan declares no VPC, so there is no deployment page")
+
+    band = [cell.find("mxGeometry") for cell in page.iter("mxCell")
+            if cell.get("id") == "layer_box_regional"]
+    assert band, "regional services were not given a band"
+    width, height = float(band[0].get("width")), float(band[0].get("height"))
+    assert width >= height, f"regional band is {width}x{height}"
+
+
+def test_the_regional_band_says_it_is_outside_the_vpc():
+    """"Regional" alone reads as a label nobody can act on. What matters is that these sit
+    in the account and outside the VPC, which is where S3, KMS and Athena actually are."""
+    page = _deployment_page(
+        drawio_generator.generate_drawio_from_plan(_vpc_plan())["xml"])
+    if page is None:
+        pytest.skip("no deployment page")
+
+    label = [cell.get("value") for cell in page.iter("mxCell")
+             if cell.get("id") == "layer_box_regional"][0]
+    assert "outside the VPC" in label
+
+
+def test_the_deployment_page_says_why_it_carries_no_arrows():
+    """It states placement, not flow. Without saying so, a page with forty resources and no
+    arrows reads as a diagram that failed to find any."""
+    page = _deployment_page(
+        drawio_generator.generate_drawio_from_plan(_vpc_plan())["xml"])
+    if page is None:
+        pytest.skip("no deployment page")
+
+    notes = [cell.get("value") for cell in page.iter("mxCell")
+             if (cell.get("id") or "").startswith("legend_")]
+    assert notes, "the deployment page carries no note"
+    joined = " ".join(notes)
+    assert "PLACEMENT" in joined
+    assert "no arrows here on purpose" in joined
+    assert not [cell for cell in page.iter("mxCell") if cell.get("edge") == "1"]
+
+
+def test_the_deployment_page_grows_to_hold_its_own_note():
+    """The page was sized by the constant 2200x1400 while its content grew from the resource
+    count; the note is appended below the cloud and has to be inside the page too."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_vpc_plan(30))["xml"]
+    page = _deployment_page(xml_text)
+    if page is None:
+        pytest.skip("no deployment page")
+
+    model = page.find("mxGraphModel")
+    height = float(model.get("pageHeight"))
+    note = [cell.find("mxGeometry") for cell in page.iter("mxCell")
+            if cell.get("id") == "legend_deployment_note"][0]
+    assert float(note.get("y")) + float(note.get("height")) <= height
+
+
 def test_the_security_band_spans_the_whole_diagram():
     bands = _band_geometry(drawio_generator.generate_drawio_from_plan(_banded_plan())["xml"])
 

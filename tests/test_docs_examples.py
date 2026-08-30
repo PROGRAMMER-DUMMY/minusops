@@ -354,6 +354,19 @@ _GENERIC_CAPS = {
 }
 _CAPS_TOKEN = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
 
+# A caps token is a claim about a pillar constant only when it is prose. A lint directive
+# names a rule and a filename names a file; neither asserts anything about the registry, and
+# both sat on lines mentioning pillars only incidentally -- `# noqa: E402` on the import of
+# `pillars`, and a `DESIGN.md` row described as "core architectural pillars".
+_DIRECTIVE = re.compile(r"(?:noqa|pylint|type|mypy|ruff|flake8)\s*:\s*[A-Z0-9,\s]*$")
+_FILENAME = re.compile(r"\.(?:md|py|json|txt|ya?ml|tf|drawio|html)\b")
+
+
+def _is_prose_claim(line, token):
+    """Whether this occurrence asserts a pillar constant rather than naming a rule or file."""
+    before, _, after = line.partition(token)
+    return not _DIRECTIVE.search(before) and not _FILENAME.match(after)
+
 
 def _pillar_vocabulary():
     with open(PILLARS_SRC, encoding="utf-8") as handle:
@@ -380,6 +393,8 @@ def test_no_document_advertises_a_pillar_constant_the_registry_lacks(relpath):
             continue
         for token in _CAPS_TOKEN.findall(line):
             if token in _GENERIC_CAPS or token in vocabulary:
+                continue
+            if not _is_prose_claim(line, token):
                 continue
             invented.append(f"{relpath}:{number} names {token!r}, absent from pillars.py")
 

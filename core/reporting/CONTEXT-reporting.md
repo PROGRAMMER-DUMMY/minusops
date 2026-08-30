@@ -431,6 +431,15 @@ This document provides an exhaustive, architectural, and operational reference f
   reports none rather than fifty guesses.
 - **The ledger states hop, source and target.** Nothing else; a transport claim the plan
   does not make is the same defect as an invented price.
+- **The deployment page states placement and says so.** It carries no arrows, on purpose:
+  declared movement is on the Logical page and drawing it twice invites the two to disagree.
+  A page of forty resources with no arrows and no explanation reads as a diagram that failed
+  to find any, so [`_DEPLOYMENT_NOTE`](./drawio_generator.py) says which reading is intended
+  -- the same doctrine as the logical legend's line about an absent arrow.
+- **Regional services wrap into a labelled band below the VPC**, sized to a roughly square
+  block. Three per row put forty services fourteen rows deep beside an empty half-canvas; a
+  region is not a side column. The band's own label says these sit in the account and outside
+  the VPC, which is where S3, KMS and Athena actually are.
 - **One colour language, and it is AWS's.** A tile's fill is the service category AWS itself
   uses, which means the same thing on every AWS diagram anyone has read. The bands carried a
   second scheme on top of it: a Glue job is analytics purple, and inside a coloured

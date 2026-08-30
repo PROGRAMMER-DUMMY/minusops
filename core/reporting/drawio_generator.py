@@ -778,6 +778,16 @@ def _container(root, parent, cell_id, label, x, y, width, height, stroke, dashed
     return cell_id
 
 
+_REGIONAL_STROKE = "#7AA116"
+_DEPLOYMENT_NOTE = (
+    "This page states PLACEMENT, not flow. A resource is inside a subnet because the plan "
+    "names that subnet in its own arguments; a resource drawn in the regional band sits "
+    "inside the account and outside the VPC, which is where S3, KMS and Athena actually are. "
+    "There are no arrows here on purpose -- declared data movement is on the Logical page, "
+    "and drawing it twice invites the two to disagree."
+)
+
+
 def _append_deployment(root, containment, by_address, badges):
     """The deployment page: AWS Cloud > VPC > subnet > service, nested for real.
 
@@ -791,9 +801,21 @@ def _append_deployment(root, containment, by_address, badges):
     subnet_h = _LABEL_STRIP + max(1, subnet_rows) * _STACK_HEIGHT
     vpc_w = max(len(subnets), 1) * (_SLOT_WIDTH + 20) + 40
     vpc_h = _LABEL_STRIP + subnet_h + (_STACK_HEIGHT if spanning else 0) + 40
-    regional_rows = (len(regional) + 2) // 3
-    cloud_w = vpc_w + 3 * _SLOT_WIDTH + 80
-    cloud_h = max(vpc_h, _LABEL_STRIP + regional_rows * _STACK_HEIGHT) + 80
+
+    # Regional services wrap across the full width below the VPC rather than stacking in a
+    # narrow column beside it. Three per row put forty services fourteen rows deep against an
+    # empty half-canvas: a region is not a side column.
+    # A roughly square block. `int(sqrt) + 1` over-estimates by one column on a perfect
+    # square, which costs a column of whitespace and saves importing math for a heuristic.
+    per_row = max(int(len(regional) ** 0.5) + 1 if regional else 1,
+                  vpc_w // _SLOT_WIDTH if containment["vpc"] else 1, 3)
+    inner_w = max(vpc_w, per_row * _SLOT_WIDTH + 40)
+    regional_rows = (len(regional) + per_row - 1) // per_row if regional else 0
+    regional_h = (_LABEL_STRIP + regional_rows * _STACK_HEIGHT + _BAND_PAD) if regional else 0
+
+    cloud_w = inner_w + 60
+    cloud_h = (_LABEL_STRIP + (vpc_h if containment["vpc"] else 0)
+               + (_GUTTER if containment["vpc"] and regional else 0) + regional_h + 40)
 
     cloud = _container(root, "1", "layer_box_cloud", "<b>AWS Cloud</b>",
                        40, 40, cloud_w, cloud_h, _CLOUD_STROKE)
@@ -829,16 +851,25 @@ def _append_deployment(root, containment, by_address, badges):
             node(vpc, address, 20 + column * _SLOT_WIDTH, _LABEL_STRIP + subnet_h + 20, index)
             index += 1
 
-    # Regional services sit inside the cloud boundary and outside the VPC, which is where
-    # S3, KMS and Athena actually are. Drawing them inside the VPC would be a network
-    # placement the plan does not state.
-    origin_x = (vpc_w + 60) if containment["vpc"] else 30
-    for position, address in enumerate(regional):
-        node(cloud, address, origin_x + (position % 3) * _SLOT_WIDTH,
-             _LABEL_STRIP + (position // 3) * _STACK_HEIGHT, index)
-        index += 1
+    if regional:
+        top = _LABEL_STRIP + (vpc_h + _GUTTER if containment["vpc"] else 0)
+        band = _container(root, cloud, "layer_box_regional",
+                          "<b>REGIONAL</b> -- in the account, outside the VPC",
+                          30, top, inner_w, regional_h, _REGIONAL_STROKE, dashed=1)
+        for position, address in enumerate(regional):
+            node(band, address, 20 + (position % per_row) * _SLOT_WIDTH,
+                 _LABEL_STRIP + (position // per_row) * _STACK_HEIGHT, index)
+            index += 1
 
-    return 40 + cloud_w + 40, 40 + cloud_h + 40
+    note_top = 40 + cloud_h + _GUTTER
+    note = ET.SubElement(root, "mxCell", {
+        "id": "legend_deployment_note", "value": _DEPLOYMENT_NOTE,
+        "style": _LEGEND_NOTE_STYLE, "vertex": "1", "parent": "1"})
+    ET.SubElement(note, "mxGeometry", {
+        "x": "40", "y": str(note_top), "width": str(cloud_w), "height": "70",
+        "as": "geometry"})
+
+    return 40 + cloud_w + 40, note_top + 70 + _MARGIN_Y
 
 
 def _create_mxgraph_xml(page_width=1800, page_height=1000):
