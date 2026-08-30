@@ -431,6 +431,34 @@ This document provides an exhaustive, architectural, and operational reference f
   reports none rather than fifty guesses.
 - **The ledger states hop, source and target.** Nothing else; a transport claim the plan
   does not make is the same defect as an invented price.
+- **Processing sits above storage, not beside it.** The spine alternated zone, transform,
+  zone along one row, which reads as a line of tiles and says nothing about direction. Each
+  transform is offset half a slot so it lands between the two zones it moves data between,
+  and the hops read as a zigzag. A bucket `stage_rank` does not recognise gets a support row
+  rather than the spine: an Athena results bucket sorted to the end and drew as the stage
+  after Gold.
+- **Bands are containers and own what they hold** ([`_reparent`](./drawio_generator.py)).
+  They were decoration -- nodes at absolute coordinates that happened to fall inside them --
+  so dragging a band in draw.io left its contents behind. Node geometry is now relative to
+  its band, which is why the test helper resolves band origins before comparing positions
+  across bands.
+- **The account boundary is drawn only when there is something inside it**
+  ([`_boundary`](./drawio_generator.py)). An empty AWS Cloud box is a picture of an account
+  with no resources in it.
+- **External senders come from the interview, never from the plan**
+  ([`external_actors`](./drawio_generator.py)). A plan states the resources inside the
+  account and cannot state what is outside it, so the actor is drawn because an operator
+  answered pillar 1 and is labelled with their answer. With no answer there is no actor: a
+  generic box captioned "Source" asserts something nobody said. It is wired to an ingestion
+  resource only when there is exactly one -- with two, the plan does not say which one the
+  partner reaches, and a guess there is the same fabrication as an invented hop. It carries
+  no AWS stencil, because nothing outside the account is an AWS service.
+- **Edges declare which side they leave and enter**
+  ([`_edge_anchors`](./drawio_generator.py)). Unanchored, draw.io leaves sideways before
+  turning, which routes a vertical hop through the boxes either side of it.
+- **The legend says what an ABSENT arrow means** ([`_append_legend`](./drawio_generator.py)):
+  the plan declares no path, not that none exists at runtime. That is the reading this canvas
+  most often loses.
 - **Three spatial roles, not six columns** ([`layout_positions`](./drawio_generator.py)),
   following the AWS analytics reference architecture: flow layers left to right, cataloging
   above the spine, security and monitoring in a full-width band beneath it that carries no

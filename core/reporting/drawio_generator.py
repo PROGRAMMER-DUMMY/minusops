@@ -368,6 +368,35 @@ def _by_layer(resources):
     return layers
 
 
+_EXTERNAL_ACTORS = {
+    "Batch files landing in S3 (CSV, JSON, Parquet)":
+        ("Upstream system", "drops files into the landing prefix"),
+    "Database CDC replication (DMS or Glue JDBC)":
+        ("Source database", "outside this account; replicated in"),
+    "Partner file drops over SFTP (Transfer Family)":
+        ("Partner", "authenticates and drops files over SFTP"),
+    "Continuous event feed (Kinesis, MSK, API Gateway)":
+        ("Event producer", "application or device emitting events"),
+}
+
+
+def external_actors(requirements):
+    """Who sends data in, from what the interview recorded -- never from the plan.
+
+    A plan states the resources inside the account and cannot state what is outside it. The
+    actor is drawn because an operator said it exists, and is labelled with their answer
+    rather than a system name nobody gave.
+    """
+    pillars = ((requirements or {}).get("pillars") or {})
+    answer = pillars.get("ingestion_source")
+    choice = (answer or {}).get("choice") if isinstance(answer, dict) else answer
+    named = _EXTERNAL_ACTORS.get(choice)
+    if not named:
+        return []
+    label, detail = named
+    return [{"key": "external_source", "label": label, "detail": detail, "choice": choice}]
+
+
 _UNRANKED_STAGE = 40
 
 
@@ -400,8 +429,8 @@ def _addresses(resources):
     return [r.get("address") for r in resources]
 
 
-def layout_positions(resources):
-    """Return {address: (x, y)} plus the bands to draw around them.
+def layout_positions(resources, actors=()):
+    """Return {address: (x, y)}, the bands to draw around them, and the account boundary.
 
     Processing sits above storage and each transform is offset half a slot, so it lands
     between the two zones it moves data between and the hops read as a zigzag rather than a
@@ -411,6 +440,7 @@ def layout_positions(resources):
     """
     layers = _by_layer(resources)
     positions, bands = {}, []
+    inset = (_SLOT_WIDTH + _GUTTER) if actors else 0
 
     ingestion = _addresses(layers.get("ingestion", []))
     zones, support = _medallion_split(layers)
@@ -421,10 +451,11 @@ def layout_positions(resources):
     footer = _addresses(layers.get("governance", [])) + _addresses(layers.get("other", []))
 
     spine_columns = max(len(zones), len(transforms) + 1, 1)
-    spine_start = _ORIGIN_X + (_SLOT_WIDTH if ingestion else 0)
+    origin_x = _ORIGIN_X + inset
+    spine_start = origin_x + (_SLOT_WIDTH if ingestion else 0)
     spine_width = spine_columns * _SLOT_WIDTH
     spine_end = spine_start + spine_width
-    total_width = spine_end - _ORIGIN_X + (_SLOT_WIDTH if consumption else 0)
+    total_width = spine_end - origin_x + (_SLOT_WIDTH if consumption else 0)
     per_row = max(1, total_width // _SLOT_WIDTH)
 
     def place(addresses, origin_x, top, wrap):
@@ -433,7 +464,10 @@ def layout_positions(resources):
                                   top + (index // wrap) * _STACK_HEIGHT)
         return (len(addresses) + wrap - 1) // wrap
 
-    top = _MARGIN_Y
+    # The account boundary is drawn around every band and carries its own label, so the
+    # topmost band starts a label strip down rather than at the margin. Without it the
+    # boundary's top edge lands above the canvas.
+    top = _MARGIN_Y + _LABEL_STRIP
     if catalog:
         rows = place(catalog, spine_start, top + _LABEL_STRIP, spine_columns)
         bands.append(("catalog", spine_start - 20, top,
@@ -471,8 +505,8 @@ def layout_positions(resources):
     flow_height = max(processing_height + (_GUTTER if processing_height else 0)
                       + storage_height, _band_height(1))
     if ingestion:
-        place(ingestion, _ORIGIN_X, top + _LABEL_STRIP, 1)
-        bands.append(("ingestion", _ORIGIN_X - 20, top, _SLOT_WIDTH,
+        place(ingestion, origin_x, top + _LABEL_STRIP, 1)
+        bands.append(("ingestion", origin_x - 20, top, _SLOT_WIDTH,
                       max(flow_height, _band_height(len(ingestion)))))
     if consumption:
         place(consumption, spine_end, top + _LABEL_STRIP, 1)
@@ -484,11 +518,32 @@ def layout_positions(resources):
 
     if footer:
         governance_top = flow_bottom + _GUTTER
-        rows = place(footer, _ORIGIN_X, governance_top + _LABEL_STRIP, per_row)
-        bands.append(("governance", _ORIGIN_X - 20, governance_top, total_width,
+        rows = place(footer, origin_x, governance_top + _LABEL_STRIP, per_row)
+        bands.append(("governance", origin_x - 20, governance_top, total_width,
                       _band_height(rows)))
 
-    return positions, bands
+    boundary = _boundary(bands)
+    for index, actor in enumerate(actors):
+        positions[f"actor::{actor['key']}"] = (
+            _ORIGIN_X, (boundary[1] if boundary else _MARGIN_Y) + _LABEL_STRIP
+            + index * _STACK_HEIGHT)
+
+    return positions, bands, boundary
+
+
+def _boundary(bands):
+    """The account boundary: the rectangle every band sits inside, with room for its label.
+
+    Returned rather than drawn so the caller decides whether there is anything to enclose.
+    An empty AWS Cloud box around nothing is a picture of an account with no resources in it.
+    """
+    if not bands:
+        return None
+    left = min(x for _, x, _, _, _ in bands) - _BAND_PAD
+    top = min(y for _, _, y, _, _ in bands) - _LABEL_STRIP
+    right = max(x + width for _, x, _, width, _ in bands) + _BAND_PAD
+    bottom = max(y + height for _, _, y, _, height in bands) + _BAND_PAD
+    return (left, top, right - left, bottom - top)
 
 
 _STEP_STYLE = ("rounded=1;arcSize=6;whiteSpace=wrap;html=1;align=left;verticalAlign=top;"
@@ -788,8 +843,54 @@ def _reparent(x, y, bands):
     return "1", x, y
 
 
-def _append_bands(root, bands):
+_BOUNDARY_STYLE = ("rounded=1;arcSize=2;fillColor=none;strokeColor=#232F3E;strokeWidth=2;"
+                   "verticalAlign=top;align=left;spacingLeft=14;spacingTop=8;fontSize=13;"
+                   "fontStyle=1;fontColor=#232F3E;container=1;collapsible=0;")
+
+_ACTOR_STYLE = ("rounded=1;arcSize=8;whiteSpace=wrap;html=1;fillColor=#f1f5f9;"
+                "strokeColor=#475569;strokeWidth=2;dashed=1;dashPattern=6 4;fontSize=11;"
+                "fontColor=#1e293b;verticalAlign=middle;")
+
+
+def _append_boundary(root, boundary):
+    """The account boundary, drawn only when there is something inside it."""
+    if not boundary:
+        return "1"
+    x, y, width, height = boundary
+    cell = ET.SubElement(root, "mxCell", {
+        "id": "layer_box_account", "value": "<b>AWS Cloud</b>",
+        "style": _BOUNDARY_STYLE, "vertex": "1", "parent": "1"})
+    ET.SubElement(cell, "mxGeometry", {
+        "x": str(x), "y": str(y), "width": str(width), "height": str(height),
+        "as": "geometry"})
+    return "layer_box_account"
+
+
+def _append_actors(root, actors, positions, boundary):
+    """Senders that live outside the account, drawn outside the boundary.
+
+    Their shape is deliberately not an AWS stencil: nothing here is an AWS service, and
+    giving a partner's SFTP client a service icon would say the account provisions it.
+    """
+    for actor in actors:
+        x, y = positions[f"actor::{actor['key']}"]
+        cell_id = f"actor_{actor['key']}"
+        cell = ET.SubElement(root, "mxCell", {
+            "id": cell_id,
+            "value": f"<b>{actor['label']}</b><br/><font style='font-size:9px'>"
+                     f"{actor['detail']}</font>",
+            "tooltip": f"external: {actor['choice']}",
+            "style": _ACTOR_STYLE, "vertex": "1", "parent": "1"})
+        ET.SubElement(cell, "mxGeometry", {
+            "x": str(x), "y": str(y), "width": str(_SLOT_WIDTH - 40), "height": "68",
+            "as": "geometry"})
+        yield f"actor::{actor['key']}", cell_id
+
+
+def _append_bands(root, bands, parent="1", boundary=None):
+    offset_x, offset_y = (boundary[0], boundary[1]) if (boundary and parent != "1") else (0, 0)
     for layer, x, y, width, height in bands:
+        x, y = x - offset_x, y - offset_y
         container = ET.SubElement(root, "mxCell", {
             "id": f"layer_box_{layer}",
             "value": f"<b>{_BAND_LABELS.get(layer, layer.upper())}</b>",
@@ -798,7 +899,7 @@ def _append_bands(root, bands):
                       "fontColor=#1e293b;fontStyle=1;fontSize=12;rounded=1;arcSize=8;"
                       "dashed=1;dashPattern=6 4;container=1;collapsible=0;"),
             "vertex": "1",
-            "parent": "1",
+            "parent": parent,
         })
         ET.SubElement(container, "mxGeometry", {
             "x": str(x), "y": str(y), "width": str(width), "height": str(height),
@@ -806,12 +907,18 @@ def _append_bands(root, bands):
         })
 
 
-def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
-    """Render one plan as draw.io XML, a 1-click URL, and the declared-hop ledger."""
+def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", requirements=None):
+    """Render one plan as draw.io XML, a 1-click URL, and the declared-hop ledger.
+
+    `requirements` is the interview record. It contributes only what a plan cannot state --
+    who sends data in from outside the account -- and nothing inside the boundary is drawn
+    from it.
+    """
     resources = [r for r in (plan_json.get("resource_changes", []) if plan_json else [])
                  if r.get("mode") == "managed" and not is_folded(r.get("type", ""))]
 
-    positions, bands = layout_positions(resources)
+    actors = external_actors(requirements)
+    positions, bands, boundary = layout_positions(resources, actors)
     badges = fold_badges(plan_json, [r.get("address") for r in resources])
 
     edges = discover_data_edges(plan_json)
@@ -828,9 +935,9 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
     model, root = _create_mxgraph_xml(max(1800, max_x + 350),
                                       max(1000, max_y + 250, legend_bottom + _MARGIN_Y))
 
-    _append_bands(root, bands)
-
-    node_map = {}
+    boundary_id = _append_boundary(root, boundary)
+    _append_bands(root, bands, boundary_id, boundary)
+    node_map = dict(_append_actors(root, actors, positions, boundary))
     for index, res in enumerate(resources):
         address = res.get("address")
         x, y = positions[address]
@@ -850,6 +957,23 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
         ET.SubElement(cell, "mxGeometry", {
             "x": str(x), "y": str(y), "width": "68", "height": "68", "as": "geometry",
         })
+
+    ingestion_addresses = [r.get("address") for r in resources
+                           if _layer_of(r) == "ingestion"]
+    for actor in actors:
+        if len(ingestion_addresses) != 1:
+            continue
+        cell = ET.SubElement(root, "mxCell", {
+            "id": f"edge_actor_{actor['key']}",
+            "value": actor["detail"],
+            "style": _EDGE_STYLE + "dashed=1;dashPattern=6 4;"
+                     + _edge_anchors(positions[f"actor::{actor['key']}"],
+                                     positions[ingestion_addresses[0]]),
+            "edge": "1", "parent": "1",
+            "source": node_map[f"actor::{actor['key']}"],
+            "target": f"node_{[r.get('address') for r in resources].index(ingestion_addresses[0])}",
+        })
+        ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
 
     for index, edge in enumerate(edges):
         source_id = node_map.get(edge["source"])

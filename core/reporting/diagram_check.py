@@ -209,24 +209,31 @@ def _check_page_bounds(page, model, cells):
         if not cell["vertex"] or not cell["box"] or cell["parent"] != "1":
             continue
         x, y, cell_width, cell_height = cell["box"]
-        if x + cell_width > width or y + cell_height > height:
+        if x < 0 or y < 0 or x + cell_width > width or y + cell_height > height:
             yield _finding("cell_off_page", "warning", page,
-                           "the cell sits beyond the declared page, so it is missing from "
+                           "the cell sits outside the declared page, so it is missing from "
                            "an export that honours the page size",
                            {"cell": cell["id"], "box": [x, y, cell_width, cell_height],
                             "page_size": [width, height]})
 
 
 def _band_of(cell, bands):
-    """Which band a node was laid out in, read off the drawing rather than the plan."""
+    """Which band a node was laid out in, read off the drawing rather than the plan.
+
+    The parent settles it when the generator made the band a real container. The geometric
+    fallback is for a hand-edited file, and takes the SMALLEST containing band: the account
+    boundary encloses every band, so the first match is always the least specific one.
+    """
+    parent = cell["parent"] or ""
+    if parent.startswith("layer_box_"):
+        return parent[len("layer_box_"):]
     if not cell["box"]:
         return "unbanded"
     x, y, width, height = cell["box"]
     centre = (x + width / 2, y + height / 2)
-    for name, (bx, by, bw, bh) in bands.items():
-        if bx <= centre[0] <= bx + bw and by <= centre[1] <= by + bh:
-            return name
-    return "unbanded"
+    holding = [(bw * bh, name) for name, (bx, by, bw, bh) in bands.items()
+               if bx <= centre[0] <= bx + bw and by <= centre[1] <= by + bh]
+    return min(holding)[1] if holding else "unbanded"
 
 
 def _check_icons(page, cells):

@@ -167,6 +167,10 @@ directory by default, which is why those three names are git-ignored at the repo
 Every `--format` writes a file. `ledger` was once an advertised format that wrote nothing
 and still exited 0 -- the operator had no way to tell it had not worked.
 
+The run's `requirements.json` is read when there is one and passed to the generator. It
+contributes only what a plan cannot state -- who sends data in from outside the account --
+and its absence draws no external sender rather than a generic box captioned "Source".
+
 `--check` runs [`diagram_check.py`](../reporting/diagram_check.py) over what was just
 generated and exits 1 on FAIL, so a broken canvas stops a pipeline instead of being
 published. The verdict is printed after the URL and carried in `--json` under `check`.

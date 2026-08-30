@@ -39,9 +39,9 @@ def add_parser(subparsers):
     parser.set_defaults(func=run)
 
 
-def _generate(plan_json):
+def _generate(plan_json, requirements=None):
     from ...reporting import drawio_generator
-    return drawio_generator.generate_drawio_from_plan(plan_json)
+    return drawio_generator.generate_drawio_from_plan(plan_json, requirements=requirements)
 
 
 def _check(xml_text):
@@ -83,6 +83,22 @@ def _find_plan(root):
     return {}
 
 
+def _find_requirements(root):
+    """The interview record for this run, when there is one.
+
+    It supplies only what a plan cannot state -- who sends data in from outside the account.
+    Its absence is not an error: the canvas then draws no external sender rather than a
+    generic box captioned "Source".
+    """
+    if not root:
+        return None
+    for candidate in (os.path.join(root, "requirements.json"),
+                      os.path.join(root, "reports", "requirements.json")):
+        if os.path.isfile(candidate):
+            return _load(candidate)
+    return None
+
+
 def _resolve_root(args):
     if args.dir:
         return args.dir
@@ -98,7 +114,8 @@ def _resolve_root(args):
 
 
 def run(args):
-    result = _generate(_find_plan(_resolve_root(args)))
+    root = _resolve_root(args)
+    result = _generate(_find_plan(root), _find_requirements(root))
 
     out_dir = args.out_dir or "."
     os.makedirs(out_dir, exist_ok=True)

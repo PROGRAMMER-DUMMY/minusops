@@ -434,13 +434,22 @@ def test_consumption_is_downstream_of_every_storage_zone():
 
 
 def _band_geometry(xml_text, full=False):
-    bands = {}
-    for cell in ET.fromstring(xml_text).iter("mxCell"):
+    """Absolute band rectangles. The account boundary is a band's parent, not its peer, so
+    a band's own geometry is relative to it."""
+    root = ET.fromstring(xml_text)
+    boxes = {}
+    for cell in root.iter("mxCell"):
         cell_id = cell.get("id") or ""
         if not cell_id.startswith("layer_box_"):
             continue
         geom = cell.find("mxGeometry")
-        box = tuple(float(geom.get(k)) for k in ("x", "y", "width", "height"))
+        boxes[cell_id] = (tuple(float(geom.get(k)) for k in ("x", "y", "width", "height")),
+                          cell.get("parent") or "1")
+
+    bands = {}
+    for cell_id, (box, parent) in boxes.items():
+        offset = boxes.get(parent, ((0.0, 0.0, 0.0, 0.0), "1"))[0] if parent != "1"             else (0.0, 0.0, 0.0, 0.0)
+        box = (box[0] + offset[0], box[1] + offset[1], box[2], box[3])
         bands[cell_id[len("layer_box_"):]] = box if full else box[:3]
     return bands
 
@@ -492,6 +501,8 @@ def test_no_two_bands_overlap():
     bands = _band_geometry(
         drawio_generator.generate_drawio_from_plan(_crowded_plan())["xml"], full=True)
 
+    # `account` is the boundary the bands sit inside, not a band beside them.
+    bands.pop("account", None)
     for (left, a), (right, b) in itertools.combinations(bands.items(), 2):
         horizontal = a[0] < b[0] + b[2] and b[0] < a[0] + a[2]
         vertical = a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
@@ -620,6 +631,95 @@ def test_a_band_is_a_container_so_draw_io_moves_what_is_inside_it():
     for cell in root.iter("mxCell"):
         if (cell.get("id") or "").startswith("layer_box_"):
             assert "container=1" in (cell.get("style") or "")
+
+
+_SFTP_REQUIREMENTS = {"pillars": {"ingestion_source": {
+    "choice": "Partner file drops over SFTP (Transfer Family)"}}}
+
+
+def _sftp_plan():
+    def rc(address, rtype):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": {}}}
+    return {"resource_changes": [
+        rc("aws_transfer_server.partner_drop", "aws_transfer_server"),
+        rc('aws_s3_bucket.zones["raw"]', "aws_s3_bucket"),
+        rc("aws_glue_job.etl", "aws_glue_job"),
+    ]}
+
+
+def test_a_sender_outside_the_account_is_drawn_outside_the_boundary():
+    """A plan states the resources inside the account and cannot state what is outside it.
+    The partner exists because an operator answered pillar 1, so it is drawn from the
+    interview record and labelled with their answer."""
+    xml_text = drawio_generator.generate_drawio_from_plan(
+        _sftp_plan(), requirements=_SFTP_REQUIREMENTS)["xml"]
+    root = ET.fromstring(xml_text)
+
+    actors = {cell.get("id"): cell.find("mxGeometry") for cell in root.iter("mxCell")
+              if (cell.get("id") or "").startswith("actor_")}
+    boundary = [cell.find("mxGeometry") for cell in root.iter("mxCell")
+                if cell.get("id") == "layer_box_account"]
+
+    assert actors, "no external sender was drawn"
+    assert boundary, "no account boundary was drawn"
+    edge = float(boundary[0].get("x"))
+    for geom in actors.values():
+        assert float(geom.get("x")) + float(geom.get("width")) <= edge
+
+
+def test_no_sender_is_drawn_when_the_interview_did_not_name_one():
+    """The plan cannot supply this. With no answer there is no actor, rather than a generic
+    box captioned 'Source' that asserts something nobody said."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_sftp_plan())["xml"]
+
+    assert not [cell for cell in ET.fromstring(xml_text).iter("mxCell")
+                if (cell.get("id") or "").startswith("actor_")]
+
+
+def test_an_external_sender_carries_no_aws_stencil():
+    """Nothing outside the account is an AWS service. A service icon on a partner's SFTP
+    client would say this stack provisions it."""
+    xml_text = drawio_generator.generate_drawio_from_plan(
+        _sftp_plan(), requirements=_SFTP_REQUIREMENTS)["xml"]
+
+    for cell in ET.fromstring(xml_text).iter("mxCell"):
+        if (cell.get("id") or "").startswith("actor_"):
+            assert "mxgraph.aws4" not in (cell.get("style") or "")
+
+
+def test_the_sender_is_wired_only_when_one_resource_receives_it():
+    """With two ingestion resources the plan does not say which one the partner reaches, so
+    no arrow is drawn. A guess here is the same fabrication as an invented hop."""
+    plan = _sftp_plan()
+    plan["resource_changes"].append(
+        {"address": "aws_kinesis_firehose_delivery_stream.events",
+         "type": "aws_kinesis_firehose_delivery_stream", "mode": "managed", "name": "events",
+         "change": {"actions": ["create"], "after": {}}})
+
+    one = drawio_generator.generate_drawio_from_plan(
+        _sftp_plan(), requirements=_SFTP_REQUIREMENTS)["xml"]
+    two = drawio_generator.generate_drawio_from_plan(
+        plan, requirements=_SFTP_REQUIREMENTS)["xml"]
+
+    def actor_edges(xml_text):
+        return [cell for cell in ET.fromstring(xml_text).iter("mxCell")
+                if (cell.get("id") or "").startswith("edge_actor_")]
+
+    assert len(actor_edges(one)) == 1
+    assert not actor_edges(two)
+
+
+def test_every_band_sits_inside_the_account_boundary():
+    xml_text = drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"]
+    bands = _band_geometry(xml_text, full=True)
+    account = bands.pop("account")
+
+    for name, (x, y, width, height) in bands.items():
+        assert account[0] <= x and account[1] <= y, f"{name} starts outside the boundary"
+        assert x + width <= account[0] + account[2], f"{name} runs past the boundary"
+        assert y + height <= account[1] + account[3], f"{name} runs past the boundary"
 
 
 def test_the_security_band_spans_the_whole_diagram():
