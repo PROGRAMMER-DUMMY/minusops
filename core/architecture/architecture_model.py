@@ -46,7 +46,7 @@ ROLE_LAYER = {
     "catalog": "catalog",
     "transform": "processing", "orchestrate": "processing",
     "consume": "consumption",
-    "security": "governance", "observability": "governance",
+    "security": "governance", "observability": "governance", "network": "governance",
     "other": "other",
 }
 
@@ -55,7 +55,8 @@ ROLE_LAYER = {
 # generic "store" so e.g. aws_glue_catalog_database is catalog, not storage.
 _RULES = [
     ("catalog", ["glue_catalog", "glue_crawler", "glue_registry", "lakeformation", "lake_formation",
-                 "data_catalog", "datacatalog", "dataplex", "purview", "schema_registry"]),
+                 "data_catalog", "datacatalog", "dataplex", "purview", "schema_registry",
+                 "datazone"]),
     ("ingest", ["dms_", "database_migration", "datasync", "transfer_", "appflow", "firehose",
                 "kinesis_stream", "kinesis_video", "msk", "kafka", "data_exchange", "dataexchange",
                 "eventbridge_pipe", "sftp", "event_source_mapping",
@@ -75,9 +76,17 @@ _RULES = [
     ("observability", ["cloudwatch", "cloudtrail", "budgets", "sns", "log_group", "logs_",
                        "metric_alarm", "anomaly", "monitor", "log_analytics", "logging_metric",
                        "notification_channel", "consumption_budget"]),
-    ("security", ["iam", "kms", "secrets", "secret", "security_group", "_vpc", "vpc_",
-                  "subnet", "key_vault", "acm", "waf", "guardduty", "macie", "network_acl",
+    ("security", ["iam", "kms", "secrets", "secret", "security_group", "key_vault", "acm",
+                  "waf", "guardduty", "macie", "network_acl",
                   "role_assignment", "service_account", "crypto_key"]),
+    # Networking follows security so a security group stays a security group. `_vpc` and
+    # `vpc_` used to live in the rule above and matched neither `aws_vpc` nor a NAT gateway:
+    # both needles require a delimiter a bare type does not have, so a VPC -- named in 10 of
+    # the 35 reference architectures in blueprint_data -- classified as "other" along with
+    # every gateway, route table and address beside it.
+    ("network", ["vpc", "subnet", "nat_gateway", "internet_gateway", "route_table", "eip",
+                 "network_interface", "transit_gateway", "vpn_", "direct_connect",
+                 "virtual_network", "load_balancer", "_lb", "route53", "dns_zone"]),
     ("store", ["s3", "bucket", "storage_account", "gcs", "dynamodb", "rds", "efs", "fsx",
                "lake", "blob", "filesystem", "table_bucket",
                # Azure / GCP storage + operational DBs

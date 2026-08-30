@@ -154,6 +154,28 @@ Generation in MinusOps is **requirements-first** and bound to reviewed records (
 * **Architectural Role:** Core organizational identity resolver powering multi-team remote S3 state isolation (`s3://.../teams/<team_id>/<workload_id>/`) and team-scoped deploy role enforcement (`arn:aws:iam::*:role/minusops-deploy-<team_id>`).
 ---
 
+### 8a. [`blueprint_data/`](./blueprint_data/)
+* **Exact Purpose:** thirty-five published data-pipeline reference architectures, recorded as
+  evidence about what a data pipeline is usually made of. AWS Prescriptive Guidance, the AWS
+  Analytics Reference Architecture, the Well-Architected analytics material, Databricks, dbt
+  and the Iceberg spec.
+* **It exists to check `architecture_model._RULES`.** Those rules were written from what we
+  had built. A service a third of the corpus names and `classify_role` cannot place lands in
+  the `other` layer, in the footer beside the IAM roles, and nothing says so. `aws_vpc` is
+  named in 10 of the 35 and the needles guarding it were `_vpc` and `vpc_` -- both requiring
+  a delimiter a bare type does not have -- with no rule mentioning a NAT gateway, an internet
+  gateway, a route table or an elastic IP at all.
+* **Counts, not text.** The pages belong to their publishers; what is stored is which service
+  names appear where. A test asserts the stored shape stays that narrow.
+* **Refreshed by a person.** A test that fetched its own reference would fail offline, and a
+  corpus that updated itself would stop being fixed enough to measure against.
+* **Not an authority.** Extraction is keyword counting over prose, so a mention is evidence a
+  page discusses a service, never evidence of a hop between two of them. Declared hops still
+  come only from a plan's own data-carrying arguments.
+* **Tests:** [`tests/test_blueprint_corpus.py`](../../tests/test_blueprint_corpus.py).
+
+---
+
 ### 8. [`pillars.py`](./pillars.py)
 
 * **Exact Purpose:** the 19-pillar interview catalogue, and the arithmetic that makes each

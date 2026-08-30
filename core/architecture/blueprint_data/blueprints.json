@@ -1,0 +1,578 @@
+{
+  "fetched_utc": "2026-08-30T09:13:11Z",
+  "source_count": 38,
+  "fetched_count": 35,
+  "failed": [
+    {
+      "key": "aws-ara-batch-analytics",
+      "error": "HTTP Error 404: Not Found"
+    },
+    {
+      "key": "aws-ara-streaming-analytics",
+      "error": "HTTP Error 404: Not Found"
+    },
+    {
+      "key": "aws-data-lake-solution",
+      "error": "HTTP Error 404: Not Found"
+    }
+  ],
+  "blueprints": [
+    {
+      "key": "aws-ara-data-lake",
+      "provider": "AWS",
+      "title": "AWS Analytics Reference Architecture, data lake module",
+      "url": "https://aws-samples.github.io/aws-analytics-reference-architecture/high-level-design/modules/data-lake/",
+      "characters": 2890,
+      "services": {
+        "aws_s3_bucket": 4,
+        "aws_glue_job": 3,
+        "aws_glue_catalog_database": 5
+      },
+      "stages": {
+        "raw": 6,
+        "cleaned": 3,
+        "clean": 3,
+        "curated": 4
+      }
+    },
+    {
+      "key": "aws-ara-data-warehouse",
+      "provider": "AWS",
+      "title": "AWS Analytics Reference Architecture, data warehouse module",
+      "url": "https://aws-samples.github.io/aws-analytics-reference-architecture/high-level-design/modules/data-warehouse/",
+      "characters": 4838,
+      "services": {
+        "aws_glue_job": 2,
+        "aws_glue_catalog_database": 2,
+        "aws_redshift": 11
+      },
+      "stages": {
+        "raw": 1,
+        "clean": 3
+      }
+    },
+    {
+      "key": "aws-athena-workgroups",
+      "provider": "AWS",
+      "title": "Athena workgroups and query result location",
+      "url": "https://docs.aws.amazon.com/athena/latest/ug/manage-queries-control-costs-with-workgroups.html",
+      "characters": 15,
+      "services": {
+        "aws_athena_workgroup": 2
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-caf-data-governance",
+      "provider": "AWS",
+      "title": "AWS CAF governance perspective, data governance",
+      "url": "https://docs.aws.amazon.com/whitepapers/latest/aws-caf-governance-perspective/data-governance.html",
+      "characters": 6113,
+      "services": {
+        "aws_glue_catalog_database": 1,
+        "aws_lakeformation_permissions": 1
+      },
+      "stages": {
+        "raw": 1,
+        "clean": 1
+      }
+    },
+    {
+      "key": "aws-datazone-concepts",
+      "provider": "AWS",
+      "title": "Amazon DataZone concepts",
+      "url": "https://docs.aws.amazon.com/datazone/latest/userguide/datazone-concepts.html",
+      "characters": 32674,
+      "services": {
+        "aws_s3_bucket": 7,
+        "aws_glue_job": 18,
+        "aws_glue_catalog_database": 4,
+        "aws_athena_workgroup": 24,
+        "aws_redshift": 44,
+        "aws_lakeformation_permissions": 7,
+        "aws_iam_role": 3,
+        "aws_datazone": 178,
+        "aws_eventbridge": 1
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-dms-s3-target",
+      "provider": "AWS",
+      "title": "AWS DMS with Amazon S3 as a target",
+      "url": "https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Target.S3.html",
+      "characters": 68988,
+      "services": {
+        "aws_s3_bucket": 111,
+        "aws_glue_job": 16,
+        "aws_glue_crawler": 1,
+        "aws_glue_catalog_database": 17,
+        "aws_athena_workgroup": 15,
+        "aws_redshift": 2,
+        "aws_dms_replication_task": 85,
+        "aws_kms_key": 11,
+        "aws_iam_role": 14,
+        "aws_vpc": 3,
+        "aws_dynamodb_table": 1
+      },
+      "stages": {
+        "raw": 2
+      }
+    },
+    {
+      "key": "aws-emr-serverless-overview",
+      "provider": "AWS",
+      "title": "What is Amazon EMR Serverless",
+      "url": "https://docs.aws.amazon.com/emr/latest/EMR-Serverless-UserGuide/emr-serverless.html",
+      "characters": 7252,
+      "services": {
+        "aws_s3_bucket": 1,
+        "aws_emr": 53,
+        "aws_iam_role": 1,
+        "aws_vpc": 1
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-emr-serverless-vpc",
+      "provider": "AWS",
+      "title": "EMR Serverless VPC access",
+      "url": "https://docs.aws.amazon.com/emr/latest/EMR-Serverless-UserGuide/vpc-access.html",
+      "characters": 10196,
+      "services": {
+        "aws_s3_bucket": 6,
+        "aws_redshift": 14,
+        "aws_emr": 30,
+        "aws_lakeformation_permissions": 1,
+        "aws_vpc": 11,
+        "aws_dynamodb_table": 1
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-firehose-destinations",
+      "provider": "AWS",
+      "title": "Firehose delivery destinations",
+      "url": "https://docs.aws.amazon.com/firehose/latest/dev/create-destination.html",
+      "characters": 76705,
+      "services": {
+        "aws_s3_bucket": 92,
+        "aws_athena_workgroup": 1,
+        "aws_redshift": 126,
+        "aws_kinesis_firehose_delivery_stream": 293,
+        "aws_lambda_function": 13,
+        "aws_kms_key": 12,
+        "aws_cloudwatch_metric_alarm": 4
+      },
+      "stages": {
+        "raw": 2
+      }
+    },
+    {
+      "key": "aws-glue-crawlers",
+      "provider": "AWS",
+      "title": "Defining crawlers in AWS Glue",
+      "url": "https://docs.aws.amazon.com/glue/latest/dg/add-crawler.html",
+      "characters": 8700,
+      "services": {
+        "aws_s3_bucket": 7,
+        "aws_glue_job": 16,
+        "aws_glue_crawler": 4,
+        "aws_glue_catalog_database": 20,
+        "aws_athena_workgroup": 6
+      },
+      "stages": {
+        "raw": 57
+      }
+    },
+    {
+      "key": "aws-glue-programming",
+      "provider": "AWS",
+      "title": "AWS Glue ETL programming and job patterns",
+      "url": "https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming.html",
+      "characters": 1549,
+      "services": {
+        "aws_glue_job": 13
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-glue-schema-registry",
+      "provider": "AWS",
+      "title": "AWS Glue Schema Registry",
+      "url": "https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html",
+      "characters": 18543,
+      "services": {
+        "aws_glue_job": 13,
+        "aws_glue_catalog_database": 1,
+        "aws_glue_registry": 21,
+        "aws_kinesis_stream": 1,
+        "aws_msk_cluster": 2,
+        "aws_lambda_function": 1,
+        "aws_cloudwatch_metric_alarm": 1
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-glue-vpc-s3-endpoint",
+      "provider": "AWS",
+      "title": "Amazon VPC endpoints for Amazon S3 in AWS Glue",
+      "url": "https://docs.aws.amazon.com/glue/latest/dg/vpc-endpoints-s3.html",
+      "characters": 3268,
+      "services": {
+        "aws_s3_bucket": 15,
+        "aws_glue_job": 6,
+        "aws_vpc": 12
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-kinesis-concepts",
+      "provider": "AWS",
+      "title": "Kinesis Data Streams terminology and concepts",
+      "url": "https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html",
+      "characters": 8567,
+      "services": {
+        "aws_s3_bucket": 1,
+        "aws_redshift": 2,
+        "aws_kinesis_stream": 35,
+        "aws_kinesis_firehose_delivery_stream": 1,
+        "aws_kms_key": 4,
+        "aws_cloudwatch_metric_alarm": 1,
+        "aws_dynamodb_table": 3
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-lakeformation-how-it-works",
+      "provider": "AWS",
+      "title": "How AWS Lake Formation works",
+      "url": "https://docs.aws.amazon.com/lake-formation/latest/dg/how-it-works.html",
+      "characters": 4009,
+      "services": {
+        "aws_s3_bucket": 10,
+        "aws_glue_job": 1,
+        "aws_glue_catalog_database": 8,
+        "aws_athena_workgroup": 2,
+        "aws_redshift": 2,
+        "aws_emr": 1,
+        "aws_lakeformation_permissions": 27
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-lakeformation-tbac",
+      "provider": "AWS",
+      "title": "Lake Formation tag-based access control",
+      "url": "https://docs.aws.amazon.com/lake-formation/latest/dg/tag-based-access-control.html",
+      "characters": 8443,
+      "services": {
+        "aws_s3_bucket": 1,
+        "aws_glue_catalog_database": 8,
+        "aws_redshift": 2,
+        "aws_lakeformation_permissions": 20,
+        "aws_dynamodb_table": 1
+      },
+      "stages": {
+        "presentation": 1
+      }
+    },
+    {
+      "key": "aws-lz-accelerator-networking",
+      "provider": "AWS",
+      "title": "Landing Zone Accelerator networking",
+      "url": "https://awslabs.github.io/landing-zone-accelerator-on-aws/latest/faq/networking/general/",
+      "characters": 6226,
+      "services": {
+        "aws_lambda_function": 2,
+        "aws_vpc": 3
+      },
+      "stages": {
+        "landing": 5
+      }
+    },
+    {
+      "key": "aws-msk-overview",
+      "provider": "AWS",
+      "title": "What is Amazon MSK",
+      "url": "https://docs.aws.amazon.com/msk/latest/developerguide/what-is-msk.html",
+      "characters": 4774,
+      "services": {
+        "aws_msk_cluster": 27,
+        "aws_vpc": 1
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-mwaa-networking",
+      "provider": "AWS",
+      "title": "Amazon MWAA networking requirements",
+      "url": "https://docs.aws.amazon.com/mwaa/latest/mwaa-serverless-userguide/networking.html",
+      "characters": 7590,
+      "services": {
+        "aws_s3_bucket": 2,
+        "aws_mwaa_environment": 17,
+        "aws_vpc": 13
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-prescriptive-data-lake-components",
+      "provider": "AWS",
+      "title": "Data lake reference architecture components",
+      "url": "https://docs.aws.amazon.com/prescriptive-guidance/latest/data-lake-for-growth-scale/reference-architecture-components.html",
+      "characters": 12414,
+      "services": {
+        "aws_s3_bucket": 7,
+        "aws_glue_job": 14,
+        "aws_glue_crawler": 3,
+        "aws_glue_catalog_database": 6,
+        "aws_athena_workgroup": 10,
+        "aws_redshift": 8,
+        "aws_emr": 4,
+        "aws_lakeformation_permissions": 24,
+        "aws_kms_key": 3,
+        "aws_iam_role": 7
+      },
+      "stages": {
+        "raw": 5,
+        "clean": 1,
+        "serving": 7
+      }
+    },
+    {
+      "key": "aws-prescriptive-data-lake-growth-scale",
+      "provider": "AWS",
+      "title": "Data lake for growth and scale, reference architecture",
+      "url": "https://docs.aws.amazon.com/prescriptive-guidance/latest/data-lake-for-growth-scale/reference-architecture.html",
+      "characters": 2379,
+      "services": {},
+      "stages": {
+        "serving": 1
+      }
+    },
+    {
+      "key": "aws-quicksight-datasources",
+      "provider": "AWS",
+      "title": "Amazon QuickSight supported data sources",
+      "url": "https://docs.aws.amazon.com/quicksight/latest/user/supported-data-sources.html",
+      "characters": 7574,
+      "services": {
+        "aws_s3_bucket": 8,
+        "aws_glue_job": 2,
+        "aws_glue_catalog_database": 4,
+        "aws_athena_workgroup": 5,
+        "aws_redshift": 7,
+        "aws_vpc": 1
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-redshift-serverless-considerations",
+      "provider": "AWS",
+      "title": "Amazon Redshift Serverless considerations",
+      "url": "https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-usage-considerations.html",
+      "characters": 8093,
+      "services": {
+        "aws_redshift": 85,
+        "aws_vpc": 1
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-s3-storage-classes",
+      "provider": "AWS",
+      "title": "Amazon S3 storage classes",
+      "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/storage-class-intro.html",
+      "characters": 18903,
+      "services": {
+        "aws_s3_bucket": 44,
+        "aws_kms_key": 2
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-s3-tables",
+      "provider": "AWS",
+      "title": "Amazon S3 Tables and Apache Iceberg",
+      "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables.html",
+      "characters": 7665,
+      "services": {
+        "aws_s3_bucket": 12,
+        "aws_glue_job": 6,
+        "aws_glue_catalog_database": 4,
+        "aws_athena_workgroup": 9,
+        "aws_redshift": 12,
+        "aws_emr": 2,
+        "aws_lakeformation_permissions": 4,
+        "aws_iam_role": 1
+      },
+      "stages": {
+        "clean": 2
+      }
+    },
+    {
+      "key": "aws-serverless-analytics-pipeline",
+      "provider": "AWS",
+      "title": "AWS serverless data analytics pipeline reference architecture",
+      "url": "https://aws.amazon.com/blogs/big-data/aws-serverless-data-analytics-pipeline-reference-architecture/",
+      "characters": 37706,
+      "services": {
+        "aws_s3_bucket": 25,
+        "aws_glue_job": 32,
+        "aws_glue_crawler": 1,
+        "aws_glue_catalog_database": 3,
+        "aws_athena_workgroup": 19,
+        "aws_redshift": 35,
+        "aws_emr": 9,
+        "aws_kinesis_firehose_delivery_stream": 7,
+        "aws_msk_cluster": 1,
+        "aws_dms_replication_task": 5,
+        "aws_transfer_server": 4,
+        "aws_sfn_state_machine": 6,
+        "aws_lambda_function": 1,
+        "aws_lakeformation_permissions": 22,
+        "aws_kms_key": 6,
+        "aws_iam_role": 1,
+        "aws_cloudwatch_metric_alarm": 2,
+        "aws_quicksight": 13,
+        "aws_vpc": 2,
+        "aws_dynamodb_table": 2,
+        "aws_appflow_flow": 4
+      },
+      "stages": {
+        "raw": 12,
+        "cleaned": 3,
+        "clean": 8,
+        "curated": 6,
+        "landing": 12,
+        "presentation": 1
+      }
+    },
+    {
+      "key": "aws-stepfunctions-glue",
+      "provider": "AWS",
+      "title": "Step Functions integration with AWS Glue",
+      "url": "https://docs.aws.amazon.com/step-functions/latest/dg/connect-glue.html",
+      "characters": 2649,
+      "services": {
+        "aws_glue_job": 16,
+        "aws_sfn_state_machine": 13,
+        "aws_eventbridge": 1
+      },
+      "stages": {}
+    },
+    {
+      "key": "aws-transfer-family",
+      "provider": "AWS",
+      "title": "AWS Transfer Family with Amazon S3",
+      "url": "https://docs.aws.amazon.com/transfer/latest/userguide/what-is-aws-transfer-family.html",
+      "characters": 11500,
+      "services": {
+        "aws_s3_bucket": 11,
+        "aws_transfer_server": 77,
+        "aws_lambda_function": 3,
+        "aws_dynamodb_table": 1
+      },
+      "stages": {
+        "serving": 1
+      }
+    },
+    {
+      "key": "aws-wa-analytics-lens",
+      "provider": "AWS",
+      "title": "Well-Architected Data Analytics Lens",
+      "url": "https://docs.aws.amazon.com/wellarchitected/latest/analytics-lens/analytics-lens.html",
+      "characters": 3378,
+      "services": {},
+      "stages": {}
+    },
+    {
+      "key": "aws-wa-analytics-scenarios",
+      "provider": "AWS",
+      "title": "Analytics Lens reference scenarios",
+      "url": "https://docs.aws.amazon.com/wellarchitected/latest/analytics-lens/scenarios.html",
+      "characters": 1378,
+      "services": {},
+      "stages": {}
+    },
+    {
+      "key": "aws-wa-rto-rpo",
+      "provider": "AWS",
+      "title": "Well-Architected, understand RTO and RPO requirements",
+      "url": "https://docs.aws.amazon.com/wellarchitected/latest/data-residency-hybrid-cloud-services-lens/drhcops03-bp01.html",
+      "characters": 4292,
+      "services": {},
+      "stages": {}
+    },
+    {
+      "key": "databricks-lakehouse-reference",
+      "provider": "Databricks",
+      "title": "Databricks lakehouse reference architectures",
+      "url": "https://docs.databricks.com/aws/en/lakehouse-architecture/reference",
+      "characters": 14065,
+      "services": {
+        "aws_s3_bucket": 1,
+        "aws_glue_job": 3,
+        "aws_redshift": 4,
+        "aws_dms_replication_task": 1,
+        "aws_mwaa_environment": 1,
+        "aws_quicksight": 2,
+        "aws_dynamodb_table": 1,
+        "aws_appflow_flow": 1
+      },
+      "stages": {
+        "clean": 1,
+        "curated": 1,
+        "gold": 1,
+        "serving": 10
+      }
+    },
+    {
+      "key": "databricks-medallion",
+      "provider": "Databricks",
+      "title": "Medallion architecture, bronze silver gold",
+      "url": "https://docs.databricks.com/aws/en/lakehouse/medallion.html",
+      "characters": 12340,
+      "services": {},
+      "stages": {
+        "raw": 9,
+        "bronze": 17,
+        "cleaned": 4,
+        "clean": 12,
+        "silver": 25,
+        "gold": 19,
+        "presentation": 3,
+        "serving": 1
+      }
+    },
+    {
+      "key": "dbt-project-structure",
+      "provider": "dbt Labs",
+      "title": "How we structure our dbt projects",
+      "url": "https://docs.getdbt.com/best-practices/how-we-structure/1-guide-overview",
+      "characters": 8095,
+      "services": {},
+      "stages": {
+        "raw": 14
+      }
+    },
+    {
+      "key": "iceberg-table-spec",
+      "provider": "Apache Iceberg",
+      "title": "Apache Iceberg table specification",
+      "url": "https://iceberg.apache.org/spec/",
+      "characters": 167794,
+      "services": {
+        "aws_athena_workgroup": 34,
+        "aws_redshift": 16,
+        "aws_emr": 17,
+        "aws_kinesis_firehose_delivery_stream": 8
+      },
+      "stages": {
+        "staged": 1,
+        "presentation": 30
+      }
+    }
+  ]
+}

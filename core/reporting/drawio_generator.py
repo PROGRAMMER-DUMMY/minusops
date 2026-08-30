@@ -317,6 +317,7 @@ _ROLE_LABELS = {
     "orchestrate": "Orchestrate",
     "consume": "Serve",
     "security": "Secure",
+    "network": "Network",
     "observability": "Observe",
 }
 
