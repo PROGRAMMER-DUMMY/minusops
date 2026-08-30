@@ -525,6 +525,14 @@ This document provides an exhaustive, architectural, and operational reference f
   comparing a box with what it holds would report every correct containment as a collision.
   Siblings of the same class are compared, which is what catches two bands drawn through
   each other.
+- **Geometry is resolved through the parent chain before anything is compared**
+  ([`_absolute`](./diagram_check.py)). mxGraph coordinates are relative to the parent and the
+  bands are nested inside the account boundary, so comparing a top-level cell's box against a
+  band's own box compares two coordinate systems -- which put an external sender drawn at
+  x=80, outside a boundary starting at x=290, inside the catalog band whose RELATIVE x was 20.
+- **An external sender is not counted as a resource with no data movement.** It is not in the
+  plan; listing it beside resources that declare no hop reads as a defect in the stack rather
+  than a statement about what sits outside it.
 - **Isolated nodes are grouped by the band that holds them**
   ([`_band_of`](./diagram_check.py)), read off the drawing rather than the plan. Twenty
   addresses in one list is a wall nobody reads; the band is what says whether an absent edge

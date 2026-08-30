@@ -217,19 +217,40 @@ def _check_page_bounds(page, model, cells):
                             "page_size": [width, height]})
 
 
-def _band_of(cell, bands):
+def _absolute(cell, by_id):
+    """A cell's box in canvas coordinates.
+
+    mxGraph geometry is relative to the parent, and the bands are nested inside the account
+    boundary. Comparing a top-level cell's box against a band's own box is comparing two
+    coordinate systems: it put an external sender drawn at x=80, outside a boundary starting
+    at x=290, inside the catalog band because that band's RELATIVE x was 20.
+    """
+    if not cell["box"]:
+        return None
+    x, y, width, height = cell["box"]
+    seen = set()
+    parent = by_id.get(cell["parent"] or "")
+    while parent is not None and parent["id"] not in seen and parent["box"]:
+        seen.add(parent["id"])
+        x, y = x + parent["box"][0], y + parent["box"][1]
+        parent = by_id.get(parent["parent"] or "")
+    return (x, y, width, height)
+
+
+def _band_of(cell, bands, by_id):
     """Which band a node was laid out in, read off the drawing rather than the plan.
 
     The parent settles it when the generator made the band a real container. The geometric
     fallback is for a hand-edited file, and takes the SMALLEST containing band: the account
-    boundary encloses every band, so the first match is always the least specific one.
+    boundary encloses every band, so the largest match is always the least specific one.
     """
     parent = cell["parent"] or ""
     if parent.startswith("layer_box_"):
         return parent[len("layer_box_"):]
-    if not cell["box"]:
+    box = _absolute(cell, by_id)
+    if not box:
         return "unbanded"
-    x, y, width, height = cell["box"]
+    x, y, width, height = box
     centre = (x + width / 2, y + height / 2)
     holding = [(bw * bh, name) for name, (bx, by, bw, bh) in bands.items()
                if bx <= centre[0] <= bx + bw and by <= centre[1] <= by + bh]
@@ -256,7 +277,7 @@ def _check_icons(page, cells):
                         "affected": len(users)})
 
 
-def _check_isolated(page, cells):
+def _check_isolated(page, cells, by_id):
     """Nodes no edge touches, grouped by the band that holds them. Reported, never fatal:
     the security band carries no edges by design, and a plan that declares no data movement
     correctly draws none. Twenty addresses in one list is a wall nobody reads; the band is
@@ -267,16 +288,16 @@ def _check_isolated(page, cells):
             wired.update(end for end in (cell["source"], cell["target"]) if end)
     nodes = [c for c in cells
              if c["vertex"] and not _is_chrome(c) and not _is_container(c)
-             and c["id"] not in ("0", "1")]
+             and c["id"] not in ("0", "1") and not c["id"].startswith("actor_")]
     if not wired or not nodes:
         return
 
-    bands = {c["id"][len("layer_box_"):]: c["box"] for c in cells
+    bands = {c["id"][len("layer_box_"):]: _absolute(c, by_id) for c in cells
              if c["id"].startswith("layer_box_") and c["box"]}
     grouped = {}
     for cell in nodes:
         if cell["id"] not in wired:
-            grouped.setdefault(_band_of(cell, bands), []).append(_name(cell))
+            grouped.setdefault(_band_of(cell, bands, by_id), []).append(_name(cell))
     if grouped:
         yield _finding("node_isolated", "note", page,
                        "the page declares data movement but these resources take part in "
@@ -315,7 +336,7 @@ def check(xml_text):
         findings.extend(_check_overlap(name, cells))
         findings.extend(_check_page_bounds(name, model, cells))
         findings.extend(_check_icons(name, cells))
-        findings.extend(_check_isolated(name, cells))
+        findings.extend(_check_isolated(name, cells, by_id))
 
     worst = max((f["severity"] for f in findings), key=SEVERITIES.index, default="note")
     return {"verdict": _VERDICTS[worst] if findings else "PASS",

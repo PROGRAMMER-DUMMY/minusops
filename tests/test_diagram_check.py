@@ -185,6 +185,40 @@ def test_a_node_no_edge_touches_is_reported_without_failing_the_canvas():
     assert isolated["evidence"]["wired"] == 2
 
 
+def test_band_attribution_resolves_nesting_before_comparing_geometry():
+    """mxGraph geometry is relative to the parent, and the bands are nested inside the
+    account boundary. Comparing a top-level cell's box against a band's own box compares two
+    coordinate systems: a sender drawn at x=80, outside a boundary starting at x=290, was
+    reported inside the catalog band because that band's RELATIVE x was 20."""
+    canvas = _canvas(
+        _node("layer_box_account", 290, 30, width=800, height=600, style="container=1;")
+        + _node("layer_box_catalog", 20, 50, parent="layer_box_account",
+                width=570, height=400, style="swimlane;")
+        + _node("node_0", 40, 80, parent="layer_box_catalog")
+        + _node("node_1", 140, 80, parent="layer_box_catalog")
+        + _node("outsider", 80, 80, width=150)
+        + _edge("edge_0", "node_0", "node_1"))
+    result = diagram_check.check(canvas)
+
+    isolated = [f for f in result["findings"] if f["check"] == "node_isolated"]
+    assert isolated
+    assert "catalog" not in isolated[0]["evidence"], isolated[0]["evidence"]
+    assert isolated[0]["evidence"]["unbanded"] == ["outsider"]
+
+
+def test_an_external_sender_is_not_counted_as_a_resource_with_no_data_movement():
+    """The actor is not in the plan. Listing it beside resources that declare no hop reads
+    as a defect in the stack rather than a statement about what is outside it."""
+    canvas = _canvas(
+        _node("node_0", 100, 100) + _node("node_1", 400, 100)
+        + _node("actor_external_source", 700, 100, width=150)
+        + _edge("edge_0", "node_0", "node_1"))
+    result = diagram_check.check(canvas)
+
+    assert result["verdict"] == "PASS"
+    assert not [f for f in result["findings"] if f["check"] == "node_isolated"]
+
+
 def test_a_canvas_with_no_edges_reports_no_isolation():
     """Every node is isolated when nothing is wired, which is a statement about the plan and
     not about the drawing."""
