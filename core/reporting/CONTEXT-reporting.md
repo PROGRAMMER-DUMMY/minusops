@@ -431,6 +431,19 @@ This document provides an exhaustive, architectural, and operational reference f
   reports none rather than fifty guesses.
 - **The ledger states hop, source and target.** Nothing else; a transport claim the plan
   does not make is the same defect as an invented price.
+- **One colour language, and it is AWS's.** A tile's fill is the service category AWS itself
+  uses, which means the same thing on every AWS diagram anyone has read. The bands carried a
+  second scheme on top of it: a Glue job is analytics purple, and inside a coloured
+  PROCESSING band it was a purple tile in an orange box asserting two different things about
+  one resource. Bands are structure now, drawn in one neutral grey. `_LAYER_COLORS` survives
+  for the legend.
+- **A node is labelled with the role that decided its band**
+  ([`node_label`](./drawio_generator.py), [`_ROLE_LABELS`](./drawio_generator.py)). The icon
+  already states the service, so "S3 Bucket / medallion_buckets" said the product twice and
+  the purpose never. The role comes from the same `classify_role` call the layout uses, so
+  the label and the placement cannot disagree -- which is exactly what happened while
+  [`_role_of`](./drawio_generator.py) passed an empty instance key and every medallion zone
+  read as a generic Store while being placed on the spine as a zone.
 - **Processing sits above storage, not beside it.** The spine alternated zone, transform,
   zone along one row, which reads as a line of tiles and says nothing about direction. Each
   transform is offset half a slot so it lands between the two zones it moves data between,

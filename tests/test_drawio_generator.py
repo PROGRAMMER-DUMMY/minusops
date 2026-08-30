@@ -588,15 +588,59 @@ def test_the_canvas_carries_a_legend_that_says_what_an_absent_arrow_means():
     assert "not that none exists" in joined
 
 
-def test_every_legend_swatch_uses_a_colour_a_band_actually_draws_with():
-    """A key whose swatch does not match the band it explains is worse than no key."""
+def test_every_legend_swatch_is_drawn_the_way_the_bands_are():
+    """A key whose swatch does not match what it explains is worse than no key. The bands
+    are one neutral dashed grey, so the swatch is too -- it used to be a filled colour chip
+    per layer, which described a canvas that no longer exists."""
     xml_text = drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"]
-    swatches = [cell.get("style") or "" for cell in ET.fromstring(xml_text).iter("mxCell")
+    root = ET.fromstring(xml_text)
+    swatches = [cell.get("style") or "" for cell in root.iter("mxCell")
                 if (cell.get("id") or "").startswith("legend_swatch_")]
+    bands = [cell.get("style") or "" for cell in root.iter("mxCell")
+             if (cell.get("id") or "").startswith("layer_box_")
+             and "swimlane" in (cell.get("style") or "")]
 
-    assert swatches
+    assert swatches and bands
     for style in swatches:
-        assert any(colour in style for colour in drawio_generator._LAYER_COLORS.values())
+        assert drawio_generator._BAND_STROKE in style
+        assert "dashed=1" in style
+    for style in bands:
+        assert drawio_generator._BAND_STROKE in style
+
+
+def test_no_band_carries_a_colour_that_competes_with_the_service_icons():
+    """A Glue job is analytics purple. In a coloured PROCESSING band it was a purple tile in
+    an orange box, two schemes asserting different things about the same resource."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"]
+
+    for cell in ET.fromstring(xml_text).iter("mxCell"):
+        if "swimlane" not in (cell.get("style") or ""):
+            continue
+        for colour in drawio_generator._LAYER_COLORS.values():
+            assert colour not in cell.get("style"), cell.get("id")
+
+
+def test_a_node_is_labelled_with_the_role_that_decided_its_band():
+    """The icon already states the service. "S3 Bucket / medallion_buckets" said the product
+    twice and the purpose never, and the role is what the layout already computed."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"]
+    labels = {cell.get("tooltip"): cell.get("value") for cell in ET.fromstring(xml_text)
+              .iter("mxCell") if cell.get("tooltip")}
+
+    assert "Zone" in labels['aws_s3_bucket.zones["raw"]']
+    assert "raw" in labels['aws_s3_bucket.zones["raw"]']
+    assert "Transform" in labels["aws_glue_job.raw_to_cleaned"]
+
+
+def test_a_bucket_that_is_not_a_medallion_zone_is_not_labelled_as_one():
+    """`classify_role` splits a bucket on its instance key, and `_role_of` was dropping that
+    key -- so every zone read as a generic Store while the layout placed it on the spine."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"]
+    labels = {cell.get("tooltip"): cell.get("value") for cell in ET.fromstring(xml_text)
+              .iter("mxCell") if cell.get("tooltip")}
+
+    assert "Store" in labels["aws_s3_bucket.athena_results"]
+    assert "Zone" not in labels["aws_s3_bucket.athena_results"]
 
 
 def test_a_hop_between_two_rows_leaves_the_bottom_and_enters_the_top():

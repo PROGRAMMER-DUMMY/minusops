@@ -302,8 +302,29 @@ def decode_drawio_url(url):
 
 
 _LABEL_STYLE = ("verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;"
-                "whiteSpace=wrap;overflow=hidden;fontSize=11;fontColor=#1e293b;fontStyle=1;")
+                "whiteSpace=wrap;overflow=visible;labelWidth=170;fontSize=11;"
+                "fontColor=#1e293b;fontStyle=0;")
 
+# What a resource DOES, in the words the role classifier already assigns it. The icon
+# already states the service, so a label reading "S3 Bucket / medallion_buckets" says the
+# product twice and the purpose never.
+_ROLE_LABELS = {
+    "ingest": "Ingest",
+    "stage": "Zone",
+    "store_other": "Store",
+    "catalog": "Catalog",
+    "transform": "Transform",
+    "orchestrate": "Orchestrate",
+    "consume": "Serve",
+    "security": "Secure",
+    "observability": "Observe",
+}
+
+# Colour belongs to the resource, where it is AWS's own service category and means the same
+# thing on every AWS diagram anyone has read. A second scheme on the bands competes with it:
+# a Glue job is analytics purple, and in a coloured PROCESSING band it was a purple tile in an
+# orange box saying two different things at once. The bands are structure now, drawn in one
+# neutral grey. These stay for the legend, which explains the icons rather than the boxes.
 _LAYER_COLORS = {
     "ingestion": "#E7157B",
     "storage": "#7AA116",
@@ -313,6 +334,7 @@ _LAYER_COLORS = {
     "governance": "#DD344C",
     "other": "#64748b",
 }
+_BAND_STROKE = "#94a3b8"
 
 _SLOT_WIDTH = 190
 _STACK_HEIGHT = 110
@@ -323,15 +345,19 @@ _BAND_PAD = 20
 _GUTTER = 60
 
 
-def node_label(address, badges=()):
-    """A short two-line title, plus a third line when the plan states capacity or posture."""
+def node_label(address, badges=(), role=None):
+    """The role this resource plays and the name the operator gave it, then any stated posture.
+
+    The role comes from `classify_role`, which is the same call that decides which band the
+    resource lands in -- so the label and the placement cannot disagree.
+    """
     parts = (address or "").split(".")
     leaf_parts = [p for p in parts if not p.startswith("module")]
-    if len(leaf_parts) >= 2:
-        short_type = leaf_parts[-2].replace("aws_", "").replace("_", " ").title()
-        label = f"{short_type}<br>{leaf_parts[-1]}"
-    else:
-        label = "<br>".join(parts[-2:]) if len(parts) > 2 else (address or "")
+    name = _instance_key(address) or (leaf_parts[-1] if leaf_parts else (address or ""))
+    kind = _ROLE_LABELS.get(role)
+    if kind is None and len(leaf_parts) >= 2:
+        kind = leaf_parts[-2].replace("aws_", "").replace("_", " ").title()
+    label = f"<b>{name}</b><br>{kind}" if kind else f"<b>{name}</b>"
     return f"{label}<br>{', '.join(sorted(badges))}" if badges else label
 
 
@@ -349,7 +375,14 @@ def _badge_text(meta, folded):
 
 
 def _role_of(res):
-    return architecture_model.classify_role(res.get("type", ""), "", res.get("name", ""))
+    """The resource's role, resolved with its instance key.
+
+    `classify_role` splits a bucket into `stage` or `store_other` by that key, so dropping it
+    made every medallion zone read as a generic store -- the label saying "Store" while the
+    layout placed it on the spine as a zone.
+    """
+    return architecture_model.classify_role(
+        res.get("type", ""), _instance_key(res.get("address")), res.get("name", ""))
 
 
 def _layer_of(res):
@@ -601,27 +634,31 @@ _STEP_PITCH = 54
 
 
 _LEGEND_ROWS = (
-    ("ingestion", "Ingestion -- where data enters this stack"),
-    ("processing", "Processing -- a job that reads one path and writes another"),
-    ("storage", "Storage -- a medallion zone, or a bucket that is not one"),
-    ("catalog", "Cataloging and governance -- control plane, not data path"),
-    ("consumption", "Consumption -- what reads the curated data"),
-    ("governance", "Security and monitoring -- cross-cutting, no data path"),
+    ("INGESTION", "where data enters this account"),
+    ("PROCESSING", "a job that reads one path and writes another"),
+    ("STORAGE", "a medallion zone, or a bucket that is not one"),
+    ("CATALOGING, GOVERNANCE & SEARCH", "control plane, not a data path"),
+    ("CONSUMPTION", "what reads the curated data"),
+    ("SECURITY & MONITORING", "cross-cutting; no resource here carries a data path"),
 )
 
 _LEGEND_NOTES = (
+    "A tile's colour is AWS's own service category, not this tool's. The dashed boxes are "
+    "the layer a resource was classified into; the second line of a tile is the role that "
+    "classification assigned, so the label and the placement cannot disagree.",
     "An arrow is a hop the plan DECLARES: one resource names the other's path in a "
     "data-carrying argument. Absence of an arrow means the plan states no path, not that "
-    "none exists at runtime.",
-    "A badge under a name is capacity the plan states -- worker count, shard count, "
-    "encryption, private access. Nothing on this canvas is inferred from a resource name.",
+    "none exists at runtime. A dashed arrow comes from the interview, not the plan.",
+    "A badge under a name is capacity or posture the plan states -- worker count, shard "
+    "count, encryption, private access. Nothing here is inferred from a resource name.",
 )
 
 _LEGEND_HEIGHT = 28 + len(_LEGEND_ROWS) * 22 + 6 + len(_LEGEND_NOTES) * 38
 
 _LEGEND_TITLE_STYLE = ("text;html=1;align=left;verticalAlign=middle;fontSize=12;fontStyle=1;"
                        "fontColor=#1e293b;")
-_LEGEND_SWATCH_STYLE = "rounded=1;arcSize=30;fillColor={fill};strokeColor=none;"
+_LEGEND_SWATCH_STYLE = ("rounded=1;arcSize=20;fillColor=none;strokeColor=" + _BAND_STROKE
+                        + ";strokeWidth=1;dashed=1;dashPattern=3 2;")
 _LEGEND_LABEL_STYLE = ("text;html=1;align=left;verticalAlign=middle;fontSize=11;"
                        "fontColor=#334155;")
 _LEGEND_NOTE_STYLE = ("text;html=1;align=left;verticalAlign=top;fontSize=10;"
@@ -644,10 +681,10 @@ def _append_legend(root, x, y, width):
 
     cell("legend_title", "<b>Legend</b>", _LEGEND_TITLE_STYLE, x, y, width, 24)
     row_y = y + 28
-    for index, (layer, text) in enumerate(_LEGEND_ROWS):
-        cell(f"legend_swatch_{index}", "",
-             _LEGEND_SWATCH_STYLE.format(fill=_LAYER_COLORS[layer]), x, row_y + 3, 14, 14)
-        cell(f"legend_label_{index}", text, _LEGEND_LABEL_STYLE, x + 22, row_y, width - 22, 20)
+    for index, (band, text) in enumerate(_LEGEND_ROWS):
+        cell(f"legend_swatch_{index}", "", _LEGEND_SWATCH_STYLE, x, row_y + 3, 20, 14)
+        cell(f"legend_label_{index}", f"<b>{band}</b> -- {text}", _LEGEND_LABEL_STYLE,
+             x + 28, row_y, width - 28, 20)
         row_y += 22
 
     row_y += 6
@@ -765,7 +802,8 @@ def _append_deployment(root, containment, by_address, badges):
         cell = ET.SubElement(root, "mxCell", {
             "id": f"dep_node_{index}",
             "value": node_label(address, _badge_text(extract_node_metadata(res),
-                                                     badges.get(address, set()))),
+                                                     badges.get(address, set())),
+                                _role_of(res)),
             "tooltip": address,
             "style": resolve_stencil(res.get("type")) + _LABEL_STYLE,
             "vertex": "1", "parent": parent,
@@ -894,10 +932,10 @@ def _append_bands(root, bands, parent="1", boundary=None):
         container = ET.SubElement(root, "mxCell", {
             "id": f"layer_box_{layer}",
             "value": f"<b>{_BAND_LABELS.get(layer, layer.upper())}</b>",
-            "style": (f"swimlane;startSize=28;fillColor=none;strokeColor="
-                      f"{_LAYER_COLORS.get(layer, '#64748b')};strokeWidth=1.5;"
-                      "fontColor=#1e293b;fontStyle=1;fontSize=12;rounded=1;arcSize=8;"
-                      "dashed=1;dashPattern=6 4;container=1;collapsible=0;"),
+            "style": ("swimlane;startSize=28;fillColor=none;strokeColor=#94a3b8;"
+                      "strokeWidth=1;fontColor=#475569;fontStyle=1;fontSize=11;"
+                      "rounded=1;arcSize=8;dashed=1;dashPattern=6 4;container=1;"
+                      "collapsible=0;"),
             "vertex": "1",
             "parent": parent,
         })
@@ -948,7 +986,8 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
         cell = ET.SubElement(root, "mxCell", {
             "id": node_id,
             "value": node_label(address, _badge_text(extract_node_metadata(res),
-                                                     badges.get(address, set()))),
+                                                     badges.get(address, set())),
+                                _role_of(res)),
             "tooltip": address,
             "style": resolve_stencil(res.get("type")) + _LABEL_STYLE,
             "vertex": "1",
