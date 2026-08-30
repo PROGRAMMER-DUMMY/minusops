@@ -368,22 +368,28 @@ def _by_layer(resources):
     return layers
 
 
-def _spine_groups(layers):
-    """The alternating zone / transform sequence, ordered by medallion stage."""
-    zones = sorted(layers.get("storage", []),
-                   key=lambda r: (architecture_model.stage_rank(
-                       _instance_key(r.get("address")), r.get("name", "")),
-                       r.get("address") or ""))
-    transforms = [r for r in layers.get("processing", []) if _role_of(r) != "orchestrate"]
+_UNRANKED_STAGE = 40
 
-    groups = []
-    for index, zone in enumerate(zones):
-        groups.append([zone])
-        if index < len(transforms) and index < len(zones) - 1:
-            groups.append([transforms[index]])
-    remaining = transforms[max(0, len(zones) - 1):]
-    groups.extend([res] for res in remaining)
-    return groups
+
+def _stage_rank_of(res):
+    return architecture_model.stage_rank(_instance_key(res.get("address")),
+                                         res.get("name", ""))
+
+
+def _medallion_split(layers):
+    """The storage layer separated into the medallion spine and the buckets that are not on it.
+
+    `classify_role` puts every bucket in the storage layer, and `stage_rank` returns 40 for a
+    name it does not recognise. An Athena results bucket and a quarantine bucket then sort to
+    the end of the spine and draw as though they were the stage after Gold. They are storage,
+    they are not a medallion zone, and the drawing has to say which.
+    """
+    storage = layers.get("storage", [])
+    ranked = sorted((r for r in storage if _stage_rank_of(r) != _UNRANKED_STAGE),
+                    key=lambda r: (_stage_rank_of(r), r.get("address") or ""))
+    support = sorted((r for r in storage if _stage_rank_of(r) == _UNRANKED_STAGE),
+                     key=lambda r: r.get("address") or "")
+    return ranked, support
 
 
 def _band_height(rows):
@@ -397,26 +403,28 @@ def _addresses(resources):
 def layout_positions(resources):
     """Return {address: (x, y)} plus the bands to draw around them.
 
-    Flow layers run left to right with the medallion zones ordered by stage and the
-    transforms sitting between them. Cataloging sits above the spine, security and
-    monitoring below it, matching the AWS analytics reference architecture. Every band
-    height is derived from what the band holds, so a band never grows into its neighbour.
+    Processing sits above storage and each transform is offset half a slot, so it lands
+    between the two zones it moves data between and the hops read as a zigzag rather than a
+    straight line through a row of tiles. Cataloging sits above both and security below,
+    matching the AWS analytics reference architecture. Every band height is derived from what
+    the band holds, so a band never grows into its neighbour.
     """
     layers = _by_layer(resources)
     positions, bands = {}, []
 
     ingestion = _addresses(layers.get("ingestion", []))
-    groups = _spine_groups(layers)
+    zones, support = _medallion_split(layers)
+    transforms = [r for r in layers.get("processing", []) if _role_of(r) != "orchestrate"]
+    orchestration = [r for r in layers.get("processing", []) if _role_of(r) == "orchestrate"]
     consumption = _addresses(layers.get("consumption", []))
     catalog = _addresses(layers.get("catalog", []))
     footer = _addresses(layers.get("governance", [])) + _addresses(layers.get("other", []))
 
-    columns = ([ingestion] if ingestion else []) + [_addresses(group) for group in groups]
+    spine_columns = max(len(zones), len(transforms) + 1, 1)
     spine_start = _ORIGIN_X + (_SLOT_WIDTH if ingestion else 0)
-    spine_end = spine_start + _SLOT_WIDTH * len(groups)
-    if consumption:
-        columns.append(consumption)
-    total_width = max(_SLOT_WIDTH * len(columns), _SLOT_WIDTH)
+    spine_width = spine_columns * _SLOT_WIDTH
+    spine_end = spine_start + spine_width
+    total_width = spine_end - _ORIGIN_X + (_SLOT_WIDTH if consumption else 0)
     per_row = max(1, total_width // _SLOT_WIDTH)
 
     def place(addresses, origin_x, top, wrap):
@@ -427,43 +435,52 @@ def layout_positions(resources):
 
     top = _MARGIN_Y
     if catalog:
-        rows = place(catalog, spine_start, top + _LABEL_STRIP, per_row)
+        rows = place(catalog, spine_start, top + _LABEL_STRIP, spine_columns)
         bands.append(("catalog", spine_start - 20, top,
-                      min(len(catalog), per_row) * _SLOT_WIDTH, _band_height(rows)))
+                      min(len(catalog), spine_columns) * _SLOT_WIDTH, _band_height(rows)))
         top += _band_height(rows) + _GUTTER
 
-    node_top = top + _LABEL_STRIP
-    depth = max([len(column) for column in columns] or [1])
+    processing_rows = 0
+    processing_height = 0
+    if transforms or orchestration:
+        for index, res in enumerate(transforms):
+            positions[res.get("address")] = (
+                spine_start + index * _SLOT_WIDTH + _SLOT_WIDTH // 2,
+                top + _LABEL_STRIP)
+        processing_rows = 1 if transforms else 0
+        if orchestration:
+            processing_rows += place(_addresses(orchestration), spine_start,
+                                     top + _LABEL_STRIP + processing_rows * _STACK_HEIGHT,
+                                     spine_columns)
+        processing_height = _band_height(processing_rows)
+        bands.append(("processing", spine_start - 20, top, spine_width, processing_height))
 
+    storage_top = top + processing_height + (_GUTTER if processing_height else 0)
+    storage_rows = 0
+    if zones:
+        place(_addresses(zones), spine_start, storage_top + _LABEL_STRIP, spine_columns)
+        storage_rows = (len(zones) + spine_columns - 1) // spine_columns
+    if support:
+        storage_rows += place(_addresses(support), spine_start,
+                              storage_top + _LABEL_STRIP + storage_rows * _STACK_HEIGHT,
+                              spine_columns)
+    storage_height = _band_height(storage_rows) if (zones or support) else 0
+    if storage_height:
+        bands.append(("storage", spine_start - 20, storage_top, spine_width, storage_height))
+
+    flow_height = max(processing_height + (_GUTTER if processing_height else 0)
+                      + storage_height, _band_height(1))
     if ingestion:
-        place(ingestion, _ORIGIN_X, node_top, 1)
-    for index, group in enumerate(groups):
-        place(_addresses(group), spine_start + index * _SLOT_WIDTH, node_top, 1)
-
-    orchestration = [address for address in _addresses(layers.get("processing", []))
-                     if address not in positions]
-    orchestration_rows = 0
-    if orchestration:
-        orchestration_rows = place(orchestration, spine_start,
-                                   node_top + depth * _STACK_HEIGHT,
-                                   max(1, len(groups) or 1))
-
-    spine_rows = depth + orchestration_rows
-    if ingestion:
+        place(ingestion, _ORIGIN_X, top + _LABEL_STRIP, 1)
         bands.append(("ingestion", _ORIGIN_X - 20, top, _SLOT_WIDTH,
-                      _band_height(len(ingestion))))
-    if groups:
-        bands.append(("storage", spine_start - 20, top,
-                      max(spine_end - spine_start, _SLOT_WIDTH), _band_height(spine_rows)))
+                      max(flow_height, _band_height(len(ingestion)))))
     if consumption:
-        place(consumption, spine_end, node_top, 1)
+        place(consumption, spine_end, top + _LABEL_STRIP, 1)
         bands.append(("consumption", spine_end - 20, top, _SLOT_WIDTH,
-                      _band_height(len(consumption))))
+                      max(flow_height, _band_height(len(consumption)))))
 
-    flow_bottom = top + max(_band_height(rows) for rows in
-                            ([spine_rows] if groups else [])
-                            + ([len(ingestion)] if ingestion else [])
-                            + ([len(consumption)] if consumption else [1]))
+    flow_bottom = top + max([height for _, _, band_top, _, height in bands
+                             if band_top == top] or [flow_height])
 
     if footer:
         governance_top = flow_bottom + _GUTTER
@@ -501,8 +518,88 @@ def walkthrough_steps(edges, by_address):
     return steps
 
 
+_EDGE_STYLE = ("edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;"
+               "jettySize=auto;html=1;strokeColor=#475569;strokeWidth=2;"
+               "endArrow=block;endFill=1;fontSize=10;fontColor=#334155;"
+               "labelBackgroundColor=#ffffff;")
+
+
+def _edge_anchors(source, target):
+    """Which side of each box the hop leaves and enters.
+
+    Left unset, draw.io picks the nearest pair of anchors and a hop between two rows leaves
+    sideways before turning, which crosses the boxes either side of it. A hop that moves
+    mostly downward should leave the bottom and enter the top.
+    """
+    if not source or not target:
+        return ""
+    dx, dy = target[0] - source[0], target[1] - source[1]
+    if abs(dy) > abs(dx):
+        exit_y, entry_y = (1, 0) if dy > 0 else (0, 1)
+        return f"exitX=0.5;exitY={exit_y};entryX=0.5;entryY={entry_y};"
+    exit_x, entry_x = (1, 0) if dx > 0 else (0, 1)
+    return f"exitX={exit_x};exitY=0.5;entryX={entry_x};entryY=0.5;"
+
+
 _STEP_HEIGHT = 46
 _STEP_PITCH = 54
+
+
+_LEGEND_ROWS = (
+    ("ingestion", "Ingestion -- where data enters this stack"),
+    ("processing", "Processing -- a job that reads one path and writes another"),
+    ("storage", "Storage -- a medallion zone, or a bucket that is not one"),
+    ("catalog", "Cataloging and governance -- control plane, not data path"),
+    ("consumption", "Consumption -- what reads the curated data"),
+    ("governance", "Security and monitoring -- cross-cutting, no data path"),
+)
+
+_LEGEND_NOTES = (
+    "An arrow is a hop the plan DECLARES: one resource names the other's path in a "
+    "data-carrying argument. Absence of an arrow means the plan states no path, not that "
+    "none exists at runtime.",
+    "A badge under a name is capacity the plan states -- worker count, shard count, "
+    "encryption, private access. Nothing on this canvas is inferred from a resource name.",
+)
+
+_LEGEND_HEIGHT = 28 + len(_LEGEND_ROWS) * 22 + 6 + len(_LEGEND_NOTES) * 38
+
+_LEGEND_TITLE_STYLE = ("text;html=1;align=left;verticalAlign=middle;fontSize=12;fontStyle=1;"
+                       "fontColor=#1e293b;")
+_LEGEND_SWATCH_STYLE = "rounded=1;arcSize=30;fillColor={fill};strokeColor=none;"
+_LEGEND_LABEL_STYLE = ("text;html=1;align=left;verticalAlign=middle;fontSize=11;"
+                       "fontColor=#334155;")
+_LEGEND_NOTE_STYLE = ("text;html=1;align=left;verticalAlign=top;fontSize=10;"
+                      "fontColor=#475569;whiteSpace=wrap;")
+
+
+def _append_legend(root, x, y, width):
+    """The swatch-to-meaning key. Returns the height it used.
+
+    A colour that means something to whoever generated the canvas and nothing to whoever
+    opens it is decoration. Two of the rows are about what an arrow's ABSENCE means, which
+    is the reading this generator most often gets wrong.
+    """
+    def cell(cell_id, value, style, cx, cy, cw, ch):
+        node = ET.SubElement(root, "mxCell", {
+            "id": cell_id, "value": value, "style": style, "vertex": "1", "parent": "1"})
+        ET.SubElement(node, "mxGeometry", {
+            "x": str(cx), "y": str(cy), "width": str(cw), "height": str(ch),
+            "as": "geometry"})
+
+    cell("legend_title", "<b>Legend</b>", _LEGEND_TITLE_STYLE, x, y, width, 24)
+    row_y = y + 28
+    for index, (layer, text) in enumerate(_LEGEND_ROWS):
+        cell(f"legend_swatch_{index}", "",
+             _LEGEND_SWATCH_STYLE.format(fill=_LAYER_COLORS[layer]), x, row_y + 3, 14, 14)
+        cell(f"legend_label_{index}", text, _LEGEND_LABEL_STYLE, x + 22, row_y, width - 22, 20)
+        row_y += 22
+
+    row_y += 6
+    for index, note in enumerate(_LEGEND_NOTES):
+        cell(f"legend_note_{index}", note, _LEGEND_NOTE_STYLE, x, row_y, width, 34)
+        row_y += 38
+    return row_y - y
 
 
 def _append_walkthrough(root, steps, x, y, width):
@@ -666,11 +763,29 @@ def _create_mxgraph_xml(page_width=1800, page_height=1000):
 
 _BAND_LABELS = {
     "ingestion": "INGESTION",
-    "storage": "STORAGE, PROCESSING",
+    "processing": "PROCESSING",
+    "storage": "STORAGE",
     "catalog": "CATALOGING, GOVERNANCE &amp; SEARCH",
     "consumption": "CONSUMPTION",
     "governance": "SECURITY &amp; MONITORING",
 }
+
+
+_NODE_SIZE = 68
+
+
+def _reparent(x, y, bands):
+    """Place a node inside the band that holds it, in that band's coordinates.
+
+    The bands were decoration: nodes sat at absolute coordinates that happened to fall
+    inside them, so dragging a band in draw.io left its contents behind. As real containers
+    the band owns what it holds, and `diagram_check` can hold this page to the same
+    containment rule it already holds the deployment page to.
+    """
+    for layer, bx, by, width, height in bands:
+        if bx <= x and by <= y and x + _NODE_SIZE <= bx + width                 and y + _NODE_SIZE <= by + height:
+            return f"layer_box_{layer}", x - bx, y - by
+    return "1", x, y
 
 
 def _append_bands(root, bands):
@@ -681,7 +796,7 @@ def _append_bands(root, bands):
             "style": (f"swimlane;startSize=28;fillColor=none;strokeColor="
                       f"{_LAYER_COLORS.get(layer, '#64748b')};strokeWidth=1.5;"
                       "fontColor=#1e293b;fontStyle=1;fontSize=12;rounded=1;arcSize=8;"
-                      "dashed=1;dashPattern=6 4;container=0;collapsible=0;"),
+                      "dashed=1;dashPattern=6 4;container=1;collapsible=0;"),
             "vertex": "1",
             "parent": "1",
         })
@@ -705,11 +820,13 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
                        default=_MARGIN_Y + _band_height(1))
     walkthrough_top = bands_bottom + _GUTTER
     walkthrough_bottom = walkthrough_top + max(len(steps) - 1, 0) * _STEP_PITCH + _STEP_HEIGHT
+    legend_top = walkthrough_bottom + _GUTTER
+    legend_bottom = legend_top + _LEGEND_HEIGHT
 
     max_x = max([x for x, _ in positions.values()], default=800)
     max_y = max([y for _, y in positions.values()], default=600)
     model, root = _create_mxgraph_xml(max(1800, max_x + 350),
-                                      max(1000, max_y + 250, walkthrough_bottom + _MARGIN_Y))
+                                      max(1000, max_y + 250, legend_bottom + _MARGIN_Y))
 
     _append_bands(root, bands)
 
@@ -719,6 +836,7 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
         x, y = positions[address]
         node_id = f"node_{index}"
         node_map[address] = node_id
+        parent, x, y = _reparent(x, y, bands)
 
         cell = ET.SubElement(root, "mxCell", {
             "id": node_id,
@@ -727,7 +845,7 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
             "tooltip": address,
             "style": resolve_stencil(res.get("type")) + _LABEL_STYLE,
             "vertex": "1",
-            "parent": "1",
+            "parent": parent,
         })
         ET.SubElement(cell, "mxGeometry", {
             "x": str(x), "y": str(y), "width": "68", "height": "68", "as": "geometry",
@@ -741,10 +859,8 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
         cell = ET.SubElement(root, "mxCell", {
             "id": f"edge_{index}",
             "value": f"[{edge['hop']}]",
-            "style": ("edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;"
-                      "jettySize=auto;html=1;strokeColor=#475569;strokeWidth=2;"
-                      "endArrow=block;endFill=1;fontSize=10;fontColor=#334155;"
-                      "labelBackgroundColor=#ffffff;"),
+            "style": _EDGE_STYLE + _edge_anchors(positions.get(edge["source"]),
+                                                 positions.get(edge["target"])),
             "edge": "1",
             "parent": "1",
             "source": source_id,
@@ -752,8 +868,9 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
         })
         ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
 
-    _append_walkthrough(root, steps, _ORIGIN_X - 20, walkthrough_top,
-                        max(max_x - _ORIGIN_X + 200, 600))
+    canvas_width = max(max_x - _ORIGIN_X + 200, 600)
+    _append_walkthrough(root, steps, _ORIGIN_X - 20, walkthrough_top, canvas_width)
+    _append_legend(root, _ORIGIN_X - 20, legend_top, canvas_width)
 
     logical = ET.tostring(model, encoding="utf-8", xml_declaration=False).decode("utf-8")
 

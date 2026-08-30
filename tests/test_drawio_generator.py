@@ -349,17 +349,34 @@ def _layered_plan():
 
 
 def _node_positions(xml_text):
+    """Absolute canvas positions, keyed by Terraform address.
+
+    Bands are real containers, so a node's own geometry is relative to the band that holds
+    it. Every caller here compares positions ACROSS bands, which means the band origin has
+    to be added back or a transform in one band and a bucket in another are being compared
+    in two different coordinate systems.
+    """
     import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml_text)
+    origins = {"1": (0.0, 0.0)}
+    for cell in root.iter("mxCell"):
+        cell_id = cell.get("id") or ""
+        if cell_id.startswith("layer_box_"):
+            geom = cell.find("mxGeometry")
+            origins[cell_id] = (float(geom.get("x")), float(geom.get("y")))
+
     positions = {}
-    for cell in ET.fromstring(xml_text).iter("mxCell"):
+    for cell in root.iter("mxCell"):
         # Band boxes and walkthrough steps are vertices too; both are captions.
         cell_id = cell.get("id") or ""
         if cell.get("vertex") != "1" or cell_id.startswith(("layer_", "legend_")):
             continue
         geom = cell.find("mxGeometry")
+        offset_x, offset_y = origins.get(cell.get("parent") or "1", (0.0, 0.0))
         # Keyed by the full address, which lives on the tooltip -- the visible label is
         # deliberately shortened to the last two segments.
-        positions[cell.get("tooltip")] = (float(geom.get("x")), float(geom.get("y")))
+        positions[cell.get("tooltip")] = (float(geom.get("x")) + offset_x,
+                                          float(geom.get("y")) + offset_y)
     return positions
 
 
@@ -488,6 +505,121 @@ def test_every_node_sits_inside_a_band():
     for address, (x, y) in _node_positions(xml_text).items():
         assert any(bx <= x and by <= y and x + 68 <= bx + bw and y + 68 <= by + bh
                    for bx, by, bw, bh in bands), f"{address} escaped every band"
+
+
+def _medallion_plan():
+    def rc(address, rtype):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": {}}}
+    return {"resource_changes": [
+        rc('aws_s3_bucket.zones["raw"]', "aws_s3_bucket"),
+        rc('aws_s3_bucket.zones["cleaned"]', "aws_s3_bucket"),
+        rc('aws_s3_bucket.zones["curated"]', "aws_s3_bucket"),
+        rc("aws_s3_bucket.athena_results", "aws_s3_bucket"),
+        rc("aws_glue_job.raw_to_cleaned", "aws_glue_job"),
+        rc("aws_glue_job.cleaned_to_curated", "aws_glue_job"),
+    ]}
+
+
+def test_processing_sits_above_storage_rather_than_beside_it():
+    """The spine used to alternate zone, transform, zone along one row, which reads as a line
+    of tiles. Processing above storage is what makes the hops zigzag, and a zigzag is what
+    tells a reader which direction the data went."""
+    bands = _band_geometry(
+        drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"], full=True)
+
+    assert bands["processing"][1] + bands["processing"][3] <= bands["storage"][1]
+
+
+def test_a_transform_is_offset_to_land_between_the_zones_it_moves_data_between():
+    positions = _node_positions(
+        drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"])
+
+    raw = positions['aws_s3_bucket.zones["raw"]'][0]
+    cleaned = positions['aws_s3_bucket.zones["cleaned"]'][0]
+    first_job = positions["aws_glue_job.raw_to_cleaned"][0]
+
+    assert raw < first_job < cleaned
+
+
+def test_the_medallion_zones_run_in_stage_order():
+    positions = _node_positions(
+        drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"])
+
+    ordered = [positions[f'aws_s3_bucket.zones["{stage}"]'][0]
+               for stage in ("raw", "cleaned", "curated")]
+    assert ordered == sorted(ordered)
+
+
+def test_a_bucket_with_no_medallion_stage_does_not_ride_the_spine():
+    """`classify_role` puts every bucket in the storage layer and `stage_rank` returns 40 for
+    a name it does not know, so a results bucket sorted to the end and drew as the stage
+    after Gold. It is storage; it is not a medallion zone."""
+    positions = _node_positions(
+        drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"])
+
+    spine_row = positions['aws_s3_bucket.zones["curated"]'][1]
+    assert positions["aws_s3_bucket.athena_results"][1] > spine_row
+
+
+def test_the_canvas_carries_a_legend_that_says_what_an_absent_arrow_means():
+    """A colour that means something to whoever generated the canvas and nothing to whoever
+    opens it is decoration. The reading this generator most often loses is that a missing
+    arrow means the plan declares no path, not that no path exists."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"]
+    legend = [cell.get("value") or "" for cell in ET.fromstring(xml_text).iter("mxCell")
+              if (cell.get("id") or "").startswith("legend_")]
+    joined = " ".join(legend)
+
+    assert "Legend" in joined
+    assert "DECLARES" in joined
+    assert "not that none exists" in joined
+
+
+def test_every_legend_swatch_uses_a_colour_a_band_actually_draws_with():
+    """A key whose swatch does not match the band it explains is worse than no key."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"]
+    swatches = [cell.get("style") or "" for cell in ET.fromstring(xml_text).iter("mxCell")
+                if (cell.get("id") or "").startswith("legend_swatch_")]
+
+    assert swatches
+    for style in swatches:
+        assert any(colour in style for colour in drawio_generator._LAYER_COLORS.values())
+
+
+def test_a_hop_between_two_rows_leaves_the_bottom_and_enters_the_top():
+    """Unanchored, draw.io leaves sideways before turning, which routes the arrow straight
+    through the boxes either side of it."""
+    assert drawio_generator._edge_anchors((100, 100), (100, 400)) == (
+        "exitX=0.5;exitY=1;entryX=0.5;entryY=0;")
+    assert drawio_generator._edge_anchors((100, 400), (100, 100)) == (
+        "exitX=0.5;exitY=0;entryX=0.5;entryY=1;")
+    assert drawio_generator._edge_anchors((100, 100), (500, 120)) == (
+        "exitX=1;exitY=0.5;entryX=0;entryY=0.5;")
+
+
+def test_a_band_owns_the_nodes_it_holds_rather_than_merely_covering_them():
+    """The bands were decoration: nodes sat at absolute coordinates that happened to fall
+    inside them, so dragging a band in draw.io left its contents behind and dropping a node
+    on one did not move it in. As real containers the geometry says what the picture says."""
+    root = ET.fromstring(drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"])
+    parents = {cell.get("tooltip"): cell.get("parent") for cell in root.iter("mxCell")
+               if cell.get("vertex") == "1" and cell.get("tooltip")}
+    bands = {cell.get("id") for cell in root.iter("mxCell")
+             if (cell.get("id") or "").startswith("layer_box_")}
+
+    assert parents
+    assert all(parent in bands for parent in parents.values()), parents
+    assert parents["aws_glue_job.raw_to_cleaned"] == "layer_box_processing"
+    assert parents['aws_s3_bucket.zones["raw"]'] == "layer_box_storage"
+
+
+def test_a_band_is_a_container_so_draw_io_moves_what_is_inside_it():
+    root = ET.fromstring(drawio_generator.generate_drawio_from_plan(_medallion_plan())["xml"])
+    for cell in root.iter("mxCell"):
+        if (cell.get("id") or "").startswith("layer_box_"):
+            assert "container=1" in (cell.get("style") or "")
 
 
 def test_the_security_band_spans_the_whole_diagram():
