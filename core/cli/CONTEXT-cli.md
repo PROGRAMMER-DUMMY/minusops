@@ -167,6 +167,10 @@ directory by default, which is why those three names are git-ignored at the repo
 Every `--format` writes a file. `ledger` was once an advertised format that wrote nothing
 and still exited 0 -- the operator had no way to tell it had not worked.
 
+`--check` runs [`diagram_check.py`](../reporting/diagram_check.py) over what was just
+generated and exits 1 on FAIL, so a broken canvas stops a pipeline instead of being
+published. The verdict is printed after the URL and carried in `--json` under `check`.
+
 
 ---
 

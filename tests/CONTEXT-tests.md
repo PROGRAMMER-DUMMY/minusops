@@ -174,6 +174,7 @@ This document provides exhaustive context for all test files, test suites, and t
   reference nodes that exist, an empty stack producing an empty graph rather than a default
   one, and plan-derived facts replacing the pattern's defaults with `facts_source` recording
   which is which.
+- [`tests/test_diagram_check.py`](./test_diagram_check.py): The diagram checker and the defects it has to catch. Every check gets a canvas broken in exactly one way -- a dangling edge, an endpoint that is absent entirely, a child outside its container, two bands drawn through each other, a duplicate id -- because a checker asserted only against correct input passes forever without having verified anything. Two cases assert what must NOT be reported: a container and the node inside it are not an overlap, and a canvas with no edges reports no isolation. Every `plan.json` in `runs/` is rendered and checked, which is what caught the logical page being sized before its walkthrough was appended.
 - [`tests/test_pillars.py`](./test_pillars.py): The 19-pillar catalogue and its arithmetic.
   The tests that matter are the REFUSALS (no volume means no worker count) and the BANDS (an
   object above the target is not described as inside it), plus the wiring guards -- a depth

@@ -24,6 +24,7 @@ This document provides an exhaustive, architectural, and operational reference f
 - [`core/reporting/cli_diagnostics.py`](./cli_diagnostics.py) — Agent-facing failure formatting: fuzzy run-id resolution, lifecycle stage interception, and the three-part `WHAT FAILED / WHY IT FAILED / ACTION REQUIRED` error (MINUS-157..160).
 - [`core/reporting/excel_finops_generator.py`](./excel_finops_generator.py) — Dual-tier FinOps `.xlsx` writer (executive summary + engineering ledger) built on stdlib `zipfile` + OpenXML, no third-party dependency.
 - [`core/reporting/drawio_generator.py`](./drawio_generator.py) — Draw.io architecture diagrams from a plan: editable mxGraphModel XML, a 1-click deflated browser URL, and the declared-hop ledger.
+- [`core/reporting/diagram_check.py`](./diagram_check.py) — Static verification of a generated canvas: dangling edges, escaped containment, overlapping siblings, off-page cells, and the verdict those earn.
 
 ---
 
@@ -452,6 +453,44 @@ This document provides an exhaustive, architectural, and operational reference f
 - **Failure Modes:** an unreadable plan yields an empty canvas rather than raising;
   [`parse_graph`](./drawio_generator.py) returns empty node and edge maps on unparseable XML.
 - **Tests:** [`tests/test_drawio_generator.py`](../../tests/test_drawio_generator.py).
+
+---
+
+### 12. `core/reporting/diagram_check.py`
+- **File Link:** [`core/reporting/diagram_check.py`](./diagram_check.py)
+- **Exact Purpose:** decide whether a generated canvas says what it claims. draw.io renders
+  whatever it is handed: an edge naming a cell that does not exist draws nothing, a child
+  whose geometry escapes its container draws outside the box, and two bands at the same
+  offset draw through each other. All three open cleanly and all three are wrong.
+- **Severity decides the verdict**, not the check: `error` gives FAIL, `warning` gives WARN,
+  `note` leaves PASS. An unlabeled edge still points somewhere real, so it is wrong without
+  being broken, and a node no edge touches is frequently correct.
+- **It reads every page.** [`parse_graph`](./drawio_generator.py) deliberately reads only the
+  first, because reconciliation compares operator edits against the logical page. Containment
+  is only expressible on the deployment page, so a checker that skipped it would verify the
+  half of the document with no nesting in it.
+- **Containers and their contents are never compared for overlap**
+  ([`_check_overlap`](./diagram_check.py)). Nesting is the point of the deployment page;
+  comparing a box with what it holds would report every correct containment as a collision.
+  Siblings of the same class are compared, which is what catches two bands drawn through
+  each other.
+- **Isolated nodes are grouped by the band that holds them**
+  ([`_band_of`](./diagram_check.py)), read off the drawing rather than the plan. Twenty
+  addresses in one list is a wall nobody reads; the band is what says whether an absent edge
+  is expected -- governance carries none by design, a warehouse in the consumption band
+  carrying none is a finding.
+- **Two defects it found on its first run against the repository's own plans:** the logical
+  page was sized before the walkthrough was appended, leaving six of seven steps past the
+  bottom edge, and the deployment page was sized by a constant while its content grew from
+  the resource count, running 490px over.
+- **Inputs/Outputs:** *Inputs:* `.drawio` XML text. *Outputs:*
+  `{"verdict", "pages", "counts", "findings"}`, and `format_report()` renders the ASCII
+  block (NFR-01).
+- **Dependencies:** standard library only. It reads XML, never a plan, so it cannot inherit
+  the generator's view of what the diagram was supposed to be.
+- **Failure Modes:** malformed XML is itself a FAIL finding rather than an exception, because
+  a checker that raises on the input it exists to reject reports nothing.
+- **Tests:** [`tests/test_diagram_check.py`](../../tests/test_diagram_check.py).
 
 ---
 

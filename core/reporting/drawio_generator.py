@@ -489,6 +489,10 @@ def walkthrough_steps(edges, by_address):
     return steps
 
 
+_STEP_HEIGHT = 46
+_STEP_PITCH = 54
+
+
 def _append_walkthrough(root, steps, x, y, width):
     for index, text in enumerate(steps, 1):
         cell = ET.SubElement(root, "mxCell", {
@@ -498,8 +502,8 @@ def _append_walkthrough(root, steps, x, y, width):
             "style": _STEP_STYLE, "vertex": "1", "parent": "1",
         })
         ET.SubElement(cell, "mxGeometry", {
-            "x": str(x), "y": str(y + (index - 1) * 54), "width": str(width),
-            "height": "46", "as": "geometry"})
+            "x": str(x), "y": str(y + (index - 1) * _STEP_PITCH), "width": str(width),
+            "height": str(_STEP_HEIGHT), "as": "geometry"})
 
 
 def deployment_containment(plan_json):
@@ -631,6 +635,8 @@ def _append_deployment(root, containment, by_address, badges):
              _LABEL_STRIP + (position // 3) * _STACK_HEIGHT, index)
         index += 1
 
+    return 40 + cloud_w + 40, 40 + cloud_h + 40
+
 
 def _create_mxgraph_xml(page_width=1800, page_height=1000):
     model = ET.Element("mxGraphModel", {
@@ -681,9 +687,17 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
     positions, bands = layout_positions(resources)
     badges = fold_badges(plan_json, [r.get("address") for r in resources])
 
+    edges = discover_data_edges(plan_json)
+    steps = walkthrough_steps(edges, {r.get("address"): r for r in resources})
+    bands_bottom = max([y + h for _, _, y, _, h in bands],
+                       default=_MARGIN_Y + _band_height(1))
+    walkthrough_top = bands_bottom + _GUTTER
+    walkthrough_bottom = walkthrough_top + max(len(steps) - 1, 0) * _STEP_PITCH + _STEP_HEIGHT
+
     max_x = max([x for x, _ in positions.values()], default=800)
     max_y = max([y for _, y in positions.values()], default=600)
-    model, root = _create_mxgraph_xml(max(1800, max_x + 350), max(1000, max_y + 250))
+    model, root = _create_mxgraph_xml(max(1800, max_x + 350),
+                                      max(1000, max_y + 250, walkthrough_bottom + _MARGIN_Y))
 
     _append_bands(root, bands)
 
@@ -707,7 +721,6 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
             "x": str(x), "y": str(y), "width": "68", "height": "68", "as": "geometry",
         })
 
-    edges = discover_data_edges(plan_json)
     for index, edge in enumerate(edges):
         source_id = node_map.get(edge["source"])
         target_id = node_map.get(edge["target"])
@@ -727,10 +740,7 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
         })
         ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
 
-    steps = walkthrough_steps(edges, {r.get("address"): r for r in resources})
-    bottom = max([y + h for _, _, y, _, h in bands],
-                 default=_MARGIN_Y + _band_height(1))
-    _append_walkthrough(root, steps, _ORIGIN_X - 20, bottom + _GUTTER,
+    _append_walkthrough(root, steps, _ORIGIN_X - 20, walkthrough_top,
                         max(max_x - _ORIGIN_X + 200, 600))
 
     logical = ET.tostring(model, encoding="utf-8", xml_declaration=False).decode("utf-8")
@@ -742,8 +752,10 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint"):
     pages = [("Logical", logical)]
     if containment["vpc"]:
         model2, root2 = _create_mxgraph_xml(2200, 1400)
-        _append_deployment(root2, containment,
-                           {r.get("address"): r for r in resources}, badges)
+        page_width, page_height = _append_deployment(
+            root2, containment, {r.get("address"): r for r in resources}, badges)
+        model2.set("pageWidth", str(max(2200, int(page_width))))
+        model2.set("pageHeight", str(max(1400, int(page_height))))
         pages.append(("Deployment", ET.tostring(
             model2, encoding="utf-8", xml_declaration=False).decode("utf-8")))
 

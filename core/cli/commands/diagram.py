@@ -33,12 +33,20 @@ def add_parser(subparsers):
     parser.add_argument("--out-dir", help="Target output directory")
     parser.add_argument("--json", action="store_true",
                         help="Structured JSON output with file paths and the 1-click URL")
+    parser.add_argument("--check", action="store_true",
+                        help="Verify the generated canvas -- dangling edges, escaped "
+                             "containment, overlapping cells -- and exit non-zero on FAIL")
     parser.set_defaults(func=run)
 
 
 def _generate(plan_json):
     from ...reporting import drawio_generator
     return drawio_generator.generate_drawio_from_plan(plan_json)
+
+
+def _check(xml_text):
+    from ...reporting import diagram_check
+    return diagram_check.check(xml_text), diagram_check.format_report
 
 
 def _load(path):
@@ -82,9 +90,11 @@ def _resolve_root(args):
         return os.path.join("runs", args.run)
     try:
         active = cli_context.active_run()
+        if isinstance(active, dict):
+            active = active.get("run_id") or active.get("run")
     except Exception:
         return None
-    return os.path.join("runs", active) if active else None
+    return os.path.join("runs", str(active)) if active else None
 
 
 def run(args):
@@ -103,11 +113,20 @@ def run(args):
                          else result[key] + "\n")
         written[name] = path
 
+    verdict = None
+    if args.check:
+        verdict, render = _check(result["xml"])
+
     if args.json:
-        print(json.dumps({"url": result["url"], "ledger": result["ledger"],
-                          "files": written}))
+        payload = {"url": result["url"], "ledger": result["ledger"], "files": written}
+        if verdict:
+            payload["check"] = verdict
+        print(json.dumps(payload))
     else:
         print("Generated Diagram URL:")
         print(result["url"])
+        if verdict:
+            print()
+            print(render(verdict))
 
-    return 0
+    return 1 if verdict and verdict["verdict"] == "FAIL" else 0
