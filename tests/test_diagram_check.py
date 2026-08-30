@@ -141,6 +141,35 @@ def test_a_document_that_is_not_xml_fails_rather_than_returning_nothing():
     assert _checks(result) == {"parse"}
 
 
+def test_a_shape_name_drawio_cannot_resolve_is_an_error():
+    """`iam` shipped for months. draw.io has no shape by that name, so every IAM role in
+    every diagram rendered as a blank tile and nothing anywhere said so."""
+    result = diagram_check.check(_canvas(_node(
+        "node_0", 100, 100,
+        style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iam;")))
+    assert result["verdict"] == "FAIL"
+    assert "icon_unknown" in _checks(result)
+    finding = [f for f in result["findings"] if f["check"] == "icon_unknown"][0]
+    assert finding["evidence"]["shape"] == "mxgraph.aws4.iam"
+
+
+def test_the_shape_names_the_generator_emits_all_resolve():
+    """The generator's own stencil table, checked against draw.io's published library."""
+    shapes = diagram_check.known_shapes()
+    assert shapes, "the aws4 shape list is missing"
+    unknown = [(needle, icon) for needle, icon, _ in drawio_generator._STENCILS
+               if icon not in shapes]
+    assert not unknown, f"stencil names draw.io cannot resolve: {unknown}"
+
+
+def test_the_resource_frames_are_not_reported_as_unknown_services():
+    """`resource` and `resourceIcon` are the frame the glyph sits in, not a service."""
+    result = diagram_check.check(_canvas(_node(
+        "node_0", 100, 100,
+        style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;")))
+    assert "icon_unknown" not in _checks(result)
+
+
 # --- What is correct, and must stay correct -------------------------------------------------
 
 def test_a_node_no_edge_touches_is_reported_without_failing_the_canvas():

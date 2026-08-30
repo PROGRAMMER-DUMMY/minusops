@@ -25,19 +25,21 @@ _GENERIC_STENCIL = "shape=mxgraph.aws4.resource;"
 
 _STENCILS = (
     ("aws_glue_job", "glue", "#8C4FFF"),
-    ("glue_crawler", "glue_crawler", "#8C4FFF"),
+    ("glue_crawler", "glue_crawlers", "#8C4FFF"),
     ("glue_catalog", "glue_data_catalog", "#8C4FFF"),
     ("glue_database", "glue_data_catalog", "#8C4FFF"),
     ("aws_s3", "s3", "#7AA116"),
     ("aws_athena", "athena", "#8C4FFF"),
     ("aws_sfn", "step_functions", "#E7157B"),
     ("aws_emr", "emr", "#8C4FFF"),
+    ("aws_kinesis_firehose", "kinesis_data_firehose", "#8C4FFF"),
     ("aws_kinesis", "kinesis", "#8C4FFF"),
     ("aws_redshift", "redshift", "#8C4FFF"),
     ("lakeformation", "lake_formation", "#DD344C"),
-    ("aws_iam", "iam", "#DD344C"),
+    ("aws_iam", "identity_and_access_management", "#DD344C"),
     ("aws_kms", "key_management_service", "#DD344C"),
     ("aws_secretsmanager", "secrets_manager", "#DD344C"),
+    ("security_group", "security_group", "#DD344C"),
     ("event_rule", "eventbridge", "#E7157B"),
     ("event_target", "eventbridge", "#E7157B"),
     ("cloudwatch", "cloudwatch", "#E7157B"),
@@ -46,11 +48,21 @@ _STENCILS = (
     ("dynamodb", "dynamodb", "#2E73B8"),
     ("lambda", "lambda", "#ED7100"),
     ("budget", "budgets", "#2E73B8"),
+    ("vpc", "virtual_private_cloud", "#8C4FFF"),
+    ("subnet", "group_subnet", "#8C4FFF"),
+    ("route_table", "route_table", "#8C4FFF"),
+    ("internet_gateway", "internet_gateway", "#8C4FFF"),
+    ("nat_gateway", "nat_gateway", "#8C4FFF"),
+    ("waf", "waf", "#DD344C"),
+    ("api_gateway", "api_gateway", "#ED7100"),
 )
 
+# aws4 carries no stencil for a partner product, and a shape reference the library cannot
+# resolve renders as a blank tile with no error. These take the generic resource frame in
+# the partner's own colour instead of a name draw.io will silently drop.
 _PARTNER_STENCILS = (
-    ("databricks", "shape=mxgraph.aws4.databricks;"),
-    ("snowflake", "shape=mxgraph.aws4.snowflake;"),
+    ("databricks", "#FF3621"),
+    ("snowflake", "#29B5E8"),
 )
 
 
@@ -60,9 +72,9 @@ def resolve_stencil(resource_type):
     for needle, icon, fill in _STENCILS:
         if needle in rtype:
             return _ICON_STYLE.format(fill=fill, icon=icon)
-    for needle, style in _PARTNER_STENCILS:
+    for needle, fill in _PARTNER_STENCILS:
         if rtype.startswith(needle):
-            return style
+            return _GENERIC_STENCIL + f"fillColor={fill};strokeColor=#232F3E;"
     return _GENERIC_STENCIL
 
 

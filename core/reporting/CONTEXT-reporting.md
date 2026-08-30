@@ -25,6 +25,7 @@ This document provides an exhaustive, architectural, and operational reference f
 - [`core/reporting/excel_finops_generator.py`](./excel_finops_generator.py) — Dual-tier FinOps `.xlsx` writer (executive summary + engineering ledger) built on stdlib `zipfile` + OpenXML, no third-party dependency.
 - [`core/reporting/drawio_generator.py`](./drawio_generator.py) — Draw.io architecture diagrams from a plan: editable mxGraphModel XML, a 1-click deflated browser URL, and the declared-hop ledger.
 - [`core/reporting/diagram_check.py`](./diagram_check.py) — Static verification of a generated canvas: dangling edges, escaped containment, overlapping siblings, off-page cells, and the verdict those earn.
+- [`core/reporting/stencil_data/`](./stencil_data/) — draw.io's `mxgraph.aws4` shape names, and the script that refreshes them. Names only; no vendor artwork is committed.
 
 ---
 
@@ -483,6 +484,13 @@ This document provides an exhaustive, architectural, and operational reference f
   page was sized before the walkthrough was appended, leaving six of seven steps past the
   bottom edge, and the deployment page was sized by a constant while its content grew from
   the resource count, running 490px over.
+- **Every `mxgraph.aws4` name is checked against draw.io's published list**
+  ([`stencil_data/aws4_shapes.txt`](./stencil_data/aws4_shapes.txt), 1037 names). An
+  unresolvable name renders as a blank tile and reports nothing, which is how `iam`,
+  `glue_crawler`, `subnets` and both partner stencils shipped: five wrong names, every IAM
+  role in every diagram drawing blank. The list holds names only -- AWS Architecture Icons
+  may be used to draw diagrams and may not be redistributed, so draw.io renders the icon
+  from its own library and this repository ships no artwork.
 - **Inputs/Outputs:** *Inputs:* `.drawio` XML text. *Outputs:*
   `{"verdict", "pages", "counts", "findings"}`, and `format_report()` renders the ASCII
   block (NFR-01).

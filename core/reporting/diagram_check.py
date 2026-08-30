@@ -14,14 +14,32 @@ Depends on: nothing outside the standard library
 Used by: core/cli/commands/diagram.py, tests/test_diagram_check.py
 """
 import argparse
+import functools
 import json
+import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 
 _CHROME_PREFIXES = ("layer_", "legend_")
+_SHAPE_LIST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "stencil_data", "aws4_shapes.txt")
+_AWS4_REF = re.compile(r"(?:shape|resIcon)=mxgraph\.aws4\.([a-z0-9_]+)")
+_AWS4_FRAMES = frozenset(("resource", "resourceIcon", "group", "productIcon"))
 
 SEVERITIES = ("note", "warning", "error")
 _VERDICTS = {"note": "PASS", "warning": "WARN", "error": "FAIL"}
+
+
+@functools.lru_cache(maxsize=1)
+def known_shapes():
+    """draw.io's aws4 shape names. Empty when the list is absent, which skips the check
+    rather than failing every diagram on a missing reference file."""
+    try:
+        with open(_SHAPE_LIST, encoding="utf-8") as handle:
+            return frozenset(handle.read().split())
+    except OSError:
+        return frozenset()
 
 
 def _finding(check, severity, page, detail, evidence=None):
@@ -211,6 +229,26 @@ def _band_of(cell, bands):
     return "unbanded"
 
 
+def _check_icons(page, cells):
+    """Every mxgraph.aws4 name we emit has to be one draw.io can resolve. It renders an
+    unknown name as a blank tile and reports nothing, so a typo is invisible in the file and
+    invisible on the canvas."""
+    shapes = known_shapes()
+    if not shapes:
+        return
+    unknown = {}
+    for cell in cells:
+        for name in _AWS4_REF.findall(cell["style"]):
+            if name not in shapes and name not in _AWS4_FRAMES:
+                unknown.setdefault(name, []).append(_name(cell))
+    for name, users in sorted(unknown.items()):
+        yield _finding("icon_unknown", "error", page,
+                       "draw.io has no shape by this name, so the resource draws as a blank "
+                       "tile with no error anywhere",
+                       {"shape": f"mxgraph.aws4.{name}", "cells": sorted(users)[:8],
+                        "affected": len(users)})
+
+
 def _check_isolated(page, cells):
     """Nodes no edge touches, grouped by the band that holds them. Reported, never fatal:
     the security band carries no edges by design, and a plan that declares no data movement
@@ -269,6 +307,7 @@ def check(xml_text):
         findings.extend(_check_containment(name, cells, by_id))
         findings.extend(_check_overlap(name, cells))
         findings.extend(_check_page_bounds(name, model, cells))
+        findings.extend(_check_icons(name, cells))
         findings.extend(_check_isolated(name, cells))
 
     worst = max((f["severity"] for f in findings), key=SEVERITIES.index, default="note")

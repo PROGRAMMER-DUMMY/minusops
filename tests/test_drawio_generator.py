@@ -27,11 +27,25 @@ import pytest
 from core.reporting import drawio_generator
 
 def test_resolve_stencil():
+    """The names are draw.io's, not ours. This once asserted `aws4.iam`, which the library
+    has no shape for -- the test held the typo in place while every IAM role in every
+    diagram rendered blank. tests/test_diagram_check.py checks the whole table against the
+    published list; these are the spot checks."""
     assert "aws4.s3" in drawio_generator.resolve_stencil("aws_s3_bucket")
     assert "aws4.glue" in drawio_generator.resolve_stencil("aws_glue_job")
-    assert "aws4.iam" in drawio_generator.resolve_stencil("aws_iam_role")
-    assert "aws4.snowflake" in drawio_generator.resolve_stencil("snowflake_database")
-    assert "aws4.databricks" in drawio_generator.resolve_stencil("databricks_catalog")
+    assert "aws4.identity_and_access_management" in drawio_generator.resolve_stencil(
+        "aws_iam_role")
+    assert "aws4.glue_crawlers" in drawio_generator.resolve_stencil("aws_glue_crawler")
+
+
+def test_a_partner_product_gets_a_frame_and_a_colour_not_a_shape_that_does_not_exist():
+    """aws4 carries no Databricks or Snowflake stencil. Referencing one renders a blank tile
+    with no error; the generic resource frame in the partner's colour is at least true."""
+    for rtype, colour in (("snowflake_database", "#29B5E8"),
+                          ("databricks_catalog", "#FF3621")):
+        style = drawio_generator.resolve_stencil(rtype)
+        assert "shape=mxgraph.aws4.resource;" in style
+        assert colour in style
 
 
 def test_resolve_stencil_has_no_azure_or_gcp_branch():
