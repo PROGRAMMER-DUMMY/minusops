@@ -510,6 +510,21 @@ This document provides an exhaustive, architectural, and operational reference f
 - **The legend says what an ABSENT arrow means** ([`_append_legend`](./drawio_generator.py)):
   the plan declares no path, not that none exists at runtime. That is the reading this canvas
   most often loses.
+- **The nodes on a declared path carry the step, not just the edges**
+  ([`path_order`](./drawio_generator.py)). The edges were numbered and the tiles were not, so
+  a reader had fifty identical boxes and a list of hops a page and a half below them. A label
+  on the tile is what turns the picture into a path; resources no hop touches get none,
+  because a label on everything is a label on nothing.
+- **The labels are scoped to their flow** ([`flow_segments`](./drawio_generator.py)). A plan
+  rarely states one pipeline: on a real lakehouse run the hops are three unconnected runs --
+  bronze to Glue to silver, the quality gate to quarantine, Athena to its results bucket --
+  and numbering them 1 through 7 would assert a seven-step chain nobody declared. Each run
+  gets a letter, and a single flow gets none.
+- **The walkthrough names the zone nothing reaches.** The arrows stopped at silver and a
+  reader could not tell whether that was the end of the pipeline or a gap in the plan. It is
+  a gap, and saying so is the point. `_unreached_zones` keys on the zone rather than the
+  address, because a bucket's versioning, lifecycle and encryption resources share its
+  instance key and named the same zone four times.
 - **An edge carries a `kind`, and there are two.** `data` is a declared hop; `describes` is
   a catalog database's `location_uri`, a table's `storage_descriptor.location` or a Lake
   Formation registration's `arn` -- each naming the storage it records. A catalog does not

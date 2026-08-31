@@ -392,7 +392,7 @@ _BAND_PAD = 20
 _GUTTER = 60
 
 
-def node_label(address, badges=(), role=None):
+def node_label(address, badges=(), role=None, step=None):
     """The role this resource plays and the name the operator gave it, then any stated posture.
 
     The role comes from `classify_role`, which is the same call that decides which band the
@@ -404,7 +404,8 @@ def node_label(address, badges=(), role=None):
     kind = _ROLE_LABELS.get(role)
     if kind is None and len(leaf_parts) >= 2:
         kind = leaf_parts[-2].replace("aws_", "").replace("_", " ").title()
-    label = f"<b>{name}</b><br>{kind}" if kind else f"<b>{name}</b>"
+    lead = f"{step}. " if step else ""  # A1, A2 ... when the plan states more than one flow
+    label = f"<b>{lead}{name}</b><br>{kind}" if kind else f"<b>{lead}{name}</b>"
     return f"{label}<br>{', '.join(sorted(badges))}" if badges else label
 
 
@@ -654,6 +655,62 @@ _STEP_STYLE = ("rounded=1;arcSize=6;whiteSpace=wrap;html=1;align=left;verticalAl
                "strokeColor=#cbd5e1;")
 
 
+def flow_segments(edges):
+    """The declared hops grouped into the separate paths they actually form.
+
+    A plan rarely states one pipeline. On a real lakehouse run the hops are three unconnected
+    runs -- bronze to Glue to silver, the quality gate to quarantine, Athena to its results
+    bucket -- and numbering them 1 through 7 would assert a seven-step chain nobody declared.
+    Each run gets its own letter, so the picture says how many separate flows there are.
+    """
+    hops = [e for e in edges if e.get("kind", "data") == "data"]
+    parent = {}
+
+    def find(address):
+        parent.setdefault(address, address)
+        while parent[address] != address:
+            parent[address] = parent[parent[address]]
+            address = parent[address]
+        return address
+
+    for edge in hops:
+        a, b = find(edge["source"]), find(edge["target"])
+        if a != b:
+            parent[a] = b
+
+    segments, seen = [], {}
+    for edge in hops:
+        root = find(edge["source"])
+        if root not in seen:
+            seen[root] = len(segments)
+            segments.append([])
+        segments[seen[root]].append(edge)
+    return segments
+
+
+def path_order(edges):
+    """{address: label} for the resources a declared hop touches, in travel order.
+
+    The edges were numbered and the nodes were not, so a reader had a page of identical tiles
+    and a list of hops well below them. A label on the tile is what turns the picture into a
+    path. Resources no hop touches get none: a label on everything is a label on nothing.
+
+    Labels are scoped to their segment -- A1, A2, B1 -- because a single running count would
+    say the segments join.
+    """
+    order = {}
+    segments = flow_segments(edges)
+    for index, segment in enumerate(segments):
+        letter = chr(ord("A") + index) if len(segments) > 1 else ""
+        step = 0
+        for edge in segment:
+            for address in (edge["source"], edge["target"]):
+                if address not in order:
+                    step += 1
+                    order[address] = f"{letter}{step}"
+    return order
+
+
 def walkthrough_steps(edges, by_address):
     """One numbered step per declared hop, in the words the plan supports.
 
@@ -661,20 +718,56 @@ def walkthrough_steps(edges, by_address):
     job we know exists and whose behaviour we do not know; what the plan states is which
     paths it reads and writes, and how big it is.
     """
-    edges = [edge for edge in edges if edge.get("kind", "data") == "data"]
-    if not edges:
+    segments = flow_segments(edges)
+    if not segments:
         return ["This plan declares no data flow. No resource states a source or target "
                 "path, so there is no hop to describe -- the arrows are absent because the "
                 "wiring is, not because the diagram is incomplete."]
 
+    labels = path_order(edges)
     steps = []
-    for edge in edges:
-        target = by_address.get(edge["target"], {})
-        meta = extract_node_metadata(target)
-        capacity = _badge_text(meta, set())
-        detail = f" ({', '.join(sorted(capacity))})" if capacity else ""
-        steps.append(f"{edge['source']} to {edge['target']}{detail}")
+    for index, segment in enumerate(segments):
+        letter = chr(ord("A") + index) if len(segments) > 1 else ""
+        if letter:
+            steps.append(f"<b>Flow {letter}</b> -- {len(segment)} declared "
+                         f"{'hop' if len(segment) == 1 else 'hops'}")
+        for edge in segment:
+            target = by_address.get(edge["target"], {})
+            capacity = _badge_text(extract_node_metadata(target), set())
+            detail = f" ({', '.join(sorted(capacity))})" if capacity else ""
+            steps.append(f"{labels.get(edge['source'], '')} {edge['source']} to "
+                         f"{labels.get(edge['target'], '')} {edge['target']}{detail}")
+
+    unreached = _unreached_zones(by_address, labels)
+    if unreached:
+        steps.append("No declared path reaches " + ", ".join(unreached)
+                     + ". The zone is provisioned and nothing in the plan states what writes "
+                       "to it, which is a gap in the plan rather than in the drawing.")
+    if len(segments) > 1:
+        steps.append(f"These are {len(segments)} separate flows, not one pipeline. Nothing "
+                     "in the plan connects them; whether they are meant to run as one is a "
+                     "question the plan does not answer.")
     return steps
+
+
+def _unreached_zones(by_address, labels):
+    """Medallion zones no declared hop touches, named so the gap is stated rather than blank.
+
+    Keyed by the zone, not by the address. A bucket carries versioning, lifecycle and
+    encryption resources that share its instance key, so addressing this per resource named
+    the same zone four times and called a reached one unreached.
+    """
+    reached, present = set(), {}
+    for address, res in by_address.items():
+        if not isinstance(res, dict) or res.get("type") != "aws_s3_bucket":
+            continue
+        if _role_of(res) != "stage":
+            continue
+        zone = _instance_key(address) or address.rsplit(".", 1)[-1]
+        present.setdefault(zone, address)
+        if address in labels:
+            reached.add(zone)
+    return sorted(zone for zone in present if zone not in reached)
 
 
 _EDGE_STYLE = ("edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;"
@@ -870,12 +963,13 @@ _DEPLOYMENT_NOTE = (
 )
 
 
-def _append_deployment(root, containment, by_address, badges):
+def _append_deployment(root, containment, by_address, badges, order=None):
     """The deployment page: AWS Cloud > VPC > subnet > service, nested for real.
 
     Child geometry is relative to its container, which is why this cannot reuse the logical
     page's absolute positions.
     """
+    order = order or {}
     subnets = containment["subnets"]
     spanning, regional = containment["spanning"], containment["regional"]
 
@@ -908,7 +1002,7 @@ def _append_deployment(root, containment, by_address, badges):
             "id": f"dep_node_{index}",
             "value": node_label(address, _badge_text(extract_node_metadata(res),
                                                      badges.get(address, set())),
-                                _role_of(res)),
+                                _role_of(res), order.get(address)),
             "tooltip": address,
             "style": resolve_stencil(res.get("type")) + _LABEL_STYLE,
             "vertex": "1", "parent": parent,
@@ -1089,6 +1183,7 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
 
     boundary_id = _append_boundary(root, boundary)
     _append_bands(root, bands, boundary_id, boundary)
+    steps_by_address = path_order(edges)
     node_map = dict(_append_actors(root, actors, positions, boundary))
     for index, res in enumerate(resources):
         address = res.get("address")
@@ -1101,7 +1196,7 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
             "id": node_id,
             "value": node_label(address, _badge_text(extract_node_metadata(res),
                                                      badges.get(address, set())),
-                                _role_of(res)),
+                                _role_of(res), steps_by_address.get(address)),
             "tooltip": address,
             "style": resolve_stencil(res.get("type")) + _LABEL_STYLE,
             "vertex": "1",
@@ -1161,7 +1256,8 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
     if containment["vpc"]:
         model2, root2 = _create_mxgraph_xml(2200, 1400)
         page_width, page_height = _append_deployment(
-            root2, containment, {r.get("address"): r for r in resources}, badges)
+            root2, containment, {r.get("address"): r for r in resources}, badges,
+            steps_by_address)
         model2.set("pageWidth", str(max(2200, int(page_width))))
         model2.set("pageHeight", str(max(1400, int(page_height))))
         pages.append(("Deployment", ET.tostring(

@@ -451,8 +451,9 @@ def test_the_walkthrough_numbers_hops_and_leaves_describes_out_of_the_count():
 
     data_hops = [e for e in drawio_generator.discover_data_edges(plan)
                  if e["kind"] == "data"]
+    hop_lines = [step for step in steps if " to " in step and "gap in the plan" not in step]
     assert steps and data_hops
-    assert len(steps) == len(data_hops)
+    assert len(hop_lines) == len(data_hops)
     catalogued = "aws_glue_catalog_database.gold"
     assert not any(catalogued in step for step in steps)
 
@@ -1138,6 +1139,125 @@ def test_a_sender_is_drawn_level_with_the_flow_it_feeds():
     flow_bottom = max(bands[name][1] + bands[name][3]
                       for name in ("processing", "storage") if name in bands)
     assert flow_top <= float(actor.get("y")) <= flow_bottom
+
+
+def test_every_resource_on_the_declared_path_carries_its_step_number():
+    """The edges were numbered and the nodes were not, so a reader had 52 identical tiles and
+    a list of hops a page and a half below them. A number on the tile is what turns the
+    picture into a path: follow 1, 2, 3 and everything unnumbered is context."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_wired_plan())["xml"]
+    labels = {cell.get("tooltip"): cell.get("value") or ""
+              for cell in ET.fromstring(xml_text).iter("mxCell") if cell.get("tooltip")}
+
+    def leading(label):
+        return re.sub(r"<[^>]+>", "", label).strip()
+
+    assert leading(labels['aws_s3_bucket.zones["raw"]']).startswith("1. ")
+    assert leading(labels["aws_glue_job.etl"]).startswith("2. ")
+    assert leading(labels['aws_s3_bucket.zones["curated"]']).startswith("3. ")
+
+
+def test_unconnected_flows_are_lettered_rather_than_counted_as_one_chain():
+    """A plan rarely states one pipeline. On a real lakehouse run the hops are three
+    unconnected runs, and numbering them 1 through 7 asserts a seven-step chain nobody
+    declared. The letters are how the picture says there are three."""
+    plan = _wired_plan()
+    plan["resource_changes"].extend([
+        {"address": "aws_s3_bucket.results", "type": "aws_s3_bucket", "mode": "managed",
+         "name": "results", "change": {"actions": ["create"],
+                                       "after": {"bucket": "lake-results"}}},
+        {"address": "aws_athena_workgroup.analysts", "type": "aws_athena_workgroup",
+         "mode": "managed", "name": "analysts",
+         "change": {"actions": ["create"], "after": {"configuration": {
+             "result_configuration": {"output_location": "s3://lake-results/q/"}}}}},
+    ])
+    order = drawio_generator.path_order(drawio_generator.discover_data_edges(plan))
+
+    assert len(drawio_generator.flow_segments(
+        drawio_generator.discover_data_edges(plan))) == 2
+    assert order['aws_s3_bucket.zones["raw"]'] == "A1"
+    assert order["aws_athena_workgroup.analysts"] == "B1"
+
+
+def test_a_single_flow_is_not_lettered():
+    """One segment needs no letter; A1 A2 A3 on the only path in the plan is noise."""
+    order = drawio_generator.path_order(
+        drawio_generator.discover_data_edges(_wired_plan()))
+
+    assert set(order.values()) == {"1", "2", "3"}
+
+
+def test_a_resource_that_is_not_on_the_path_carries_no_number():
+    """A number on everything is a number on nothing."""
+    plan = _wired_plan()
+    plan["resource_changes"].append(
+        {"address": "aws_iam_role.glue", "type": "aws_iam_role", "mode": "managed",
+         "name": "glue", "change": {"actions": ["create"], "after": {}}})
+    xml_text = drawio_generator.generate_drawio_from_plan(plan)["xml"]
+    labels = {cell.get("tooltip"): cell.get("value") or ""
+              for cell in ET.fromstring(xml_text).iter("mxCell") if cell.get("tooltip")}
+
+    visible = re.sub(r"<[^>]+>", "", labels["aws_iam_role.glue"]).strip()
+    assert not visible[0].isdigit(), visible
+
+
+def test_the_step_numbers_match_the_walkthrough_that_explains_them():
+    """Two numbering schemes for one path is worse than none."""
+    plan = _wired_plan()
+    edges = drawio_generator.discover_data_edges(plan)
+    order = drawio_generator.path_order(edges)
+    steps = drawio_generator.walkthrough_steps(
+        edges, {r["address"]: r for r in plan["resource_changes"]})
+
+    assert order['aws_s3_bucket.zones["raw"]'] == "1"
+    assert len(steps) == len(edges)
+    assert order[edges[0]["target"]] == "2"
+
+
+def test_the_walkthrough_names_a_zone_no_declared_path_reaches():
+    """The arrows stopped at silver and the reader could not tell whether that was the end of
+    the pipeline or a gap in the plan. It is a gap: the gold zone is provisioned and nothing
+    states what writes to it."""
+    plan = _wired_plan()
+    plan["resource_changes"].append(
+        {"address": 'aws_s3_bucket.zones["gold"]', "type": "aws_s3_bucket", "mode": "managed",
+         "name": "zones", "change": {"actions": ["create"], "after": {"bucket": "lake-gold"}}})
+    steps = drawio_generator.walkthrough_steps(
+        drawio_generator.discover_data_edges(plan),
+        {r["address"]: r for r in plan["resource_changes"]})
+
+    closing = " ".join(steps)
+    assert "No declared path reaches gold" in closing
+    assert "gap in the plan rather than in the drawing" in closing
+
+
+def test_the_walkthrough_says_when_the_flows_do_not_join():
+    plan = _wired_plan()
+    plan["resource_changes"].extend([
+        {"address": "aws_s3_bucket.results", "type": "aws_s3_bucket", "mode": "managed",
+         "name": "results", "change": {"actions": ["create"],
+                                       "after": {"bucket": "lake-results"}}},
+        {"address": "aws_athena_workgroup.analysts", "type": "aws_athena_workgroup",
+         "mode": "managed", "name": "analysts",
+         "change": {"actions": ["create"], "after": {"configuration": {
+             "result_configuration": {"output_location": "s3://lake-results/q/"}}}}},
+    ])
+    steps = drawio_generator.walkthrough_steps(
+        drawio_generator.discover_data_edges(plan),
+        {r["address"]: r for r in plan["resource_changes"]})
+
+    joined = " ".join(steps)
+    assert "Flow A" in joined and "Flow B" in joined
+    assert "2 separate flows, not one pipeline" in joined
+
+
+def test_a_single_flow_gets_no_segment_headers():
+    steps = drawio_generator.walkthrough_steps(
+        drawio_generator.discover_data_edges(_wired_plan()),
+        {r["address"]: r for r in _wired_plan()["resource_changes"]})
+
+    assert not any("Flow A" in step for step in steps)
+    assert not any("separate flows" in step for step in steps)
 
 
 def test_the_security_band_spans_the_whole_diagram():
