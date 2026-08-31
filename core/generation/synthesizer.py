@@ -1304,6 +1304,16 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
         args = _module_args(m["id"], present_ids, monthly_budget_usd=monthly_budget_usd,
                             glue_execution_class=glue_execution_class)
         review += [f"{m['id']}: {i}" for i in m["inputs"] if i not in args]
+        # Review is otherwise derived as "inputs nobody wired", so wiring an input removes it
+        # from the list. _module_args routes monthly_budget_usd through the root variable even
+        # when no budget was parsed -- deliberately, so envs/prod.tfvars can set a ceiling --
+        # and that wiring silently took the review item away. The root variable defaults to 0
+        # and governance-observability turns 0 into 300, so an operator whose budget said
+        # "deferred: pending finance sign-off" got a 300 USD alarm and no mention of it.
+        if m["id"] == "governance-observability" and not monthly_budget_usd:
+            review.append("governance-observability: monthly_budget_usd (routed through "
+                          "var.monthly_budget_usd; unset uses the module default, which is "
+                          "not a number anyone stated)")
     doc = ["# Composition", "", f"Request: {request or '(none)'}", "",
            "## Modules", ""]
     for m in chosen:

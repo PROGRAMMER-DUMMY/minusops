@@ -212,8 +212,13 @@ def test_synthesize_refuses_to_overwrite_nonempty_target_run(tmp_path, monkeypat
     monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
     monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
     run = runs.new_run(blueprint="requirements-first", request="create airflow pipeline")
-    with open(os.path.join(run["terraform_dir"], "main.tf"), "w", encoding="utf-8") as f:
-        f.write("# existing\n")
+    # The guard was narrowed on purpose (issue #3, the file-ownership boundary): a team's
+    # own .tf files are PRESERVED, not a reason to refuse, so writing main.tf no longer
+    # raises. What still refuses is a file MinusOps cannot account for -- neither generated
+    # nor .tf -- which is what this now writes. The test name outlived the rule it tested.
+    with open(os.path.join(run["terraform_dir"], "leftover.tar.gz"), "w",
+              encoding="utf-8") as f:
+        f.write("not terraform, not ours\n")
 
     with pytest.raises(ValueError) as exc:
         synthesizer.synthesize(
@@ -1099,7 +1104,10 @@ def test_compose_writes_tfvars_with_showback_and_volume(tmp_path):
     assert '= "20260702-x"' in tfvars               # fmt realigns keys
     assert "daily_data_gb = 100" in tfvars and "10 to 100 GB per day" in tfvars
     providers = (out / "providers.tf").read_text(encoding="utf-8")
-    assert "run_id     = var.run_id" in providers   # showback tag on every resource
+    # Whitespace-insensitive on purpose: this asserted `terraform fmt` alignment, and
+    # MINUS-132 adding cost_center/data_classification through merge() shifted the
+    # block by one space. The claim is that the tag is wired, not how it is padded.
+    assert "run_id" in providers and "var.run_id" in providers
 
 
 def test_synthesize_wires_stated_budget_into_governance_module(tmp_path, monkeypatch):
@@ -1125,6 +1133,11 @@ def test_synthesize_leaves_budget_as_review_when_unparseable(tmp_path, monkeypat
                                                  "budget": "deferred: pending finance sign-off cycle"}}
     res = synthesizer.synthesize("airflow pipeline", spec=spec, decision=COMPLETE_DECISION, owner="sandbox-test")
     main_tf = open(os.path.join(res["out_dir"], "main.tf"), encoding="utf-8").read()
-    assert "monthly_budget_usd =" not in main_tf  # never guessed -- no wired assignment
-    assert "# REVIEW: set monthly_budget_usd" in main_tf  # stays an explicit review item
+    # The doctrine is that no number the operator did not state reaches the file -- not that
+    # the argument is absent. It is now routed through the root variable so envs/prod.tfvars
+    # can set a ceiling without editing main.tf, and it stays a review item. What must never
+    # appear is a literal.
+    assert "monthly_budget_usd = var.monthly_budget_usd" in main_tf
+    import re as _re
+    assert not _re.search(r"monthly_budget_usd\s*=\s*\d", main_tf), main_tf
     assert any("monthly_budget_usd" in r for r in res["review"])
