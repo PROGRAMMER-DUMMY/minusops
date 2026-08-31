@@ -82,6 +82,10 @@ def _cells(model):
             "value": cell.get("value") or "",
             "tooltip": cell.get("tooltip") or "",
             "style": cell.get("style") or "",
+            "points": [] if geometry is None else [
+                (_number(pt.get("x")), _number(pt.get("y")))
+                for array in geometry.findall("Array")
+                if array.get("as") == "points" for pt in array.findall("mxPoint")],
             "box": None if geometry is None else (
                 _number(geometry.get("x")), _number(geometry.get("y")),
                 _number(geometry.get("width")), _number(geometry.get("height"))),
@@ -277,6 +281,107 @@ def _check_icons(page, cells):
                         "affected": len(users)})
 
 
+_MARKUP = re.compile(r"</?(?:b|i|u|br|font|div|span|sub|sup)(?![a-z])(?:\s[^>]*)?/?>", re.I)
+# After XML parsing a correctly escaped `&` is just `&`. An entity still visible in the
+# parsed value means the file carried `&amp;amp;`, and the reader sees the entity.
+_DOUBLE_ESCAPED = re.compile(r"&(?:amp|lt|gt|quot|#\d+);", re.I)
+
+
+def _check_markup(page, cells):
+    """A value is drawn literally unless the style says html=1.
+
+    A band titled `<b>CONSUMPTION</b>` puts those characters on the canvas, and `&amp;`
+    written into a value is escaped again on the way into XML so the entity is what a reader
+    sees. Every container label on both pages carried the tags with none of the styles
+    setting the flag.
+    """
+    for cell in cells:
+        value = cell["value"]
+        if not value:
+            continue
+        if _MARKUP.search(value) and "html=1" not in cell["style"]:
+            yield _finding("markup_not_rendered", "error", page,
+                           "draw.io draws this value literally, so the tags appear on the "
+                           "canvas as text",
+                           {"cell": cell["id"], "value": value[:80]})
+        elif _DOUBLE_ESCAPED.search(value):
+            yield _finding("markup_not_rendered", "error", page,
+                           "the entity is escaped twice, so the reader sees the entity "
+                           "rather than the character it stands for",
+                           {"cell": cell["id"], "value": value[:80]})
+
+
+def _segments(source, target, points=()):
+    """The orthogonal path between two boxes, through any waypoints the edge declares.
+
+    Waypoints are the whole point of measuring this: an edge routed through a band gutter has
+    a different path from the one draw.io would pick unaided, and checking the unaided one
+    reports crossings that are not drawn.
+    """
+    sx, sy, sw, sh = source
+    tx, ty, tw, th = target
+    a = (sx + sw / 2, sy + sh / 2)
+    b = (tx + tw / 2, ty + th / 2)
+
+    stops = [a] + list(points) + [b]
+    path = []
+    for start, end in zip(stops, stops[1:]):
+        mid = ((start[0], end[1]) if abs(end[1] - start[1]) > abs(end[0] - start[0])
+               else (end[0], start[1]))
+        path.append((start, mid))
+        path.append((mid, end))
+    return path
+
+
+def _crosses(segment, box, margin=6):
+    """Whether an axis-aligned segment passes through a box, with a little clearance."""
+    (x1, y1), (x2, y2) = segment
+    bx, by, bw, bh = box[0] - margin, box[1] - margin, box[2] + 2 * margin, box[3] + 2 * margin
+    if x1 == x2:
+        return bx <= x1 <= bx + bw and min(y1, y2) < by + bh and by < max(y1, y2)
+    if y1 == y2:
+        return by <= y1 <= by + bh and min(x1, x2) < bx + bw and bx < max(x1, x2)
+    return False
+
+
+def _check_edge_routing(page, cells, by_id):
+    """Edges drawn through a node they do not connect.
+
+    An arrow through an icon reads as a connection to that icon. This is a note rather than a
+    warning because the path here is a MODEL of draw.io's router -- out, across, in, through
+    any waypoints the edge declares -- and draw.io re-routes around obstacles at render time
+    when it can. It names the edges at risk; it does not claim to know what was drawn.
+
+    Reserving routing lanes in `layout_positions` is what would remove the risk rather than
+    report it. Waypoints through the band gutters were tried and moved sixteen crossings to
+    fifteen: the horizontal run cleared the icons and the vertical runs still shared a column
+    with them.
+    """
+    boxes = {}
+    for cell in cells:
+        if cell["vertex"] and not _is_container(cell) and cell["id"] not in ("0", "1"):
+            absolute = _absolute(cell, by_id)
+            if absolute:
+                boxes[cell["id"]] = absolute
+
+    for cell in cells:
+        if not cell["edge"] or not cell["source"] or not cell["target"]:
+            continue
+        ends = (cell["source"], cell["target"])
+        if any(end not in boxes for end in ends):
+            continue
+        path = _segments(boxes[ends[0]], boxes[ends[1]], cell["points"])
+        struck = sorted(cell_id for cell_id, box in boxes.items()
+                        if cell_id not in ends
+                        and any(_crosses(segment, box) for segment in path))
+        if struck:
+            yield _finding("edge_crosses_node", "note", page,
+                           "the hop is at risk of being drawn through a resource it does not "
+                           "connect, which reads as a connection to that resource",
+                           {"edge": cell["id"], "label": cell["value"],
+                            "through": [_name(by_id[c]) for c in struck][:6]})
+
+
 def _check_isolated(page, cells, by_id):
     """Nodes no edge touches, grouped by the band that holds them. Reported, never fatal:
     the security band carries no edges by design, and a plan that declares no data movement
@@ -336,6 +441,8 @@ def check(xml_text):
         findings.extend(_check_overlap(name, cells))
         findings.extend(_check_page_bounds(name, model, cells))
         findings.extend(_check_icons(name, cells))
+        findings.extend(_check_markup(name, cells))
+        findings.extend(_check_edge_routing(name, cells, by_id))
         findings.extend(_check_isolated(name, cells, by_id))
 
     worst = max((f["severity"] for f in findings), key=SEVERITIES.index, default="note")

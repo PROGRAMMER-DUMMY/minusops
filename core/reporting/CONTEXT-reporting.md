@@ -621,6 +621,19 @@ This document provides an exhaustive, architectural, and operational reference f
   page was sized before the walkthrough was appended, leaving six of seven steps past the
   bottom edge, and the deployment page was sized by a constant while its content grew from
   the resource count, running 490px over.
+- **A value is drawn literally unless the style says `html=1`**
+  ([`_check_markup`](./diagram_check.py)). Every container label on both pages carried `<b>`
+  tags with none of the styles setting the flag, so a band titled `<b>CONSUMPTION</b>` put
+  those characters on the canvas. `&amp;` written into a value is escaped again by
+  ElementTree on the way into XML, so `CATALOGING, GOVERNANCE &amp; SEARCH` rendered the
+  entity; the band labels carry a plain `&` and the escaping happens once.
+- **`edge_crosses_node` is a note, not a warning.** The path is a MODEL of draw.io's router
+  -- out, across, in, through any declared waypoints -- and draw.io re-routes around
+  obstacles at render time when it can. It names the edges at risk without claiming to know
+  what was drawn. Waypoints through the band gutters were tried and moved sixteen crossings
+  to fifteen: the horizontal run cleared the icons and the vertical runs still shared a
+  column with them. Reserving routing lanes in `layout_positions` is the fix that would
+  remove the risk rather than report it.
 - **Every `mxgraph.aws4` name is checked against draw.io's published list**
   ([`stencil_data/aws4_shapes.txt`](./stencil_data/aws4_shapes.txt), 1037 names). An
   unresolvable name renders as a blank tile and reports nothing, which is how `iam`,

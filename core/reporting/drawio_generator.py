@@ -1102,7 +1102,8 @@ def deployment_containment(plan_json):
     return {"vpc": vpc, "subnets": placed, "spanning": spanning, "regional": regional}
 
 
-_CONTAINER_STYLE = ("rounded=1;arcSize=4;fillColor=none;strokeColor={stroke};strokeWidth=2;"
+_CONTAINER_STYLE = ("rounded=1;html=1;arcSize=4;fillColor=none;strokeColor={stroke};"
+                    "strokeWidth=2;"
                     "dashed={dashed};dashPattern=8 4;verticalAlign=top;align=left;"
                     "spacingLeft=12;spacingTop=6;fontSize=12;fontStyle=1;fontColor={stroke};"
                     "container=1;collapsible=0;")
@@ -1237,9 +1238,9 @@ _BAND_LABELS = {
     "ingestion": "INGESTION",
     "processing": "PROCESSING",
     "storage": "STORAGE",
-    "catalog": "CATALOGING, GOVERNANCE &amp; SEARCH",
+    "catalog": "CATALOGING, GOVERNANCE & SEARCH",
     "consumption": "CONSUMPTION",
-    "governance": "SECURITY &amp; MONITORING",
+    "governance": "SECURITY & MONITORING",
 }
 
 
@@ -1260,7 +1261,7 @@ def _reparent(x, y, bands):
     return "1", x, y
 
 
-_BOUNDARY_STYLE = ("rounded=1;arcSize=2;fillColor=none;strokeColor=#232F3E;strokeWidth=2;"
+_BOUNDARY_STYLE = ("rounded=1;html=1;arcSize=2;fillColor=none;strokeColor=#232F3E;strokeWidth=2;"
                    "verticalAlign=top;align=left;spacingLeft=14;spacingTop=8;fontSize=13;"
                    "fontStyle=1;fontColor=#232F3E;container=1;collapsible=0;")
 
@@ -1311,7 +1312,7 @@ def _append_bands(root, bands, parent="1", boundary=None):
         container = ET.SubElement(root, "mxCell", {
             "id": f"layer_box_{layer}",
             "value": f"<b>{_BAND_LABELS.get(layer, layer.upper())}</b>",
-            "style": ("swimlane;startSize=28;fillColor=none;strokeColor=#94a3b8;"
+            "style": ("swimlane;html=1;startSize=28;fillColor=none;strokeColor=#94a3b8;"
                       "strokeWidth=1;fontColor=#475569;fontStyle=1;fontSize=11;"
                       "rounded=1;arcSize=8;dashed=1;dashPattern=6 4;container=1;"
                       "collapsible=0;"),

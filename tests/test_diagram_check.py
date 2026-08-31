@@ -170,6 +170,53 @@ def test_the_resource_frames_are_not_reported_as_unknown_services():
     assert "icon_unknown" not in _checks(result)
 
 
+def test_markup_in_a_label_without_html_is_an_error():
+    """draw.io renders a value literally unless the style says html=1, so a band titled
+    `<b>CONSUMPTION</b>` draws those characters on the canvas. Every container label on both
+    pages carried the tags and none of the styles had the flag."""
+    result = diagram_check.check(_canvas(
+        '<mxCell id="layer_box_storage" value="&lt;b&gt;CONSUMPTION&lt;/b&gt;" '
+        'style="swimlane;" vertex="1" parent="1">'
+        '<mxGeometry x="40" y="40" width="600" height="200" as="geometry"/></mxCell>'))
+    finding = [f for f in result["findings"] if f["check"] == "markup_not_rendered"]
+
+    assert result["verdict"] == "FAIL"
+    assert finding and finding[0]["evidence"]["cell"] == "layer_box_storage"
+
+
+def test_a_label_with_html_enabled_is_not_reported():
+    result = diagram_check.check(_canvas(
+        '<mxCell id="n" value="&lt;b&gt;CONSUMPTION&lt;/b&gt;" style="swimlane;html=1;" '
+        'vertex="1" parent="1">'
+        '<mxGeometry x="40" y="40" width="600" height="200" as="geometry"/></mxCell>'))
+
+    assert "markup_not_rendered" not in _checks(result)
+
+
+def test_a_double_escaped_entity_is_an_error():
+    """`&amp;` written into the value is escaped again on the way into XML, so the canvas
+    shows the entity rather than the ampersand."""
+    canvas = _canvas('<mxCell id="b" value="A &amp;amp; B" style="html=1;" vertex="1" '
+                     'parent="1"><mxGeometry x="1" y="1" width="9" height="9" '
+                     'as="geometry"/></mxCell>')
+    result = diagram_check.check(canvas)
+
+    assert result["verdict"] == "FAIL"
+    assert "markup_not_rendered" in _checks(result)
+
+
+def test_the_generator_never_emits_a_label_drawio_will_show_as_markup():
+    plans = _plans()
+    if not plans:
+        pytest.skip("no plan in the repository to render")
+    with open(plans[0], encoding="utf-8") as handle:
+        result = diagram_check.check(
+            drawio_generator.generate_drawio_from_plan(json.load(handle))["xml"])
+
+    assert "markup_not_rendered" not in _checks(result), [
+        f["evidence"] for f in result["findings"] if f["check"] == "markup_not_rendered"]
+
+
 # --- What is correct, and must stay correct -------------------------------------------------
 
 def test_a_node_no_edge_touches_is_reported_without_failing_the_canvas():
