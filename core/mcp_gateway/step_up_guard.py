@@ -8,17 +8,45 @@ via outbound integration hooks.
 import hashlib
 import hmac
 import json
+import os
+import secrets
 import time
 import uuid
 from typing import Any, Dict, Optional, Tuple
 
-_SECRET_KEY = b"minusops-hitl-step-up-secret-key-2026"
 DEFAULT_TTL_SECONDS = 900  # 15 minutes
 
 
+class StepUpSecretMissing(RuntimeError):
+    """Raised when production mode has no configured signing key."""
+
+
+def resolve_secret_key():
+    """The HMAC key that signs approval tokens, from MINUS_STEP_UP_SECRET.
+
+    This was a literal in the source. A hardcoded key in a public repository is a published
+    key: anyone holding it can forge an approval token for exactly the high-risk tool calls
+    this guard exists to gate.
+
+    With no key configured, production REFUSES rather than falling back -- signing real
+    approvals with a key the operator never chose is worse than not starting. Development
+    gets a key generated per process, not a second literal: tokens then do not survive a
+    restart, which is correct for dev and is what forces production to configure one.
+    """
+    configured = os.environ.get("MINUS_STEP_UP_SECRET")
+    if configured:
+        return configured.encode("utf-8")
+    if (os.environ.get("MINUS_POLICY_MODE") or "dev").strip().lower() == "production":
+        raise StepUpSecretMissing(
+            "MINUS_STEP_UP_SECRET is not set and MINUS_POLICY_MODE=production. Approval "
+            "tokens cannot be signed with a key the operator did not choose.")
+    return secrets.token_bytes(32)
+
+
 class StepUpGuard:
-    def __init__(self, secret_key: bytes = _SECRET_KEY, ttl_seconds: int = DEFAULT_TTL_SECONDS):
-        self.secret_key = secret_key
+    def __init__(self, secret_key: Optional[bytes] = None,
+                 ttl_seconds: int = DEFAULT_TTL_SECONDS):
+        self.secret_key = secret_key or resolve_secret_key()
         self.ttl_seconds = ttl_seconds
         self._pending_tickets: Dict[str, Dict[str, Any]] = {}
 

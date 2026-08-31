@@ -1797,7 +1797,7 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
 
 
 def stage_run(dir_, mode, policy_mode=None, destroy=False, with_telemetry=False,
-              role_arn=None):
+              role_arn=None, impact=None):
     return (stage_verify(dir_, policy_mode)
             and stage_plan(dir_, policy_mode, destroy=destroy, with_telemetry=with_telemetry,
                            impact=impact)

@@ -789,6 +789,24 @@ def auto_estimate(report_dir, region="us-east-1", usage_profile=None):
         return False, str(exc)
 
 
+def _total_cost_amount(value):
+    """The number out of a BCM totalCost, whatever shape the API returned it in.
+
+    The live API returns an object -- {"amount": "123.45", "unit": "USD"} -- and the base
+    estimate was unwrapped inline while every curve POINT went through a bare float(). A
+    multi-point run therefore raised TypeError after the AWS calls had already been made and
+    billed. One reader, used at both sites, is what stops the two drifting again.
+
+    Returns None rather than 0.0 when there is no number: a missing cost is not a free one.
+    """
+    if isinstance(value, dict):
+        value = value.get("amount")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def scale_curve(report_dir, factors=(1, 5, 10)):
     """Price the SAME architecture at multiples of the declared usage — AWS prices every
     point (temporary workload estimates, deleted after reading), nothing is extrapolated
@@ -801,14 +819,7 @@ def scale_curve(report_dir, factors=(1, 5, 10)):
     if errors:
         raise RuntimeError("usage payload not ready for scale curve:\n- " + "\n- ".join(errors))
     base_estimate = _load_json(paths["estimate"]) if os.path.exists(paths["estimate"]) else {}
-    base_total = None
-    tc = (base_estimate.get("estimate") or {}).get("totalCost")
-    if isinstance(tc, dict):
-        tc = tc.get("amount")
-    try:
-        base_total = float(tc)
-    except (TypeError, ValueError):
-        pass
+    base_total = _total_cost_amount((base_estimate.get("estimate") or {}).get("totalCost"))
 
     aws = _aws_cli()
     cwd = os.path.abspath(report_dir)
@@ -843,7 +854,7 @@ def scale_curve(report_dir, factors=(1, 5, 10)):
             estimate = _run_json([aws, "bcm-pricing-calculator", "get-workload-estimate",
                                   "--identifier", est_id], cwd)
             points.append({"factor": factor,
-                           "total": float(estimate.get("totalCost") or 0),
+                           "total": _total_cost_amount(estimate.get("totalCost")) or 0,
                            "estimate_id": est_id,
                            # Raw AWS response retained as evidence that each point is an
                            # INDEPENDENT BCM estimate, not a local extrapolation.
@@ -980,7 +991,7 @@ def fetch_actuals(report_dir, month=None, months_back=6):
     return {"month": chosen.get("month"), "actuals": actuals, "path": out_path}
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="AWS BCM Pricing Calculator report integration")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prepare", help="write reviewable BCM payload files; no AWS calls")
@@ -1003,21 +1014,20 @@ def main():
     r.add_argument("--report-dir", required=True)
     r.add_argument("--mode", default="auto-approve", choices=["gatekeeper", "auto-approve"],
                    help="estimates default to auto-approve; use gatekeeper to require a prompt")
-    s = sub.add_parser("scenario", help="BCM bill scenario + estimate (Savings Plan / RI modeling)")
+    s = sub.add_parser("scenario", help="model Commitments (Savings Plans / RIs) via BCM bill scenario")
     s.add_argument("--report-dir", required=True)
     s.add_argument("--usage-modifications", default="",
-                   help="user-supplied usageModifications JSON (from generate-cli-skeleton)")
+                   help="path to reviewed JSON array of usage modifications")
     s.add_argument("--commitments", default="",
-                   help="user-supplied commitmentModifications JSON (Savings Plans / RIs)")
-    s.add_argument("--mode", default="auto-approve", choices=["gatekeeper", "auto-approve"],
-                   help="estimates default to auto-approve; use gatekeeper to require a prompt")
-    a = sub.add_parser("actuals", help="pull Cost Explorer per-service actuals for forecast-vs-actual (read-only)")
+                   help="path to reviewed JSON array of commitment purchase actions")
+    s.add_argument("--mode", default="auto-approve", choices=["gatekeeper", "auto-approve"])
+    a = sub.add_parser("actuals", help="fetch AWS Cost Explorer actuals into bcm-actuals.json")
     a.add_argument("--report-dir", required=True)
     a.add_argument("--month", default="", help="YYYY-MM month to compare (default: most recent with spend)")
     sc = sub.add_parser("scale-curve", help="AWS-price the same architecture at 1x/5x/10x usage (temporary estimates)")
     sc.add_argument("--report-dir", required=True)
     sc.add_argument("--factors", default="1,5,10", help="comma-separated usage multipliers")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.cmd == "prepare":
         paths = prepare(args.report_dir, args.account_id, args.region, args.rate_type,

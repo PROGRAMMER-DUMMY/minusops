@@ -30,6 +30,27 @@ from app import console_app  # noqa: E402
 
 # --- The four views ---------------------------------------------------------------------
 
+def test_every_connector_handler_defines_the_background_it_styles_with(monkeypatch):
+    """Four connector handlers set `bg` from the result; `_handle_outlook` was copy-pasted
+    without that line and references it anyway, so testing an Outlook endpoint raises
+    NameError instead of reporting the result. No test drove any of these callbacks."""
+    class _Ctx:
+        triggered = [{"prop_id": "btn-test-outlook.n_clicks"}]
+
+    monkeypatch.setattr(console_app.dash, "callback_context", _Ctx())
+    monkeypatch.setattr(console_app.connector_config, "save_connector_config",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(console_app.connector_config, "test_connector",
+                        lambda name: {"ok": False, "status": "NOT_CONFIGURED",
+                                      "detail": "no endpoint"})
+
+    rendered = console_app._handle_outlook(1, 0, "x@example.com", "https://example.com/hook")
+
+    assert rendered is not None
+    assert "background" in rendered.style
+    assert rendered.style["background"]
+
+
 def test_every_navigable_view_has_a_renderer():
     """PRD v13 declared four views; Flow absorbed lineage and delivery, and Access and Cost
     were added, so the bar carries six. Settings is reachable but deliberately NOT numbered

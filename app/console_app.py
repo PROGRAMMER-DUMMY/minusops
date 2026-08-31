@@ -3412,6 +3412,7 @@ def _handle_outlook(test_clicks, save_clicks, dl, endpoint):
                 "endpoint_ref": endpoint,
             })
         res = connector_config.test_connector("outlook")
+        bg = "rgba(47,107,79,0.1)" if res["ok"] else "rgba(138,101,22,0.1)"
         color = "var(--good)" if res["ok"] else ("var(--warn)" if res["status"] == "NOT_CONFIGURED" else "var(--crit)")
         return html.Div(style={"background": bg, "color": color, "padding": "10px", "borderRadius": "8px", "border": f"1px solid {color}", "fontSize": "12px"},
                         children=[html.B(f"[{res['status']}] "), res["detail"]])

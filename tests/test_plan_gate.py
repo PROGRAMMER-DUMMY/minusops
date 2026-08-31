@@ -103,6 +103,33 @@ def _stub_apply_success(applied=("aws_s3_bucket.data",), failed=(), errors=None)
     return _apply
 
 
+def test_stage_run_accepts_the_impact_its_own_cli_passes():
+    """`main()` calls stage_run(..., impact=args.impact, ...) and the signature has no such
+    parameter, so `minusctl gate run` raises TypeError before doing anything. The body then
+    passes `impact=impact` to stage_plan, which would be a NameError even if the call landed.
+    Two defects on the gate's primary command, on a path no test exercised."""
+    import inspect
+    parameters = inspect.signature(plan_gate.stage_run).parameters
+    assert "impact" in parameters, list(parameters)
+    assert parameters["impact"].default is None
+
+
+def test_stage_run_forwards_impact_to_the_plan_stage(monkeypatch):
+    """The parameter has to reach stage_plan. Accepting and dropping it would satisfy the
+    signature check while still losing the operator's declared blast radius."""
+    seen = {}
+
+    def fake_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False, impact=None):
+        seen["impact"] = impact
+        return False
+
+    monkeypatch.setattr(plan_gate, "stage_verify", lambda *a, **k: True)
+    monkeypatch.setattr(plan_gate, "stage_plan", fake_plan)
+    plan_gate.stage_run("d", "gatekeeper", impact="high")
+
+    assert seen["impact"] == "high"
+
+
 def test_plan_hash_is_deterministic(monkeypatch):
     monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
     h1, _ = plan_gate._plan_hash("anydir")

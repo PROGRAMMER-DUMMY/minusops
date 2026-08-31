@@ -12,6 +12,9 @@ import time
 
 from core.mcp_gateway.pii_redactor import redact_string, redact_payload, contains_pii
 from core.mcp_gateway.opa_evaluator import evaluate_policy_in_memory
+import io
+
+from core.mcp_gateway import step_up_guard
 from core.mcp_gateway.step_up_guard import StepUpGuard
 from core.mcp_gateway.session_checkpointer import SessionCheckpointer
 from core.mcp_gateway.gateway_proxy import MCPGatewayProxy
@@ -20,6 +23,76 @@ from core.mcp_gateway.gateway_proxy import MCPGatewayProxy
 # ==============================================================================
 # 1. PII / PHI Redaction Tests
 # ==============================================================================
+
+def test_a_bare_run_of_digits_is_not_an_ssn():
+    r"""A nine-digit run matched the SSN pattern. `807698055` is a real aws_lakeformation_data_lake_
+    settings id out of this repository's own state file, and the redactor replaced it with
+    [REDACTED_SSN_...] -- destroying an infrastructure identifier in the reports and audit
+    entries this gateway is meant to be safe to log."""
+    assert redact_string("807698055")[0] == "807698055"
+    assert redact_string("id=807698055")[0] == "id=807698055"
+
+
+def test_a_bare_run_of_digits_is_not_a_phone_number():
+    """Ten consecutive digits matched the phone pattern, so an epoch timestamp was redacted."""
+    assert redact_string("1756598400")[0] == "1756598400"
+
+
+def test_a_real_ssn_is_still_redacted():
+    """The fix must not blind the redactor. A written SSN carries its separators."""
+    redacted, found, _ = redact_string("patient ssn 123-45-6789")
+
+    assert "123-45-6789" not in redacted
+    assert any(f["type"] == "SSN" for f in found)
+
+
+def test_a_real_phone_number_is_still_redacted():
+    for written in ("555-123-4567", "(555) 123-4567", "+1 555-123-4567"):
+        redacted, found, _ = redact_string(f"call {written} now")
+        assert written not in redacted, written
+        assert any(f["type"] == "PHONE" for f in found), written
+
+
+def test_the_signing_key_is_not_a_literal_in_the_source(monkeypatch):
+    """A hardcoded HMAC key in a public repository is a published key: anyone holding it can
+    forge an approval token for a high-risk tool call, which is the exact control this guard
+    exists to be."""
+    monkeypatch.delenv("MINUS_STEP_UP_SECRET", raising=False)
+    monkeypatch.setenv("MINUS_POLICY_MODE", "dev")
+    source = io.open(step_up_guard.__file__, encoding="utf-8").read()
+
+    assert "minusops-hitl-step-up-secret-key" not in source
+
+
+def test_production_refuses_to_start_without_a_configured_secret(monkeypatch):
+    """Falling back to a default in production would sign real approvals with a key the
+    operator never chose. Refusing is the only honest option."""
+    monkeypatch.delenv("MINUS_STEP_UP_SECRET", raising=False)
+    monkeypatch.setenv("MINUS_POLICY_MODE", "production")
+
+    with pytest.raises(step_up_guard.StepUpSecretMissing):
+        step_up_guard.StepUpGuard()
+
+
+def test_dev_gets_a_key_that_is_random_per_process(monkeypatch):
+    """A fixed development key in a public repository is still a published key. Random per
+    process means tokens do not survive a restart, which is correct for dev and forces
+    production to configure one."""
+    monkeypatch.delenv("MINUS_STEP_UP_SECRET", raising=False)
+    monkeypatch.setenv("MINUS_POLICY_MODE", "dev")
+
+    first = step_up_guard.StepUpGuard().secret_key
+    second = step_up_guard.StepUpGuard().secret_key
+
+    assert first and second and first != second
+
+
+def test_a_configured_secret_is_used_verbatim(monkeypatch):
+    monkeypatch.setenv("MINUS_STEP_UP_SECRET", "an-operator-chosen-key")
+    monkeypatch.setenv("MINUS_POLICY_MODE", "production")
+
+    assert step_up_guard.StepUpGuard().secret_key == b"an-operator-chosen-key"
+
 
 def test_pii_redactor_masks_ssn_and_email():
     text = "Patient SSN is 123-45-6789 and doctor email is dr.smith@hospital.org"

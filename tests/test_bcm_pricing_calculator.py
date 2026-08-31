@@ -40,6 +40,18 @@ PLAN = {
 }
 
 
+def test_a_total_cost_object_is_read_the_same_way_everywhere():
+    """The live API returns totalCost as {"amount": "...", "unit": "USD"}. `scale_curve`
+    handles that shape when reading the BASE estimate and then does a bare float() on every
+    curve POINT, so a real multi-point run raises TypeError after the AWS calls have already
+    been made and billed."""
+    assert bcm._total_cost_amount({"amount": "123.45", "unit": "USD"}) == 123.45
+    assert bcm._total_cost_amount("123.45") == 123.45
+    assert bcm._total_cost_amount(123.45) == 123.45
+    assert bcm._total_cost_amount(None) is None
+    assert bcm._total_cost_amount({"unit": "USD"}) is None
+
+
 def test_prepare_writes_reviewable_payloads(tmp_path):
     report = tmp_path / "reports" / "abc123"
     report.mkdir(parents=True)
