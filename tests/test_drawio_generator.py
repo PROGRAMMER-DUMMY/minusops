@@ -342,6 +342,121 @@ def test_firehose_is_read_from_either_delivery_block():
             'aws_s3_bucket.zone["bronze"]') in hops
 
 
+def _catalog_plan():
+    """A catalog that states which bucket it describes.
+
+    `location_uri`, `storage_descriptor.location` and a Lake Formation resource's `arn` each
+    appear five times across the plans in `runs/`. None of them is data movement: a database
+    does not send anything to a bucket, it says where that bucket's tables live.
+    """
+    def rc(address, rtype, after):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": after}}
+    return {"resource_changes": [
+        rc('aws_s3_bucket.zone["gold"]', "aws_s3_bucket", {"bucket": "lake-gold"}),
+        rc("aws_glue_catalog_database.gold", "aws_glue_catalog_database",
+           {"location_uri": "s3://lake-gold/"}),
+        rc("aws_glue_catalog_table.curated", "aws_glue_catalog_table",
+           {"storage_descriptor": [{"location": "s3://lake-gold/iceberg/curated"}]}),
+        rc("aws_lakeformation_resource.gold", "aws_lakeformation_resource",
+           {"arn": "arn:aws:s3:::lake-gold"}),
+    ]}
+
+
+def test_a_catalog_database_declares_which_bucket_it_describes():
+    """The catalog band drew as a row of tiles connected to nothing, because the one relation
+    it has is not data movement and nothing else was ever drawn."""
+    edges = drawio_generator.discover_data_edges(_catalog_plan())
+    hops = {(e["source"], e["target"]) for e in edges}
+
+    assert ("aws_glue_catalog_database.gold", 'aws_s3_bucket.zone["gold"]') in hops
+
+
+def test_a_describes_relation_is_not_labelled_as_data_movement():
+    """A database does not send data to a bucket. Drawing this the same as a hop would make
+    the canvas assert traffic that does not exist, which is the whole defect this generator
+    was built to stop."""
+    edges = drawio_generator.discover_data_edges(_catalog_plan())
+    kinds = {e["source"]: e["kind"] for e in edges}
+
+    assert kinds["aws_glue_catalog_database.gold"] == "describes"
+
+
+def test_a_catalog_table_and_a_lake_formation_registration_describe_too():
+    """A table's storage descriptor and a Lake Formation resource's ARN each name a bucket
+    five times across the plans in `runs/`. Both are the same relation as location_uri: this
+    is where that data is, not data going anywhere."""
+    edges = drawio_generator.discover_data_edges(_catalog_plan())
+    described = {(e["source"], e["target"]) for e in edges if e["kind"] == "describes"}
+
+    assert ("aws_glue_catalog_table.curated", 'aws_s3_bucket.zone["gold"]') in described
+    assert ("aws_lakeformation_resource.gold", 'aws_s3_bucket.zone["gold"]') in described
+
+
+def test_nothing_in_the_catalog_plan_is_called_data_movement():
+    edges = drawio_generator.discover_data_edges(_catalog_plan())
+
+    assert edges
+    assert {e["kind"] for e in edges} == {"describes"}
+
+
+def test_every_hop_from_a_data_argument_is_still_kind_data():
+    edges = drawio_generator.discover_data_edges(_wired_plan())
+
+    assert edges
+    assert {e["kind"] for e in edges} == {"data"}
+
+
+def test_a_describes_edge_is_drawn_differently_from_a_hop():
+    """Two relations sharing one arrow style is a canvas that asserts traffic between a
+    catalog and a bucket. The line has to say which of the two it is without being read."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_catalog_plan())["xml"]
+    styles = {cell.get("id"): cell.get("style") or ""
+              for cell in ET.fromstring(xml_text).iter("mxCell")
+              if cell.get("edge") == "1"}
+
+    assert styles, "no edge was drawn for a plan that declares three describes relations"
+    for style in styles.values():
+        assert "dashed=1" in style
+
+
+def test_a_describes_edge_says_what_it_is_rather_than_a_hop_number():
+    """A data hop is numbered because the order matters. "describes" has no order: numbering
+    it would invite the reader to trace a sequence that is not one."""
+    xml_text = drawio_generator.generate_drawio_from_plan(_catalog_plan())["xml"]
+    labels = [cell.get("value") for cell in ET.fromstring(xml_text).iter("mxCell")
+              if cell.get("edge") == "1"]
+
+    assert labels
+    assert all(label == "describes" for label in labels), labels
+
+
+def test_the_legend_says_a_dashed_catalog_line_is_not_data_movement():
+    xml_text = drawio_generator.generate_drawio_from_plan(_catalog_plan())["xml"]
+    legend = " ".join(cell.get("value") or "" for cell in ET.fromstring(xml_text).iter("mxCell")
+                      if (cell.get("id") or "").startswith("legend_"))
+
+    assert "describes" in legend
+    assert "not data movement" in legend
+
+
+def test_the_walkthrough_numbers_hops_and_leaves_describes_out_of_the_count():
+    """The walkthrough is the order data travels. A catalog registration is not a step in it."""
+    plan = _catalog_plan()
+    plan["resource_changes"].extend(_wired_plan()["resource_changes"])
+    steps = drawio_generator.walkthrough_steps(
+        drawio_generator.discover_data_edges(plan),
+        {r["address"]: r for r in plan["resource_changes"]})
+
+    data_hops = [e for e in drawio_generator.discover_data_edges(plan)
+                 if e["kind"] == "data"]
+    assert steps and data_hops
+    assert len(steps) == len(data_hops)
+    catalogued = "aws_glue_catalog_database.gold"
+    assert not any(catalogued in step for step in steps)
+
+
 def test_the_ledger_states_only_what_the_plan_declares():
     """The protocol, latency and safeguard columns were produced by matching a substring
     against the TARGET address, so a KMS key referenced by an Athena workgroup was reported

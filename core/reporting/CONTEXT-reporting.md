@@ -497,6 +497,13 @@ This document provides an exhaustive, architectural, and operational reference f
 - **The legend says what an ABSENT arrow means** ([`_append_legend`](./drawio_generator.py)):
   the plan declares no path, not that none exists at runtime. That is the reading this canvas
   most often loses.
+- **An edge carries a `kind`, and there are two.** `data` is a declared hop; `describes` is
+  a catalog database's `location_uri`, a table's `storage_descriptor.location` or a Lake
+  Formation registration's `arn` -- each naming the storage it records. A catalog does not
+  send anything to a bucket, so the two are drawn differently: `describes` is thinner,
+  dashed, open-headed, in the catalog band's purple, labelled "describes" rather than
+  numbered. Numbering it would invite a reader to trace a sequence that is not one, and
+  `walkthrough_steps` counts only `data` for the same reason.
 - **`_BUCKET_TO_BUCKET` is for resources that name both ends and are neither.** A
   replication configuration is not a place data rests; it states that one bucket copies to
   another, so the hop is drawn between the two buckets and the configuration itself is not on

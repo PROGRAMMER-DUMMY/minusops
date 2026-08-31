@@ -205,6 +205,16 @@ _DATA_ARGUMENTS = (
     ("aws_dms_s3_endpoint", ("bucket_name",), "out"),
 )
 
+# Arguments that state which storage a resource DESCRIBES rather than moves data to. A
+# catalog database does not send anything to a bucket; it records where that bucket's tables
+# live. Drawn separately because an arrow that means two things means neither.
+_DESCRIBES_ARGUMENTS = (
+    ("aws_glue_catalog_database", ("location_uri",)),
+    ("aws_glue_catalog_table", ("storage_descriptor", "location")),
+    ("aws_lakeformation_resource", ("arn",)),
+)
+
+
 # Resources that name BOTH ends of a hop and are neither of them. A replication
 # configuration is not a place data rests; it states that one bucket copies to another.
 _BUCKET_TO_BUCKET = (
@@ -263,7 +273,8 @@ def discover_data_edges(plan_json):
                 index, addresses)
             if not bucket:
                 continue
-            pairs.append((bucket, address) if direction == "in" else (address, bucket))
+            pairs.append((bucket, address, "data") if direction == "in"
+                         else (address, bucket, "data"))
 
         for rtype, source_path, target_path in _BUCKET_TO_BUCKET:
             if res.get("type") != rtype:
@@ -276,14 +287,26 @@ def discover_data_edges(plan_json):
                     node.get("references") if isinstance(node, dict) else None,
                     index, addresses))
             if all(ends):
-                pairs.append((ends[0], ends[1]))
+                pairs.append((ends[0], ends[1], "data"))
+
+        for rtype, path in _DESCRIBES_ARGUMENTS:
+            if res.get("type") != rtype:
+                continue
+            node = _walk(declared, path)
+            bucket = _resolve_bucket(
+                _walk(after, path),
+                node.get("references") if isinstance(node, dict) else None,
+                index, addresses)
+            if bucket:
+                pairs.append((address, bucket, "describes"))
 
     seen, edges = set(), []
-    for source, target in pairs:
+    for source, target, kind in pairs:
         if source == target or (source, target) in seen:
             continue
         seen.add((source, target))
-        edges.append({"source": source, "target": target, "hop": len(edges) + 1})
+        edges.append({"source": source, "target": target, "kind": kind,
+                      "hop": len(edges) + 1})
     return edges
 
 
@@ -615,6 +638,7 @@ def walkthrough_steps(edges, by_address):
     job we know exists and whose behaviour we do not know; what the plan states is which
     paths it reads and writes, and how big it is.
     """
+    edges = [edge for edge in edges if edge.get("kind", "data") == "data"]
     if not edges:
         return ["This plan declares no data flow. No resource states a source or target "
                 "path, so there is no hop to describe -- the arrows are absent because the "
@@ -634,6 +658,14 @@ _EDGE_STYLE = ("edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;"
                "jettySize=auto;html=1;strokeColor=#475569;strokeWidth=2;"
                "endArrow=block;endFill=1;fontSize=10;fontColor=#334155;"
                "labelBackgroundColor=#ffffff;")
+
+# A catalog does not send data to a bucket, it records where that bucket's tables live. Two
+# relations sharing one arrow style is a canvas asserting traffic that does not exist, so the
+# describes relation is thinner, dashed, open-headed and in the catalog band's own colour.
+_DESCRIBES_STYLE = ("edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;"
+                    "jettySize=auto;html=1;strokeColor=#8C4FFF;strokeWidth=1;dashed=1;"
+                    "dashPattern=6 4;endArrow=open;endFill=0;fontSize=9;fontColor=#8C4FFF;"
+                    "labelBackgroundColor=#ffffff;")
 
 
 def _edge_anchors(source, target):
@@ -670,9 +702,13 @@ _LEGEND_NOTES = (
     "A tile's colour is AWS's own service category, not this tool's. The dashed boxes are "
     "the layer a resource was classified into; the second line of a tile is the role that "
     "classification assigned, so the label and the placement cannot disagree.",
-    "An arrow is a hop the plan DECLARES: one resource names the other's path in a "
-    "data-carrying argument. Absence of an arrow means the plan states no path, not that "
-    "none exists at runtime. A dashed arrow comes from the interview, not the plan.",
+    "A solid numbered arrow is a hop the plan DECLARES: one resource names the other's path "
+    "in a data-carrying argument. Absence of one means the plan states no path, not that "
+    "none exists at runtime.",
+    "A thin purple line labelled \"describes\" is not data movement. A catalog database, a "
+    "table's storage descriptor and a Lake Formation registration each name the storage they "
+    "record; nothing travels along that line. A grey dashed arrow from outside the boundary "
+    "comes from the interview rather than the plan.",
     "A badge under a name is capacity or posture the plan states -- worker count, shard "
     "count, encryption, private access. Nothing here is inferred from a resource name.",
 )
@@ -1074,11 +1110,13 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
         target_id = node_map.get(edge["target"])
         if not source_id or not target_id:
             continue
+        describes = edge.get("kind") == "describes"
         cell = ET.SubElement(root, "mxCell", {
             "id": f"edge_{index}",
-            "value": f"[{edge['hop']}]",
-            "style": _EDGE_STYLE + _edge_anchors(positions.get(edge["source"]),
-                                                 positions.get(edge["target"])),
+            "value": "describes" if describes else f"[{edge['hop']}]",
+            "style": (_DESCRIBES_STYLE if describes else _EDGE_STYLE)
+                     + _edge_anchors(positions.get(edge["source"]),
+                                     positions.get(edge["target"])),
             "edge": "1",
             "parent": "1",
             "source": source_id,
