@@ -35,6 +35,30 @@ PLAN = {
     "output_changes": {},
 }
 
+# A plan that DECLARES its hops: the Glue job names a source and a target path, and each
+# path resolves to a bucket in the same plan. `PLAN` above declares none, which is why it now
+# renders without arrows -- that is the correct drawing of a stack that states no data path.
+DECLARING_PLAN = {
+    "format_version": "1.2",
+    "resource_changes": [
+        {"address": 'aws_s3_bucket.zone["bronze"]', "type": "aws_s3_bucket", "name": "zone",
+         "mode": "managed",
+         "change": {"actions": ["create"], "after": {"bucket": "lake-bronze"}}},
+        {"address": 'aws_s3_bucket.zone["silver"]', "type": "aws_s3_bucket", "name": "zone",
+         "mode": "managed",
+         "change": {"actions": ["create"], "after": {"bucket": "lake-silver"}}},
+        {"address": "aws_glue_job.bronze_to_silver", "type": "aws_glue_job",
+         "name": "bronze_to_silver", "mode": "managed",
+         "change": {"actions": ["create"], "after": {"default_arguments": {
+             "--source_path": "s3://lake-bronze/in/",
+             "--target_path": "s3://lake-silver/out/"}}}},
+        {"address": "aws_sfn_state_machine.pipeline", "type": "aws_sfn_state_machine",
+         "name": "pipeline", "mode": "managed", "change": {"actions": ["create"]}},
+    ],
+    "output_changes": {},
+}
+
+
 REQUIRED_GROUP_IDS = [
     "bg", "titlebar", "edges",
     "tier-sources", "tier-storage", "tier-compute",
@@ -52,11 +76,12 @@ def _svg():
     return reporter.build_svg(rows, TEMPLATE_GENERIC, "aws", "abc123def456", "2026-06-28 12:00 UTC")
 
 
-def _pipeline_svg(findings=None):
-    # Known-blueprint flow/topology layout (spec v2 §9).
-    rows, _ = reporter.summarize(PLAN)
+def _pipeline_svg(findings=None, plan=PLAN):
+    # Known-blueprint flow/topology layout (spec v2 §9). The plan is passed because the
+    # arrows are read from it; without one the diagram correctly has none.
+    rows, _ = reporter.summarize(plan)
     return reporter.build_svg(rows, "aws-data-pipeline-standard", "aws", "abc123def456",
-                              "2026-06-28 12:00 UTC", findings=findings)
+                              "2026-06-28 12:00 UTC", findings=findings, plan=plan)
 
 
 def _group_ids_in_order(root):
@@ -338,10 +363,34 @@ def test_pipeline_flow_is_wellformed_and_self_contained():
     assert nodes and all(n.attrib.get("data-address") for n in nodes)
 
 
-def test_pipeline_flow_draws_real_anchored_edges():
-    root = ET.fromstring(_pipeline_svg())
+def _edge_paths(svg):
+    root = ET.fromstring(svg)
     edges = next(el for el in root.iter(SVG_NS + "g") if el.attrib.get("id") == "edges")
-    assert [e for e in edges.iter(SVG_NS + "path")], "expected anchored flow edges"
+    return [e for e in edges.iter(SVG_NS + "path")]
+
+
+def test_pipeline_flow_draws_the_hops_the_plan_declares():
+    """This asserted that arrows exist, against a fixture that declares none -- so it was
+    asserting the fabrication. The slots were joined whenever they were filled: a stack whose
+    Glue job names no source or target path still drew a complete medallion pipeline."""
+    assert _edge_paths(_pipeline_svg(plan=DECLARING_PLAN)), "expected the declared hops"
+
+
+def test_pipeline_flow_draws_nothing_when_the_plan_declares_no_path():
+    """The correct drawing of a stack that states no data path. Arrows are absent because the
+    wiring is, which is the same reading the draw.io canvas gives."""
+    assert not _edge_paths(_pipeline_svg(plan=PLAN))
+
+
+def test_both_renderers_agree_on_which_hops_exist():
+    """Two renderers with two ideas of what connects to what is worse than one that is plain.
+    reporter.py built its own edges by matching resource names; it now reads the same
+    derivation the draw.io canvas does."""
+    from core.reporting import drawio_generator as generator
+
+    declared = generator.discover_data_edges(DECLARING_PLAN)
+    assert declared
+    assert len(_edge_paths(_pipeline_svg(plan=DECLARING_PLAN))) == len(declared)
 
 
 def test_pipeline_flow_shows_service_components_and_zone():

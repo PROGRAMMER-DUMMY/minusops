@@ -245,32 +245,32 @@ def _flow_edge(p1, p2, node_h, kind):
     return (p1[0] + 232, p1[1] + node_h // 2, p2[0], p2[1] + node_h // 2, kind)
 
 
-def _pipeline_flow(rowmap, pos, node_h):
-    """Real medallion data flow for the standard pipeline blueprint."""
-    def find(pred):
-        return next((a for a, r in rowmap.items() if pred(r)), None)
-    bronze = find(lambda r: r["type"] == "aws_s3_bucket" and _instance_key(r["address"]) == "bronze")
-    silver = find(lambda r: r["type"] == "aws_s3_bucket" and _instance_key(r["address"]) == "silver")
-    gold = find(lambda r: r["type"] == "aws_s3_bucket" and _instance_key(r["address"]) == "gold")
-    g1 = find(lambda r: r["type"] == "aws_glue_job" and r["name"] == "bronze_to_silver")
-    g2 = find(lambda r: r["type"] == "aws_glue_job" and r["name"] == "silver_to_gold")
-    athena = find(lambda r: r["type"] == "aws_athena_workgroup")
-    sfn = find(lambda r: r["type"] == "aws_sfn_state_machine")
-    edges = []
-    for a, b in zip([bronze, g1, silver, g2, gold, athena], [g1, silver, g2, gold, athena, None]):
-        if a in pos and b in pos:
-            edges.append(_flow_edge(pos[a], pos[b], node_h, "data"))
-    for g in (g1, g2):  # orchestration controls the Glue jobs (dashed)
-        if sfn in pos and g in pos:
-            edges.append(_flow_edge(pos[sfn], pos[g], node_h, "ctrl"))
+def declared_hops(plan):
+    """The hops the plan states, from the one derivation both renderers share.
+
+    This file used to build its own edges by matching resource NAMES -- a bucket whose
+    instance key was "bronze", a Glue job called "bronze_to_silver" -- and then drew an arrow
+    between every pair of slots that happened to be filled. `_generic_flow` went further and
+    joined the first node of consecutive tiers so the picture would have arrows in it. Both
+    are the defect deleted from `drawio_generator` in 14ab3f1, and they shipped in
+    architecture.svg, which minusctl lists as a required report artifact.
+
+    `discover_data_edges` reads only data-carrying arguments, so an arrow here means the same
+    thing it means on the draw.io canvas: one resource names the other's path.
+    """
+    return drawio_generator.discover_data_edges(plan or {})
+
+
+def _anchored_flow(plan, pos, node_h):
+    """Declared hops between nodes this layout actually placed."""
+    edges, drawn = [], set()
+    for hop in declared_hops(plan):
+        pair = (hop["source"], hop["target"])
+        if pair in drawn or pair[0] not in pos or pair[1] not in pos:
+            continue
+        drawn.add(pair)
+        edges.append(_flow_edge(pos[pair[0]], pos[pair[1]], node_h, "data"))
     return edges
-
-
-def _generic_flow(by_tier, pos, node_h, visible_tiers):
-    """Fallback: connect the first node of consecutive non-empty tiers (anchored, no floaters)."""
-    firsts = [by_tier[t][0]["address"] for t in visible_tiers if by_tier[t]]
-    return [_flow_edge(pos[a], pos[b], node_h, "data")
-            for a, b in zip(firsts, firsts[1:]) if a in pos and b in pos]
 
 
 _SEV_ORDER = ("HIGH", "MEDIUM", "LOW", "EXTERNAL")
@@ -539,18 +539,21 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
         '<text class="tier-h" x="44" y="396">ORCHESTRATION &amp; GOVERNANCE</text>',
     ]
 
-    # edges first (under nodes)
+    # Edges first (under nodes). The slots are a fixed layout; which of them are JOINED is
+    # read from the plan. This drew the whole chain source -> bronze -> glue1 -> silver ->
+    # glue2 -> gold -> athena -> results whenever the slots were filled, so a stack whose
+    # Glue job declares no source or target path still showed a complete medallion pipeline.
+    slot_of = {address: key for key, addresses in R.items() for address in addresses}
     edges = ['<g id="edges">']
-    chain = [k for k in ["source", "bronze", "glue1", "silver", "glue2", "gold"] if present(k)]
-    for a, b in zip(chain, chain[1:]):
+    drawn = set()
+    for hop in declared_hops(plan):
+        a, b = slot_of.get(hop["source"]), slot_of.get(hop["target"])
+        if not a or not b or a == b or (a, b) in drawn:
+            continue
+        if not (present(a) and present(b)):
+            continue
+        drawn.add((a, b))
         edges.append(_ortho_edge(LAYOUT[a], LAYOUT[b], "data"))
-    if present("gold") and present("athena"):
-        edges.append(_ortho_edge(LAYOUT["gold"], LAYOUT["athena"], "data"))
-    if present("athena") and present("results"):
-        edges.append(_ortho_edge(LAYOUT["athena"], LAYOUT["results"], "data"))
-    for i, g in enumerate(("glue1", "glue2")):  # orchestration controls the Glue jobs
-        if present("sfn") and present(g):
-            edges.append(_ortho_edge(LAYOUT["sfn"], LAYOUT[g], "ctrl", channel=364 - i * 8))
     edges.append('</g>')
     parts += edges
 
@@ -672,12 +675,11 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         return fmap.get(address.split("[")[0], [])
 
     # layout pass — record node positions so edges anchor to real nodes
-    pos, rowmap = {}, {}
+    pos = {}
     for t in visible_tiers:
         y = 108
         for r in by_tier[t]:
             pos[r["address"]] = (TIER_X[t], y)
-            rowmap[r["address"]] = r
             y += node_h + gap
 
     parts = [
@@ -709,8 +711,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     ]
 
     # edges — real flow anchored to node positions
-    flow = (_pipeline_flow(rowmap, pos, node_h) if template == "aws-data-pipeline-standard"
-            else _generic_flow(by_tier, pos, node_h, visible_tiers))
+    flow = _anchored_flow(plan, pos, node_h)
     edges = ['<g id="edges">']
     for x1, y1, x2, y2, kind in flow:
         mx = (x1 + x2) // 2

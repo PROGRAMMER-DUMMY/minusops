@@ -218,6 +218,22 @@ This document provides an exhaustive, architectural, and operational reference f
 
 ### 7. `core/reporting/reporter.py`
 - **File Link:** [`core/reporting/reporter.py`](./reporter.py)
+- **The arrows in `architecture.svg` are the same derivation the draw.io canvas uses**
+  ([`declared_hops`](./reporter.py) -> [`discover_data_edges`](./drawio_generator.py)). This
+  file built its own: `_pipeline_flow` matched resource NAMES (a bucket whose instance key was
+  "bronze", a Glue job called `bronze_to_silver`), `build_pipeline_flow_svg` joined the whole
+  slot chain source -> bronze -> glue1 -> silver -> glue2 -> gold -> athena -> results
+  whenever the slots were filled, and `_generic_flow` connected the first node of consecutive
+  tiers so the picture would have arrows in it. All three are the defect deleted from
+  `drawio_generator` in 14ab3f1, and they shipped in an artifact `minusctl` lists as required
+  and the console renders under "01 Topology". `_pipeline_flow` was additionally unreachable:
+  `build_svg` returns early for the template it was branched on.
+- **The layout is still a fixed set of slots; which of them are JOINED is read from the plan.**
+  A stack whose Glue job names no source or target path now draws no arrows, which is the
+  correct picture of a stack that declares no data path.
+- **`tests/test_reporter.py` asserted the fabrication.** `test_pipeline_flow_draws_real_anchored_edges`
+  required arrows from a fixture that declares none, so it could only pass while the edges
+  were invented. It is now two tests and a fixture that states its hops.
 - **Exact Purpose:** Core report generation engine. After a `terraform plan -out=tfplan`, it creates a versioned, plan-hash-keyed report bundle in `artifacts/reports/<hash[:12]>/` or `runs/<run-id>/reports/<hash[:12]>/`. Generates SVG architecture diagrams, dataflow diagrams, HTML reports, and headless-browser PDF documents.
 - **Key Functions/Classes:**
   - [`generate(dir_)`](./reporter.py) / [`generate_from_plan_json(dir_, plan_json_path, template=None)`](./reporter.py): Main entry points loading `tfplan` / `plan.json` and calling `_generate_report_bundle()`.
