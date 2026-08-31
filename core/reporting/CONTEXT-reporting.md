@@ -497,6 +497,14 @@ This document provides an exhaustive, architectural, and operational reference f
 - **The legend says what an ABSENT arrow means** ([`_append_legend`](./drawio_generator.py)):
   the plan declares no path, not that none exists at runtime. That is the reading this canvas
   most often loses.
+- **`_BUCKET_TO_BUCKET` is for resources that name both ends and are neither.** A
+  replication configuration is not a place data rests; it states that one bucket copies to
+  another, so the hop is drawn between the two buckets and the configuration itself is not on
+  it.
+- **`command.script_location` is deliberately absent from `_DATA_ARGUMENTS`.** It appears ten
+  times across the plans in `runs/`, every one pointing at the bronze bucket -- because that
+  is where the SCRIPT lives. Reading it would draw "bronze feeds this job with data" about a
+  bucket holding its code. A test asserts the exact edge set of a plan that carries one.
 - **Three spatial roles, not six columns** ([`layout_positions`](./drawio_generator.py)),
   following the AWS analytics reference architecture: flow layers left to right, cataloging
   above the spine, security and monitoring in a full-width band beneath it that carries no

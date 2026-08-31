@@ -196,10 +196,20 @@ def _bucket_for_uri(uri, index):
 _DATA_ARGUMENTS = (
     ("aws_glue_job", ("default_arguments", "--source_path"), "in"),
     ("aws_glue_job", ("default_arguments", "--target_path"), "out"),
+    ("aws_glue_job", ("default_arguments", "--quarantine_path"), "out"),
     ("aws_athena_workgroup",
      ("configuration", "result_configuration", "output_location"), "out"),
     ("aws_kinesis_firehose_delivery_stream",
      ("extended_s3_configuration", "bucket_arn"), "out"),
+    ("aws_kinesis_firehose_delivery_stream", ("s3_configuration", "bucket_arn"), "out"),
+    ("aws_dms_s3_endpoint", ("bucket_name",), "out"),
+)
+
+# Resources that name BOTH ends of a hop and are neither of them. A replication
+# configuration is not a place data rests; it states that one bucket copies to another.
+_BUCKET_TO_BUCKET = (
+    ("aws_s3_bucket_replication_configuration",
+     ("bucket",), ("rule", "destination", "bucket")),
 )
 
 
@@ -254,6 +264,19 @@ def discover_data_edges(plan_json):
             if not bucket:
                 continue
             pairs.append((bucket, address) if direction == "in" else (address, bucket))
+
+        for rtype, source_path, target_path in _BUCKET_TO_BUCKET:
+            if res.get("type") != rtype:
+                continue
+            ends = []
+            for path in (source_path, target_path):
+                node = _walk(declared, path)
+                ends.append(_resolve_bucket(
+                    _walk(after, path),
+                    node.get("references") if isinstance(node, dict) else None,
+                    index, addresses))
+            if all(ends):
+                pairs.append((ends[0], ends[1]))
 
     seen, edges = set(), []
     for source, target in pairs:

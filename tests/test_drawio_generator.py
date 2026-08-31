@@ -226,6 +226,122 @@ def _wired_plan():
     ]}
 
 
+def _quarantine_plan():
+    """A quality gate: the job reads one path, writes a clean path and a rejected path.
+
+    `--quarantine_path` is what `modules/dq-great-expectations` emits, and it appears three
+    times across the plans in `runs/`. Rejected records are data, and where they go is the
+    question an on-call engineer asks first.
+    """
+    def rc(address, rtype, after):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": after}}
+    return {"resource_changes": [
+        rc('aws_s3_bucket.zones["raw"]', "aws_s3_bucket", {"bucket": "lake-raw"}),
+        rc('aws_s3_bucket.zones["curated"]', "aws_s3_bucket", {"bucket": "lake-curated"}),
+        rc("aws_s3_bucket.quarantine", "aws_s3_bucket", {"bucket": "lake-quarantine"}),
+        rc("aws_glue_job.dq", "aws_glue_job", {
+            "command": {"script_location": "s3://lake-raw/scripts/dq.py"},
+            "default_arguments": {"--source_path": "s3://lake-raw/data/",
+                                  "--target_path": "s3://lake-curated/data/",
+                                  "--quarantine_path": "s3://lake-quarantine/rejected/"}}),
+    ]}
+
+
+def test_a_job_declares_where_it_sends_the_records_it_rejects():
+    """Quarantine is a declared destination like any other. It was the one path in the
+    quality-gate module the canvas never drew, so a reader could see the gate and not where
+    the rejects land."""
+    hops = {(e["source"], e["target"])
+            for e in drawio_generator.discover_data_edges(_quarantine_plan())}
+
+    assert ("aws_glue_job.dq", "aws_s3_bucket.quarantine") in hops
+
+
+def test_a_jobs_script_location_never_becomes_a_data_arrow():
+    """`command.script_location` appears ten times across the plans in `runs/`, every one of
+    them pointing at the bronze bucket -- because that is where the SCRIPT lives. Reading it
+    would draw "bronze feeds this job with data" about a bucket that holds its code."""
+    hops = {(e["source"], e["target"])
+            for e in drawio_generator.discover_data_edges(_quarantine_plan())}
+
+    assert ('aws_s3_bucket.zones["raw"]', "aws_glue_job.dq") in hops, (
+        "the declared --source_path hop should still be there")
+    assert hops == {
+        ('aws_s3_bucket.zones["raw"]', "aws_glue_job.dq"),
+        ("aws_glue_job.dq", 'aws_s3_bucket.zones["curated"]'),
+        ("aws_glue_job.dq", "aws_s3_bucket.quarantine"),
+    }
+
+
+def _replication_plan():
+    """`modules/storage-medallion-s3` provisions cross-region replication when a destination
+    bucket ARN is supplied. The rule names the destination; the configuration names the
+    source through its own `bucket` argument."""
+    def rc(address, rtype, after):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": after}}
+    return {"resource_changes": [
+        rc('aws_s3_bucket.zone["gold"]', "aws_s3_bucket", {"bucket": "lake-gold"}),
+        rc("aws_s3_bucket.dr_gold", "aws_s3_bucket", {"bucket": "lake-gold-dr"}),
+        rc('aws_s3_bucket_replication_configuration.zone["gold"]',
+           "aws_s3_bucket_replication_configuration",
+           {"bucket": "lake-gold",
+            "rule": [{"id": "dr-gold",
+                      "destination": [{"bucket": "arn:aws:s3:::lake-gold-dr"}]}]}),
+    ]}
+
+
+def test_replication_is_data_movement_between_the_two_buckets_it_names():
+    """A DR copy is data leaving one bucket for another. The canvas drew neither the arrow
+    nor the destination, so a stack with cross-region replication looked identical to one
+    without it -- which is the difference an auditor is asking about."""
+    hops = {(e["source"], e["target"])
+            for e in drawio_generator.discover_data_edges(_replication_plan())}
+
+    assert ('aws_s3_bucket.zone["gold"]', "aws_s3_bucket.dr_gold") in hops
+
+
+def _ingest_plan():
+    """The two landing shapes `modules/ingestion-dms` and `modules/ingest-firehose` emit.
+
+    DMS names its target with a bare bucket name rather than a URI, and Firehose has two
+    delivery blocks: `extended_s3_configuration` and the older `s3_configuration`. Only the
+    extended one was read, so a stream configured the plain way landed nowhere on the canvas.
+    """
+    def rc(address, rtype, after):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": after}}
+    return {"resource_changes": [
+        rc('aws_s3_bucket.zone["bronze"]', "aws_s3_bucket", {"bucket": "lake-bronze"}),
+        rc("aws_dms_s3_endpoint.target", "aws_dms_s3_endpoint",
+           {"bucket_name": "lake-bronze", "bucket_folder": "cdc"}),
+        rc("aws_kinesis_firehose_delivery_stream.events",
+           "aws_kinesis_firehose_delivery_stream",
+           {"s3_configuration": [{"bucket_arn": "arn:aws:s3:::lake-bronze"}]}),
+    ]}
+
+
+def test_a_dms_target_endpoint_names_the_bucket_it_lands_in():
+    hops = {(e["source"], e["target"])
+            for e in drawio_generator.discover_data_edges(_ingest_plan())}
+
+    assert ("aws_dms_s3_endpoint.target", 'aws_s3_bucket.zone["bronze"]') in hops
+
+
+def test_firehose_is_read_from_either_delivery_block():
+    """`s3_configuration` is the older of the two and is still what a plan can carry. Reading
+    only `extended_s3_configuration` meant a stream landed nowhere on the canvas."""
+    hops = {(e["source"], e["target"])
+            for e in drawio_generator.discover_data_edges(_ingest_plan())}
+
+    assert ("aws_kinesis_firehose_delivery_stream.events",
+            'aws_s3_bucket.zone["bronze"]') in hops
+
+
 def test_the_ledger_states_only_what_the_plan_declares():
     """The protocol, latency and safeguard columns were produced by matching a substring
     against the TARGET address, so a KMS key referenced by an Athena workgroup was reported
