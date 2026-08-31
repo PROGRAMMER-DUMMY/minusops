@@ -1,7 +1,9 @@
 name: "Terraform CI/CD (governed)"
 
 # Workload-agnostic pipeline: you supply WHICH Terraform directory to act on.
-# - test:     runs the engine's own pytest suite (incl. the real-terraform gate e2e).
+# - test:     runs the engine's own pytest suite. `pyproject.toml` deselects the tests
+#             marked slow, so the real-terraform gate e2e is NOT in this job -- it runs
+#             in ci.yml's `slow` job. This line claimed otherwise and was wrong.
 # - validate: static checks on the chosen dir, no cloud credentials.
 # - deploy:   gated behind a human approval (the `production` environment) AND the
 #             project's own plan-gate, so apply runs ONLY the exact reviewed plan hash.

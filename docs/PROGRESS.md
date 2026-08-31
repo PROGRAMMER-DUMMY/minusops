@@ -7,7 +7,7 @@ this up cold should be able to read only this file and know where things stand.
 increment, close a decision, or discover a bug, edit here before moving on. Stale entries are
 worse than missing ones.
 
-Last updated: 2026-08-18 · Branch: `feat/minusops-enterprise-nextgen-v2`
+Last updated: 2026-08-31 · Branch: `fix/drawio-dataflow-edges`
 
 ---
 
@@ -125,9 +125,14 @@ New file: `core/governance/verification_coverage.py`.
 
 ## 4. Verification status
 
-**535 passed, 77 skipped, 303 deselected in ~50s.** The suite now runs to completion, which
+**Roughly 2,000 passing in the default suite, plus 362 marked `slow` that ran for the first
+time on 2026-08-31.** The suite now runs to completion, which
 it never once did before: 14 files doing live `terraform init` / provider-schema fetches are
-marked `slow` and deselected by default. CI runs them with `pytest -m slow`.
+marked `slow` and deselected by default. CI runs them in ci.yml's `slow` job, added
+2026-08-31. Until then no workflow ran them at all: every `pytest` invocation inherited
+`addopts = -m 'not slow'` from pyproject, while this line, `ci.yml`'s header and
+`deploy.yml`'s all claimed otherwise. 362 tests, including the whole gate end-to-end
+suite and 51 synthesizer tests, had never executed anywhere.
 
 ```bash
 python -m pytest          # no flags needed; pyproject sets --basetemp and -m 'not slow'
