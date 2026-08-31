@@ -510,6 +510,22 @@ This document provides an exhaustive, architectural, and operational reference f
 - **The legend says what an ABSENT arrow means** ([`_append_legend`](./drawio_generator.py)):
   the plan declares no path, not that none exists at runtime. That is the reading this canvas
   most often loses.
+- **A layout profile says where each layer is drawn, and nothing else**
+  ([`LAYOUT_PROFILES`](./drawio_generator.py)). An organisation handing over a screenshot of
+  its existing architecture is specifying an ARRANGEMENT -- how many tiers, which axis the
+  flow runs on, what sits beside what -- so that is all a profile carries: which region each
+  classified layer belongs to, and the order of the tiers in the middle.
+- **A profile can never change which hops exist.** A test renders the same plan under two
+  profiles and asserts the ledger is identical. If arrangement could change the edges, an
+  organisation could pick a layout that hides a gap and the drawing would stop being a
+  reading of the plan.
+- **An unknown profile raises rather than defaulting.** Falling back would draw one
+  arrangement while the record claims another.
+- **Reading a screenshot happens outside `core/`** ([`declared_profile`](./drawio_generator.py)).
+  A model can look at an image and propose a profile; `core/` is stdlib-only and makes no
+  model calls, and more to the point reading a picture is inference. What reaches this file
+  is the profile an operator CONFIRMED, recorded in `requirements.json` like any other
+  answer. A misread layout applied silently is the same defect class as an invented edge.
 - **The canvas opens with a line saying what it is** ([`canvas_summary`](./drawio_generator.py)).
   A reader arrived at fifty tiles with no idea what the stack was. Every number is counted
   from the plan and nothing in it is a sentence anyone wrote: "78 resources -- 3 medallion

@@ -587,6 +587,18 @@ _EXTERNAL_ACTORS = {
 }
 
 
+def declared_profile(requirements):
+    """The arrangement the operator confirmed, or the reference architecture.
+
+    An organisation's screenshot is read by a model, not by this file: reading a picture is
+    inference, and inference becomes a fact here only once somebody says so. What reaches
+    this function is the profile an operator confirmed, recorded like any other answer.
+    """
+    layout = ((requirements or {}).get("layout") or {})
+    name = layout.get("profile") if isinstance(layout, dict) else layout
+    return name if name in LAYOUT_PROFILES else DEFAULT_PROFILE
+
+
 def external_actors(requirements):
     """Who sends data in, from what the interview recorded -- never from the plan.
 
@@ -647,7 +659,37 @@ def _addresses(resources):
     return [r.get("address") for r in resources]
 
 
-def layout_positions(resources, actors=()):
+# Where each classified layer is drawn. An organisation handing over a screenshot of its
+# existing architecture is specifying an ARRANGEMENT, and that is all a profile is: which
+# region each layer sits in, and the order of the tiers in the middle.
+#
+# A profile can never change which hops exist. If it could, an organisation could pick a
+# layout that hides a gap, and the drawing would stop being a reading of the plan.
+LAYOUT_PROFILES = {
+    "aws-analytics": {
+        "title": "AWS serverless analytics reference architecture",
+        "above": ("catalog",),
+        "spine": ("processing", "storage"),
+        "left": ("ingestion",),
+        "right": ("consumption",),
+        "below": ("governance", "other"),
+        "offset_spine_head": True,
+    },
+    "stacked-tiers": {
+        "title": "Tiers stacked top to bottom, every layer its own row",
+        "above": (),
+        "spine": ("ingestion", "processing", "storage", "consumption"),
+        "left": (),
+        "right": (),
+        "below": ("catalog", "governance", "other"),
+        "offset_spine_head": False,
+    },
+}
+
+DEFAULT_PROFILE = "aws-analytics"
+
+
+def layout_positions(resources, actors=(), profile=DEFAULT_PROFILE):
     """Return {address: (x, y)}, the bands to draw around them, and the account boundary.
 
     Processing sits above storage and each transform is offset half a slot, so it lands
@@ -656,17 +698,29 @@ def layout_positions(resources, actors=()):
     matching the AWS analytics reference architecture. Every band height is derived from what
     the band holds, so a band never grows into its neighbour.
     """
+    shape = LAYOUT_PROFILES[profile]
     layers = _by_layer(resources)
     positions, bands = {}, []
     inset = (_SLOT_WIDTH + _GUTTER) if actors else 0
 
-    ingestion = _addresses(layers.get("ingestion", []))
+    def region(names):
+        return [address for name in names
+                for address in _addresses(layers.get(name, []))]
+
+    ingestion = region(shape["left"])
     zones, support = _medallion_split(layers)
-    transforms = [r for r in layers.get("processing", []) if _role_of(r) != "orchestrate"]
-    orchestration = [r for r in layers.get("processing", []) if _role_of(r) == "orchestrate"]
-    consumption = _addresses(layers.get("consumption", []))
-    catalog = _addresses(layers.get("catalog", []))
-    footer = _addresses(layers.get("governance", [])) + _addresses(layers.get("other", []))
+    spine_layers = shape["spine"]
+    transforms = ([r for r in layers.get("processing", []) if _role_of(r) != "orchestrate"]
+                  if "processing" in spine_layers else [])
+    orchestration = ([r for r in layers.get("processing", []) if _role_of(r) == "orchestrate"]
+                     if "processing" in spine_layers else [])
+    consumption = region(shape["right"])
+    catalog = region(shape["above"])
+    footer = region(shape["below"])
+    # Layers the profile puts in the spine that this generator has no dedicated row for are
+    # stacked underneath it in declaration order, so no resource is silently dropped.
+    extra_rows = [(name, _addresses(layers.get(name, [])))
+                  for name in spine_layers if name not in ("processing", "storage")]
 
     spine_columns = max(len(zones), len(transforms) + 1, 1)
     # Cataloging and security wrap to the same width as each other. Deciding it here rather
@@ -703,10 +757,10 @@ def layout_positions(resources, actors=()):
     processing_rows = 0
     processing_height = 0
     if transforms or orchestration:
+        nudge = _SLOT_WIDTH // 2 if shape["offset_spine_head"] else 0
         for index, res in enumerate(transforms):
             positions[res.get("address")] = (
-                spine_start + index * _SLOT_WIDTH + _SLOT_WIDTH // 2,
-                top + _LABEL_STRIP)
+                spine_start + index * _SLOT_WIDTH + nudge, top + _LABEL_STRIP)
         processing_rows = 1 if transforms else 0
         if orchestration:
             processing_rows += place(_addresses(orchestration), spine_start,
@@ -727,6 +781,15 @@ def layout_positions(resources, actors=()):
     storage_height = _band_height(storage_rows) if (zones or support) else 0
     if storage_height:
         bands.append(("storage", spine_start - 20, storage_top, spine_width, storage_height))
+
+    stacked_top = storage_top + storage_height + (_GUTTER if storage_height else 0)
+    for name, members in extra_rows:
+        if not members:
+            continue
+        rows = place(members, spine_start, stacked_top + _LABEL_STRIP, spine_columns)
+        height = _band_height(rows)
+        bands.append((name, spine_start - 20, stacked_top, spine_width, height))
+        stacked_top += height + _GUTTER
 
     flow_height = max(processing_height + (_GUTTER if processing_height else 0)
                       + storage_height, _band_height(1))
@@ -1325,7 +1388,8 @@ def _append_bands(root, bands, parent="1", boundary=None):
         })
 
 
-def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", requirements=None):
+def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", requirements=None,
+                              profile=None):
     """Render one plan as draw.io XML, a 1-click URL, and the declared-hop ledger.
 
     `requirements` is the interview record. It contributes only what a plan cannot state --
@@ -1345,7 +1409,8 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
                   for module, count in sorted(folded_counts.items())]
 
     actors = external_actors(requirements)
-    positions, bands, boundary = layout_positions(resources, actors)
+    positions, bands, boundary = layout_positions(
+        resources, actors, profile or declared_profile(requirements))
     badges = fold_badges(plan_json, [r.get("address") for r in resources])
 
     steps = walkthrough_steps(edges, {r.get("address"): r for r in resources})

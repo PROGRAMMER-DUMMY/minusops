@@ -1448,6 +1448,60 @@ def test_the_summary_is_drawn_at_the_top_of_the_canvas():
     assert float(header[0].find("mxGeometry").get("y")) < top
 
 
+def test_the_default_profile_is_the_reference_architecture_we_already_draw():
+    """The profile mechanism must not change the drawing it was extracted from."""
+    default = drawio_generator.LAYOUT_PROFILES[drawio_generator.DEFAULT_PROFILE]
+
+    assert default["above"] == ("catalog",)
+    assert default["spine"] == ("processing", "storage")
+    assert default["left"] == ("ingestion",)
+    assert default["right"] == ("consumption",)
+    assert "governance" in default["below"]
+
+
+def test_a_profile_changes_where_a_layer_is_drawn():
+    """An organisation handing over a screenshot is specifying an ARRANGEMENT. Stacked tiers
+    top to bottom is a different arrangement of the same resources."""
+    plan = _medallion_plan()
+    plan["resource_changes"].append(
+        {"address": "aws_athena_workgroup.analysts", "type": "aws_athena_workgroup",
+         "mode": "managed", "name": "analysts",
+         "change": {"actions": ["create"], "after": {}}})
+    resources = [r for r in plan["resource_changes"]
+                 if not drawio_generator.is_folded(r["type"])]
+
+    _, default_bands, _ = drawio_generator.layout_positions(resources)
+    _, stacked_bands, _ = drawio_generator.layout_positions(
+        resources, profile="stacked-tiers")
+
+    default = {name: (x, y) for name, x, y, _, _ in default_bands}
+    stacked = {name: (x, y) for name, x, y, _, _ in stacked_bands}
+
+    # Consumption is a right-hand flank by default and a tier of its own when stacked.
+    assert default["consumption"][0] > default["storage"][0]
+    assert stacked["consumption"][0] == stacked["storage"][0]
+    assert stacked["consumption"][1] > stacked["storage"][1]
+
+
+def test_a_profile_cannot_change_which_hops_exist():
+    """Arrangement is presentation. If a layout could change the edges, an organisation could
+    pick one that hides a gap."""
+    plan = _wired_plan()
+    resources = [r for r in plan["resource_changes"]]
+    first = drawio_generator.generate_drawio_from_plan(plan)["ledger"]
+    second = drawio_generator.generate_drawio_from_plan(
+        plan, profile="stacked-tiers")["ledger"]
+
+    assert first == second
+    assert resources
+
+
+def test_an_unknown_profile_is_refused_rather_than_silently_defaulted():
+    """Falling back would draw one arrangement while the record says another."""
+    with pytest.raises(KeyError):
+        drawio_generator.layout_positions([], profile="whatever-they-asked-for")
+
+
 def test_the_security_band_spans_the_whole_diagram():
     bands = _band_geometry(drawio_generator.generate_drawio_from_plan(_banded_plan())["xml"])
 
