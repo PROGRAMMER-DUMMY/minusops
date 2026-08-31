@@ -501,6 +501,17 @@ def _medallion_split(layers):
     return ranked, support
 
 
+def _reference_columns(count, minimum=3):
+    """How wide to wrap a band whose order carries no meaning.
+
+    Cataloging and security are reference material: nothing is read left to right, so
+    inheriting the spine's column count only makes them tall. Three medallion zones wrapped
+    33 governance resources into 4 columns and 9 rows, and the canvas came out 800 wide by
+    2400 tall -- a strip nobody scrolls to the end of.
+    """
+    return max(minimum, int(count ** 0.5) + 1 if count else minimum)
+
+
 def _band_height(rows):
     return _LABEL_STRIP + max(1, rows) * _STACK_HEIGHT + _BAND_PAD
 
@@ -531,6 +542,12 @@ def layout_positions(resources, actors=()):
     footer = _addresses(layers.get("governance", [])) + _addresses(layers.get("other", []))
 
     spine_columns = max(len(zones), len(transforms) + 1, 1)
+    # Cataloging and security wrap to the same width as each other. Deciding it here rather
+    # than per band is what stops the flow sitting in the left third of a boundary stretched
+    # by whichever reference band happened to be widest.
+    reference_columns = max(spine_columns,
+                            _reference_columns(len(catalog), spine_columns),
+                            _reference_columns(len(footer), spine_columns))
     origin_x = _ORIGIN_X + inset
     spine_start = origin_x + (_SLOT_WIDTH if ingestion else 0)
     spine_width = spine_columns * _SLOT_WIDTH
@@ -549,10 +566,12 @@ def layout_positions(resources, actors=()):
     # boundary's top edge lands above the canvas.
     top = _MARGIN_Y + _LABEL_STRIP
     if catalog:
-        rows = place(catalog, spine_start, top + _LABEL_STRIP, spine_columns)
+        rows = place(catalog, spine_start, top + _LABEL_STRIP, reference_columns)
         bands.append(("catalog", spine_start - 20, top,
-                      min(len(catalog), spine_columns) * _SLOT_WIDTH, _band_height(rows)))
+                      min(len(catalog), reference_columns) * _SLOT_WIDTH,
+                      _band_height(rows)))
         top += _band_height(rows) + _GUTTER
+    flow_top = top
 
     processing_rows = 0
     processing_height = 0
@@ -591,22 +610,26 @@ def layout_positions(resources, actors=()):
     if consumption:
         place(consumption, spine_end, top + _LABEL_STRIP, 1)
         bands.append(("consumption", spine_end - 20, top, _SLOT_WIDTH,
-                      max(flow_height, _band_height(len(consumption)))))
+                      _band_height(len(consumption))))
 
-    flow_bottom = top + max([height for _, _, band_top, _, height in bands
-                             if band_top == top] or [flow_height])
+    # Every band drawn so far, not just the ones starting on the top row. Storage sits below
+    # processing, so filtering on `band_top == top` excluded it -- and the governance band
+    # went straight through it the moment the consumption band stopped being stretched to
+    # cover the whole flow height by accident.
+    flow_bottom = max([band_top + height for _, _, band_top, _, height in bands]
+                      or [top + flow_height])
 
     if footer:
         governance_top = flow_bottom + _GUTTER
-        rows = place(footer, origin_x, governance_top + _LABEL_STRIP, per_row)
-        bands.append(("governance", origin_x - 20, governance_top, total_width,
+        rows = place(footer, origin_x, governance_top + _LABEL_STRIP, reference_columns)
+        bands.append(("governance", origin_x - 20, governance_top,
+                      max(total_width, min(len(footer), reference_columns) * _SLOT_WIDTH),
                       _band_height(rows)))
 
     boundary = _boundary(bands)
     for index, actor in enumerate(actors):
         positions[f"actor::{actor['key']}"] = (
-            _ORIGIN_X, (boundary[1] if boundary else _MARGIN_Y) + _LABEL_STRIP
-            + index * _STACK_HEIGHT)
+            _ORIGIN_X, flow_top + _LABEL_STRIP + index * _STACK_HEIGHT)
 
     return positions, bands, boundary
 

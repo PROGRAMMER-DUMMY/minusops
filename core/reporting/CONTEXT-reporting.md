@@ -469,6 +469,19 @@ This document provides an exhaustive, architectural, and operational reference f
   the label and the placement cannot disagree -- which is exactly what happened while
   [`_role_of`](./drawio_generator.py) passed an empty instance key and every medallion zone
   read as a generic Store while being placed on the spine as a zone.
+- **Cataloging and security wrap to their own width, not the spine's**
+  ([`_reference_columns`](./drawio_generator.py)). Nothing in an inventory is read left to
+  right, so inheriting the medallion's three columns only made those bands tall: 33 security
+  resources became four columns and nine rows, and the canvas came out 800 wide by 2400 tall.
+  One column count is decided for both before either is placed, so they line up with each
+  other rather than each following a different neighbour.
+- **`flow_bottom` measures every band placed so far.** It filtered on bands starting at the
+  top row, which excluded storage -- storage sits below processing -- so the security band
+  was laid straight through it. The consumption band had been stretched to the full flow
+  height and was hiding the collision; sizing it to its one tile exposed it. The checker's
+  `sibling_overlap` caught it.
+- **The external sender is drawn level with the flow it feeds**, not with the catalog band
+  above it.
 - **Processing sits above storage, not beside it.** The spine alternated zone, transform,
   zone along one row, which reads as a line of tiles and says nothing about direction. Each
   transform is offset half a slot so it lands between the two zones it moves data between,

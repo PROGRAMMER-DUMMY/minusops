@@ -1078,6 +1078,68 @@ def test_the_deployment_page_grows_to_hold_its_own_note():
     assert float(note.get("y")) + float(note.get("height")) <= height
 
 
+def _wide_reference_plan():
+    """Three medallion zones and a large security inventory: the shape that produced an
+    800x2400 strip."""
+    def rc(address, rtype):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": {}}}
+    changes = [rc(f'aws_s3_bucket.zones["{s}"]', "aws_s3_bucket")
+               for s in ("raw", "cleaned", "curated")]
+    changes += [rc(f"aws_glue_job.etl{i}", "aws_glue_job") for i in range(2)]
+    changes += [rc(f"aws_iam_role.role{i}", "aws_iam_role") for i in range(20)]
+    changes += [rc(f"aws_subnet.net{i}", "aws_subnet") for i in range(13)]
+    changes += [rc(f"aws_glue_catalog_database.cat{i}", "aws_glue_catalog_database")
+                for i in range(8)]
+    return {"resource_changes": changes}
+
+
+def test_a_reference_band_does_not_inherit_the_spines_column_count():
+    """Cataloging and security are inventories; nothing in them is read left to right. Three
+    medallion zones wrapped 33 security resources into four columns and nine rows, and the
+    canvas came out 800 wide by 2400 tall -- a strip nobody scrolls to the end of."""
+    bands = _band_geometry(
+        drawio_generator.generate_drawio_from_plan(_wide_reference_plan())["xml"], full=True)
+
+    assert bands["governance"][2] > bands["storage"][2]
+    assert bands["catalog"][2] == bands["governance"][2]
+
+
+def test_the_canvas_is_not_a_tall_narrow_strip():
+    bands = _band_geometry(
+        drawio_generator.generate_drawio_from_plan(_wide_reference_plan())["xml"], full=True)
+    account = bands["account"]
+
+    assert account[3] / account[2] < 2.5, f"{account[2]}x{account[3]}"
+
+
+def test_a_band_below_another_is_counted_when_the_footer_is_placed():
+    """`flow_bottom` filtered on bands starting at the top row, so storage -- which sits
+    below processing -- was excluded, and the security band was laid straight through it the
+    moment the consumption band stopped being stretched over the whole flow by accident."""
+    bands = _band_geometry(
+        drawio_generator.generate_drawio_from_plan(_wide_reference_plan())["xml"], full=True)
+
+    storage_bottom = bands["storage"][1] + bands["storage"][3]
+    assert bands["governance"][1] >= storage_bottom, (bands["storage"], bands["governance"])
+
+
+def test_a_sender_is_drawn_level_with_the_flow_it_feeds():
+    """It sat level with the catalog band, which is above the flow and is not what it feeds."""
+    xml_text = drawio_generator.generate_drawio_from_plan(
+        _sftp_plan(), requirements=_SFTP_REQUIREMENTS)["xml"]
+    root = ET.fromstring(xml_text)
+    actor = [cell.find("mxGeometry") for cell in root.iter("mxCell")
+             if (cell.get("id") or "").startswith("actor_")][0]
+    bands = _band_geometry(xml_text, full=True)
+
+    flow_top = min(bands[name][1] for name in ("processing", "storage") if name in bands)
+    flow_bottom = max(bands[name][1] + bands[name][3]
+                      for name in ("processing", "storage") if name in bands)
+    assert flow_top <= float(actor.get("y")) <= flow_bottom
+
+
 def test_the_security_band_spans_the_whole_diagram():
     bands = _band_geometry(drawio_generator.generate_drawio_from_plan(_banded_plan())["xml"])
 
