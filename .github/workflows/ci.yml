@@ -220,10 +220,30 @@ jobs:
           sudo mv opa /usr/local/bin/opa
           opa version
 
+      # Disk is the failure mode this job is most likely to hit, and it is not theoretical:
+      # running these locally on Windows filled a 361 GB disk to zero bytes on 2026-09-01,
+      # and docs/PROGRESS.md records the same thing happening on 2026-08-18. The cause is
+      # that Terraform COPIES a provider out of TF_PLUGIN_CACHE_DIR rather than symlinking it
+      # when the platform cannot symlink, at ~900 MB for hashicorp/aws per `terraform init`.
+      #
+      # A GitHub runner has roughly 14 GB free. `tmp_path_retention_policy = "failed"` in
+      # pyproject deletes a passing test's directory immediately, which caps the peak at the
+      # handful that fail -- but if a lot fail at once the job dies of disk rather than of the
+      # failures, and the log says nothing useful. These two steps make that legible instead:
+      # the reading before and after is the evidence for whether the cap is holding.
+      - name: Disk before
+        run: df -h /
+
       - name: Run the slow suite
         env:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: python -m pytest -m slow -q
+
+      - name: Disk after
+        if: always()
+        run: |
+          df -h /
+          du -sh "${{ runner.temp }}/tf-plugin-cache" 2>/dev/null || true
 
   package:
     name: "wheel asset smoke"
