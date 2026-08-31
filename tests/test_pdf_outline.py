@@ -61,7 +61,6 @@ def test_the_outline_names_the_document_sections(rendered):
 def test_backgrounds_survive_printing(rendered):
     """Independent of the outline: the report is dark-themed, and a PDF that printed
     white-on-white would be unreadable while still passing every other check."""
-    assert b"/Outlines" in rendered or True
     import zlib
     streams = b""
     for m in re.finditer(rb"stream\r?\n(.*?)endstream", rendered, re.S):

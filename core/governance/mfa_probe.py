@@ -39,6 +39,15 @@ TRUST = {
 }
 
 
+class MFAError(RuntimeError):
+    """A step in the MFA probe failed.
+
+    These helpers raised SystemExit, which is a BaseException: any caller importing `aws()`
+    or `elevate()` had its process killed rather than getting an error it could handle. Only
+    the __main__ block below turns this into an exit code.
+    """
+
+
 def aws(*args, check=False, env=None):
     """Returns (returncode, stdout, stderr). Never raises on a non-zero exit.
 
@@ -47,7 +56,7 @@ def aws(*args, check=False, env=None):
     done = subprocess.run(["aws", *args], capture_output=True, text=True,
                           env={**os.environ, **env} if env else None)
     if check and done.returncode != 0:
-        raise SystemExit(f"aws {' '.join(args)} failed:\n{done.stderr.strip()}")
+        raise MFAError(f"aws {' '.join(args)} failed:\n{done.stderr.strip()}")
     return done.returncode, done.stdout, done.stderr
 
 
@@ -68,7 +77,7 @@ def elevate(serial, code):
     rc, out, err = aws("sts", "get-session-token", "--serial-number", serial,
                        "--token-code", code, "--output", "json")
     if rc != 0:
-        raise SystemExit(f"[mfa] get-session-token failed:\n{err.strip()}")
+        raise MFAError(f"[mfa] get-session-token failed:\n{err.strip()}")
     creds = json.loads(out)["Credentials"]
     return {"AWS_ACCESS_KEY_ID": creds["AccessKeyId"],
             "AWS_SECRET_ACCESS_KEY": creds["SecretAccessKey"],
@@ -144,7 +153,7 @@ def live_probe(account, method, env=None, chain=False):
         if "EntityAlreadyExists" in err:
             print(f"[live] {TEST_ROLE} already exists -- reusing it.")
         else:
-            raise SystemExit(f"[live] could not create the probe role:\n{err.strip()}")
+            raise MFAError(f"[live] could not create the probe role:\n{err.strip()}")
 
     arn = f"arn:aws:iam::{account}:role/{TEST_ROLE}"
     if chain:
@@ -267,4 +276,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except MFAError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)

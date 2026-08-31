@@ -33,6 +33,23 @@ class FakeProvider:
         return self._owner_map.get(resource_hint)
 
 
+def test_exporting_to_a_named_file_reports_success(tmp_path, monkeypatch):
+    """`main()` does `sys.exit(0 if ok else 1)`. Only the DIRECTORY branch returned True; both
+    single-file branches fell off the end returning None, so writing `report.xlsx` succeeded
+    and exited 1. A CI step calling this failed while producing the file it was asked for."""
+    written = []
+    monkeypatch.setattr(finops_agent, "cmd_export_excel", finops_agent.cmd_export_excel)
+    import excel_finops_generator as gen
+    monkeypatch.setattr(gen, "generate_executive_project_summary_excel",
+                        lambda path, records: written.append(path))
+    monkeypatch.setattr(gen, "generate_both_enterprise_reports",
+                        lambda d: written.append(d) or (d, d))
+
+    assert finops_agent.cmd_export_excel(str(tmp_path / "project_summary.xlsx")) is True
+    assert finops_agent.cmd_export_excel(str(tmp_path / "ledger.xlsx")) is True
+    assert written
+
+
 def test_cmd_cost_prints_spend_and_month_over_month(monkeypatch, capsys):
     provider = FakeProvider(cost_result={
         "ok": True,

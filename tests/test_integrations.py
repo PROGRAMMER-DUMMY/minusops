@@ -14,6 +14,7 @@ import urllib.error
 import pytest
 
 import base_hook
+import connector_config
 import slack_hook
 import teams_hook
 import outlook_hook
@@ -93,6 +94,39 @@ def test_request_json_success_returns_status_and_body(capture_http):
     assert call["method"] == "POST"
     assert call["body"] == {"a": 1}
     assert call["headers"]["Content-type"] == "application/json"
+
+
+def test_an_http_rejection_is_not_reported_as_an_unconfigured_endpoint(monkeypatch):
+    """Every branch read `if res.get("sent")` and called everything else NOT_CONFIGURED, so a
+    401 was shown to the operator as "endpoint is unconfigured" -- a false statement about a
+    destination that is configured and rejecting them. They would go re-enter a URL that was
+    already right."""
+    monkeypatch.setattr(slack_hook, "send_slack_notification",
+                        lambda *a, **k: {"ok": False, "sent": False, "status": 401,
+                                         "error": "invalid_token"})
+    result = connector_config.test_connector("slack")
+
+    assert result["status"] == "AUTH_FAILED", result
+    assert "401" in result["detail"]
+
+
+def test_a_server_error_is_reported_as_a_connection_error(monkeypatch):
+    monkeypatch.setattr(slack_hook, "send_slack_notification",
+                        lambda *a, **k: {"ok": False, "sent": False, "status": 500,
+                                         "error": "upstream exploded"})
+    result = connector_config.test_connector("slack")
+
+    assert result["status"] == "CONNECTION_ERROR", result
+
+
+def test_a_genuinely_unconfigured_endpoint_still_says_so(monkeypatch):
+    """The fix must not turn a real not-configured into a scary error."""
+    monkeypatch.setattr(slack_hook, "send_slack_notification",
+                        lambda *a, **k: {"ok": True, "sent": False,
+                                         "reason": "not_configured", "status": 0})
+    result = connector_config.test_connector("slack")
+
+    assert result["status"] == "NOT_CONFIGURED", result
 
 
 def test_request_json_http_error_returns_real_code_not_500(capture_http):

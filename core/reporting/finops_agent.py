@@ -269,9 +269,16 @@ def cmd_export_excel(output_target):
             }
         ]
         generate_executive_project_summary_excel(output_target, project_records)
-    else:
-        out_dir = os.path.dirname(os.path.abspath(output_target)) or os.getcwd()
-        generate_both_enterprise_reports(out_dir)
+        print(f"[FINOPS EXPORT] Wrote the executive project summary to {output_target}")
+        return True
+
+    out_dir = os.path.dirname(os.path.abspath(output_target)) or os.getcwd()
+    generate_both_enterprise_reports(out_dir)
+    print(f"[FINOPS EXPORT] Wrote both enterprise workbooks to {out_dir}")
+    # `main()` does `sys.exit(0 if ok else 1)`. Only the directory branch above returned
+    # True; both single-file branches fell off the end returning None, so writing a named
+    # .xlsx succeeded and exited 1 -- a CI step failing while producing the file it asked for.
+    return True
 def error_budget_minutes(slo_percent, days=30):
     """
     Calculate allowable downtime/delay minutes for a given SLO over a time window.

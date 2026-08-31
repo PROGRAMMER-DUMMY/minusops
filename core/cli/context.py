@@ -158,7 +158,13 @@ def resolve_run(run_id=None):
             raise ContextError(f"no run matches {run_id!r}")
         return record
     if run_id == "latest":
-        return runs.latest_run()
+        record = runs.latest_run()
+        if not record:
+            # Returning None here handed callers something they then joined into a path,
+            # so the failure surfaced as a TypeError far from the empty `runs/` that caused
+            # it. Every other branch of this function refuses out loud; this one did not.
+            raise ContextError("no runs exist yet, so there is no latest run to resolve")
+        return record
 
     discovered = discover_run_from_cwd()
     if discovered:

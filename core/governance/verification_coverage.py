@@ -32,10 +32,19 @@ UNCHECKED = "unchecked"
 
 def _type_of_resource_ref(ref):
     """Findings name a resource address ('aws_s3_bucket.a') or bare type. Both reduce to
-    the type, which is the grain rules and claims are keyed on."""
+    the type, which is the grain rules and claims are keyed on.
+
+    Module prefixes come off first. `split(".", 1)[0]` returned "module" for
+    `module.storage.aws_s3_bucket.zone`, so no rule keyed on a resource type could match a
+    finding from a module-composed plan -- the path the generator emits. Coverage was
+    under-reported by the mechanism whose whole job is reporting it honestly.
+    """
     if not ref:
         return None
-    return str(ref).split(".", 1)[0]
+    parts = str(ref).split(".")
+    while len(parts) > 2 and parts[0] == "module":
+        parts = parts[2:]
+    return parts[0]
 
 
 def classify(plan_json, findings=(), claims_by_type=None):

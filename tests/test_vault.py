@@ -70,7 +70,11 @@ def test_summary_counts_only_what_is_on_disk(run):
     summary = vault.summary(run)
 
     assert summary["present"] == 3
-    assert summary["total"] == len(vault.CATEGORIES) * 0 + summary["total"]
+    # `len(CATEGORIES) * 0 + summary["total"]` reduces to `total == total`, which held no
+    # matter what the counter did. `total` is the expected DOCUMENT count, not the category
+    # count: 17 documents across 6 categories.
+    assert summary["total"] == 17
+    assert summary["total"] == summary["present"] + summary["missing"]
     assert summary["present"] < summary["total"]
 
 

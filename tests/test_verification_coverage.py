@@ -22,6 +22,25 @@ PLAN = {
 }
 
 
+def test_a_module_composed_finding_resolves_to_its_resource_type():
+    """`str(ref).split(".", 1)[0]` returns "module" for `module.storage.aws_s3_bucket.zone`,
+    so no rule keyed on a resource type could ever match a finding from a module-composed
+    plan -- which is the path the generator emits. Coverage was under-reported by exactly the
+    mechanism that exists to report it honestly.
+
+    Third instance of this bug: policy/g6/rules.rego and lineage_graph.py had it too."""
+    assert vc._type_of_resource_ref(
+        "aws_s3_bucket.a") == "aws_s3_bucket"
+    assert vc._type_of_resource_ref(
+        "module.storage.aws_s3_bucket.zone") == "aws_s3_bucket"
+    assert vc._type_of_resource_ref(
+        'module.storage.aws_s3_bucket.zone["gold"]') == "aws_s3_bucket"
+    assert vc._type_of_resource_ref(
+        "module.a.module.b.aws_kms_key.k") == "aws_kms_key"
+    assert vc._type_of_resource_ref("aws_s3_bucket") == "aws_s3_bucket"
+    assert vc._type_of_resource_ref(None) is None
+
+
 def test_classify_reports_one_row_per_managed_resource_type():
     cov = vc.classify(PLAN, findings=[], claims_by_type={})
     assert {r["resource_type"] for r in cov["types"]} == {"aws_s3_bucket", "aws_dynamodb_table"}

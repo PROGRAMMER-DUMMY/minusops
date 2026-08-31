@@ -121,6 +121,20 @@ COMMAND_GROUPS = (
 USAGE = "minusctl <command> [options]"
 
 
+def _canonical(command):
+    """The command a name refers to, resolving any alias a command module declares.
+
+    Read from the modules rather than a second table here: `console.ALIASES` existed and was
+    never wired, so `minusctl ui` was documented in the source and refused at the prompt.
+    Keeping the declaration with the command is what stops this file and that one disagreeing
+    about which names are valid -- the same reason `known_commands()` exists.
+    """
+    for name, module in NATIVE.items():
+        if command in getattr(module, "ALIASES", ()):
+            return name
+    return command
+
+
 def known_commands():
     """Every subcommand this CLI accepts, native and delegated."""
     return sorted(set(NATIVE) | set(DELEGATED))
@@ -188,7 +202,8 @@ def main(argv=None):
         print(format_help())
         return 2
 
-    command = argv[0]
+    command = _canonical(argv[0])
+    argv = [command] + list(argv[1:])
     if command in ("-h", "--help"):
         print(format_help())
         raise SystemExit(0)

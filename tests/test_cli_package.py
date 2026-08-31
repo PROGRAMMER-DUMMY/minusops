@@ -46,6 +46,32 @@ def workspace(tmp_path, monkeypatch):
 
 # --- Context switching ----------------------------------------------------------------
 
+def test_a_declared_alias_actually_reaches_its_command():
+    """`console.ALIASES = ("ui", "dashboard")` existed and was never passed to argparse or
+    consulted by dispatch, so both names were documented in the source and refused at the
+    prompt. The resolver reads the declaration off the command module, so this file and that
+    one cannot disagree about which names are valid."""
+    from core.cli import main as m
+
+    assert m._canonical("ui") == "console"
+    assert m._canonical("dashboard") == "console"
+    assert m._canonical("console") == "console"
+    assert m._canonical("gate") == "gate"
+    assert m._canonical("not-a-command") == "not-a-command"
+
+
+def test_latest_refuses_when_there_are_no_runs(tmp_path, monkeypatch):
+    """It returned None, which callers joined into a path, so an empty `runs/` surfaced as a
+    TypeError far from its cause. Every other branch of resolve_run refuses out loud."""
+    from core.cli import context as cli_context
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_context.runs, "latest_run", lambda: None)
+
+    with pytest.raises(cli_context.ContextError):
+        cli_context.resolve_run("latest")
+
+
 def test_use_persists_the_active_run(workspace):
     run = runs.new_run(name="clickstream", domain="marketing", orchestrator="mwaa")
 

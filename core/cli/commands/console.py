@@ -41,8 +41,11 @@ _PROBE_TIMEOUT = 1.5
 
 
 def add_parser(subparsers):
+    # `ALIASES` was declared and never passed to argparse, so `minusctl ui` and
+    # `minusctl dashboard` were documented in the source and refused at the prompt.
     parser = subparsers.add_parser(
-        "console", help="Serve the visual governance console for a run.")
+        "console", aliases=list(ALIASES),
+        help="Serve the visual governance console for a run.")
     parser.add_argument("action", nargs="?", choices=("start", "stop"), default="start",
                         help="start (default) or stop a background console")
     parser.add_argument("--run", help="Run workspace to open; defaults to the active run")

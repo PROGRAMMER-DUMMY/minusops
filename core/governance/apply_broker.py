@@ -114,10 +114,31 @@ def verify(plan_hash, approval, planner=None, max_age_seconds=DEFAULT_MAX_AGE_SE
     }
 
 
+def _account_of(value):
+    """The account id in an ARN, or None for anything that is not one."""
+    parts = str(value or "").strip().split(":")
+    return parts[4] if len(parts) >= 6 and parts[0] == "arn" and parts[4] else None
+
+
 def _same_principal(left, right):
-    """True if both strings name the same principal, compared on the last ARN segment."""
+    """True if both strings name the same principal.
+
+    Compared on the last ARN segment, which matched `111111111111:user/deploy` against
+    `222222222222:role/deploy` -- two unrelated principals in two accounts, refused as a
+    self-approval. A gate that blocks correct work is a gate people route around.
+
+    Two accounts that are both stated and differ settle it: the names carry no relationship
+    across an account boundary. Everything else keeps the segment comparison, deliberately.
+    Comparing whole ARN strings instead -- the obvious fix -- would stop `alice` matching
+    `arn:aws:iam::111111111111:user/alice`, so someone could plan under a bare name and
+    approve under their ARN, which is the exact bypass this check exists to stop.
+    """
     def tail(value):
         return str(value).strip().rsplit("/", 1)[-1].rsplit(":", 1)[-1].lower()
+
+    left_account, right_account = _account_of(left), _account_of(right)
+    if left_account and right_account and left_account != right_account:
+        return False
     return tail(left) == tail(right)
 
 

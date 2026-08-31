@@ -11,11 +11,20 @@ from typing import Any, Dict, List, Tuple
 
 # Regex patterns for high-risk PII / PHI
 _PATTERNS = {
-    "SSN": re.compile(r"\b(?:\d{3}-\d{2}-\d{4}|\d{9})\b"),
+    # A bare nine-digit run is not identifiable as an SSN, and redacting one destroys
+    # real identifiers: 807698055 is an aws_lakeformation_data_lake_settings id out of
+    # this repository's own state file, and it was replaced with [REDACTED_SSN_...] in
+    # the reports and audit entries this gateway exists to make safe to log. A written
+    # SSN carries its separators; that is what makes it recognisable as one.
+    "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     "MRN": re.compile(r"\b(?:MRN-?[A-Z0-9]{6,10}|medical_record_number[\s:=]+([A-Z0-9]+))\b", re.IGNORECASE),
     "CREDIT_CARD": re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b"),
     "EMAIL": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b"),
-    "PHONE": re.compile(r"\b(?:\+?1[-. ]?)?\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})\b"),
+    # Same reasoning: ten consecutive digits matched, so an epoch timestamp was redacted
+    # as a phone number. A written number carries a separator, a country code or
+    # parentheses.
+    "PHONE": re.compile(
+        r"(?<![0-9])(?:\+1[-. ]?)?(?:\([0-9]{3}\)[-. ]?|[0-9]{3}[-. ])[0-9]{3}[-. ]?[0-9]{4}\b"),
 }
 
 

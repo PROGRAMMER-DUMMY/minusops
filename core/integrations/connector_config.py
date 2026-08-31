@@ -120,6 +120,31 @@ def save_connector_config(connector_key, values):
     return True
 
 
+def _unsent(res, unconfigured_detail):
+    """Why a send did not happen, told apart rather than collapsed.
+
+    Every branch read `if res.get("sent")` and reported everything else as NOT_CONFIGURED, so
+    an HTTP 401, 403 or 500 was shown to the operator as "endpoint is unconfigured" -- a
+    false statement about a destination that is configured and rejected them. base_hook's own
+    contract distinguishes the cases and this threw that away: `not_configured` carries
+    ok=True with reason="not_configured", a delivery failure does not.
+    """
+    res = res or {}
+    reason = res.get("reason")
+    if reason == "not_configured":
+        return {"ok": False, "status": "NOT_CONFIGURED", "detail": unconfigured_detail}
+    if reason == "not_authorized":
+        return {"ok": False, "status": "NOT_AUTHORIZED",
+                "detail": "The send was not authorised by the approval gate."}
+    status = res.get("status") or 0
+    detail = res.get("error") or "the endpoint did not accept the message"
+    if status in (401, 403):
+        return {"ok": False, "status": "AUTH_FAILED",
+                "detail": f"The endpoint rejected the credentials (HTTP {status}): {detail}"}
+    return {"ok": False, "status": "CONNECTION_ERROR",
+            "detail": f"Delivery failed (HTTP {status}): {detail}"}
+
+
 def test_connector(connector_key):
     """Execute a governed test ping to verify connectivity."""
     now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S UTC")
@@ -133,7 +158,7 @@ def test_connector(connector_key):
             )
             if res.get("sent"):
                 return {"ok": True, "status": "CONNECTED", "detail": f"Message delivered to Slack (HTTP {res.get('status', 200)}) at {now_str}"}
-            return {"ok": False, "status": "NOT_CONFIGURED", "detail": "Slack endpoint is unconfigured. Set the endpoint reference above."}
+            return _unsent(res, "Slack endpoint is unconfigured. Set the endpoint reference above.")
 
         elif connector_key == "teams":
             import teams_hook
@@ -145,7 +170,7 @@ def test_connector(connector_key):
             )
             if res.get("sent"):
                 return {"ok": True, "status": "CONNECTED", "detail": f"Adaptive Card delivered to Teams at {now_str}"}
-            return {"ok": False, "status": "NOT_CONFIGURED", "detail": "Teams endpoint is unconfigured. Set the endpoint reference above."}
+            return _unsent(res, "Teams endpoint is unconfigured. Set the endpoint reference above.")
 
         elif connector_key == "jira":
             import jira_hook
@@ -157,7 +182,7 @@ def test_connector(connector_key):
             )
             if res.get("sent"):
                 return {"ok": True, "status": "CONNECTED", "detail": f"Jira Issue created: {res.get('issue_key')} at {now_str}"}
-            return {"ok": False, "status": "NOT_CONFIGURED", "detail": "Jira credentials unconfigured. Set Base URL, User and API token."}
+            return _unsent(res, "Jira credentials unconfigured. Set Base URL, User and API token.")
 
         elif connector_key == "confluence":
             import confluence_hook
@@ -169,7 +194,7 @@ def test_connector(connector_key):
             )
             if res.get("sent"):
                 return {"ok": True, "status": "CONNECTED", "detail": f"Page created at {now_str}"}
-            return {"ok": False, "status": "NOT_CONFIGURED", "detail": "Confluence credentials unconfigured."}
+            return _unsent(res, "Confluence credentials unconfigured.")
 
         elif connector_key == "outlook":
             import outlook_hook
@@ -181,7 +206,7 @@ def test_connector(connector_key):
             )
             if res.get("sent"):
                 return {"ok": True, "status": "CONNECTED", "detail": f"Email report delivered at {now_str}"}
-            return {"ok": False, "status": "NOT_CONFIGURED", "detail": "Outlook SMTP unconfigured. Set SMTP_HOST and SMTP_FROM."}
+            return _unsent(res, "Outlook SMTP unconfigured. Set SMTP_HOST and SMTP_FROM.")
 
         return {"ok": False, "status": "UNKNOWN", "detail": f"Unknown connector: {connector_key}"}
 

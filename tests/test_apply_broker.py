@@ -39,6 +39,44 @@ def _verify(approval, **kwargs):
 
 # --- Hash binding ----------------------------------------------------------------------------
 
+def test_two_principals_in_different_accounts_are_not_the_same_person():
+    """The comparison took the last ARN segment, so `111111111111:user/deploy` and
+    `222222222222:role/deploy` read as one principal and a legitimate two-party approval was
+    refused as self-approval. A gate that blocks correct work is a gate people route around."""
+    assert not apply_broker._same_principal(
+        "arn:aws:iam::111111111111:user/deploy",
+        "arn:aws:iam::222222222222:role/deploy")
+
+
+def test_a_user_and_a_role_of_one_name_in_one_account_still_count_as_one_person():
+    """Deliberately conservative, and NOT relaxed by the account fix. A role named `deploy`
+    in the same account as a user named `deploy` is almost always that user assuming it, and
+    the safe direction for a self-approval check is to refuse. The bug was matching ACROSS
+    accounts, where the names carry no relationship at all."""
+    assert apply_broker._same_principal(
+        "arn:aws:iam::111111111111:user/deploy",
+        "arn:aws:iam::111111111111:role/deploy")
+
+
+def test_the_same_person_under_two_forms_is_still_caught():
+    """The dangerous direction. Comparing full ARN strings -- the obvious fix -- would let
+    someone plan as a bare name and approve as their ARN, which is the exact bypass this
+    check exists to stop. A bare name still has to match the ARN that carries it."""
+    assert apply_broker._same_principal(
+        "alice", "arn:aws:iam::111111111111:user/alice")
+    assert apply_broker._same_principal(
+        "arn:aws:iam::111111111111:user/alice", "ALICE")
+    assert apply_broker._same_principal(
+        "arn:aws:sts::111111111111:assumed-role/deploy/alice",
+        "arn:aws:sts::111111111111:assumed-role/deploy/alice")
+
+
+def test_an_identical_arn_is_the_same_person():
+    assert apply_broker._same_principal(
+        "arn:aws:iam::111111111111:user/deploy",
+        "arn:aws:iam::111111111111:user/deploy")
+
+
 def test_an_approval_for_a_different_plan_does_not_release_this_one():
     decision = _verify(_approval(plan_hash=OTHER))
     assert decision["released"] is False
