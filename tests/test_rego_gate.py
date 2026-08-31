@@ -65,12 +65,128 @@ def _plan(resource_changes=(), config_resources=(), prior_state_resources=()):
     }
 
 
+def _module_plan(resource_changes=(), module_resources=None, module_name="storage"):
+    """A plan whose resources are declared inside a module call, not at the root.
+
+    This is what the generator actually produces: on a real 112-resource plan
+    `root_module.resources` holds ONE data source and the other 111 live under `module_calls`.
+    Every fixture in this file built root-level plans, so a rule reading only the root passed
+    its whole suite and fired HIGH on every correctly-configured bucket in production.
+    """
+    return {
+        "resource_changes": list(resource_changes),
+        "configuration": {"root_module": {
+            "resources": [],
+            "module_calls": {
+                module_name: {"module": {"resources": list(module_resources or [])}}},
+        }},
+        "prior_state": {"values": {"root_module": {"resources": []}}},
+    }
+
+
 def _data_resource(address, type_, values):
     return {"address": address, "mode": "data", "type": type_, "values": values}
 
 
 def _findings_by_id(result, rule_id):
     return [f for f in result["findings"] if f["id"] == rule_id]
+
+
+# ---------------------------------------------------------------------------
+# Module-composed plans -- the shape the generator actually emits
+# ---------------------------------------------------------------------------
+
+def test_a_bucket_inside_a_module_sees_its_public_access_block_sibling():
+    """SEC-01 read `configuration.root_module.resources` and nothing else, so a bucket
+    declared inside a module could never find the public-access-block declared beside it.
+    Six correctly-configured buckets reported HIGH on every module-composed plan in `runs/`,
+    and no fixture in this file was module-composed, so the suite stayed green."""
+    plan = _module_plan(
+        resource_changes=[
+            _rc("managed", "aws_s3_bucket", 'module.storage.aws_s3_bucket.zone["bronze"]'),
+            _rc("managed", "aws_s3_bucket_public_access_block",
+                'module.storage.aws_s3_bucket_public_access_block.zone["bronze"]'),
+        ],
+        module_resources=[
+            _cfg_resource("aws_s3_bucket.zone", "aws_s3_bucket"),
+            _cfg_resource("aws_s3_bucket_public_access_block.zone",
+                          "aws_s3_bucket_public_access_block",
+                          expressions={"bucket": {"references": ["each.value.id", "each.value"]}},
+                          for_each_expression={"references": ["aws_s3_bucket.zone"]}),
+        ])
+    result = rego_gate.evaluate(plan, opa_bin=OPA)
+
+    assert not result["evaluation_failed"], result
+    assert not _findings_by_id(result, "SEC-01"), _findings_by_id(result, "SEC-01")
+
+
+def test_a_bucket_inside_a_module_with_no_sibling_is_still_reported():
+    """The fix must not make the rule blind. A module-composed bucket with genuinely no
+    public-access-block is exactly what SEC-01 exists to catch."""
+    plan = _module_plan(
+        resource_changes=[
+            _rc("managed", "aws_s3_bucket", "module.storage.aws_s3_bucket.lonely")],
+        module_resources=[_cfg_resource("aws_s3_bucket.lonely", "aws_s3_bucket")])
+    result = rego_gate.evaluate(plan, opa_bin=OPA)
+
+    assert not result["evaluation_failed"], result
+    assert _findings_by_id(result, "SEC-01")
+
+
+def test_a_sibling_in_a_different_module_does_not_count():
+    """Module-local references are module-local. A public-access-block in module A must not
+    satisfy a bucket in module B, or the fix trades a false positive for a false negative."""
+    plan = {
+        "resource_changes": [
+            _rc("managed", "aws_s3_bucket", "module.a.aws_s3_bucket.zone")],
+        "configuration": {"root_module": {"resources": [], "module_calls": {
+            "a": {"module": {"resources": [
+                _cfg_resource("aws_s3_bucket.zone", "aws_s3_bucket")]}},
+            "b": {"module": {"resources": [
+                _cfg_resource("aws_s3_bucket_public_access_block.zone",
+                              "aws_s3_bucket_public_access_block",
+                              expressions={"bucket": {"references": ["aws_s3_bucket.zone"]}})]}},
+        }}},
+        "prior_state": {"values": {"root_module": {"resources": []}}},
+    }
+    result = rego_gate.evaluate(plan, opa_bin=OPA)
+
+    assert not result["evaluation_failed"], result
+    assert _findings_by_id(result, "SEC-01")
+
+
+def test_a_module_composed_bucket_sees_its_lifecycle_sibling():
+    """COST-01 shares `has_sibling_referencing`, so it had the same blindness."""
+    plan = _module_plan(
+        resource_changes=[
+            _rc("managed", "aws_s3_bucket", 'module.storage.aws_s3_bucket.zone["gold"]')],
+        module_resources=[
+            _cfg_resource("aws_s3_bucket.zone", "aws_s3_bucket"),
+            _cfg_resource("aws_s3_bucket_lifecycle_configuration.zone",
+                          "aws_s3_bucket_lifecycle_configuration",
+                          for_each_expression={"references": ["aws_s3_bucket.zone"]}),
+        ])
+    result = rego_gate.evaluate(plan, opa_bin=OPA)
+
+    assert not result["evaluation_failed"], result
+    assert not _findings_by_id(result, "COST-01"), _findings_by_id(result, "COST-01")
+
+
+def test_a_root_level_sibling_still_works():
+    """Every existing fixture is root-level. The fix must not regress the case that worked."""
+    plan = _plan(
+        resource_changes=[_rc("managed", "aws_s3_bucket", "aws_s3_bucket.b")],
+        config_resources=[
+            _cfg_resource("aws_s3_bucket.b", "aws_s3_bucket"),
+            _cfg_resource("aws_s3_bucket_public_access_block.b",
+                          "aws_s3_bucket_public_access_block",
+                          expressions={"bucket": {"references": ["aws_s3_bucket.b"]}}),
+        ])
+    result = rego_gate.evaluate(plan, opa_bin=OPA)
+
+    assert not result["evaluation_failed"], result
+    assert not _findings_by_id(result, "SEC-01")
+
 
 
 # ---------------------------------------------------------------------------
