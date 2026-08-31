@@ -154,7 +154,13 @@ def test_governed_destroy_actually_tears_down_real_state(gate, tmp_path):
 
     # Tear it down through the SAME gate -- plan(--destroy) -> approve -> apply, no new
     # apply-side code path, no raw `terraform destroy`.
-    assert plan_gate.stage_plan(str(d), destroy=True) is True
+    # aeeb116 (2026-08-26) made a stated impact mandatory for a plan that is not
+    # autonomous-eligible, and a destroy never is. This file was last touched
+    # 2026-07-27 and is deselected by `-m 'not slow'`, so nothing ran it and nothing
+    # noticed for five days. The requirement is right; the call predates it.
+    assert plan_gate.stage_plan(
+        str(d), destroy=True,
+        impact="Tears down the demo resource; nothing downstream reads it.") is True
     assert plan_gate.stage_approve(str(d), mode="gatekeeper") is True
     assert plan_gate.stage_apply(str(d)) is True
 
@@ -189,9 +195,18 @@ def test_real_plan_hash_changes_on_tf_edit_and_blocks_apply(gate, tmp_path):
     approved_hash, _ = plan_gate._plan_hash(str(d))
     assert plan_gate.stage_approve(str(d), mode="gatekeeper") is True
 
-    # Edit the .tf -> a new real plan -> a different hash -> apply must refuse.
+    # Edit the .tf. aeeb116 (2026-08-26) added a SECOND protection here: a plan now needs a
+    # verify receipt, so editing the source after verify passed refuses at plan time rather
+    # than waiting for the hash comparison at apply. That is stricter, and this test asserts
+    # it rather than working around it -- the file was last touched 2026-07-27, is deselected
+    # by `-m 'not slow'`, and so nothing exercised either protection.
     _write_tf(d, DRIFTED_TF)
-    plan_gate.stage_plan(str(d))
+    assert plan_gate.stage_plan(str(d)) is False
+
+    # Re-verify, and the original guarantee still has to hold: a new real plan, a different
+    # hash, and an apply that refuses because the approval was bound to the old one.
+    assert plan_gate.stage_verify(str(d)) is True
+    assert plan_gate.stage_plan(str(d)) is True
     drifted_hash, _ = plan_gate._plan_hash(str(d))
     assert drifted_hash != approved_hash
     # The approval was bound to the old hash; the new plan has no approval on record.
@@ -316,28 +331,44 @@ def test_auto_approve_apply_refuses_a_real_destructive_change(gate, tmp_path):
     assert "terraform_data.demo" in state_list
 
     # Attempt the teardown through the auto-approve path -- no y/N prompt at all.
-    assert plan_gate.stage_plan(str(d), destroy=True) is True
-    assert plan_gate.stage_approve(str(d), mode="auto-approve") is True
-    assert plan_gate.stage_apply(str(d), mode="auto-approve") is False
+    # aeeb116 (2026-08-26) made a stated impact mandatory for a plan that is not
+    # autonomous-eligible, and a destroy never is. This file was last touched
+    # 2026-07-27 and is deselected by `-m 'not slow'`, so nothing ran it and nothing
+    # noticed for five days. The requirement is right; the call predates it.
+    assert plan_gate.stage_plan(
+        str(d), destroy=True,
+        impact="Tears down the demo resource; nothing downstream reads it.") is True
+    # The refusal now lands at APPROVE, not apply: "Teardowns require interactive human
+    # review." That is one step earlier than this test was written for and strictly safer --
+    # an unreviewed teardown never reaches a stage that could run it. The test asserted the
+    # older, weaker shape and nothing ran it to notice, being deselected by `-m 'not slow'`.
+    assert plan_gate.stage_approve(str(d), mode="auto-approve") is False
 
     # Real state is untouched -- the resource still exists, nothing was actually destroyed.
     state_list_after = subprocess.run([TERRAFORM, f"-chdir={d}", "state", "list"],
                                        capture_output=True, text=True).stdout
     assert "terraform_data.demo" in state_list_after
 
-    # The refusal is on record, tied to the real classification, and the approval survives
-    # (an operator can still re-run apply with --mode gatekeeper for human review).
-    audit_path = os.path.join(plan_gate.LOG_DIR, "audit.jsonl")
-    entries = [json.loads(line) for line in open(audit_path, encoding="utf-8") if line.strip()]
-    refused = [e for e in entries if e.get("action") == "apply"
-              and e.get("reason") == "destructive_change_not_autonomous_eligible"]
-    assert refused, "expected a destructive_change_not_autonomous_eligible rejection record"
-    assert refused[-1]["destructive_classification"]["autonomous_eligible"] is False
+    # Refusing early must not leave an approval lying around for a later apply to find.
     current, _ = plan_gate._plan_hash(str(d))
-    assert os.path.exists(plan_gate._approved_path(str(d), current))
+    assert not os.path.exists(plan_gate._approved_path(str(d), current))
+
+    # The refusal is on record, tied to the real classification.
+    audit_path = os.path.join(plan_gate.LOG_DIR, "audit.jsonl")
+    with open(audit_path, encoding="utf-8") as handle:
+        entries = [json.loads(line) for line in handle if line.strip()]
+    # plan_gate.py:1524 -- the approve-time refusal records its own reason. It is not the
+    # apply-time `destructive_change_not_autonomous_eligible` this test looked for, because
+    # the plan never reaches apply any more.
+    refused = [e for e in entries
+               if e.get("reason") == "destroy_auto_approve_forbidden"]
+    assert refused, f"expected a destroy_auto_approve_forbidden record, got {[e.get('reason') for e in entries[-6:]]}"
+    assert refused[-1]["action"] == "approve"
+    assert refused[-1]["status"] == "REJECTED"
 
     # The staged/guarded path (gatekeeper mode) remains genuinely usable for this same
     # destructive plan -- enforcement blocks the unreviewed path, not the reviewed one.
+    assert plan_gate.stage_approve(str(d), mode="gatekeeper") is True
     assert plan_gate.stage_apply(str(d)) is True
     state_list_final = subprocess.run([TERRAFORM, f"-chdir={d}", "state", "list"],
                                        capture_output=True, text=True).stdout
