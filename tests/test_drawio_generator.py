@@ -458,6 +458,73 @@ def test_the_walkthrough_numbers_hops_and_leaves_describes_out_of_the_count():
     assert not any(catalogued in step for step in steps)
 
 
+def _orchestrated_plan():
+    """A schedule that starts a state machine, which starts a Glue job.
+
+    Both links are stated outright: the event target holds the state machine's ARN, and the
+    state machine's definition holds the job's name. Neither is data movement -- nothing
+    travels along them -- but until they were drawn the orchestrator sat on the canvas
+    connected to nothing while plainly running the pipeline.
+    """
+    def rc(address, rtype, after):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": after}}
+    return {"resource_changes": [
+        rc("aws_glue_job.etl", "aws_glue_job", {"name": "lake-bronze-to-silver"}),
+        rc("aws_sns_topic.alerts", "aws_sns_topic",
+           {"arn": "arn:aws:sns:eu-west-1:1:lake-alerts"}),
+        rc("aws_sfn_state_machine.pipeline", "aws_sfn_state_machine", {
+            "arn": "arn:aws:states:eu-west-1:1:stateMachine:lake-workflow",
+            "definition": '{"StartAt":"Run_0","States":{"Run_0":{"Type":"Task",'
+                          '"Resource":"arn:aws:states:::glue:startJobRun.sync",'
+                          '"Parameters":{"JobName":"lake-bronze-to-silver"},"End":true}}}'}),
+        rc("aws_cloudwatch_event_target.schedule", "aws_cloudwatch_event_target",
+           {"arn": "arn:aws:states:eu-west-1:1:stateMachine:lake-workflow"}),
+        rc("aws_cloudwatch_event_target.failure", "aws_cloudwatch_event_target",
+           {"arn": "arn:aws:sns:eu-west-1:1:lake-alerts"}),
+    ]}
+
+
+def test_a_state_machine_declares_the_job_it_starts():
+    """The definition names the job outright. The orchestrator sat connected to nothing while
+    plainly running the pipeline, and a reader could not tell what started anything."""
+    triggers = {(e["source"], e["target"])
+                for e in drawio_generator.discover_data_edges(_orchestrated_plan())
+                if e["kind"] == "triggers"}
+
+    assert ("aws_sfn_state_machine.pipeline", "aws_glue_job.etl") in triggers
+
+
+def test_an_event_target_declares_what_it_invokes():
+    """The target holds the ARN of the thing it fires, and the plan states that ARN on the
+    resource it belongs to."""
+    triggers = {(e["source"], e["target"])
+                for e in drawio_generator.discover_data_edges(_orchestrated_plan())
+                if e["kind"] == "triggers"}
+
+    assert ("aws_cloudwatch_event_target.schedule",
+            "aws_sfn_state_machine.pipeline") in triggers
+    assert ("aws_cloudwatch_event_target.failure", "aws_sns_topic.alerts") in triggers
+
+
+def test_starting_a_job_is_not_moving_data_into_it():
+    """Control flow drawn as a hop would say the schedule sends records to the job."""
+    edges = drawio_generator.discover_data_edges(_orchestrated_plan())
+
+    assert edges
+    assert not [e for e in edges if e["kind"] == "data"]
+
+
+def test_a_trigger_is_not_a_numbered_step_on_the_data_path():
+    """The steps are the order data travels. Nothing travels along a trigger."""
+    plan = _orchestrated_plan()
+    edges = drawio_generator.discover_data_edges(plan)
+
+    assert not drawio_generator.path_order(edges)
+    assert not drawio_generator.flow_segments(edges)
+
+
 def test_the_ledger_states_only_what_the_plan_declares():
     """The protocol, latency and safeguard columns were produced by matching a substring
     against the TARGET address, so a KMS key referenced by an Athena workgroup was reported
@@ -1258,6 +1325,127 @@ def test_a_single_flow_gets_no_segment_headers():
 
     assert not any("Flow A" in step for step in steps)
     assert not any("separate flows" in step for step in steps)
+
+
+def _plumbing_plan():
+    """One flow, and a networking module nothing on the flow touches."""
+    def rc(address, rtype, after=None):
+        return {"address": address, "type": rtype, "mode": "managed",
+                "name": address.split(".")[-1],
+                "change": {"actions": ["create"], "after": after or {}}}
+    changes = [
+        rc('aws_s3_bucket.zones["raw"]', "aws_s3_bucket", {"bucket": "lake-raw"}),
+        rc('aws_s3_bucket.zones["curated"]', "aws_s3_bucket", {"bucket": "lake-curated"}),
+        rc("aws_glue_job.etl", "aws_glue_job", {"default_arguments": {
+            "--source_path": "s3://lake-raw/d/", "--target_path": "s3://lake-curated/d/"}}),
+        rc("module.networking_vpc.aws_vpc.this", "aws_vpc"),
+        rc("module.networking_vpc.aws_internet_gateway.this", "aws_internet_gateway"),
+        rc("module.networking_vpc.aws_nat_gateway.this", "aws_nat_gateway"),
+    ]
+    changes += [rc(f"module.networking_vpc.aws_subnet.private[{i}]", "aws_subnet")
+                for i in range(4)]
+    changes += [rc(f"module.networking_vpc.aws_route_table_association.a[{i}]",
+                   "aws_route_table_association") for i in range(6)]
+    changes += [rc(f"module.security_iam_scoped.aws_iam_role.r{i}", "aws_iam_role")
+                for i in range(5)]
+    return {"resource_changes": changes}
+
+
+def _logical_tooltips(xml_text):
+    """Tooltips on the FIRST page only. The deployment page is about placement, and a VPC's
+    subnets are exactly what it exists to show -- folding them there would gut it."""
+    page = ET.fromstring(xml_text).findall("diagram")[0]
+    return [cell.get("tooltip") or "" for cell in page.iter("mxCell")]
+
+
+def test_a_module_of_plumbing_no_edge_touches_folds_into_one_tile():
+    """Sixteen networking tiles at full size were a sixth of the canvas and told a reader
+    nothing beyond "there is a VPC". The pipeline they surround is the thing being read."""
+    tooltips = _logical_tooltips(
+        drawio_generator.generate_drawio_from_plan(_plumbing_plan())["xml"])
+
+    individual = [t for t in tooltips if t.startswith("module.networking_vpc.")]
+    assert not individual, individual
+    assert "module.networking_vpc" in tooltips, "the module vanished entirely"
+
+
+def test_a_folded_module_says_how_many_resources_it_stands_for():
+    """A tile that hides thirteen resources without saying so is a diagram that under-reports
+    what is being provisioned."""
+    page = ET.fromstring(
+        drawio_generator.generate_drawio_from_plan(_plumbing_plan())["xml"]).findall("diagram")[0]
+    label = [cell.get("value") or "" for cell in page.iter("mxCell")
+             if (cell.get("tooltip") or "").endswith("networking_vpc")][0]
+
+    assert "13" in label, label
+
+
+def test_a_module_with_a_resource_on_the_path_is_never_folded():
+    """Folding away something the flow runs through would hide the pipeline to tidy the page."""
+    tooltips = _logical_tooltips(
+        drawio_generator.generate_drawio_from_plan(_plumbing_plan())["xml"])
+
+    assert 'aws_s3_bucket.zones["raw"]' in tooltips
+    assert "aws_glue_job.etl" in tooltips
+
+
+def test_a_small_module_is_left_alone():
+    """Folding five tiles into one saves nothing and costs the reader the detail."""
+    tooltips = _logical_tooltips(
+        drawio_generator.generate_drawio_from_plan(_plumbing_plan())["xml"])
+
+    assert "module.security_iam_scoped.aws_iam_role.r0" in tooltips
+
+
+def test_the_canvas_opens_with_a_line_saying_what_it_is():
+    """A reader arrived at fifty tiles with no idea what the stack was. Every number in the
+    line is counted from the plan; none of it is a description anyone wrote."""
+    summary = drawio_generator.canvas_summary(
+        _wired_plan(), drawio_generator.discover_data_edges(_wired_plan()))
+
+    assert "3 resources" in summary
+    assert "1 declared flow" in summary
+
+
+def test_the_summary_names_the_gap_rather_than_rounding_it_away():
+    plan = _wired_plan()
+    plan["resource_changes"].append(
+        {"address": 'aws_s3_bucket.zones["gold"]', "type": "aws_s3_bucket", "mode": "managed",
+         "name": "zones", "change": {"actions": ["create"], "after": {"bucket": "lake-gold"}}})
+    summary = drawio_generator.canvas_summary(
+        plan, drawio_generator.discover_data_edges(plan))
+
+    assert "gold unreached" in summary
+
+
+def test_the_summary_counts_flows_not_hops():
+    """Three hops in one chain is one flow. Saying "3 flows" would repeat the mistake the
+    step letters exist to stop."""
+    plan = _wired_plan()
+    plan["resource_changes"].extend([
+        {"address": "aws_s3_bucket.results", "type": "aws_s3_bucket", "mode": "managed",
+         "name": "results", "change": {"actions": ["create"],
+                                       "after": {"bucket": "lake-results"}}},
+        {"address": "aws_athena_workgroup.analysts", "type": "aws_athena_workgroup",
+         "mode": "managed", "name": "analysts",
+         "change": {"actions": ["create"], "after": {"configuration": {
+             "result_configuration": {"output_location": "s3://lake-results/q/"}}}}},
+    ])
+    summary = drawio_generator.canvas_summary(
+        plan, drawio_generator.discover_data_edges(plan))
+
+    assert "2 declared flows" in summary
+
+
+def test_the_summary_is_drawn_at_the_top_of_the_canvas():
+    xml_text = drawio_generator.generate_drawio_from_plan(_wired_plan())["xml"]
+    page = ET.fromstring(xml_text).findall("diagram")[0]
+    header = [cell for cell in page.iter("mxCell") if cell.get("id") == "legend_summary"]
+
+    assert header, "no summary was drawn"
+    bands = _band_geometry(xml_text, full=True)
+    top = min(box[1] for name, box in bands.items() if name != "account")
+    assert float(header[0].find("mxGeometry").get("y")) < top
 
 
 def test_the_security_band_spans_the_whole_diagram():

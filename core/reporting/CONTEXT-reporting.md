@@ -510,6 +510,26 @@ This document provides an exhaustive, architectural, and operational reference f
 - **The legend says what an ABSENT arrow means** ([`_append_legend`](./drawio_generator.py)):
   the plan declares no path, not that none exists at runtime. That is the reading this canvas
   most often loses.
+- **The canvas opens with a line saying what it is** ([`canvas_summary`](./drawio_generator.py)).
+  A reader arrived at fifty tiles with no idea what the stack was. Every number is counted
+  from the plan and nothing in it is a sentence anyone wrote: "78 resources -- 3 medallion
+  zones -- 3 declared flows -- 3 catalog links -- 3 triggers -- gold unreached". On the
+  hand-authored stack it reads "1 declared flow -- cleaned, curated, raw unreached", which is
+  the whole finding in one line.
+- **An edge has three kinds.** `data` is a declared hop, `describes` is a catalog naming the
+  storage it records, and `triggers` is control: an event target holding the ARN of what it
+  fires, or a state machine whose own `definition` names the Glue job it starts. Nothing
+  travels along a trigger, so it carries no step number and never counts as a flow. The
+  orchestrator used to sit on the canvas connected to nothing while plainly running the
+  pipeline. `_arn_index` excludes the types read FROM, because an event target's own `arn`
+  holds the ARN of its target and indexing it made the hop resolve to itself.
+- **A module of untouched plumbing folds into one tile**
+  ([`fold_modules`](./drawio_generator.py)). Sixteen networking tiles at full size were a
+  sixth of the canvas and said nothing past "there is a VPC". A module folds only when NO
+  resource in it is on a declared edge -- folding away something the flow runs through would
+  hide the pipeline to tidy the page -- and only above a floor, since collapsing five tiles
+  into one costs the detail and saves nothing. The tile says how many it stands for. The
+  deployment page never folds: subnets are what that page exists to show.
 - **The nodes on a declared path carry the step, not just the edges**
   ([`path_order`](./drawio_generator.py)). The edges were numbered and the tiles were not, so
   a reader had fifty identical boxes and a list of hops a page and a half below them. A label

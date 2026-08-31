@@ -9,6 +9,7 @@ Shells out to: nothing
 Used by: core/cli/commands/diagram.py, app/console_app.py, tests/test_drawio_generator.py
 """
 import base64
+import json
 import re
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -223,6 +224,61 @@ _BUCKET_TO_BUCKET = (
 )
 
 
+# Arguments holding the ARN of another resource in the same plan. An event target is not a
+# place data rests and does not move any; it states what it fires.
+_INVOKES_ARGUMENTS = (
+    ("aws_cloudwatch_event_target", ("arn",)),
+    ("aws_lambda_permission", ("source_arn",)),
+)
+
+
+def _arn_index(resources):
+    """{arn: address} for resources that OWN an ARN.
+
+    An event target's own `arn` attribute holds the ARN of the thing it fires, not its own,
+    so indexing it made the target resolve to itself and the hop was dropped as a self-loop.
+    The types read from in `_INVOKES_ARGUMENTS` are excluded for exactly that reason.
+    """
+    readers = {rtype for rtype, _ in _INVOKES_ARGUMENTS}
+    index = {}
+    for res in resources:
+        after = (res.get("change") or {}).get("after")
+        arn = after.get("arn") if isinstance(after, dict) else None
+        if arn and res.get("type") not in readers:
+            index.setdefault(arn, res.get("address"))
+    return index
+
+
+def _job_name_index(resources):
+    return {(r.get("change") or {}).get("after", {}).get("name"): r.get("address")
+            for r in resources if r.get("type") == "aws_glue_job"
+            and isinstance((r.get("change") or {}).get("after"), dict)
+            and (r.get("change") or {}).get("after", {}).get("name")}
+
+
+def _state_machine_targets(after, jobs):
+    """The jobs a state machine's own definition names.
+
+    `definition` is a JSON string the plan carries verbatim, and a Glue task states the job
+    by name in `Parameters.JobName`. Nothing is inferred: the state machine says what it
+    runs, and this reads it.
+    """
+    raw = after.get("definition")
+    if not isinstance(raw, str):
+        return []
+    try:
+        states = (json.loads(raw) or {}).get("States") or {}
+    except ValueError:
+        return []
+    found = []
+    for state in states.values() if isinstance(states, dict) else []:
+        parameters = state.get("Parameters") if isinstance(state, dict) else None
+        job = (parameters or {}).get("JobName") if isinstance(parameters, dict) else None
+        if job in jobs and jobs[job] not in found:
+            found.append(jobs[job])
+    return found
+
+
 def _walk(node, path):
     for key in path:
         if isinstance(node, list):
@@ -253,6 +309,8 @@ def discover_data_edges(plan_json):
     resources = [r for r in (plan_json or {}).get("resource_changes", [])
                  if r.get("mode") == "managed"]
     index = _bucket_index(resources)
+    arns = _arn_index(resources)
+    jobs = _job_name_index(resources)
     addresses = {r.get("address") for r in resources}
     expressions = {r.get("address") or f"{r.get('type')}.{r.get('name')}":
                    r.get("expressions", {}) for r in _config_resources(plan_json)}
@@ -299,6 +357,17 @@ def discover_data_edges(plan_json):
                 index, addresses)
             if bucket:
                 pairs.append((address, bucket, "describes"))
+
+        for rtype, path in _INVOKES_ARGUMENTS:
+            if res.get("type") != rtype:
+                continue
+            target = arns.get(_walk(after, path))
+            if target and target != address:
+                pairs.append((address, target, "triggers"))
+
+        if res.get("type") == "aws_sfn_state_machine":
+            for target in _state_machine_targets(after, jobs):
+                pairs.append((address, target, "triggers"))
 
     seen, edges = set(), []
     for source, target, kind in pairs:
@@ -389,10 +458,11 @@ _ORIGIN_X = 80
 _MARGIN_Y = 30
 _LABEL_STRIP = 50
 _BAND_PAD = 20
+_SUMMARY_STRIP = 30
 _GUTTER = 60
 
 
-def node_label(address, badges=(), role=None, step=None):
+def node_label(address, badges=(), role=None, step=None, folded=None):
     """The role this resource plays and the name the operator gave it, then any stated posture.
 
     The role comes from `classify_role`, which is the same call that decides which band the
@@ -405,6 +475,9 @@ def node_label(address, badges=(), role=None, step=None):
     if kind is None and len(leaf_parts) >= 2:
         kind = leaf_parts[-2].replace("aws_", "").replace("_", " ").title()
     lead = f"{step}. " if step else ""  # A1, A2 ... when the plan states more than one flow
+    if folded:
+        return (f"<b>{name}</b><br>{folded} resources<br>"
+                "<i>none on a declared path</i>")
     label = f"<b>{lead}{name}</b><br>{kind}" if kind else f"<b>{lead}{name}</b>"
     return f"{label}<br>{', '.join(sorted(badges))}" if badges else label
 
@@ -429,6 +502,8 @@ def _role_of(res):
     made every medallion zone read as a generic store -- the label saying "Store" while the
     layout placed it on the spine as a zone.
     """
+    if res.get("_role"):
+        return res["_role"]
     return architecture_model.classify_role(
         res.get("type", ""), _instance_key(res.get("address")), res.get("name", ""))
 
@@ -440,6 +515,57 @@ def _layer_of(res):
 def _instance_key(address):
     match = re.search(r'\["([^"]+)"\]', address or "")
     return match.group(1) if match else ""
+
+
+_FOLD_MODULE_FLOOR = 6
+
+
+def fold_modules(resources, wired):
+    """Collapse a module of untouched plumbing into one tile standing for all of it.
+
+    Sixteen networking tiles at full size were a sixth of the canvas and told a reader
+    nothing past "there is a VPC", while the pipeline they surround is the thing being read.
+    A module is folded only when NO resource in it is on a declared edge -- folding away
+    something the flow runs through would be hiding the pipeline to tidy the page -- and only
+    above a floor, because collapsing five tiles into one costs the detail and saves nothing.
+
+    Returns (visible resources, {module: count}).
+    """
+    grouped = {}
+    for res in resources:
+        module = _module_of(res.get("address") or "")
+        if module:
+            grouped.setdefault(module, []).append(res)
+
+    folded, counts = set(), {}
+    for module, members in grouped.items():
+        if len(members) < _FOLD_MODULE_FLOOR:
+            continue
+        if any(r.get("address") in wired for r in members):
+            continue
+        counts[module] = len(members)
+        folded.update(id(r) for r in members)
+
+    visible = [r for r in resources if id(r) not in folded]
+    return visible, counts
+
+
+def _module_placeholder(module, count, members):
+    """One resource standing for a folded module, classified by what it mostly holds."""
+    roles = {}
+    for res in members:
+        roles[_role_of(res)] = roles.get(_role_of(res), 0) + 1
+    dominant = max(roles, key=roles.get)
+    return {
+        "address": f"module.{module}",
+        "type": max(((r.get("type"), sum(1 for m in members if m.get("type") == r.get("type")))
+                     for r in members), key=lambda pair: pair[1])[0],
+        "name": module,
+        "mode": "managed",
+        "_folded": count,
+        "_role": dominant,
+        "change": {"actions": ["create"], "after": {}},
+    }
 
 
 def _by_layer(resources):
@@ -565,7 +691,7 @@ def layout_positions(resources, actors=()):
     # The account boundary is drawn around every band and carries its own label, so the
     # topmost band starts a label strip down rather than at the margin. Without it the
     # boundary's top edge lands above the canvas.
-    top = _MARGIN_Y + _LABEL_STRIP
+    top = _MARGIN_Y + _LABEL_STRIP + _SUMMARY_STRIP
     if catalog:
         rows = place(catalog, spine_start, top + _LABEL_STRIP, reference_columns)
         bands.append(("catalog", spine_start - 20, top,
@@ -750,6 +876,40 @@ def walkthrough_steps(edges, by_address):
     return steps
 
 
+_SUMMARY_STYLE = ("text;html=1;align=left;verticalAlign=middle;fontSize=13;fontStyle=1;"
+                  "fontColor=#1e293b;whiteSpace=wrap;")
+
+
+def canvas_summary(plan_json, edges):
+    """One line saying what this stack is, counted rather than described.
+
+    A reader arrived at fifty tiles with no idea what they were looking at. Every number here
+    comes from the plan; nothing in it is a sentence anyone wrote about the architecture.
+    """
+    resources = [r for r in (plan_json or {}).get("resource_changes", [])
+                 if r.get("mode") == "managed"]
+    by_address = {r.get("address"): r for r in resources}
+    zones = {_instance_key(r.get("address")) or r.get("name", "")
+             for r in resources if r.get("type") == "aws_s3_bucket"
+             and _role_of(r) == "stage"}
+    segments = flow_segments(edges)
+    unreached = _unreached_zones(by_address, path_order(edges))
+
+    parts = [f"{len(resources)} resources"]
+    if zones:
+        parts.append(f"{len(zones)} medallion "
+                     f"{'zone' if len(zones) == 1 else 'zones'}")
+    parts.append(f"{len(segments)} declared "
+                 f"{'flow' if len(segments) == 1 else 'flows'}")
+    for kind, word in (("describes", "catalog link"), ("triggers", "trigger")):
+        count = sum(1 for edge in edges if edge.get("kind") == kind)
+        if count:
+            parts.append(f"{count} {word}{'' if count == 1 else 's'}")
+    if unreached:
+        parts.append(", ".join(unreached) + " unreached")
+    return " -- ".join(parts)
+
+
 def _unreached_zones(by_address, labels):
     """Medallion zones no declared hop touches, named so the gap is stated rather than blank.
 
@@ -778,6 +938,11 @@ _EDGE_STYLE = ("edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;"
 # A catalog does not send data to a bucket, it records where that bucket's tables live. Two
 # relations sharing one arrow style is a canvas asserting traffic that does not exist, so the
 # describes relation is thinner, dashed, open-headed and in the catalog band's own colour.
+_TRIGGERS_STYLE = ("edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;"
+                   "jettySize=auto;html=1;strokeColor=#E7157B;strokeWidth=1;dashed=1;"
+                   "dashPattern=1 3;endArrow=openThin;endFill=0;fontSize=9;"
+                   "fontColor=#E7157B;labelBackgroundColor=#ffffff;")
+
 _DESCRIBES_STYLE = ("edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;"
                     "jettySize=auto;html=1;strokeColor=#8C4FFF;strokeWidth=1;dashed=1;"
                     "dashPattern=6 4;endArrow=open;endFill=0;fontSize=9;fontColor=#8C4FFF;"
@@ -801,6 +966,9 @@ def _edge_anchors(source, target):
     return f"exitX={exit_x};exitY=0.5;entryX={entry_x};entryY=0.5;"
 
 
+_EDGE_STYLES = {"data": _EDGE_STYLE, "describes": _DESCRIBES_STYLE,
+                "triggers": _TRIGGERS_STYLE}
+
 _STEP_HEIGHT = 46
 _STEP_PITCH = 54
 
@@ -821,6 +989,9 @@ _LEGEND_NOTES = (
     "A solid numbered arrow is a hop the plan DECLARES: one resource names the other's path "
     "in a data-carrying argument. Absence of one means the plan states no path, not that "
     "none exists at runtime.",
+    "A thin pink line labelled \"triggers\" is control, not data: a schedule firing a state "
+    "machine, a state machine starting the Glue job its own definition names. Nothing "
+    "travels along it, so it carries no step number.",
     "A thin purple line labelled \"describes\" is not data movement. A catalog database, a "
     "table's storage descriptor and a Lake Formation registration each name the storage they "
     "record; nothing travels along that line. A grey dashed arrow from outside the boundary "
@@ -1163,11 +1334,19 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
     resources = [r for r in (plan_json.get("resource_changes", []) if plan_json else [])
                  if r.get("mode") == "managed" and not is_folded(r.get("type", ""))]
 
+    edges = discover_data_edges(plan_json)
+    wired = {end for edge in edges for end in (edge["source"], edge["target"])}
+    by_module = {}
+    for res in resources:
+        by_module.setdefault(_module_of(res.get("address") or ""), []).append(res)
+    resources, folded_counts = fold_modules(resources, wired)
+    resources += [_module_placeholder(module, count, by_module[module])
+                  for module, count in sorted(folded_counts.items())]
+
     actors = external_actors(requirements)
     positions, bands, boundary = layout_positions(resources, actors)
     badges = fold_badges(plan_json, [r.get("address") for r in resources])
 
-    edges = discover_data_edges(plan_json)
     steps = walkthrough_steps(edges, {r.get("address"): r for r in resources})
     bands_bottom = max([y + h for _, _, y, _, h in bands],
                        default=_MARGIN_Y + _band_height(1))
@@ -1180,6 +1359,13 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
     max_y = max([y for _, y in positions.values()], default=600)
     model, root = _create_mxgraph_xml(max(1800, max_x + 350),
                                       max(1000, max_y + 250, legend_bottom + _MARGIN_Y))
+
+    header = ET.SubElement(root, "mxCell", {
+        "id": "legend_summary", "value": canvas_summary(plan_json, edges),
+        "style": _SUMMARY_STYLE, "vertex": "1", "parent": "1"})
+    ET.SubElement(header, "mxGeometry", {
+        "x": str(_ORIGIN_X - 20), "y": "8", "width": str(max(600, max_x)), "height": "22",
+        "as": "geometry"})
 
     boundary_id = _append_boundary(root, boundary)
     _append_bands(root, bands, boundary_id, boundary)
@@ -1196,7 +1382,8 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
             "id": node_id,
             "value": node_label(address, _badge_text(extract_node_metadata(res),
                                                      badges.get(address, set())),
-                                _role_of(res), steps_by_address.get(address)),
+                                _role_of(res), steps_by_address.get(address),
+                                res.get("_folded")),
             "tooltip": address,
             "style": resolve_stencil(res.get("type")) + _LABEL_STYLE,
             "vertex": "1",
@@ -1228,11 +1415,11 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
         target_id = node_map.get(edge["target"])
         if not source_id or not target_id:
             continue
-        describes = edge.get("kind") == "describes"
+        kind = edge.get("kind", "data")
         cell = ET.SubElement(root, "mxCell", {
             "id": f"edge_{index}",
-            "value": "describes" if describes else f"[{edge['hop']}]",
-            "style": (_DESCRIBES_STYLE if describes else _EDGE_STYLE)
+            "value": f"[{edge['hop']}]" if kind == "data" else kind,
+            "style": _EDGE_STYLES.get(kind, _EDGE_STYLE)
                      + _edge_anchors(positions.get(edge["source"]),
                                      positions.get(edge["target"])),
             "edge": "1",
