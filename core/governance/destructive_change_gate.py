@@ -102,6 +102,15 @@ STATEFUL_RESOURCE_TYPES = frozenset({
     # blanks every pipeline's schedule and cluster sizing until the table is repopulated -- the
     # same "holds data" bar as aws_s3_bucket and aws_kinesis_stream above.
     "aws_dynamodb_table",
+    # Reviewed IN on the same bar, after tests/test_destructive_change_gate.py's catalog sweep
+    # ran for the first time (2026-09-01) and reported it as unreviewed_resource_type. The
+    # module answers the question itself: modules/cube-semantic-layer describes it as the
+    # "Cube pre-aggregation cache", says "the cache holds business metrics", and turns on
+    # at-rest encryption so those pre-aggregations do not rest in the clear. A type whose own
+    # declaration argues its contents need encrypting is not a type a teardown should pass
+    # unreviewed. Dropping it is not silent either: every dashboard falls back to full scans
+    # against the warehouse until it refills.
+    "aws_elasticache_replication_group",
 })
 
 # IAM is a separate dimension from "holds data" -- a privilege-escalation-risk category the
@@ -246,6 +255,11 @@ AUTO_SHIP_ELIGIBLE_TYPES = frozenset({
     # A replication subnet group is a named list of existing subnet ids -- it holds no data,
     # grants no permission, has no endpoint, and costs nothing.
     "aws_dms_replication_subnet_group",
+    # Reviewed on the same reasoning, and by direct precedent above, after the catalog sweep
+    # ran for the first time (2026-09-01) and reported it unreviewed. modules/cube-semantic-
+    # layer's is `subnet_ids = var.subnet_ids` and nothing else. The cluster it serves is
+    # separately reviewed as stateful, which is where the data question is answered.
+    "aws_elasticache_subnet_group",
     # Not cloud resources -- test-utility types with zero cloud footprint, used by this repo's
     # test suite as create/delete/replace and end-to-end apply fixtures without real
     # credentials. Deliberately reviewed in, not a real-world type judgment. `grep -rn
