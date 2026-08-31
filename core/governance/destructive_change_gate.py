@@ -86,6 +86,12 @@ STATEFUL_RESOURCE_TYPES = frozenset({
     "aws_glue_catalog_table",              # catalog entry pointing at real underlying data
     "aws_kinesis_stream",                  # in-flight/retained streaming data
     "aws_kinesis_firehose_delivery_stream",
+    # The Kafka equivalent of aws_kinesis_stream above, and unreviewed until the catalog sweep
+    # first ran (2026-09-01). Brokers hold topic data for a retention period; destroying the
+    # cluster destroys every partition with it, and unlike aws_emr_cluster -- which is in
+    # REVIEWED_UNSAFE_TYPES for being expensive rather than for holding anything -- there is
+    # data here to lose, which is the higher bar.
+    "aws_msk_cluster",
     "aws_mwaa_environment",                # DAG run history/connections/variables; ~20-30min to recreate
     "databricks_metastore",                # root of the entire Unity Catalog governance tree
     "databricks_metastore_assignment",     # governs which workspace can reach which metastore's data
@@ -111,6 +117,14 @@ STATEFUL_RESOURCE_TYPES = frozenset({
     # unreviewed. Dropping it is not silent either: every dashboard falls back to full scans
     # against the warehouse until it refills.
     "aws_elasticache_replication_group",
+    # Holds log data under a retention period, and deleting the group deletes the streams with
+    # it -- there is no undo and no snapshot. The asymmetric-downside test this file applies
+    # settles it: staging a log-group deletion costs one human glance, auto-shipping one
+    # destroys the record of what a pipeline did. Unreviewed until the catalog sweep first ran
+    # (2026-09-01); streaming-msk-kafka declares one for broker logs. Note the neighbouring
+    # CloudWatch types (metric_alarm, event_rule, event_target) are auto-ship eligible on
+    # purpose: they carry configuration, not history.
+    "aws_cloudwatch_log_group",
 })
 
 # IAM is a separate dimension from "holds data" -- a privilege-escalation-risk category the
@@ -120,12 +134,38 @@ STATEFUL_RESOURCE_TYPES = frozenset({
 IAM_RESOURCE_TYPES = frozenset({
     "aws_iam_role",
     "aws_iam_role_policy",
+    # The standalone managed policy. aws_iam_role_policy (inline) and
+    # aws_iam_role_policy_attachment (the binding) were both here and the policy DOCUMENT
+    # itself was not, so a change to the permissions every consumer role carries reported as
+    # "nobody has looked at this type" rather than "this is IAM". Surfaced by the catalog
+    # sweep's first run (2026-09-01); modules/security-iam-scoped has declared one since
+    # 2026-08-22.
+    "aws_iam_policy",
     # Privilege-granting in exactly the sense this set exists for: an instance profile hands a
     # role to every EC2 node in a cluster, and a policy attachment binds an AWS-MANAGED policy
     # whose contents this repo does not author and cannot scan (compute-emr-ec2-spot attaches
     # AmazonEMRServicePolicy_v2). A wildcard inside a managed policy is invisible to SEC-02.
     "aws_iam_instance_profile",
     "aws_iam_role_policy_attachment",
+    # Lake Formation is IAM for the lake, and none of it was classified until the catalog
+    # sweep ran for the first time (2026-09-01). Every type below decides who can read what,
+    # and every one of them fails OPEN when removed -- which is precisely the direction this
+    # set exists to catch.
+    #
+    #   data_lake_settings   names the account's data lake administrators
+    #   permissions          the grant itself
+    #   resource             registers an S3 location, so LF governs it at all; deregistering
+    #                        leaves the data in place and the governance gone
+    #   lf_tag               the tag vocabulary TBAC policies are written against; deleting a
+    #                        key invalidates every policy referencing it
+    #   resource_lf_tags     the assignment that makes a TBAC grant apply to a table
+    #   data_cells_filter    the row/column restriction; removing one WIDENS access
+    "aws_lakeformation_data_lake_settings",
+    "aws_lakeformation_permissions",
+    "aws_lakeformation_resource",
+    "aws_lakeformation_lf_tag",
+    "aws_lakeformation_resource_lf_tags",
+    "aws_lakeformation_data_cells_filter",
 })
 
 # Types explicitly reviewed and found NOT safe to auto-ship, despite being neither
@@ -140,6 +180,12 @@ REVIEWED_UNSAFE_TYPES = frozenset({
     # string) but its CONTENT can grant public access -- the case G6's SEC-07 rule exists for.
     # G6 is shadow-only, so this classifier is the only thing that could actually stage it.
     "aws_s3_bucket_policy",
+    # The same shape, one service over, and unreviewed until the catalog sweep first ran
+    # (2026-09-01): no stateful content, one opaque policy string, and that string is what
+    # decides whether another account can read the queue. modules/ingestion-webhook declares
+    # one so API Gateway can write to its queue; nothing here can tell that from a policy
+    # that opens it wider.
+    "aws_sqs_queue_policy",
     # aws_default_security_group: excluded on a decision, not by default. This repo's own
     # correctly-configured usage (modules/networking-vpc/main.tf) sets
     # `egress { cidr_blocks = ["0.0.0.0/0"] }`, so an unrestricted CIDR block is present in the
