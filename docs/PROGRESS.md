@@ -125,14 +125,26 @@ New file: `core/governance/verification_coverage.py`.
 
 ## 4. Verification status
 
-**Roughly 2,000 passing in the default suite, plus 362 marked `slow` that ran for the first
-time on 2026-08-31.** The suite now runs to completion, which
-it never once did before: 14 files doing live `terraform init` / provider-schema fetches are
-marked `slow` and deselected by default. CI runs them in ci.yml's `slow` job, added
+**Roughly 2,000 passing in the default suite, plus 364 marked `slow`, of which 343 have now
+actually been executed and pass.** 17 files doing live `terraform init` / provider-schema
+fetches are marked `slow` and deselected by default. CI runs them in ci.yml's `slow` job, added
 2026-08-31. Until then no workflow ran them at all: every `pytest` invocation inherited
-`addopts = -m 'not slow'` from pyproject, while this line, `ci.yml`'s header and
-`deploy.yml`'s all claimed otherwise. 362 tests, including the whole gate end-to-end
-suite and 51 synthesizer tests, had never executed anywhere.
+`addopts = -m 'not slow'` from pyproject, while this line, `ci.yml`'s header and `deploy.yml`'s
+all claimed otherwise.
+
+This paragraph previously said all 362 "ran for the first time on 2026-08-31" and that the
+suite "now runs to completion". Neither was true when written -- 60 had run, and the rest were
+dying on the disk exhaustion described in section 15. Correcting it is the point of the
+section: a verification status that overstates itself is the same failure the rest of this
+document is about.
+
+**The 21 not yet executed are all `test_teardown_regression_harness.py`**, and the reason is
+measured, not suspected. Windows refuses symlinks without Developer Mode, so `terraform init`
+COPIES the ~900 MB provider out of `TF_PLUGIN_CACHE_DIR` rather than linking it: a bare
+single-provider init against a warm cache takes **147.7 seconds** here. Each harness test runs
+four Terraform invocations across two paths, so roughly ten minutes per test and about three
+hours for the file. On Linux, where symlinking works, the same init takes seconds. Enabling
+Developer Mode on a Windows dev box fixes it for every terraform test in the repo.
 
 ```bash
 python -m pytest          # no flags needed; pyproject sets --basetemp and -m 'not slow'
@@ -942,3 +954,120 @@ catalog citation the moment one exists. A test asserts no option's `cost_delta` 
   shape is flat and fixed -- the same reasoning `cicd.parse_feed` carries.
 * **The `next` banner appears only when there is a failure.** A diagnostic line on every
   healthy run is noise nobody reads, and noise is how the real one gets missed.
+
+---
+
+## 15. The slow suite actually ran -- and what a full disk was hiding -- 2026-09-01
+
+Section 4 said the 362 `slow` tests "ran for the first time on 2026-08-31" and that the suite
+"now runs to completion". Neither was true when written. Sixty of them had run. The rest died
+on disk exhaustion that was misread three times as code defects.
+
+### The disk was the finding
+
+`terraform init` unpacks each provider through a loose, randomly-named file in the system temp
+directory and deletes it on the way out. A run that is killed or crashes mid-init never reaches
+the way out. Nothing expires them and nothing else collects them.
+
+Measured 2026-09-01: **793 files, 62.8 GB, the oldest 6.9 days old**, against 2.4 GB free on a
+361 GB disk. Deleting them took the machine to 65.2 GB and the slow suite went from impossible
+to routine in one step.
+
+This matters far more than the wasted space, because of how the symptom presents. A test that
+cannot write a provider binary fails on whatever assertion came next, not on a disk error, so
+the failure reads as a defect in the code under test. It cost real time twice: a claimed
+security regression in `modules/security-iam-scoped` that was a full disk, and the same class
+of thing recorded here on 2026-08-18. **Wrong answers that look like findings are worse than no
+answers.** `tests/conftest.py` now reaps orphans older than one hour at session start and prints
+the reclaimed total in the pytest header. One hour, not zero, so a concurrent init's live temp
+file is never touched.
+
+Second, smaller cause, worth knowing on any Windows box: creating a symlink needs Developer Mode
+or admin, and without it Terraform **copies** ~900 MB per working directory instead of
+symlinking from `TF_PLUGIN_CACHE_DIR`. Enabling Developer Mode makes every terraform test
+dramatically cheaper. It is off on this machine.
+
+### G2 refused fourteen of its own modules
+
+`test_schema_lint.py`'s per-module catalog sweep had never executed. Its first run failed on
+**14 of the 16 real modules**, and not one of them was wrong.
+
+Every failure was a `dynamic` block, reported as `unparseable_reference`, which was blocking.
+`dynamic "statement"` is simply how an IAM policy document with a variable number of statements
+is written -- so the gate was refusing the normal way to write the thing it governs. A gate like
+that is noise, and noise is what gets gates switched off.
+
+The distinction the code was missing: every other blocking finding asserts a defect -- this type
+does not exist, this attribute is not in the schema, this literal is the wrong shape. A dynamic
+block asserts the opposite, that **nothing was checked here**. "Not verified" and "verified
+wrong" are different claims and only one of them is a reason to refuse a module. It now raises
+`dynamic_block_unverified` as a warning: the gap stays disclosed, which is what the fail-open
+reasoning in `_scan_body` was actually protecting, without failing correct code.
+
+The repo had already diagnosed this and drawn the wrong conclusion. The xfail for
+`table-format-iceberg` read *"a structural G2 limitation, not a bug in this module or this
+test"* -- correct, and then written down as one module's exception when it belonged to the
+linter. `_G2_KNOWN_EXCEPTIONS` is now empty, and the catalog reports zero blocking findings.
+
+A fifteenth failure was a separate false positive: `cube-semantic-layer` writes
+`at_rest_encryption_enabled = true`, which the AWS provider types `string` (it models a
+tri-state, where unset is not false) while the adjacent `transit_encryption_enabled` is typed
+`bool`. HCL widens bool and number to string automatically and losslessly, so the module applies
+cleanly. Safe widening is no longer a mismatch; the reverse direction still is, because
+string to bool succeeds only when the content happens to parse.
+
+Downstream, `table-format-iceberg` was unskipped in the teardown regression harness -- its
+blocker was that same G2 limitation -- and it now passes real plan-equivalence. A module
+recorded as "never actually G2-clean" is now G2-clean and plan-equivalent, both executed rather
+than inferred.
+
+### A one-shot approval could survive its apply in silence
+
+Found by audit rather than by a test. `stage_apply` ends with `_clear_approvals(dir_, current)`
+under the comment "one-shot: the approval is consumed". `_clear_approvals` caught every
+exception and returned nothing, so a removal that failed was indistinguishable from one that
+succeeded. The approval file stays on disk, stays valid, and the same plan can be applied again
+on it. **One approval, two applies.**
+
+Not theoretical on this platform: `os.remove` raises `PermissionError` on Windows whenever
+anything else holds the file open, and divergent Windows lock semantics have already produced
+bugs in this repo more than once. `_clear_approvals` now narrows to `OSError`, returns the paths
+it could not remove, and the consuming caller prints to stderr and records
+`approval_not_consumed` in the audit chain. Callers on rejection paths may ignore the return:
+they have already refused, and a leftover record is re-validated against hash and canonical dir
+on any later attempt, so it cannot authorise anything by itself.
+
+`test_full_gate_loop_applies_exact_plan` carried the comment "The one-shot approval was
+consumed" followed by a line that computed the hash and never compared it to anything. The
+property it named was never checked. It is checked now.
+
+### Decisions
+
+* **"Not verified" is a warning, never a block.** A gate that cannot inspect a region should say
+  so and let the change through, because the alternative is refusing correct code and training
+  operators to bypass the gate. Blocking is reserved for a specific claim that something is
+  wrong.
+* **A structural limitation belongs to the tool, not to a list of exceptions.** One module's
+  xfail hid a class-wide linter gap for as long as only one module was ever checked. An entry in
+  a known-exceptions table should name a specific module doing something specific and wrong.
+* **A cleanup that can fail must report failing.** Silence turns a security contract into a
+  suggestion. Where the action cannot be undone, the honest remaining move is to make the
+  surviving state loud and auditable.
+* **Never attribute a failure to code before checking free disk.** Three misattributions in two
+  weeks all traced to the same orphaned temp files.
+* **Keep test paths short on Windows.** A custom `--basetemp` under the agent scratchpad pushed
+  gate paths to 304 characters against a 260-character `MAX_PATH` and produced seven
+  `FileNotFoundError` failures that looked exactly like real regressions. The repo-local
+  `.pytest_tmp` that `pyproject.toml` configures is ~70 characters shorter, and that margin is
+  load-bearing.
+* **Never run two pytest sessions at once here.** Doing so produced a wall of failures whose
+  actual cause was `terraform.exe` exiting `3221225794` -- `0xC0000142`,
+  `STATUS_DLL_INIT_FAILED` -- with empty stdout AND stderr, which is Windows refusing to start
+  a process under resource pressure, not anything wrong with a module. `TF_PLUGIN_CACHE_DIR` is
+  documented as unsafe for concurrent use besides.
+* **A copied provider binary can stay locked after the run that made it exits.** Windows held
+  `terraform-provider-aws_v6.62.0_x5.exe` inside a finished test's `tmp_path`, so pytest's own
+  cleanup raised `PermissionError: [WinError 5]` at the SETUP of the next run and three tests
+  errored before executing. No terraform process was alive; a scanner touching a freshly written
+  executable is enough. Running against a different `--basetemp` steps around it. This is the
+  same divergence-from-POSIX family as the audit-chain lock and the G9 concurrency test.
