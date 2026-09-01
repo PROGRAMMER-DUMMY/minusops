@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.10.5"
           terraform_wrapper: false   # the e2e test invokes the real terraform binary
@@ -180,7 +180,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.10.5"
           terraform_wrapper: false
@@ -266,7 +266,7 @@ jobs:
       # genuinely requires terraform on PATH wherever pin runs, this smoke job included. Found
       # by actually running CI, not local dogfooding (which never exercised "pin from a wheel-
       # installed environment with no terraform").
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.10.5"
           terraform_wrapper: false
