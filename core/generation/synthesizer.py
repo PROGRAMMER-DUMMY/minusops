@@ -1360,8 +1360,14 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
         "modules": [m["id"] for m in chosen],
         "review": review,
         "authored_resources": [
+            # A projection on purpose: `content` and `assets` are written to files rather than
+            # echoed back. g2_warnings is included because it is verification metadata, not
+            # payload -- it belongs beside content_hash in the durable record. Leaving it out
+            # made the manifest say an authored resource passed G2 without saying which parts
+            # of it G2 never looked at.
             {"resource_type": e["resource_type"], "form": e.get("form", "flat"),
-             "decision_source": e["decision_source"], "content_hash": e["content_hash"]}
+             "decision_source": e["decision_source"], "content_hash": e["content_hash"],
+             "g2_warnings": e.get("g2_warnings") or []}
             for e in authored_resources
         ],
     }
