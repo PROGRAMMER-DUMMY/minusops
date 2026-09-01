@@ -1078,6 +1078,58 @@ on any later attempt, so it cannot authorise anything by itself.
 consumed" followed by a line that computed the hash and never compared it to anything. The
 property it named was never checked. It is checked now.
 
+### The first CI run, and what only CI could say
+
+246 commits reached a runner for the first time on 2026-09-01. Seven tests failed, in three
+groups, and every one of them was invisible to a green local suite.
+
+**Two doctor tests could only ever pass where opa was missing.** Both assert on
+`checks["opa"]["fix"]`, and `_cli_check()` returns that remediation string only when
+`find_tool()` comes back empty. ci.yml's test job installs OPA on purpose -- pinned and
+checksum-verified -- so that `tests/test_rego_gate.py` runs instead of silently skipping. That
+step and these two assertions cannot both hold: from the moment it was added,
+`assert "skip" in remediation` was checking an empty string on every runner. It failed all six
+platform jobs and nothing else.
+
+**The committed provider lock covered one platform.** `.agents/terraform.lock.hcl` carried one
+`h1:` and sixteen `zh:`, and `compose()` copies it into every composed directory. `zh:` are
+registry ZIP hashes and platform-independent; `h1:` hashes the unpacked provider directory and
+is specific to the platform that made it -- this one, Windows. Installing from a plugin cache
+can only verify `h1:`, while downloading verifies `zh:`, so the lock worked for years of
+downloads and refused the moment terraform preferred the cache. 20+ teardown modules failed.
+The plugin-cache flag exposed it; it did not cause it. Any Linux or macOS contributor using a
+cache would have hit the same wall.
+
+**Three PDF tests asserted against a fallback.** `render_pdf()` succeeds on three tiers -- CDP,
+`--print-to-pdf`, then a hand-written built-in PDF -- and returns `ok=True` for all of them. A
+runner with no usable browser landed on the third (a few hundred bytes, `/BaseFont /Helvetica`)
+and three tests reported the bookmark outline missing as though the CDP path had regressed. The
+fixture now reads the tier out of `info` and skips when CDP was never reached, which is not the
+same as passing.
+
+Worth stating plainly: a green local suite could not have found any of these. The first was
+guaranteed to fail only where OPA is installed, the second only where the OS differs from the
+one that wrote the lock, the third only where no browser exists. Local runs are agreement with
+one machine.
+
+### The diagram drew connections the plan never declared
+
+Left unaided, draw.io routes an L between two nodes: one run along the source's column
+centre-line, one along the target's row centre-line. Those are the exact coordinates the icons
+sit on, so a hop between two rows passes through every icon between them. **12 of 21 hops
+across the three plans** were drawn that way.
+
+On a diagram whose whole doctrine is that an arrow exists only when an argument declares it,
+arrows passing through unrelated resources are the same failure as fabricating them -- the
+reader cannot tell the difference. The grid already leaves 27px between columns and at least
+42px between rows holding nothing, so the route now travels there: out of the source, along a
+row gutter, down a column gutter, along another row gutter, in. 12 crossings became 0 at no
+cost in canvas.
+
+An earlier attempt is recorded in the generator as moving sixteen crossings to fifteen. It put
+waypoints in the band gutters but only moved the horizontal run; the vertical still shared a
+column with what it passed. Both axes have to move for either to help.
+
 ### Decisions
 
 * **"Not verified" is a warning, never a block.** A gate that cannot inspect a region should say
