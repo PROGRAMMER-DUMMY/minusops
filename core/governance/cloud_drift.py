@@ -151,7 +151,12 @@ def aws_telemetry(address, resource_type, lookback_hours=24):
     if resource_type not in TELEMETRY_TYPES:
         return None
     try:
-        import aws
+        # `from providers import aws`, not `import aws`. Both resolve -- core/ and
+        # core/providers are both on sys.path -- but they are separate module objects for the
+        # same file, and core/integrations/base_hook.py and core/reporting/finops_agent.py
+        # already reach it as providers.aws. Staying lazy and optional either way: a missing
+        # provider module still means "unanswerable", never a crash.
+        from providers import aws
     except ImportError:
         return None
 

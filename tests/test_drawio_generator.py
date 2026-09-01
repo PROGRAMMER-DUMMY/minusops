@@ -24,7 +24,7 @@ import json
 import urllib.parse
 import pytest
 
-from core.reporting import drawio_generator
+import drawio_generator
 
 def test_resolve_stencil():
     """The names are draw.io's, not ours. This once asserted `aws4.iam`, which the library

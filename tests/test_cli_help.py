@@ -20,8 +20,8 @@ from contextlib import redirect_stdout
 
 import pytest
 
-from cli import main as cli_main
-from cli import theme
+from core.cli import main as cli_main
+from core.cli import theme
 
 ESC = "\x1b"
 
@@ -229,7 +229,7 @@ def test_delegated_help_passes_through_to_the_owning_command(monkeypatch):
 
 def test_a_native_command_is_still_parsed_here(monkeypatch, tmp_path):
     import runs
-    from cli import context as cli_context
+    from core.cli import context as cli_context
 
     monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
     monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))

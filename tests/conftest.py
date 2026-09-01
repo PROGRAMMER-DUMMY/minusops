@@ -114,6 +114,68 @@ def pytest_report_header(config):
     return f"reaped {reclaimed / (1024 ** 3):.1f} GB of orphaned terraform provider temp files"
 
 
+# One file must never become two modules.
+#
+# core/ is on sys.path and so is each of its subpackages, so almost every module here can be
+# reached by more than one name -- `plan_gate`, `core.governance.plan_gate`, and (because
+# core/governance is on the path too) anything else that resolves. Each name Python has not
+# seen before builds a SEPARATE module object holding its own copy of every module-level name.
+#
+# For a test suite that is a correctness problem, not tidiness. monkeypatch.setattr targets one
+# object; if the code under test imported the other, the patch silently does nothing and the
+# test exercises the real implementation while reporting a pass. That is not theoretical here:
+# test_aws_telemetry_returns_none_without_credentials patched bare `aws` while cloud_drift
+# reached providers.aws, and the unpatched run_aws returned live AWS data
+# ({'identity': 'resource-explorer-2'}) instead of the refusal the test asserts.
+#
+# A whole-session check rather than a per-test one, because import identity is global and
+# order-dependent: the duplicate is usually created by a different file than the one that
+# suffers from it. tests/test_module_identity.py covers the product's own entry points in
+# clean subprocesses; this covers the suite. There were 22 when this was written.
+#
+# The rule: import a module the way production imports it. Engines flat (`import reporter`),
+# the CLI through its package (`from core.cli import main`), since that is what the console
+# script in pyproject.toml loads.
+def _duplicated_core_modules():
+    import collections
+
+    by_file = collections.defaultdict(list)
+    for name, module in list(sys.modules.items()):
+        path = getattr(module, "__file__", None)
+        if not path:
+            continue
+        path = os.path.abspath(path)
+        if path.startswith(os.path.join(ROOT, "core")) or path.startswith(os.path.join(ROOT, "app")):
+            by_file[path].append(name)
+    return {os.path.relpath(f, ROOT): sorted(n) for f, n in by_file.items() if len(n) > 1}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    duplicates = _duplicated_core_modules()
+    if not duplicates:
+        return
+    lines = ["", "One source file was imported under more than one module name:"]
+    for path, names in sorted(duplicates.items()):
+        lines.append(f"  {path}")
+        lines.append(f"      {names}")
+    lines += [
+        "",
+        "Each name is a separate module object with its own module-level state, so a",
+        "monkeypatch against one is invisible to code that imported the other -- a test can",
+        "pass while exercising the real implementation. Import it the way production does:",
+        "engines flat (`import reporter`), the CLI through its package",
+        "(`from core.cli import main`). See tests/test_module_identity.py.",
+        "",
+    ]
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line("\n".join(lines), red=True)
+    else:
+        print("\n".join(lines))
+    if session.exitstatus == 0:
+        session.exitstatus = 1
+
+
 # MINUS-140. `record_claim()` exports the whole claim corpus to JSONL on every insert, and
 # `_claims_corpus_dir()` resolves to the repo's own tracked `knowledge/claims/`. Any test that
 # records a claim therefore rewrote committed files -- `ingested_at`/`observed_at` churn on

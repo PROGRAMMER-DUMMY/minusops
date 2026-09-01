@@ -386,7 +386,7 @@ def test_both_renderers_agree_on_which_hops_exist():
     """Two renderers with two ideas of what connects to what is worse than one that is plain.
     reporter.py built its own edges by matching resource names; it now reads the same
     derivation the draw.io canvas does."""
-    from core.reporting import drawio_generator as generator
+    import drawio_generator as generator
 
     declared = generator.discover_data_edges(DECLARING_PLAN)
     assert declared

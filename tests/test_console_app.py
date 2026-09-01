@@ -142,8 +142,8 @@ def test_v13_modules_carry_no_emoji(relative):
 
 
 def test_the_console_command_is_registered_with_its_aliases():
-    from cli import main as cli_main
-    from cli.commands import console as console_cmd
+    from core.cli import main as cli_main
+    from core.cli.commands import console as console_cmd
 
     assert "console" in cli_main.known_commands()
     assert cli_main.NATIVE["console"] is console_cmd

@@ -23,9 +23,9 @@ from contextlib import redirect_stdout
 import pytest
 
 import runs
-from cli import context as cli_context
-from cli import formatters
-from cli import main as cli_main
+from core.cli import context as cli_context
+from core.cli import formatters
+from core.cli import main as cli_main
 
 
 def _capture(argv):

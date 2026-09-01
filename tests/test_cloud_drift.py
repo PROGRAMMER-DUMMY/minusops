@@ -220,7 +220,12 @@ def test_the_lookup_is_asked_only_about_drifted_resources():
 
 
 def test_aws_telemetry_returns_none_without_credentials(monkeypatch):
-    import aws as aws_provider
+    # Must be the SAME module object cloud_drift.aws_telemetry imports, which is
+    # `from providers import aws`. Patching bare `aws` instead leaves run_aws untouched, and
+    # this test then calls the real one: it was observed returning a live
+    # {'identity': 'resource-explorer-2'} rather than the refusal it asserts. An import path is
+    # the only thing standing between this test and a real AWS call.
+    from providers import aws as aws_provider
 
     monkeypatch.setattr(aws_provider, "run_aws", lambda args, timeout=20: (False, None, "boom"))
 
@@ -341,7 +346,7 @@ def test_the_gate_cli_accepts_with_telemetry():
 def test_minusctl_gate_forwards_the_flag(tmp_path):
     """The wrapper is the surface an operator uses; a flag it drops is a flag that does
     not exist."""
-    from cli.commands import gate as gate_cmd
+    from core.cli.commands import gate as gate_cmd
 
     seen = {}
 

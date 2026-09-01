@@ -20,8 +20,8 @@ from contextlib import redirect_stdout
 import pytest
 
 import runs
-from cli import context as cli_context
-from cli import main as cli_main
+from core.cli import context as cli_context
+from core.cli import main as cli_main
 
 
 def _capture(argv):
@@ -424,7 +424,7 @@ def test_minusctl_gate_status_renders_without_touching_terraform(workspace, monk
 def test_gate_status_is_not_forwarded_to_the_engine_as_a_stage(workspace, monkeypatch):
     """`status` is a CLI-side read of recorded state, not a sixth gate stage. Forwarding it
     would hand plan_gate a stage it does not implement."""
-    from cli.commands import gate as gate_cmd
+    from core.cli.commands import gate as gate_cmd
 
     run = runs.new_run(name="clickstream", domain="marketing")
     cli_context.set_active_run(run["run_id"])
@@ -523,7 +523,7 @@ def test_the_gate_cli_accepts_role_arn():
 
 
 def test_minusctl_gate_forwards_role_arn(workspace, monkeypatch):
-    from cli.commands import gate as gate_cmd
+    from core.cli.commands import gate as gate_cmd
 
     run = runs.new_run(name="clickstream", domain="marketing")
     cli_context.set_active_run(run["run_id"])

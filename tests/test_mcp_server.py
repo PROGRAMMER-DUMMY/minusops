@@ -137,7 +137,7 @@ def test_pillar_next_carries_what_the_facts_already_decide():
 
 
 def pillars_keys():
-    from core.architecture import pillars as p
+    import pillars as p
     return list(p.PILLAR_KEYS)
 
 

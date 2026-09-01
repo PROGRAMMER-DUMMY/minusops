@@ -23,8 +23,8 @@ import pytest
 import export
 import runs
 import serving
-from cli import context as cli_context
-from cli import main as cli_main
+from core.cli import context as cli_context
+from core.cli import main as cli_main
 
 FULL_OUTPUTS = {
     "region": "us-east-1",

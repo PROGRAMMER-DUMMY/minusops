@@ -12,7 +12,8 @@ Used by: nothing (pytest entry point)
 import pytest
 import os
 import json
-from core.generation import git_agent, patterns
+import git_agent
+import patterns
 
 
 def test_promote_pattern_fails_when_run_does_not_exist(tmp_path):

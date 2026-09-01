@@ -138,7 +138,10 @@ def test_guide_cli_example_imports_real_symbols():
     unresolved = []
     for body in _fences("python"):
         for module_name, names in re.findall(r"from \.\.(\w+) import ([^\n]+)", body):
-            module = importlib.import_module(f"cli.{module_name}")
+            # core.cli, not cli: both resolve (core/ and the repo root are both importable),
+            # but they produce SEPARATE module objects for the same file. core.cli is the path
+            # the console script actually uses -- see tests/test_module_identity.py.
+            module = importlib.import_module(f"core.cli.{module_name}")
             for symbol in (n.strip() for n in names.split(",")):
                 if not hasattr(module, symbol):
                     unresolved.append(f"core/cli/{module_name}.py has no {symbol!r}")
