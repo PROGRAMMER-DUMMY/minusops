@@ -296,12 +296,20 @@ def _new_path_plan(module_id, tmp_path):
             name for name, _ in dcg._iter_top_level_blocks(f.read(), "variable")
         }
 
+    # `patched`, not `main_tf`. _strip_caller_identity() removes the data
+    # "aws_caller_identity" block AND rewrites references to it, because Terraform reads every
+    # declared data source at plan time and dummy credentials cannot satisfy a real STS call.
+    # The decomposition above already works from `patched`; these three did not, so the data
+    # source was stripped while a locals block still referencing it was carried over verbatim.
+    # warehouse-snowflake-aws failed exactly there: "A data resource \"aws_caller_identity\"
+    # \"current\" has not been declared in the root module". `patched` is by definition the
+    # content this path plans, so everything derived from the module reads from it.
     var_blocks = "\n".join(
         f'variable "{name}" {{\n{body}\n}}\n'
-        for name, body in dcg._iter_top_level_blocks(main_tf, "variable")
+        for name, body in dcg._iter_top_level_blocks(patched, "variable")
         if name not in composed_variables
     )
-    locals_blocks = "\n".join(_extract_locals_blocks(main_tf))
+    locals_blocks = "\n".join(_extract_locals_blocks(patched))
     with open(os.path.join(out_dir, "_module_vars.tf"), "w", encoding="utf-8") as f:
         f.write(var_blocks + "\n" + locals_blocks)
 
@@ -319,7 +327,7 @@ def _new_path_plan(module_id, tmp_path):
                     assigned.add(name.strip())
 
     var_assignments = "\n".join(
-        line for line in dcg._required_variable_lines(main_tf)
+        line for line in dcg._required_variable_lines(patched)
         if line.strip().split(" ", 1)[0] not in assigned
     )
     with open(tfvars_path, "a", encoding="utf-8") as f:
