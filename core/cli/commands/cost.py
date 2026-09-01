@@ -12,6 +12,7 @@ Depends on: core/cli/context.py, core/cost/bcm_pricing_calculator.py (lazily, in
 Shells out to: nothing directly; the engine calls the `aws` CLI (read-only pricing APIs)
 Used by: core/cli/main.py
 """
+import os
 from .. import context as cli_context
 
 # CLI verb -> engine stage. `estimate` reads better than `run` at the call site and `run`
@@ -44,6 +45,29 @@ def run(args):
             report_dir = cli_context.resolve_run(args.run)["reports_dir"]
         except cli_context.ContextError as exc:
             print(f"[ERR] {exc}")
+            return 1
+
+    # A reports directory usually holds one plan-hash subdirectory per plan. Descend into it
+    # when there is exactly ONE candidate, and refuse when there are several.
+    #
+    # This previously sorted by mtime and took the newest. AGENTS.md is explicit about that
+    # shape: "Do not work around that by passing the newest run -- if you are not sure which
+    # run is meant, ask." A cost report run against the wrong plan looks exactly like one run
+    # against the right plan, and mtime is not even a reliable ordering: regenerating an older
+    # report moves it to the front.
+    if not os.path.isfile(os.path.join(report_dir, "plan.json")) and os.path.isdir(report_dir):
+        candidates = sorted(
+            os.path.join(report_dir, name) for name in os.listdir(report_dir)
+            if os.path.isfile(os.path.join(report_dir, name, "plan.json"))
+        )
+        if len(candidates) == 1:
+            report_dir = candidates[0]
+            print(f"[cost] using the only plan in {report_dir}")
+        elif len(candidates) > 1:
+            print(f"[ERR] {len(candidates)} plans under {report_dir} and no way to tell which "
+                  "one you mean. Name it with --report-dir:")
+            for candidate in candidates:
+                print(f"         --report-dir {candidate}")
             return 1
 
     if args.action == "coverage":

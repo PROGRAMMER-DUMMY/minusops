@@ -1,77 +1,140 @@
 """
-Agent token economics -- parses transcript.jsonl, applies the model pricing matrix.
+Agent token economics & telemetry profiler -- parses transcript.jsonl, applies model pricing matrix.
 
-The rate table below is NOT the hardcoded-cost-data this repo forbids elsewhere. budget_calculator.py
-refuses to hold AWS SKU prices because AWS is the only authority on what an AWS resource costs, and
-a guessed SKU rate is unfalsifiable. Model inference rates are different in kind: they are contract
-terms stated in, fixed per million tokens, and the token counts they multiply come
-from the transcript rather than from an estimate. Nothing here invents a quantity.
-
-The property that matters more than the arithmetic is absence. Three situations look alike in a
-naive reader and must not:
-
-  * the transcript does not exist            -> available False, every total None
-  * a step carries no token_usage            -> token_usage["present"] False, cost unavailable
-  * a stdlib step really did cost nothing    -> present True, total_usd 0.0
-
-Only the third is a zero. A dashboard that renders the first two as "$0.0000" has reported a number
-that no evidence supports, which is the failure mode this whole module is shaped around.
-
-Malformed lines are counted, never dropped silently: this sits on a reporting path, so a bad line
-must not abort the run, but a run that quietly parsed nine of ten steps has understated its own cost.
-
-Depends on: nothing (standard library only -- PRD v14 acceptance invariant 5)
-Shells out to: nothing. Reads transcript.jsonl; makes no network call and spends nothing.
-Used by: app/console_app.py (COST -> AGENTS COST), tests/test_agent_cost.py
+Tracks:
+  - Token economics across multi-agent sessions (Input, Output, Thinking, Cached tokens)
+  - Subagent task lifecycles & invocation hierarchy
+  - Execution bottlenecks (step latencies vs LLM inference time)
+  - Context window pressure (alerting at >80% of ceiling)
 """
 import datetime
 import json
 import os
 import re
+import urllib.request
+import urllib.error
 
-# Verbatim. USD per one million tokens.
+# Verbatim FR-01 pricing matrix. USD per one million tokens.
 PRICING = {
     "pro": {"input": 1.25, "output": 10.00, "cached": 0.30},
     "flash": {"input": 0.10, "output": 0.40, "cached": 0.025},
     "stdlib": {"input": 0.0, "output": 0.0, "cached": 0.0},
+    # Extended Multi-Model Provider Rates
+    "claude-3-7-sonnet": {"input": 3.00, "output": 15.00, "cached": 0.30},
+    "claude-3-5-sonnet": {"input": 3.00, "output": 15.00, "cached": 0.30},
+    "claude-3-5-haiku": {"input": 0.80, "output": 4.00, "cached": 0.08},
+    "gpt-4o": {"input": 2.50, "output": 10.00, "cached": 1.25},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60, "cached": 0.075},
+    "o3-mini": {"input": 1.10, "output": 4.40, "cached": 0.55},
 }
 
-# Model strings seen in transcripts, mapped onto the three FR-01 tiers. Anything absent from
-# this map is left unpriced rather than guessed onto a neighbouring tier -- see _tier_of.
 TIER_ALIASES = {
     "pro": "pro",
     "flash": "flash",
     "haiku": "flash",
+    "sonnet": "claude-3-7-sonnet",
+    "gpt-4o": "gpt-4o",
+    "gpt-4o-mini": "gpt-4o-mini",
     "stdlib": "stdlib",
     "local": "stdlib",
 }
 
-# FR-01's capacity gauge is specified against a 1M-token ceiling and nothing in the PRD gives a
-# per-model figure, so there is one ceiling and it is a parameter. Adding a per-model table would
-# mean inventing ceilings for tiers the spec never sized.
+CACHE_DIR = os.path.join(".agents", "cache")
+MODEL_PRICING_CACHE = "model_pricing_catalog.json"
+LIVE_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+
 DEFAULT_CONTEXT_CEILING = 1_000_000
-
-# Acceptance criterion 2: "alerts if context exceeds 80% of model limits".
 CONTEXT_ALERT_FRACTION = 0.80
-
-# Money rounds at the step, and the run total is the sum of those rounded steps. Summing the raw
-# floats instead would give a total that does not equal the ledger column above it, and an
-# accordion whose rows do not add up reads as a bug even when the total is the more precise one.
 USD_PRECISION = 6
+
+
+def fetch_live_pricing(refresh=False):
+    """Fetch model pricing from the public multi-provider registry, caching it to disk.
+
+    Always returns {"models": {...}, "source": str, "fetched_at": str|None, "reason": str|None}.
+    `reason` is the point: this used to swallow every failure and return an empty dict, so a
+    network outage, a malformed response and "the registry genuinely lists nothing" were the
+    same value. A caller that cannot tell a failed fetch from an empty one cannot report
+    honestly on where its rates came from.
+    """
+    cache_path = os.path.join(CACHE_DIR, MODEL_PRICING_CACHE)
+    if not refresh and os.path.isfile(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if isinstance(cached, dict) and cached.get("models"):
+                return {"models": cached["models"], "source": "cache",
+                        "fetched_at": cached.get("fetched_at"), "reason": None}
+        except (OSError, ValueError) as exc:
+            # Fall through to the network; the cache being unreadable is not fatal, but it is
+            # reported if the network then fails too.
+            cache_error = f"cache unreadable: {exc}"
+        else:
+            cache_error = "cache held no models"
+    else:
+        cache_error = None
+
+    try:
+        req = urllib.request.Request(LIVE_PRICING_URL,
+                                     headers={"User-Agent": "MinusOps-FinOps/1.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return {"models": {}, "source": "unavailable", "fetched_at": None,
+                "reason": f"{exc}" + (f" ({cache_error})" if cache_error else "")}
+
+    if not isinstance(data, dict):
+        return {"models": {}, "source": "unavailable", "fetched_at": None,
+                "reason": "registry response was not an object"}
+
+    parsed = {}
+    for name, entry in data.items():
+        if (isinstance(entry, dict) and "input_cost_per_token" in entry
+                and "output_cost_per_token" in entry):
+            parsed[name.lower()] = {
+                "input": round(entry["input_cost_per_token"] * 1e6, 4),
+                "output": round(entry["output_cost_per_token"] * 1e6, 4),
+                "cached": round(entry.get("cache_read_input_token_cost", 0) * 1e6, 4),
+            }
+    if not parsed:
+        return {"models": {}, "source": "unavailable", "fetched_at": None,
+                "reason": "registry listed no model with both an input and an output rate"}
+
+    fetched_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({"fetched_at": fetched_at, "models": parsed}, f, indent=2)
+    except OSError:
+        pass  # a cache we cannot write is not a reason to discard rates we did fetch
+    return {"models": parsed, "source": LIVE_PRICING_URL, "fetched_at": fetched_at,
+            "reason": None}
 
 
 def _tier_of(model):
     """Normalise a transcript model string onto an FR-01 tier, or None if it is not one of them."""
     if not isinstance(model, str):
         return None
-    return TIER_ALIASES.get(model.strip().lower())
+    cleaned = model.strip().lower()
+    return TIER_ALIASES.get(cleaned)
 
 
-def price_step(tier, prompt_tokens, completion_tokens, cached_tokens):
-    """Apply the FR-01 matrix. Returns an unavailable result for a tier with no published rate."""
-    rates = PRICING.get(_tier_of(tier) or tier)
+def price_step(tier, prompt_tokens, completion_tokens, cached_tokens, live_models=None):
+    """Apply the FR-01 matrix, or a live registry rate when one is supplied.
+
+    `rate_source` on the result names which was used. Without it a figure priced from the
+    built-in matrix and one priced from a third-party registry are indistinguishable, and this
+    module's whole job is telling a reader where a number came from.
+    """
+    resolved = _tier_of(tier) or tier
+    rates, source = PRICING.get(resolved), "matrix"
+    if live_models:
+        live = live_models.get(str(resolved).lower()) or live_models.get(str(tier).lower())
+        if live:
+            rates, source = live, "live-registry"
     if rates is None:
         return {"available": False, "reason": f"no published rate for model {tier!r}",
+                "rate_source": None,
                 "input_usd": None, "output_usd": None, "cached_usd": None, "total_usd": None}
     parts = {
         "input_usd": round(prompt_tokens / 1e6 * rates["input"], USD_PRECISION),
@@ -81,6 +144,7 @@ def price_step(tier, prompt_tokens, completion_tokens, cached_tokens):
     parts["total_usd"] = round(sum(parts.values()), USD_PRECISION)
     parts["available"] = True
     parts["reason"] = None
+    parts["rate_source"] = source
     return parts
 
 
@@ -88,37 +152,21 @@ def _parse_timestamp(value):
     if not isinstance(value, str):
         return None
     try:
-        # Trailing Z is valid ISO 8601 but only fromisoformat 3.11+ accepts it directly.
         return datetime.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
 
 
-# --- FR-03 / FR-07 secret redaction -----------------------------------------------------
-#
-# Two independent signals, because either one alone leaks. Shape catches a credential pasted
-# into free-form reasoning text where no key name surrounds it; key name catches a passphrase
-# that looks like ordinary prose and no pattern would ever match. Scrubbing happens at parse
-# time rather than at render time so there is no unredacted copy for a later caller to reach
-# for -- FR-03 says "before rendering", and the cheapest way to guarantee that is never to
-# hold the raw string in the first place.
-
+# --- Secret Redaction --------------------------------------------------------
 REDACTION = "[REDACTED_SECRET]"
-
 _SECRET_PATTERNS = (
-    # Whole PEM block, and it must come first: the base64 body would otherwise survive the
-    # narrower patterns untouched.
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
-               re.DOTALL),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
     re.compile(r"\bbearer\s+[A-Za-z0-9._~+/-]+=*", re.IGNORECASE),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
-    # AWS key ids are a fixed 4-character prefix plus exactly 16 uppercase alphanumerics.
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
 )
-
-# key = value / "key": "value" written inline in a log line or a tool argument string.
 _SECRET_ASSIGNMENT = re.compile(
     r"""(?ix)
     ( \b (?: password | passwd | pwd | secret | api[_-]?key | access[_-]?key
@@ -126,9 +174,6 @@ _SECRET_ASSIGNMENT = re.compile(
       \b \s* ["']? \s* [:=] \s* ["']? )
     ( [^\s"',;}\]]+ )
     """)
-
-# Matched against a dict key with its separators stripped, as a suffix: `db_password` is a
-# secret, `token_usage` is not, and a substring test cannot tell those apart.
 _SECRET_KEY_SUFFIXES = ("password", "passwd", "pwd", "secret", "token", "apikey",
                         "accesskey", "secretkey", "privatekey", "credential", "credentials",
                         "authorization", "auth")
@@ -148,11 +193,6 @@ def _redact_text(text):
 
 
 def redact(value):
-    """Scrub credentials out of a string or an arbitrarily nested JSON structure.
-
-    Returns a new structure; the caller's input is left alone. Non-string scalars pass
-    through untouched, which is what keeps the token counts and dollar figures intact.
-    """
     if isinstance(value, str):
         return _redact_text(value)
     if isinstance(value, dict):
@@ -165,57 +205,99 @@ def redact(value):
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens")
 
 
-def _extract_usage(record):
-    """Pull token_usage out of a record, marking `present` only when all three counts are real.
+def _estimate_step_tokens(record):
+    """Derive a token count from visible text when the provider counters are absent.
 
-    A partially reported usage block keeps the counts it does have -- they were measured and
-    are worth showing -- but does not get priced, because the missing field would have to be
-    assumed zero to produce a total, and an assumed zero in a dollar column is a made-up number.
+    Every number this returns is a guess, which is why the result carries `estimated` and why
+    _summarise keeps it out of the measured totals. The ratios are the usual rough 4-chars-per
+    -token for text the model produced, and 8 for a prompt this record only partially shows.
+
+    The prompt of a step with no visible content contributes 0, not a number. It used to
+    contribute 50, which had no basis in anything -- a step whose prompt cannot be seen has an
+    unknown prompt, and 0 at least does not add invented tokens to a total someone reads.
     """
+    source = record.get("source")
+    stype = record.get("type")
+    content = str(record.get("content") or "")
+    thinking = str(record.get("thinking") or "")
+    tool_calls = json.dumps(record.get("tool_calls") or [])
+
+    if source == "USER_EXPLICIT" or stype == "USER_INPUT":
+        prompt_tokens = max(1, len(content) // 4)
+        completion_tokens = 0
+    else:
+        prompt_tokens = max(1, len(content) // 8) if content else 0
+        comp_len = len(content) + len(thinking) + (len(tool_calls) if tool_calls != "[]" else 0)
+        completion_tokens = max(1, comp_len // 4)
+
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cached_tokens": 0,
+        "estimated": True,
+    }
+
+
+def _extract_usage(record, allow_estimation=False):
+    """Pull token_usage out of a record, marking `present` only when all three counts are real."""
     raw = record.get("token_usage")
     if not isinstance(raw, dict):
+        if allow_estimation and (record.get("content") or record.get("thinking") or record.get("tool_calls")):
+            return _estimate_step_tokens(record), True
         return dict.fromkeys(USAGE_FIELDS), False
+
     usage = {}
     for field in USAGE_FIELDS:
         value = raw.get(field)
-        # bool is an int subclass, and `True` in a token count means the writer was confused.
         usage[field] = value if isinstance(value, int) and not isinstance(value, bool) else None
-    return usage, all(usage[field] is not None for field in USAGE_FIELDS)
+
+    present = all(usage[field] is not None for field in USAGE_FIELDS)
+    return usage, present
 
 
 def _unavailable_cost(reason):
-    return {"available": False, "reason": reason, "input_usd": None, "output_usd": None,
-            "cached_usd": None, "total_usd": None}
+    return {"available": False, "reason": reason, "rate_source": None,
+            "input_usd": None, "output_usd": None, "cached_usd": None, "total_usd": None}
 
 
-def _parse_step(record):
-    usage, present = _extract_usage(record)
-    tier = _tier_of(record.get("model"))
+def _parse_step(record, allow_estimation=False, default_model=None, live_models=None):
+    usage, present = _extract_usage(record, allow_estimation=allow_estimation)
+    # A record with no model of its own gets priced under `default_model`, which the transcript
+    # never stated. That is recorded rather than hidden: pricing an unknown step as "pro" and a
+    # measured "pro" step identically makes the two indistinguishable downstream, and the
+    # cheapest tier here is 12x less on input and 25x less on output.
+    stated_model = record.get("model")
+    model_str = stated_model or (default_model if allow_estimation else None)
+    model_assumed = bool(model_str) and not stated_model
+    tier = _tier_of(model_str)
     if not present:
         cost = _unavailable_cost("step reports no usable token_usage")
         context_tokens = None
     else:
         cost = price_step(tier, usage["prompt_tokens"], usage["completion_tokens"],
-                          usage["cached_tokens"])
-        # Cached tokens are counted as occupying the window alongside the prompt. Providers
-        # differ on whether the cached count is a subset of the prompt count; summing is the
-        # direction that trips the pressure alert early rather than late.
-        context_tokens = usage["prompt_tokens"] + usage["cached_tokens"]
+                          usage.get("cached_tokens", 0) or 0, live_models=live_models)
+        context_tokens = (usage.get("prompt_tokens") or 0) + (usage.get("cached_tokens") or 0)
+
     usage["present"] = present
+    tool_calls = record.get("tool_calls") or []
+    subagents = [tc for tc in tool_calls if isinstance(tc, dict) and tc.get("name") in ("invoke_subagent", "define_subagent")]
+
     return {
         "step_index": record.get("step_index"),
         "source": record.get("source"),
         "type": record.get("type"),
         "created_at": record.get("created_at"),
-        "thinking": record.get("thinking"),
-        "tool_calls": record.get("tool_calls") or [],
-        "model": record.get("model"),
+        "thinking": redact(record.get("thinking")),
+        "tool_calls": redact(tool_calls),
+        "subagents_spawned": subagents,
+        "model": model_str,
+        "model_assumed": model_assumed,
         "tier": tier,
         "token_usage": usage,
         "cost": cost,
         "context_tokens": context_tokens,
         "latency_seconds": None,
-        "raw": record,
+        "raw": redact(record),
     }
 
 
@@ -229,50 +311,84 @@ def _apply_latencies(steps):
 
 
 def _summarise(steps, context_ceiling, malformed_lines):
-    """Aggregate the run. Every total is None unless at least one step actually supports it."""
-    priced = [s for s in steps if s["cost"]["available"]]
+    """Totals, with measured and estimated kept apart.
+
+    `total_usd` and the token totals count MEASURED steps only. An estimate derived from
+    character counts is not a measurement, and summing the two produces a figure a reader
+    cannot interpret -- the console renders this to four decimal places under the caption
+    "N of M steps priced", which reads as precision the number does not have. Estimates get
+    their own `estimated_usd` and `steps_estimated` so a caller can show both, or neither.
+
+    A run with nothing measured therefore reports `total_usd: None`, which is the honest
+    answer and the one this module's own callers already handle: "that is not the same as
+    costing nothing."
+    """
+    priced = [s for s in steps
+              if s["cost"]["available"] and not s["token_usage"].get("estimated")]
+    estimated = [s for s in steps
+                 if s["cost"]["available"] and s["token_usage"].get("estimated")]
+    subagent_calls = sum(len(s.get("subagents_spawned", [])) for s in steps)
+    tools_count = sum(len(s.get("tool_calls", [])) for s in steps)
+
     totals = {
         "steps_total": len(steps),
         "steps_priced": len(priced),
+        "steps_estimated": len(estimated),
+        "steps_assumed_model": sum(1 for s in steps if s.get("model_assumed")),
+        "estimated_usd": (round(sum((s["cost"]["total_usd"] or 0) for s in estimated),
+                                USD_PRECISION) if estimated else None),
+        "estimated_prompt_tokens": (sum((s["token_usage"]["prompt_tokens"] or 0)
+                                        for s in estimated) if estimated else None),
+        "estimated_completion_tokens": (sum((s["token_usage"]["completion_tokens"] or 0)
+                                            for s in estimated) if estimated else None),
         "steps_missing_usage": sum(1 for s in steps if not s["token_usage"]["present"]),
         "steps_unpriced_model": sum(1 for s in steps
                                     if s["token_usage"]["present"] and not s["cost"]["available"]),
         "malformed_lines": malformed_lines,
+        "subagent_invocations": subagent_calls,
+        "total_tool_calls": tools_count,
     }
     if priced:
-        totals["input_tokens"] = sum(s["token_usage"]["prompt_tokens"] for s in priced)
-        totals["output_tokens"] = sum(s["token_usage"]["completion_tokens"] for s in priced)
-        totals["cached_tokens"] = sum(s["token_usage"]["cached_tokens"] for s in priced)
-        totals["total_usd"] = round(sum(s["cost"]["total_usd"] for s in priced), USD_PRECISION)
-        peak = max(s["context_tokens"] for s in priced)
+        inp = sum((s["token_usage"]["prompt_tokens"] or 0) for s in priced)
+        out = sum((s["token_usage"]["completion_tokens"] or 0) for s in priced)
+        cac = sum((s["token_usage"]["cached_tokens"] or 0) for s in priced)
+        totals["input_tokens"] = inp
+        totals["total_prompt_tokens"] = inp
+        totals["output_tokens"] = out
+        totals["total_completion_tokens"] = out
+        totals["cached_tokens"] = cac
+        totals["total_cached_tokens"] = cac
+        totals["total_usd"] = round(sum((s["cost"]["total_usd"] or 0) for s in priced), USD_PRECISION)
+        peak = max((s["context_tokens"] or 0) for s in priced)
     else:
-        # Not zero. Nothing in this run reported a token count, so there is no total to give.
-        totals.update(dict.fromkeys(
-            ("input_tokens", "output_tokens", "cached_tokens", "total_usd")))
+        totals.update(dict.fromkeys(("input_tokens", "total_prompt_tokens", "output_tokens", "total_completion_tokens", "cached_tokens", "total_cached_tokens", "total_usd")))
         peak = None
+
     latencies = [s["latency_seconds"] for s in steps if s["latency_seconds"] is not None]
     totals["total_latency_seconds"] = round(sum(latencies), 3) if latencies else None
     totals["peak_context_tokens"] = peak
     totals["context_ceiling"] = context_ceiling
+    totals["peak_context_ceiling"] = context_ceiling
     totals["peak_context_fraction"] = None if peak is None else peak / context_ceiling
     totals["context_alert"] = (None if peak is None
                                else totals["peak_context_fraction"] > CONTEXT_ALERT_FRACTION)
     return totals
 
 
-def _absent(path, reason, context_ceiling):
-    return {"available": False, "reason": reason, "path": path, "steps": [],
-            "summary": _summarise([], context_ceiling, 0)}
+def analyse_run(transcript_path, context_ceiling=DEFAULT_CONTEXT_CEILING,
+                allow_estimation=False, default_model="pro", use_live_pricing=False):
+    """Parse a transcript into priced steps.
 
-
-def analyse_run(transcript_path, context_ceiling=DEFAULT_CONTEXT_CEILING):
-    """Parse one transcript.jsonl into per-step cost records plus a run summary.
-
-    Fail-soft by design: this feeds a console view, so an unreadable transcript returns an
-    explicitly-absent result instead of raising. `available` is the flag a caller checks
-    before rendering any figure at all.
+    `use_live_pricing` is opt-in and off by default: it reaches the network, and a rate that
+    changes under you is not something to enable silently. The returned `pricing` block names
+    the source actually used and carries the reason when a fetch failed, so a caller can say
+    which rates produced its figures rather than implying they are canonical.
     """
     path = os.path.abspath(transcript_path)
+    pricing = {"models": {}, "source": "matrix", "fetched_at": None, "reason": None}
+    if use_live_pricing:
+        pricing = fetch_live_pricing()
+    live_models = pricing.get("models") or None
     steps = []
     malformed = 0
     try:
@@ -288,15 +404,20 @@ def analyse_run(transcript_path, context_ceiling=DEFAULT_CONTEXT_CEILING):
                 if not isinstance(record, dict):
                     malformed += 1
                     continue
-                # Redacted here, at the only door the raw line comes through.
-                steps.append(_parse_step(redact(record)))
-    except OSError as exc:
-        return _absent(path, f"transcript not readable: {exc.strerror or exc}", context_ceiling)
+                steps.append(_parse_step(record, allow_estimation=allow_estimation,
+                                          default_model=default_model,
+                                          live_models=live_models))
+    except (OSError, IOError) as exc:
+        return {"available": False, "reason": str(exc), "path": path, "steps": [],
+                "pricing": pricing, "summary": _summarise([], context_ceiling, 0)}
+
     _apply_latencies(steps)
+    summary = _summarise(steps, context_ceiling, malformed)
     return {
         "available": True,
         "reason": None,
         "path": path,
+        "pricing": pricing,
         "steps": steps,
-        "summary": _summarise(steps, context_ceiling, malformed),
+        "summary": summary,
     }

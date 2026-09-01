@@ -128,3 +128,42 @@ def test_entry_for_service_code_prefers_the_more_specific_entry():
     entry = pc.entry_for_service_code("AmazonCloudWatch")
     assert entry["prefix"] == "aws_cloudwatch_metric_alarm"
     assert entry["verified"] is True
+
+
+# --- "free" must claim only what was actually reviewed ---------------------------------------
+
+def test_a_vpc_endpoint_is_not_free_just_because_a_vpc_is():
+    """aws_vpc's own note says "subresources like NAT gateways and interface endpoints are NOT
+    free and must never be added to this file" -- and prefix matching claimed them anyway, so
+    every interface endpoint in a plan audited as costing nothing. An interface endpoint bills
+    per hour per availability zone plus data processing."""
+    assert pc.confirmed_free("aws_vpc") is not None
+    assert pc.confirmed_free("aws_vpc_endpoint") is None
+
+    mapped = pc.resolve_resource_type("aws_vpc_endpoint")
+    assert mapped is not None, "it has to land somewhere -- unmapped and unfree is a silent gap"
+    assert mapped["service_code"] == "AmazonVPC"
+
+
+def test_making_vpc_exact_did_not_strand_the_subresources_that_really_are_free():
+    """The narrowing must not turn genuinely free types into false coverage gaps that block a
+    production plan for nothing."""
+    for resource_type in ("aws_vpc_peering_connection",
+                          "aws_vpc_dhcp_options_association",
+                          "aws_vpc_security_group_ingress_rule"):
+        assert pc.confirmed_free(resource_type) is not None, resource_type
+
+
+def test_a_billable_vpc_subresource_stays_a_visible_gap():
+    """IPAM and NAT gateways bill, and nobody has reviewed them into the catalog. Unresolved is
+    the correct state for that -- it is the one this repo added specifically so an unreviewed
+    type stops reading as free."""
+    for resource_type in ("aws_vpc_ipam", "aws_nat_gateway"):
+        assert pc.confirmed_free(resource_type) is None, resource_type
+
+
+def test_exact_entries_do_not_break_prefix_entries():
+    """Most entries are still prefixes and must keep matching their families."""
+    assert pc.confirmed_free("aws_iam_role_policy_attachment") is not None
+    assert pc.confirmed_free("aws_lakeformation_data_cells_filter") is not None
+

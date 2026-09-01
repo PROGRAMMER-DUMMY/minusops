@@ -260,6 +260,126 @@ def test_an_unreadable_timestamp_leaves_latency_absent(tmp_path):
     assert run["summary"]["total_latency_seconds"] is None
 
 
+# --- Estimated is not measured --------------------------------------------------------------
+#
+# app/console_app.py calls analyse_run(allow_estimation=True) and renders summary["total_usd"]
+# to four decimal places under the caption "N of M steps measured". Before these tests nothing
+# exercised allow_estimation at all -- every call in this file used the default False -- so the
+# only path the console actually uses was the one path with no coverage.
+
+
+def _transcript(tmp_path, *records):
+    path = tmp_path / "transcript.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return str(path)
+
+
+def test_an_estimated_step_is_not_counted_among_the_measured_ones(tmp_path):
+    """The failure this guards: an estimate derived from character length landing in
+    total_usd, where a reader cannot tell it from a provider-reported figure."""
+    path = _transcript(tmp_path, {
+        "step_index": 0, "source": "AGENT", "model": "pro",
+        "content": "x" * 400, "created_at": "2026-09-01T00:00:00Z",
+    })
+    run = acc.analyse_run(path, allow_estimation=True)
+    summary = run["summary"]
+
+    assert summary["steps_estimated"] == 1
+    assert summary["steps_priced"] == 0, "an estimate must never count as a measured step"
+    assert summary["total_usd"] is None, "a run with nothing measured has no measured total"
+    assert summary["estimated_usd"] is not None, "the estimate is still reported, separately"
+    assert run["steps"][0]["token_usage"]["estimated"] is True
+
+
+def test_a_measured_step_and_an_estimated_one_do_not_get_added_together(tmp_path):
+    path = _transcript(tmp_path,
+        {"step_index": 0, "source": "AGENT", "model": "pro",
+         "token_usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0, "cached_tokens": 0},
+         "created_at": "2026-09-01T00:00:00Z"},
+        {"step_index": 1, "source": "AGENT", "model": "pro",
+         "content": "y" * 800, "created_at": "2026-09-01T00:00:01Z"})
+    summary = acc.analyse_run(path, allow_estimation=True)["summary"]
+
+    assert summary["steps_priced"] == 1
+    assert summary["steps_estimated"] == 1
+    # 1M prompt tokens at the pro input rate, and nothing from the estimated step.
+    assert summary["total_usd"] == 1.25
+    assert summary["total_prompt_tokens"] == 1_000_000
+
+
+def test_estimation_stays_off_unless_asked_for(tmp_path):
+    """The default must keep refusing rather than guessing -- every existing caller relies on
+    it, and a step with no token_usage is reported as missing, not filled in."""
+    path = _transcript(tmp_path, {
+        "step_index": 0, "source": "AGENT", "model": "pro", "content": "z" * 400,
+        "created_at": "2026-09-01T00:00:00Z"})
+    summary = acc.analyse_run(path)["summary"]
+
+    assert summary["steps_estimated"] == 0
+    assert summary["steps_missing_usage"] == 1
+    assert summary["total_usd"] is None
+
+
+def test_a_model_nobody_stated_is_recorded_as_assumed(tmp_path):
+    """default_model prices a step the transcript never assigned a model. Pricing that
+    identically to a stated model hides a 12x difference on input and 25x on output between
+    the cheapest tier and the one assumed."""
+    path = _transcript(tmp_path, {
+        "step_index": 0, "source": "AGENT", "content": "q" * 400,
+        "created_at": "2026-09-01T00:00:00Z"})
+    run = acc.analyse_run(path, allow_estimation=True, default_model="pro")
+
+    assert run["steps"][0]["model_assumed"] is True
+    assert run["summary"]["steps_assumed_model"] == 1
+
+
+def test_a_stated_model_is_not_marked_assumed(tmp_path):
+    """The guard above must not fire on every step -- otherwise it says nothing."""
+    path = _transcript(tmp_path, {
+        "step_index": 0, "source": "AGENT", "model": "flash", "content": "q" * 400,
+        "created_at": "2026-09-01T00:00:00Z"})
+    run = acc.analyse_run(path, allow_estimation=True, default_model="pro")
+
+    assert run["steps"][0]["model_assumed"] is False
+    assert run["summary"]["steps_assumed_model"] == 0
+
+
+def test_an_unseen_prompt_contributes_no_tokens_rather_than_fifty(tmp_path):
+    """A step whose prompt is not visible has an unknown prompt. It used to contribute a
+    hardcoded 50 tokens, which came from nowhere and was summed into a total someone reads."""
+    estimate = acc._estimate_step_tokens({"source": "AGENT", "thinking": "t" * 400})
+    assert estimate["prompt_tokens"] == 0
+    assert estimate["estimated"] is True
+
+
+def test_every_priced_step_says_where_its_rate_came_from(tmp_path):
+    """A figure from the built-in matrix and one from a third-party registry must not be
+    indistinguishable."""
+    priced = acc.price_step("pro", 1_000_000, 0, 0)
+    assert priced["rate_source"] == "matrix"
+
+    live = acc.price_step("pro", 1_000_000, 0, 0,
+                          live_models={"pro": {"input": 2.0, "output": 4.0, "cached": 0.0}})
+    assert live["rate_source"] == "live-registry"
+    assert live["input_usd"] == 2.0, "the live rate has to actually be the one applied"
+
+
+def test_a_failed_pricing_fetch_says_so_instead_of_looking_empty(monkeypatch, tmp_path):
+    """It used to swallow everything and return {}, so an outage and a genuinely empty
+    registry were the same value."""
+    monkeypatch.setattr(acc, "CACHE_DIR", str(tmp_path / "no-cache"))
+
+    def _boom(*a, **k):
+        raise OSError("network is down")
+
+    monkeypatch.setattr(acc.urllib.request, "urlopen", _boom)
+    result = acc.fetch_live_pricing()
+
+    assert result["models"] == {}
+    assert result["source"] == "unavailable"
+    assert "network is down" in result["reason"]
+
+
 # --- FR-03 / FR-07 secret redaction -----------------------------------------------------
 
 SECRETS = [

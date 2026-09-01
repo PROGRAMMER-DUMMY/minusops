@@ -90,9 +90,20 @@ def resolve_resource_type(tf_type):
 
 
 def confirmed_free(tf_type):
-    """Return the free-resource entry for a Terraform resource type, or None."""
+    """Return the free-resource entry for a Terraform resource type, or None.
+
+    An entry may set `"exact": true` to claim only the type it names. Prefix matching is right
+    for a family that is free throughout, and wrong for one where the parent is free and the
+    children are not: "aws_vpc" also matches aws_vpc_endpoint, and an interface endpoint bills
+    per hour per AZ plus data processing. That entry's own note said so -- "subresources like
+    NAT gateways and interface endpoints are NOT free" -- while the matching claimed them
+    anyway, so a plan full of endpoints audited as costing nothing.
+    """
     for entry in _free_registry():
-        if tf_type.startswith(entry["prefix"]):
+        if entry.get("exact"):
+            if tf_type == entry["prefix"]:
+                return entry
+        elif tf_type.startswith(entry["prefix"]):
             return entry
     return None
 

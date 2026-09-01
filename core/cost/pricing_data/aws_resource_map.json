@@ -1,6 +1,7 @@
 {
   "_comment": "Consolidated Terraform-resource-type -> AWS Price List serviceCode map. This REPLACES three formerly-independent, hand-maintained tables (bcm_pricing_calculator._SERVICE_CODE, plan_inspector.SERVICE_PREFIXES, plan_inspector.FILE_HINTS) that each had the same blind spots (MWAA/Kinesis/SNS were missing from all three). Matched by LONGEST matching prefix, not list order, so e.g. aws_kinesis_firehose_delivery_stream resolves to Firehose rather than the generic Kinesis Data Streams entry. `verified: true` means usageType/operation were confirmed against the live AWS Price List catalog (see examples/bcm-usage-profile.example.json) and amounts are derived automatically; `verified: false` means the serviceCode is a stable AWS identifier but usageType/operation/amount still require a reviewed usage profile before a run can price that service -- never treat an unverified entry as a real dollar amount.",
   "prefixes": [
+    {"prefix": "aws_vpc_endpoint", "service_code": "AmazonVPC", "display_name": "Amazon VPC (endpoints)", "file_hint": "networking.tf", "verified": true},
     {"prefix": "aws_glue", "service_code": "AWSGlue", "display_name": "AWS Glue", "file_hint": "glue.tf", "verified": true},
     {"prefix": "aws_s3_object", "service_code": "AmazonS3", "display_name": "Amazon S3", "file_hint": "scripts.tf", "verified": true},
     {"prefix": "aws_s3", "service_code": "AmazonS3", "display_name": "Amazon S3", "file_hint": "s3.tf", "verified": true},
