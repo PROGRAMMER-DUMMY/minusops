@@ -31,6 +31,34 @@ os.environ["MINUS_BCM_AUTO"] = "0"
 os.environ.setdefault("TF_PLUGIN_CACHE_DIR", os.path.join(ROOT, ".agents", "tf-plugin-cache"))
 os.makedirs(os.environ["TF_PLUGIN_CACHE_DIR"], exist_ok=True)
 
+# Without this, the cache above does nothing at all.
+#
+# Terraform will not install a provider from the shared cache unless the dependency lock file
+# already records that provider's official checksums, because a cache entry alone cannot prove
+# authenticity. Every test here inits a fresh tmp_path with no .terraform.lock.hcl, so that
+# condition is never met: Terraform said "Installed hashicorp/aws v6.62.0 (signed by
+# HashiCorp)" -- the registry download path -- and re-downloaded the ~490 MB package every
+# single time, while the populated cache sat unused.
+#
+# Measured 2026-09-01 on one pinned-version init with a warm cache, everything else identical:
+#
+#     without this variable   97-293s   "Installed ... (signed by HashiCorp)"
+#     with it                   10.3s   "Using ... from the shared cache directory"
+#
+# The variance is download throughput; this connection measured 4.6 MB/s. Local file I/O was
+# never the cost -- copying the same 863 MB binary takes 2.1s and hashing it 3.7s.
+#
+# What the name warns about does not apply here. The risk is that Terraform records a lock
+# entry covering only the current platform, instead of the registry's checksums for every
+# platform. These lock files live in a tmp_path that is deleted when the test ends and are never
+# committed. Provider VERSION resolution still goes to the registry ("Finding hashicorp/aws
+# versions matching ..."), so a newly released provider is still discovered and still
+# downloaded -- schema_lint.py's live-schema contract is unaffected. Only the redundant
+# re-download of a version already sitting in the cache is skipped.
+#
+# Scoped to the test suite. Nothing an operator runs through minusctl reads this file.
+os.environ.setdefault("TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE", "1")
+
 
 # The plugin cache above fixed re-downloading. It does not fix this, which is a separate leak
 # in the same direction and was the one actually filling the disk.
