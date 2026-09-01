@@ -916,19 +916,37 @@ def _reject_if_apply_identity_mismatches_approver(dir_, approval, policy_mode, d
 
 
 def _clear_approvals(dir_, plan_hash=None):
-    try:
-        if plan_hash:
-            path = _approved_path(dir_, plan_hash)
+    """Remove approval records, returning the paths that could not be removed."""
+    # This used to swallow every exception and return nothing, which quietly broke the one-shot
+    # contract its own call site states. An approval that cannot be deleted is still a valid
+    # approval: the next apply of the same plan finds it, validates it, and runs again. One
+    # approval, two applies.
+    #
+    # Not hypothetical on this platform. os.remove raises PermissionError on Windows whenever
+    # anything else holds the file open -- an indexer or a scanner is enough -- and this repo
+    # has hit Windows lock semantics diverging from POSIX more than once already.
+    #
+    # A caller that is rejecting anyway can ignore the return: it has already refused, and the
+    # leftover record is re-validated (hash, canonical dir) on any later attempt, so it cannot
+    # authorise anything on its own. The consuming caller cannot ignore it, and does not.
+    if plan_hash:
+        targets = [_approved_path(dir_, plan_hash)]
+    else:
+        approvals = _approval_dir(dir_)
+        try:
+            targets = [os.path.join(approvals, name) for name in os.listdir(approvals)
+                       if name.endswith(".json")] if os.path.isdir(approvals) else []
+        except OSError:
+            return [approvals]
+
+    unremoved = []
+    for path in targets:
+        try:
             if os.path.exists(path):
                 os.remove(path)
-            return
-        approvals = _approval_dir(dir_)
-        if os.path.isdir(approvals):
-            for name in os.listdir(approvals):
-                if name.endswith(".json"):
-                    os.remove(os.path.join(approvals, name))
-    except Exception:
-        pass
+        except OSError:
+            unremoved.append(path)
+    return unremoved
 
 
 # ---------------------------------------------------------------------------
@@ -1792,7 +1810,17 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
                destroy=destroy)
     print("[gate] apply complete." if status == "OK" else f"[gate] apply {status}.")
     if status != "INTERRUPTED":
-        _clear_approvals(dir_, current)  # one-shot: the approval is consumed
+        unconsumed = _clear_approvals(dir_, current)  # one-shot: the approval is consumed
+        if unconsumed:
+            # The apply already happened and cannot be undone, so the only honest thing left is
+            # to make the surviving approval loud. Staying quiet here would leave a replayable
+            # approval on disk with nothing in the record to say so.
+            print("[gate] WARNING: the apply completed but its one-shot approval could not be "
+                  f"removed ({', '.join(unconsumed)}). That approval is still valid and this "
+                  "plan can be applied again without a new one. Delete it by hand.",
+                  file=sys.stderr)
+            _audit("apply", "WARN", reason="approval_not_consumed", dir=dir_, plan_hash=current,
+                   unremoved=unconsumed, destroy=destroy)
     return status == "OK"
 
 

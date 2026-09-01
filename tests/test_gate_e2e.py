@@ -127,8 +127,64 @@ def test_full_gate_loop_applies_exact_plan(gate, tmp_path):
 
     # Real terraform actually applied: local state now exists.
     assert (d / "terraform.tfstate").exists()
-    # The one-shot approval was consumed.
+    # The one-shot approval was consumed. This comment was here with nothing under it: the hash
+    # was computed and then never compared to anything, so the property it names was never
+    # actually checked. It is checked now.
     current, _ = plan_gate._plan_hash(str(d))
+    assert not os.path.exists(plan_gate._approved_path(str(d), current))
+
+
+def test_apply_reports_an_approval_it_could_not_consume(gate, tmp_path, capsys):
+    """A one-shot approval that survives the apply must be reported, never swallowed.
+
+    _clear_approvals() used to catch every exception and return nothing, so a failed removal was
+    indistinguishable from a successful one. The approval file stays on disk, stays valid, and
+    the same plan can be applied again on it -- one approval, two applies. os.remove raises
+    PermissionError on Windows whenever another process holds the file open, so this is a real
+    path on the platform this repo runs on, not a contrived one.
+    """
+    d = tmp_path / "tf"
+    d.mkdir()
+    _write_tf(d, MAIN_TF)
+
+    assert plan_gate.stage_verify(str(d)) is True
+    assert plan_gate.stage_plan(str(d)) is True
+    assert plan_gate.stage_approve(str(d), mode="gatekeeper") is True
+
+    current, _ = plan_gate._plan_hash(str(d))
+    approval_path = plan_gate._approved_path(str(d), current)
+
+    real_remove = os.remove
+
+    def _refuse_the_approval(path, *args, **kwargs):
+        if os.path.abspath(path) == os.path.abspath(approval_path):
+            raise PermissionError(13, "The process cannot access the file")
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(plan_gate.os, "remove", _refuse_the_approval)
+    try:
+        # The apply itself still succeeds -- it already ran, and failing it afterwards would be
+        # a lie in the other direction.
+        assert plan_gate.stage_apply(str(d)) is True
+    finally:
+        monkeypatch.undo()
+
+    # The approval really did survive, which is the condition being reported.
+    assert os.path.exists(approval_path)
+
+    err = capsys.readouterr().err
+    assert "could not be removed" in err
+    assert "applied again" in err
+
+    audit_path = os.path.join(plan_gate.LOG_DIR, "audit.jsonl")
+    entries = [json.loads(line) for line in open(audit_path, encoding="utf-8") if line.strip()]
+    unconsumed = [e for e in entries if e.get("reason") == "approval_not_consumed"]
+    assert unconsumed, [e.get("reason") for e in entries]
+    assert unconsumed[0]["unremoved"] == [approval_path]
+
+    ok, chain_errors = audit_chain.verify(audit_path)
+    assert ok, chain_errors
 
 
 def test_governed_destroy_actually_tears_down_real_state(gate, tmp_path):
