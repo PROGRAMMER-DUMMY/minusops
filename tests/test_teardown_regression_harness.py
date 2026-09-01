@@ -412,17 +412,12 @@ _NEW_PATH_KNOWN_BLOCKERS = {
         "flat-decomposition path only -- see test_module_form_closes_the_path_module_asset_"
         "blockers for the real, now-passing proof via the module-shaped authored_content form."
     ),
-    # Same real, disclosed G2 limitation already found and recorded in
-    # tests/test_schema_lint.py::test_every_real_module_passes_g2_cleanly's own known-exceptions
-    # table: a genuinely dynamic `dynamic "columns" { for_each = var.columns }` block that
-    # schema_lint.py structurally cannot resolve statically. Since _validate_novel_resources()
-    # calls the exact same gate_content(), this surfaces here identically, not a new gap.
-    "table-format-iceberg": (
-        "aws_glue_catalog_table.this's dynamic \"columns\" block trips the same structural G2 "
-        "unparseable_reference limitation already disclosed in "
-        "test_schema_lint.py::test_every_real_module_passes_g2_cleanly -- this module was never "
-        "actually G2-clean (no PROVENANCE.json; never pinned)."
-    ),
+    # table-format-iceberg used to be listed here, deferring to the known-exceptions table in
+    # tests/test_schema_lint.py for a `dynamic "columns"` block G2 could not resolve statically.
+    # That table is now empty: the limitation was schema_lint's, not the module's, and a dynamic
+    # block raises the non-blocking dynamic_block_unverified WARNING instead of refusing the
+    # module. _validate_novel_resources() calls the same gate_content(), so the block lifted here
+    # at the same time and this parametrization now runs for real.
 }
 
 
