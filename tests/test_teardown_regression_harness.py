@@ -121,9 +121,26 @@ _DUMMY_VERSIONS_WITH_DATABRICKS = '''terraform {
 '''
 
 
-def _run_tf(dst, *args, timeout=120):
-    result = subprocess.run([TERRAFORM, f"-chdir={dst}", *args],
-                            capture_output=True, text=True, timeout=timeout)
+# A `terraform init` on a platform that cannot symlink COPIES the whole provider out of
+# TF_PLUGIN_CACHE_DIR -- roughly 900 MB for hashicorp/aws -- instead of linking to it. Windows
+# refuses symlinks without Developer Mode or admin, so every init pays that copy.
+#
+# Measured directly on this repo's dev machine 2026-09-01: 147.7 seconds for a bare
+# single-provider init against a warm cache, versus the 120 this used to allow. Three modules
+# (streaming-msk-kafka, speed-layer-kinesis, dq-great-expectations) failed on TimeoutExpired for
+# that reason alone, and on the catalog-copy BASELINE path, where nothing under test had run
+# yet. The ones that passed were on the right side of the variance, not meaningfully faster.
+#
+# This timeout exists to stop a hang from wedging the suite, not to assert how fast Terraform
+# is, so it sits well above the measured worst case. On Linux, where symlinking works, init
+# takes seconds and this never binds; enabling Developer Mode on Windows has the same effect.
+# Overridable for a machine slower still.
+_TF_TIMEOUT_SECONDS = int(os.environ.get("MINUS_HARNESS_TF_TIMEOUT", "600"))
+
+
+def _run_tf(dst, *args, timeout=None):
+    result = subprocess.run([TERRAFORM, f"-chdir={dst}", *args], capture_output=True, text=True,
+                            timeout=timeout or _TF_TIMEOUT_SECONDS)
     return result.returncode, (result.stdout or "") + (result.stderr or "")
 
 
