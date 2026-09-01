@@ -23,6 +23,12 @@ variable "glue_job_names" {
   description = "Glue job names to orchestrate. Used to generate the starter workflow when definition_json is empty."
 }
 
+variable "schedule_expression" {
+  type        = string
+  default     = ""
+  description = "EventBridge schedule that starts the state machine, e.g. \"rate(1 day)\" or \"cron(0 3 * * ? *)\". Empty means no schedule: the pipeline is triggered by the operator or by an upstream event, which is a legitimate choice, so a cron is never invented."
+}
+
 variable "task_role_arns" {
   type        = list(string)
   default     = []
@@ -96,6 +102,62 @@ resource "aws_sfn_state_machine" "this" {
   role_arn   = aws_iam_role.sfn.arn
   definition = local.effective_definition
   tags       = var.tags
+}
+
+# MINUS-111. Without this the state machine exists but nothing ever starts it -- the
+# 2026-08-17 run had no automated trigger at all. Created only when the operator states a
+# schedule, so an event-driven pipeline is not given a surprise cron.
+resource "aws_cloudwatch_event_rule" "schedule" {
+  count               = var.schedule_expression == "" ? 0 : 1
+  name                = "${var.name_prefix}-workflow-schedule"
+  description         = "Scheduled trigger for ${aws_sfn_state_machine.this.name}."
+  schedule_expression = var.schedule_expression
+  tags                = var.tags
+}
+
+# EventBridge assumes its own role to start the execution; it cannot reuse the state
+# machine's role, whose trust policy names states.amazonaws.com.
+data "aws_iam_policy_document" "events_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "events" {
+  count              = var.schedule_expression == "" ? 0 : 1
+  name               = "${var.name_prefix}-sfn-events"
+  assume_role_policy = data.aws_iam_policy_document.events_assume.json
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy" "events" {
+  count = var.schedule_expression == "" ? 0 : 1
+  name  = "${var.name_prefix}-sfn-events"
+  role  = aws_iam_role.events[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "states:StartExecution"
+      Resource = aws_sfn_state_machine.this.arn
+    }]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "sfn" {
+  count     = var.schedule_expression == "" ? 0 : 1
+  rule      = aws_cloudwatch_event_rule.schedule[0].name
+  target_id = "state-machine"
+  arn       = aws_sfn_state_machine.this.arn
+  role_arn  = aws_iam_role.events[0].arn
+}
+
+output "schedule_rule_name" {
+  value = var.schedule_expression == "" ? "" : aws_cloudwatch_event_rule.schedule[0].name
 }
 
 output "state_machine_arn" {

@@ -1,0 +1,6 @@
+# Global Code Owners for MinusOps Control Plane
+
+* @minusops/platform-maintainers
+/core/governance/ @minusops/security-reviewers
+/core/providers/ @minusops/cloud-architects
+/policy/ @minusops/security-reviewers

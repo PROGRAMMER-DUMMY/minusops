@@ -1,3 +1,14 @@
+"""
+A manual edit to generated Terraform is detected, and the baseline does not track itself.
+
+Two tests, and the second is the one that bites: a baseline file recorded inside its own
+hash set changes the hash every time it is written, so status is permanently STALE and the
+signal becomes noise an operator learns to ignore.
+
+Depends on: core/governance/source_guard.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import json
 
 import source_guard

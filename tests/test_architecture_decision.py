@@ -1,3 +1,16 @@
+"""
+The architecture decision gate, and the four-part contract it will not pass without.
+
+The record exists to make synthesis explain itself, so the tests are mostly REFUSALS: a
+template is incomplete until researched, an unknown module id is rejected rather than
+recorded, and a record naming neither modules nor novel resources does not validate. The
+TerraShark contract (assumptions, tradeoffs, validation, rollback) is checked here because a
+record that cannot say how a design is proven or undone is the one that reaches production.
+
+Depends on: core/architecture/architecture_decision.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import architecture_decision as archdec
 
 
@@ -26,6 +39,8 @@ def test_architecture_decision_complete_record_validates():
         ],
         "assumptions": ["AWS is the target cloud."],
         "risks": ["MWAA cost must be checked during BCM estimate."],
+        "validation": ["terraform validate + SEC scan clean before approval."],
+        "rollback": ["plan_gate.py run --destroy under the same hash-bound gate."],
         "sources": ["AWS MWAA documentation", "Terraform AWS provider registry"],
     }
 
@@ -47,6 +62,8 @@ def test_architecture_decision_editor_builds_record(tmp_path):
     archdec.add_alternative(str(path), "Redshift-only", "rejected", "Does not fit lakehouse storage needs.")
     archdec.add_list_item(str(path), "assumptions", "AWS is approved.")
     archdec.add_list_item(str(path), "risks", "Athena cost needs guardrails.")
+    archdec.add_list_item(str(path), "validation", "terraform validate + SEC scan clean.")
+    archdec.add_list_item(str(path), "rollback", "plan_gate.py run --destroy.")
     record = archdec.add_list_item(str(path), "sources", "Terraform AWS provider registry")
 
     ok, missing = archdec.validate(record)
@@ -68,7 +85,7 @@ def test_architecture_decision_rejects_unknown_module(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# novel_resources (docs/phase6_step1_authoring_scope.md section 1) -- additive field for a
+# novel_resources -- additive field for a
 # requirement no existing catalog module covers. Optional at the record level (a record with no
 # novel resources needs none), but every entry present is held to the same completeness bar
 # `alternatives` already gets.
@@ -85,6 +102,8 @@ def _complete_record(**overrides):
         ],
         "assumptions": ["AWS is the target cloud."],
         "risks": ["Cost must be checked during BCM estimate."],
+        "validation": ["terraform validate + SEC scan clean before approval."],
+        "rollback": ["plan_gate.py run --destroy under the same hash-bound gate."],
         "sources": ["AWS MWAA documentation"],
     }
     record.update(overrides)
@@ -154,6 +173,8 @@ def test_architecture_decision_editor_add_novel_resource(tmp_path):
     archdec.add_alternative(str(path), "Redshift-only", "rejected", "Does not fit lakehouse storage needs.")
     archdec.add_list_item(str(path), "assumptions", "AWS is approved.")
     archdec.add_list_item(str(path), "risks", "Cost needs guardrails.")
+    archdec.add_list_item(str(path), "validation", "terraform validate + SEC scan clean.")
+    archdec.add_list_item(str(path), "rollback", "plan_gate.py run --destroy.")
     archdec.add_list_item(str(path), "sources", "Terraform AWS provider registry")
     record = archdec.add_novel_resource(
         str(path), "aws_dynamodb_table",
@@ -166,3 +187,33 @@ def test_architecture_decision_editor_add_novel_resource(tmp_path):
     assert ok is True
     assert missing == []
     assert record["novel_resources"][0]["resource_type"] == "aws_dynamodb_table"
+
+
+# --- TerraShark 4-part output contract (assumptions, tradeoffs, validation, rollback)
+
+def test_validation_and_rollback_are_required():
+    """`assumptions` and `alternatives` already carried two parts of the contract. A record
+    that cannot say how the design is checked, or how it is undone, is not complete."""
+    for field in ("validation", "rollback"):
+        ok, missing = archdec.validate(_complete_record(**{field: []}))
+        assert ok is False
+        assert f"{field} (at least one item)" in missing
+
+
+def test_failure_modes_are_optional_but_ids_must_be_real():
+    assert archdec.validate(_complete_record(failure_modes=[]))[0] is True
+    assert archdec.validate(_complete_record(failure_modes=["FM-01", "FM-03"]))[0] is True
+
+    ok, missing = archdec.validate(_complete_record(failure_modes=["FM-99"]))
+    assert ok is False
+    assert any("unknown ids" in item for item in missing)
+
+
+def test_editor_refuses_an_invented_failure_mode(tmp_path):
+    path = tmp_path / "architecture_decision.json"
+    try:
+        archdec.add_list_item(str(path), "failure_modes", "FM-42")
+    except ValueError as exc:
+        assert "unknown failure mode" in str(exc)
+    else:
+        raise AssertionError("an id outside FM-01..05 must be refused, not stored")

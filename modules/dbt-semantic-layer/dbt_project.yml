@@ -1,0 +1,42 @@
+# dbt project scaffold for the Gold semantic layer.
+#
+# The adapter is dbt-athena-community against the workgroup query-athena provisions. The two
+# settings that matter for cost are here rather than in a runbook nobody reads:
+#
+#   * `partitioned_by` on incremental models. Athena bills by bytes scanned, so a model that
+#     is not partitioned on the same key the table projects on turns every metric query into
+#     a full-lake scan. This is the same key declared as `event_date` in
+#     models/semantic_models.yml and projected by the Glue table in modules/query-athena.
+#   * `table_type: iceberg`. Hive-format incrementals rewrite whole partitions; Iceberg
+#     merges rows. On a late-arriving-data pipeline that is the difference between minutes
+#     and hours.
+#
+# Replace `profile` and the schema names with the domain team's own.
+
+name: gold_semantic_layer
+version: "1.0.0"
+config-version: 2
+
+profile: gold_athena
+
+model-paths: ["models"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+require-dbt-version: [">=1.6.0", "<2.0.0"]
+
+models:
+  gold_semantic_layer:
+    +materialized: table
+    +table_type: iceberg
+    marts:
+      +materialized: incremental
+      +incremental_strategy: merge
+      +unique_key: event_id
+      # Must match the projected partition key, or the projection saves nothing.
+      +partitioned_by: ["event_date"]
+
+vars:
+  # Bounds a backfill. Without it, a first `dbt run` against a multi-year lake scans all of
+  # it and the bill arrives before the model does.
+  backfill_start_date: "2024-01-01"

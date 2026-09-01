@@ -1,0 +1,25 @@
+MinusOps
+Copyright (c) 2026 MinusOps contributors
+
+Licensed under the MIT License. See LICENSE.
+
+MIT does not require this file. It is kept because the inventory below is real
+information an operator needs: MinusOps SHELLS OUT to these tools, so their
+licenses apply to whoever installs them, not to this repository.
+
+  terraform  - HashiCorp, BUSL-1.1 (>= 1.6) / MPL-2.0 (earlier)
+  aws        - AWS CLI, Apache-2.0
+  opa        - Open Policy Agent, Apache-2.0        (optional, G6 policy gate)
+  checkov    - Bridgecrew/Prisma Cloud, Apache-2.0  (optional, `policy` extra)
+  tfsec      - Aqua Security, MIT                   (optional, external scanner)
+
+Terraform's BUSL-1.1 is the one to read before redistributing a bundle: it
+restricts competing hosted offerings. Nothing here bundles, links, or
+redistributes any of these binaries.
+
+Optional Python dependencies, installed only with the `dashboard` extra:
+
+  dash       - Plotly, MIT
+  plotly     - Plotly, MIT
+
+The base install has no runtime Python dependencies.

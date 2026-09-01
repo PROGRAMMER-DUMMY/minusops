@@ -1,0 +1,104 @@
+{
+  "_comment": [
+    "Identity policy for the role the AGENT holds. It can read the account and compute a",
+    "plan; it cannot mutate anything. Attach alongside the AWS managed policy",
+    "arn:aws:iam::aws:policy/ReadOnlyAccess -- that is what `terraform plan` needs for its",
+    "refresh and its data sources, and this file only adds the narrow state-backend access",
+    "on top. Attaching this file ALONE leaves a role that fails on the first Describe call.",
+    "",
+    "Replace <ACCOUNT_ID>, <STATE_BUCKET>, <LOCK_TABLE>, and the cross-account read role ARNs."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadTerraformState",
+      "_comment": "plan reads state; it does not write it. PutObject is denied below.",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::<STATE_BUCKET>",
+        "arn:aws:s3:::<STATE_BUCKET>/*"
+      ]
+    },
+    {
+      "Sid": "DecryptTerraformState",
+      "_comment": [
+        "Read-only on the state CMK. GenerateDataKey is the apply role's, because writing a",
+        "new state object needs it and reading an existing one does not."
+      ],
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt", "kms:DescribeKey"],
+      "Resource": "arn:aws:kms:*:<ACCOUNT_ID>:key/<STATE_KEY_ID>"
+    },
+    {
+      "Sid": "HoldTheStateLockWhilePlanning",
+      "_comment": [
+        "plan is not purely read-only: with the S3 backend it takes and releases the",
+        "DynamoDB lock. Scoped to the lock table alone. Do not solve this with -lock=false;",
+        "an unlocked plan against a shared state races an apply."
+      ],
+      "Effect": "Allow",
+      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+      "Resource": "arn:aws:dynamodb:*:<ACCOUNT_ID>:table/<LOCK_TABLE>"
+    },
+    {
+      "Sid": "AssumeOnlyTheNamedCrossAccountReadRoles",
+      "_comment": [
+        "SCOPED, not denied outright. A hub-and-spoke lakehouse plans across accounts through",
+        "aliased providers with assume_role blocks, so a blanket deny on sts:AssumeRole makes",
+        "that architecture unplannable. List exactly the read roles; everything else is denied",
+        "by the statement below, which is what stops a provider block naming an admin role."
+      ],
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:aws:iam::<LAKE_ACCOUNT_ID>:role/minusops-plan",
+        "arn:aws:iam::<COMPUTE_ACCOUNT_ID>:role/minusops-plan"
+      ]
+    },
+    {
+      "Sid": "DenyAssumingAnyOtherRole",
+      "_comment": [
+        "The escalation path this closes: an agent authoring HCL can write",
+        "provider \"aws\" { assume_role { role_arn = \"...AdminRole\" } }. That only works if",
+        "the CALLER may assume it. NotResource, so the two read roles above stay reachable",
+        "and every other role -- including the apply role -- does not."
+      ],
+      "Effect": "Deny",
+      "Action": [
+        "sts:AssumeRole",
+        "sts:AssumeRoleWithSAML",
+        "sts:AssumeRoleWithWebIdentity"
+      ],
+      "NotResource": [
+        "arn:aws:iam::<LAKE_ACCOUNT_ID>:role/minusops-plan",
+        "arn:aws:iam::<COMPUTE_ACCOUNT_ID>:role/minusops-plan"
+      ]
+    },
+    {
+      "Sid": "DenyMutation",
+      "_comment": [
+        "Unconditional, and belt-and-braces over ReadOnlyAccess. ReadOnlyAccess grants no",
+        "writes today, but attaching one more policy to this role must not be able to make it",
+        "mutating by accident: an explicit Deny cannot be overridden by any Allow.",
+        "",
+        "Not an exhaustive list of every mutating action -- that is unmaintainable and would",
+        "be the same fail-open denylist this project rejects elsewhere. It is the subset that",
+        "destroys or escalates. The real boundary is that the role holds only ReadOnlyAccess",
+        "plus the statements above; this is the second line."
+      ],
+      "Effect": "Deny",
+      "Action": [
+        "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:DeleteBucket",
+        "iam:*",
+        "kms:ScheduleKeyDeletion", "kms:CreateKey", "kms:PutKeyPolicy",
+        "lakeformation:GrantPermissions", "lakeformation:RevokePermissions",
+        "lakeformation:PutDataLakeSettings",
+        "glue:DeleteDatabase", "glue:DeleteTable", "glue:DeleteJob",
+        "dynamodb:DeleteTable",
+        "cloudtrail:StopLogging", "cloudtrail:DeleteTrail"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

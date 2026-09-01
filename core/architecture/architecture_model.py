@@ -17,6 +17,13 @@ Design rules (deliberate):
 Grounding (see docs / memory `aws-reference-architectures-for-design`):
   * Reference architecture — https://aws.amazon.com/blogs/big-data/aws-serverless-data-analytics-pipeline-reference-architecture/
   * Well-Architected Data Analytics Lens — https://docs.aws.amazon.com/wellarchitected/latest/analytics-lens/
+
+Depends on: core/governance/plan_reader.py (fail-soft plan access)
+Shells out to: nothing. Every score is derived from a plan.json already on disk — no AWS call,
+    no pricing, no model inference.
+Used by: core/reporting/minusctl.py, core/reporting/reporter.py (lazy),
+    core/generation/accelerators.py (lazy), tests/test_architecture_model.py,
+    tests/test_reporter.py
 """
 import json
 import os
@@ -39,7 +46,7 @@ ROLE_LAYER = {
     "catalog": "catalog",
     "transform": "processing", "orchestrate": "processing",
     "consume": "consumption",
-    "security": "governance", "observability": "governance",
+    "security": "governance", "observability": "governance", "network": "governance",
     "other": "other",
 }
 
@@ -48,7 +55,8 @@ ROLE_LAYER = {
 # generic "store" so e.g. aws_glue_catalog_database is catalog, not storage.
 _RULES = [
     ("catalog", ["glue_catalog", "glue_crawler", "glue_registry", "lakeformation", "lake_formation",
-                 "data_catalog", "datacatalog", "dataplex", "purview", "schema_registry"]),
+                 "data_catalog", "datacatalog", "dataplex", "purview", "schema_registry",
+                 "datazone"]),
     ("ingest", ["dms_", "database_migration", "datasync", "transfer_", "appflow", "firehose",
                 "kinesis_stream", "kinesis_video", "msk", "kafka", "data_exchange", "dataexchange",
                 "eventbridge_pipe", "sftp", "event_source_mapping",
@@ -68,9 +76,17 @@ _RULES = [
     ("observability", ["cloudwatch", "cloudtrail", "budgets", "sns", "log_group", "logs_",
                        "metric_alarm", "anomaly", "monitor", "log_analytics", "logging_metric",
                        "notification_channel", "consumption_budget"]),
-    ("security", ["iam", "kms", "secrets", "secret", "security_group", "_vpc", "vpc_",
-                  "subnet", "key_vault", "acm", "waf", "guardduty", "macie", "network_acl",
+    ("security", ["iam", "kms", "secrets", "secret", "security_group", "key_vault", "acm",
+                  "waf", "guardduty", "macie", "network_acl",
                   "role_assignment", "service_account", "crypto_key"]),
+    # Networking follows security so a security group stays a security group. `_vpc` and
+    # `vpc_` used to live in the rule above and matched neither `aws_vpc` nor a NAT gateway:
+    # both needles require a delimiter a bare type does not have, so a VPC -- named in 10 of
+    # the 35 reference architectures in blueprint_data -- classified as "other" along with
+    # every gateway, route table and address beside it.
+    ("network", ["vpc", "subnet", "nat_gateway", "internet_gateway", "route_table", "eip",
+                 "network_interface", "transit_gateway", "vpn_", "direct_connect",
+                 "virtual_network", "load_balancer", "_lb", "route53", "dns_zone"]),
     ("store", ["s3", "bucket", "storage_account", "gcs", "dynamodb", "rds", "efs", "fsx",
                "lake", "blob", "filesystem", "table_bucket",
                # Azure / GCP storage + operational DBs
@@ -122,11 +138,10 @@ def _instance_key(address):
 def extract_resources(plan):
     """Flatten a `terraform show -json` plan into classified resource dicts (managed only).
 
-    plan_reader.py (G4 consolidation, docs/phase4_scope.md) supplies the fail-soft read: a
-    malformed/absent `resource_changes` or a non-dict entry no longer crashes this advisory,
-    reporting-only path (the previous `(plan or {}).get(...)` silently defaulted on absence but
-    would raise on a non-dict entry -- a real, if minor, robustness gap this consolidation
-    fixes, not just a refactor)."""
+    plan_reader.py supplies the fail-soft read on purpose: this is an advisory, reporting-only
+    path, so a malformed or absent `resource_changes`, or a non-dict entry inside it, must not
+    crash it. A plain `(plan or {}).get(...)` is not equivalent -- it defaults on absence but
+    still raises on a non-dict entry."""
     raw_resource_changes, _error = plan_reader.read_resource_changes(plan, treat_absent_as_error=False)
     resource_changes = raw_resource_changes or []
     managed, _malformed = plan_reader.managed_only(resource_changes)
@@ -348,6 +363,41 @@ def conformance(plan, daily_data_gb=None):
         "resource_total": len(resources),
         "findings": findings,
     }
+
+
+def latency_floor_violation(target_ms, cross_region=False, multi_az=False):
+    """
+    Check if a declared latency SLA target violates the physical laws of networking and hardware.
+
+    Cross-region fiber RTT is 30-200ms, physically eliminating synchronous sub-100ms commitments.
+    Inter-AZ synchronous replication has a physical floor of 1-4ms.
+    Undeclared (None) targets are not violations.
+    """
+    if target_ms is None:
+        return None
+
+    if cross_region:
+        if target_ms < 100:
+            return {
+                "violation": True,
+                "floor_ms": 30,
+                "reason": (
+                    f"Cross-region fiber RTT is 30-200ms. A {target_ms}ms synchronous "
+                    "commitment violates physical networking floors. Use asynchronous replication."
+                ),
+            }
+    elif multi_az:
+        if target_ms < 1.0:
+            return {
+                "violation": True,
+                "floor_ms": 1.0,
+                "reason": (
+                    f"Inter-AZ synchronous replication has a physical floor of 1-4ms. "
+                    f"A {target_ms}ms target cannot be achieved with Multi-AZ persistence."
+                ),
+            }
+
+    return None
 
 
 def _main(argv=None):

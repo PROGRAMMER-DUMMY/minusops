@@ -3,6 +3,16 @@
 __pycache__/
 *.pyc
 .pytest_tmp*/
+.pytest_cache/
+# Ad hoc test scratch dirs and captured pytest output that accumulated at repo root
+Temppytest/
+tmp_test/
+test_log_*.txt
+# Tooling caches (agent/editor local state, never shared)
+.serena/
+.memory/
+# claims.db is a rebuildable cache -- knowledge/claims/*.jsonl is the source of truth
+*.db
 # Build / packaging artifacts
 build/
 dist/
@@ -71,3 +81,37 @@ assets/architecture-icons/
 # generated repo-structure snapshot — a point-in-time reference, not maintained documentation;
 # would go stale in source control, so it's local-only (regenerate on demand instead)
 docs/REPO_MAP.md
+
+# MINUS-153: the real team directory names people and their alert routing -- reconnaissance
+# a repo should not hand out. configs/teams.yaml.example is the committed template.
+configs/teams.yaml
+
+# PRD-ARCH-2026-007: `minusctl use` writes the operator's active run here. It is per-checkout
+# session state, not project configuration -- committing it would make one person's selection
+# everyone else's default, and `gate apply` reads it.
+.minus/
+
+# --- Building plans, specs and audits ------------------------------------------------------
+# Working documents, not deliverables. They record how the project got here rather than what
+# it does, they go stale the moment the work moves on, and a reader of the repository is
+# served by the code and the operator docs instead. Kept on disk, out of the repository.
+tasks/
+docs/superpowers/
+docs/*_scope.md
+docs/phase*_plan.md
+docs/project_plan.md
+docs/REMAINING_WORK.md
+docs/minusops_v2_engineering_tickets.md
+docs/generation_engine_ground_truth_survey.md
+docs/generation_pivot_first_proof_*.md
+context/
+../context/
+DESIGN.md
+
+# minusctl diagram output, written to the invocation directory
+architecture.drawio
+architecture_url.txt
+architecture_ledger.md
+
+# dbt runtime logs
+logs/

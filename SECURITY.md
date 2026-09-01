@@ -1,24 +1,25 @@
 # Security Policy
 
-## Reporting a vulnerability
+## Reporting a Vulnerability
 
-Please report suspected vulnerabilities privately. Do **not** open a public issue for
-security reports.
+MinusOps takes the security of autonomous governance, cryptographic plan-hash verification, and cloud provisioning integrity seriously. If you discover a security vulnerability, please report it privately.
 
-- Email: security@your-org.example  (replace with your security contact)
-- Include: affected version/commit, reproduction steps, and impact.
-- We aim to acknowledge within 3 business days and to provide a remediation timeline
-  after triage.
+**Please do NOT disclose security vulnerabilities publicly in GitHub Issues or pull requests.**
 
-## Supported versions
+### How to Report
 
-The latest released minor version receives security fixes. Pre-1.0 releases may require
-upgrading to the newest version to receive a fix.
+1. Email your report to **security@minusops.internal** (or open a GitHub Private Vulnerability Advisory).
+2. Include a detailed description of the vulnerability, steps to reproduce, and the affected version or commit hash.
+3. If applicable, provide a minimal proof-of-concept demonstrating the gate bypass or credential exposure.
 
-## Handling model
+### Response Timelines
 
-- Releases are built in CI and published with a Sigstore-backed build-provenance
-  attestation plus a CycloneDX SBOM (see `.github/workflows/release.yml`). Verify the
-  attestation before deploying a release artifact.
-- The control plane never stores cloud credentials; see
-  [`docs/security_model.md`](./docs/security_model.md) for trust boundaries and non-goals.
+- **Initial Response:** Within 24 hours.
+- **Triage & Status Update:** Within 72 hours.
+- **Patch Delivery:** Critical vulnerabilities receive emergency hotfixes within 7 days.
+
+## Security Guarantees & Non-Negotiable Invariants
+
+1. **Zero Ambient Mutation:** The control plane will never execute mutations (terraform apply, destructive cloud changes) without an audited cryptographic human-in-the-loop plan-hash signature.
+2. **Bearer Token Isolation:** Webhook URLs, API tokens, and cloud secrets are never echoed, logged, or serialized into audit journals or UI states.
+3. **Fail-Closed Gate:** Missing or unmapped policy findings are marked as unexamined rather than approved.

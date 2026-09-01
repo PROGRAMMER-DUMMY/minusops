@@ -1,0 +1,77 @@
+{
+  "family": "minusops-console",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/minusops-ecs-execution-role",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/minusops-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "console",
+      "image": "<account-id>.dkr.ecr.<region>.amazonaws.com/minusops:latest",
+      "essential": true,
+      "command": [
+        "python",
+        "-m",
+        "core.cli.main",
+        "console",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8050"
+      ],
+      "user": "10001",
+      "readonlyRootFilesystem": true,
+      "portMappings": [
+        {
+          "containerPort": 8050,
+          "hostPort": 8050,
+          "protocol": "tcp"
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "tmp-scratch",
+          "containerPath": "/tmp",
+          "readOnly": false
+        },
+        {
+          "sourceVolume": "home-scratch",
+          "containerPath": "/home/minusops",
+          "readOnly": false
+        }
+      ],
+      "environment": [
+        {
+          "name": "MINUS_CLOUD",
+          "value": "aws"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "MINUS_DASH_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:<region>:<account-id>:secret:minusops/dash-token"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/minusops-console",
+          "awslogs-region": "<region>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "tmp-scratch"
+    },
+    {
+      "name": "home-scratch"
+    }
+  ]
+}

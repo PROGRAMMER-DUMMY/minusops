@@ -8,10 +8,38 @@ safe preparation from gated execution:
   prepare -> writes reviewable JSON payloads, no AWS calls
   run     -> requires approval.py, creates the BCM estimate, adds usage, reads result
 
+Nothing here produces a price. This file derives usage AMOUNTS (GB-months, DPU-hours,
+shard-hours) from the plan and stated assumptions, submits them, and lets AWS do the pricing —
+which is why every unknown is left as a REVIEW_REQUIRED placeholder rather than filled with a
+plausible default. A fabricated amount is indistinguishable from a real one once it reaches
+the report; an unresolved one is visible.
+
 Usage:
   python core/cost/bcm_pricing_calculator.py prepare --report-dir artifacts/reports/<hash> --account-id 123456789012
   python core/cost/bcm_pricing_calculator.py prepare --report-dir artifacts/reports/<hash> --usage-profile pricing-profile.json
   python core/cost/bcm_pricing_calculator.py run --report-dir artifacts/reports/<hash> --mode gatekeeper
+
+Depends on: core/governance/approval.py (request_approval), core/cost/pricing_catalog.py,
+    core/architecture/requirements.py (as reqgate — parse_daily_gb, FILENAME),
+    core/reporting/toolpath.py; lazily core/reporting/reporter.py (refresh_cost, best-effort)
+    and core/providers/base.py (fetch_actuals only). Reads <report-dir>/plan.json and
+    manifest.json, writes the bcm-*.json family beside them.
+Shells out to: the `aws` CLI, and this is the file in core/cost/ that spends money and mutates
+    AWS state. `sts get-caller-identity` (account discovery, read-only).
+    `bcm-pricing-calculator create-workload-estimate`,
+    `batch-create-workload-estimate-usage`, `get-workload-estimate`,
+    `list-workload-estimate-usage` — the run() path; these CREATE a persistent BCM object in
+    the account. scale_curve() additionally calls `delete-workload-estimate`, since each curve
+    point is a throwaway estimate. run_bill_scenario() calls `create-bill-scenario`,
+    `batch-create-bill-scenario-usage-modification`,
+    `batch-create-bill-scenario-commitment-modification`, `create-bill-estimate`,
+    `list-bill-estimate-line-items`, `list-bill-estimate-commitments`. fetch_actuals() reaches
+    AWS Cost Explorer through providers/aws.py (`aws ce get-cost-and-usage`) — Cost Explorer
+    is BILLED PER REQUEST, so it is not a free read despite being read-only, and it is the
+    only per-request charge this file can incur.
+Used by: core/cost/coverage_audit.py (pure helpers only), core/reporting/reporter.py,
+    app/dashboard_app.py (lazy), tests/test_bcm_pricing_calculator.py,
+    tests/test_finops_doctor_policy.py
 """
 import argparse
 import datetime
@@ -28,6 +56,7 @@ for _sub in ("generation", "architecture", "governance", "cost", "reporting", "p
 sys.path.insert(0, _CORE_DIR)
 from approval import request_approval  # noqa: E402
 import pricing_catalog  # noqa: E402
+import requirements as reqgate  # noqa: E402
 import toolpath  # noqa: E402
 
 PLACEHOLDER = "REVIEW_REQUIRED"
@@ -143,6 +172,105 @@ def _assumption_doc(plan, usage_profile=None):
     }
 
 
+# DEFAULT_ASSUMPTIONS are the values used when nobody said otherwise, and they are STATIC --
+# glue_runs_per_day is 24 whether the pipeline is a nightly batch or a 15-minute micro-batch.
+# Requirements usually DO say, in prose, and reading them turns a fixed guess into a stated
+# one. On a real run, requirements saying "15-minute micro-batch" and "Bronze retained 90 days"
+# against defaults of hourly and 30 days meant a 4x understatement on Glue and 3x on S3 -- in
+# an estimate that had already passed the budget gate.
+#
+# Every override records the phrase it came from. A derived assumption nobody can trace is
+# worse than a default everybody knows is a default.
+
+# Cadence phrases -> runs per day. Ordered most-specific first: "15-minute" must win over
+# "minute", and "hourly" must not match inside "4-hourly".
+_CADENCE_PATTERNS = (
+    (r"(?:every\s+)?(\d+)\s*[-\s]?minute", lambda m: 1440.0 / max(float(m.group(1)), 1)),
+    (r"(?:every\s+)?(\d+)\s*[-\s]?hour", lambda m: 24.0 / max(float(m.group(1)), 1)),
+    (r"micro-?batch", lambda m: 96.0),          # 15 minutes is the conventional micro-batch
+    (r"continuous|streaming|real-?time", lambda m: 288.0),   # 5-minute equivalent
+    (r"hourly", lambda m: 24.0),
+    (r"twice\s+(?:a\s+)?day|bi-?daily", lambda m: 2.0),
+    (r"daily|nightly|overnight|once\s+a\s+day", lambda m: 1.0),
+    (r"weekly", lambda m: 1.0 / 7.0),
+)
+
+_RETENTION_RE = re.compile(r"(\d+)\s*(day|week|month|year)s?", re.I)
+_RETENTION_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+
+
+def _cadence_runs_per_day(text):
+    for pattern, to_runs in _CADENCE_PATTERNS:
+        match = re.search(pattern, text or "", re.I)
+        if match:
+            return round(to_runs(match), 4), match.group(0).strip()
+    return None, None
+
+
+def _raw_zone_retention_days(text):
+    """Days of RAW data retained -- the driver for S3 volume.
+
+    Deliberately NOT the longest period stated. Requirements normally name several ("Bronze
+    90 days, Gold 3 years"), and taking the maximum assumes every byte is kept for the longest
+    one: on a real run that turned 100 GB/day into 109,500 GB-Mo, a 36x overstatement. Raw
+    volume dominates the bill, so the period stated alongside bronze/raw wins, and the SHORTEST
+    stated period is the fallback -- understating storage is a recoverable surprise,
+    overstating it by 36x makes the whole forecast unusable.
+    """
+    text = text or ""
+    for match in _RETENTION_RE.finditer(text):
+        window = text[max(0, match.start() - 60):match.end() + 20].lower()
+        if "bronze" in window or "raw" in window:
+            return (int(match.group(1)) * _RETENTION_DAYS[match.group(2).lower()],
+                    match.group(0))
+    periods = [(int(m.group(1)) * _RETENTION_DAYS[m.group(2).lower()], m.group(0))
+               for m in _RETENTION_RE.finditer(text)]
+    return min(periods) if periods else (None, None)
+
+
+def auto_populate_usage(requirements):
+    """Derive BCM usage assumptions from stated requirements.
+
+    Returns {"assumptions": {...}, "provenance": {key: phrase}, "unresolved": [...]}. Only
+    fields the prose actually supports are returned -- an unstated cadence leaves
+    glue_runs_per_day alone rather than inventing one, because a fabricated assumption that
+    looks derived is worse than a default that is visibly a default.
+    """
+    data_pipeline = (requirements or {}).get("data_pipeline") or {}
+    non_functional = (requirements or {}).get("non_functional") or {}
+    assumptions, provenance, unresolved = {}, {}, []
+
+    daily_gb, volume_phrase = reqgate.parse_daily_gb(requirements or {})
+    if daily_gb:
+        assumptions["daily_data_gb"] = daily_gb
+        provenance["daily_data_gb"] = volume_phrase
+    else:
+        unresolved.append("daily_data_gb (data_pipeline.data_volume states no volume)")
+
+    # Cadence: the transform description usually names it; the freshness SLA is the fallback,
+    # since "query availability within 15 minutes" implies the job runs at least that often.
+    cadence_text = " ".join(str(v) for v in (
+        data_pipeline.get("transforms"), data_pipeline.get("orchestration"),
+        data_pipeline.get("freshness_sla"), non_functional.get("latency")) if v)
+    runs, cadence_phrase = _cadence_runs_per_day(cadence_text)
+    if runs:
+        assumptions["glue_runs_per_day"] = runs
+        provenance["glue_runs_per_day"] = cadence_phrase
+    else:
+        unresolved.append("glue_runs_per_day (no cadence stated in transforms/orchestration/SLA)")
+
+    retention_days, retention_phrase = _raw_zone_retention_days(
+        " ".join(str(v) for v in (non_functional.get("retention"),
+                                  data_pipeline.get("storage_zones")) if v))
+    if retention_days:
+        assumptions["s3_storage_retention_factor"] = retention_days
+        provenance["s3_storage_retention_factor"] = retention_phrase
+    else:
+        unresolved.append("s3_storage_retention_factor (non_functional.retention states no period)")
+
+    return {"assumptions": assumptions, "provenance": provenance, "unresolved": unresolved}
+
+
 def _load_usage_profile(path):
     if not path:
         return None
@@ -172,10 +300,11 @@ def _bcm_group(region):
     return cleaned.strip("-") or "tf"
 
 
-# Service identifiers now come from core/cost/pricing_data/aws_resource_map.json via
-# pricing_catalog.resolve_resource_type() — this replaces the old static _SERVICE_CODE list,
-# which was one of three independent, hand-maintained tables that all shared the same blind
-# spots (MWAA/Kinesis/SNS were absent from every one of them).
+# Service identifiers come from core/cost/pricing_data/aws_resource_map.json via
+# pricing_catalog.resolve_resource_type(). There is deliberately no local _SERVICE_CODE table
+# here: the previous one was a third hand-maintained copy, and all three shared the same blind
+# spots (MWAA/Kinesis/SNS were missing from every one). A new resource type is added to the
+# JSON, not to this file.
 
 # Named, documented, OVERRIDABLE usage assumptions (NOT prices). Recorded in the report so a
 # reviewer sees exactly what usage was assumed; override with --assume key=value.
@@ -433,6 +562,41 @@ def validate_usage(usage):
     return errors
 
 
+def _merge_assumptions(report_dir, requirements_path, explicit):
+    """Requirements-derived assumptions, overridden by anything the operator passed.
+
+    Explicit --assume wins on purpose: a derived value is a reading of prose, and an operator
+    who disagrees with the reading needs a way to say so that does not involve editing the
+    requirements.
+    """
+    path = requirements_path
+    if not path and report_dir:
+        # reports/<hash>/ sits inside the run root, beside requirements.json.
+        candidate = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(report_dir))),
+                                 reqgate.FILENAME)
+        path = candidate if os.path.exists(candidate) else None
+    if not path or not os.path.exists(path):
+        return explicit
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            requirements = json.load(handle)
+    except (OSError, ValueError) as exc:
+        print(f"[bcm] could not read {path}: {exc}", file=sys.stderr)
+        return explicit
+
+    derived = auto_populate_usage(requirements)
+    for key, value in derived["assumptions"].items():
+        print(f"[bcm] derived {key}={value}  (from {derived['provenance'][key]!r})")
+    for gap in derived["unresolved"]:
+        # Named, not silent: an unstated driver falls back to a static default, and the
+        # reviewer should know which numbers are prose-derived and which are guesses.
+        print(f"[bcm] NOT derived, using default: {gap}")
+    merged = dict(derived["assumptions"])
+    merged.update(explicit)
+    return merged
+
+
 def prepare(report_dir, account_id=None, region="us-east-1", rate_type="BEFORE_DISCOUNTS",
             usage_profile=None, derive=False, assumptions=None):
     paths = _report_paths(report_dir)
@@ -625,6 +789,24 @@ def auto_estimate(report_dir, region="us-east-1", usage_profile=None):
         return False, str(exc)
 
 
+def _total_cost_amount(value):
+    """The number out of a BCM totalCost, whatever shape the API returned it in.
+
+    The live API returns an object -- {"amount": "123.45", "unit": "USD"} -- and the base
+    estimate was unwrapped inline while every curve POINT went through a bare float(). A
+    multi-point run therefore raised TypeError after the AWS calls had already been made and
+    billed. One reader, used at both sites, is what stops the two drifting again.
+
+    Returns None rather than 0.0 when there is no number: a missing cost is not a free one.
+    """
+    if isinstance(value, dict):
+        value = value.get("amount")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def scale_curve(report_dir, factors=(1, 5, 10)):
     """Price the SAME architecture at multiples of the declared usage — AWS prices every
     point (temporary workload estimates, deleted after reading), nothing is extrapolated
@@ -637,14 +819,7 @@ def scale_curve(report_dir, factors=(1, 5, 10)):
     if errors:
         raise RuntimeError("usage payload not ready for scale curve:\n- " + "\n- ".join(errors))
     base_estimate = _load_json(paths["estimate"]) if os.path.exists(paths["estimate"]) else {}
-    base_total = None
-    tc = (base_estimate.get("estimate") or {}).get("totalCost")
-    if isinstance(tc, dict):
-        tc = tc.get("amount")
-    try:
-        base_total = float(tc)
-    except (TypeError, ValueError):
-        pass
+    base_total = _total_cost_amount((base_estimate.get("estimate") or {}).get("totalCost"))
 
     aws = _aws_cli()
     cwd = os.path.abspath(report_dir)
@@ -679,7 +854,7 @@ def scale_curve(report_dir, factors=(1, 5, 10)):
             estimate = _run_json([aws, "bcm-pricing-calculator", "get-workload-estimate",
                                   "--identifier", est_id], cwd)
             points.append({"factor": factor,
-                           "total": float(estimate.get("totalCost") or 0),
+                           "total": _total_cost_amount(estimate.get("totalCost")) or 0,
                            "estimate_id": est_id,
                            # Raw AWS response retained as evidence that each point is an
                            # INDEPENDENT BCM estimate, not a local extrapolation.
@@ -816,7 +991,7 @@ def fetch_actuals(report_dir, month=None, months_back=6):
     return {"month": chosen.get("month"), "actuals": actuals, "path": out_path}
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="AWS BCM Pricing Calculator report integration")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prepare", help="write reviewable BCM payload files; no AWS calls")
@@ -829,31 +1004,36 @@ def main():
                    help="optional reviewed JSON profile containing BCM usage entries (catalog fields)")
     p.add_argument("--derive", action="store_true",
                    help="derive monthly usage amounts from blueprint inputs + assumptions (no prices)")
+    p.add_argument("--requirements", default=None,
+                   help="requirements.json to derive usage assumptions from (MINUS-146). "
+                        "Defaults to the one beside the report's run when present. "
+                        "Explicit --assume always wins over a derived value.")
     p.add_argument("--assume", action="append", default=[],
                    help="override a usage assumption, e.g. --assume glue_runs_per_day=12")
     r = sub.add_parser("run", help="create the BCM workload estimate (free pricing object; audited)")
     r.add_argument("--report-dir", required=True)
     r.add_argument("--mode", default="auto-approve", choices=["gatekeeper", "auto-approve"],
                    help="estimates default to auto-approve; use gatekeeper to require a prompt")
-    s = sub.add_parser("scenario", help="BCM bill scenario + estimate (Savings Plan / RI modeling)")
+    s = sub.add_parser("scenario", help="model Commitments (Savings Plans / RIs) via BCM bill scenario")
     s.add_argument("--report-dir", required=True)
     s.add_argument("--usage-modifications", default="",
-                   help="user-supplied usageModifications JSON (from generate-cli-skeleton)")
+                   help="path to reviewed JSON array of usage modifications")
     s.add_argument("--commitments", default="",
-                   help="user-supplied commitmentModifications JSON (Savings Plans / RIs)")
-    s.add_argument("--mode", default="auto-approve", choices=["gatekeeper", "auto-approve"],
-                   help="estimates default to auto-approve; use gatekeeper to require a prompt")
-    a = sub.add_parser("actuals", help="pull Cost Explorer per-service actuals for forecast-vs-actual (read-only)")
+                   help="path to reviewed JSON array of commitment purchase actions")
+    s.add_argument("--mode", default="auto-approve", choices=["gatekeeper", "auto-approve"])
+    a = sub.add_parser("actuals", help="fetch AWS Cost Explorer actuals into bcm-actuals.json")
     a.add_argument("--report-dir", required=True)
     a.add_argument("--month", default="", help="YYYY-MM month to compare (default: most recent with spend)")
     sc = sub.add_parser("scale-curve", help="AWS-price the same architecture at 1x/5x/10x usage (temporary estimates)")
     sc.add_argument("--report-dir", required=True)
     sc.add_argument("--factors", default="1,5,10", help="comma-separated usage multipliers")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.cmd == "prepare":
         paths = prepare(args.report_dir, args.account_id, args.region, args.rate_type,
-                        args.usage_profile, derive=args.derive, assumptions=_parse_assumptions(args.assume))
+                        args.usage_profile, derive=args.derive,
+                        assumptions=_merge_assumptions(args.report_dir, args.requirements,
+                                                       _parse_assumptions(args.assume)))
         print("[bcm] prepared:")
         for key in ("assumptions", "create", "usage", "commands"):
             print(f"  {key}: {paths[key]}")

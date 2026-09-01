@@ -1,13 +1,28 @@
-"""
-AWS implementation of CloudProvider — uses the AWS CLI credential chain (never
-handles secrets itself). Cost Explorer / Cost Anomaly Detection / STS / tagging.
+"""AWSProvider — the product's only path to the cloud, via the local AWS CLI.
+
+Credentials come from the AWS CLI's own chain; nothing here reads, stores, or forwards a
+secret. Every call is a `subprocess.run` of the `aws` binary in list form (no shell), so a
+resource hint or service name can never be interpreted as shell syntax. Return shapes are
+the contract documented in base.py, not here — keep the two in step.
+
+This build is AWS-only by decision, so there is no abstract base to conform to and no
+Azure/GCP sibling to keep symmetric; see base.py for why re-adding them is a reversal.
+
+Depends on: toolpath, pricing_catalog (both lazy-imported at call time — core/ is on
+    sys.path by then, and importing this module offline must stay free of side effects)
+Shells out to: the `aws` CLI — `sts get-caller-identity` (identity, credential posture),
+    `ce get-cost-and-usage` (monthly actuals), `ce get-anomalies` (Cost Anomaly Detection),
+    `resourcegroupstaggingapi get-resources` (Owner/Team tag lookup); pre-deploy pricing
+    reaches the Price List (`pricing`) API indirectly through pricing_catalog. These calls
+    read only — nothing here mutates infrastructure.
+Used by: core/providers/base.py (via get_provider), core/reporting/finops_agent.py
+    (imports run_aws for a CloudTrail lookup), tests/test_credentials.py,
+    tests/test_providers.py, tests/test_finops_agent.py
 """
 import json
 import os
 import datetime
 import subprocess
-
-from .base import CloudProvider
 
 
 def classify_credentials(arn, access_key_id=None):
@@ -61,7 +76,7 @@ def _days_ago(n):
     return (datetime.date.today() - datetime.timedelta(days=n)).isoformat()
 
 
-class AWSProvider(CloudProvider):
+class AWSProvider:
     name = "aws"
     status = "implemented"
 

@@ -3,6 +3,14 @@ Demo Terraform generator for cached fixture blueprints.
 
 This module writes Terraform source only. It does not run terraform init, plan,
 apply, or cloud CLI commands.
+
+Only `aws-data-pipeline-standard` is supported; `generate()` raises ValueError for anything else.
+Production Terraform comes from core/generation/synthesizer.py composing the module registry, not
+from here.
+
+Depends on: core/governance/source_guard.py
+Shells out to: nothing
+Used by: core/generation/demo.py, tests/test_intent_assertions.py
 """
 import json
 import os
@@ -369,8 +377,8 @@ Generated Terraform for demo fixture `aws-data-pipeline-standard`.
 Safe workflow:
 
 ```powershell
-python core/governance/plan_gate.py verify --dir {out.as_posix()}
-python core/governance/plan_gate.py plan --dir {out.as_posix()}
+minusctl gate verify --dir {out.as_posix()}
+minusctl gate plan --dir {out.as_posix()}
 ```
 
 Do not run apply until the plan hash is reviewed and approved.

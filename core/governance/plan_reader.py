@@ -39,6 +39,13 @@ regression to change post-close); a shadow/advisory reader (like G6's) treats it
 managed to check." This module does not force those two policies to converge -- it exposes the
 raw fact (`resource_changes` present vs. absent vs. wrong-typed) and a `treat_absent_as_error`
 flag so each caller keeps its own already-proven policy.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing -- it parses `terraform show -json` output, it never runs terraform
+Used by: core/architecture/architecture_model.py, core/architecture/intent_assertions.py,
+    core/governance/address_churn.py, core/governance/cloud_drift.py,
+    core/governance/destructive_change_gate.py, core/governance/ephemeral_apply.py,
+    core/governance/verification_coverage.py
 """
 
 
@@ -59,6 +66,21 @@ def read_resource_changes(plan_json, treat_absent_as_error):
     if not isinstance(raw, list):
         return None, "resource_changes_not_a_list"
     return raw, None
+
+
+def resource_drift(plan_json):
+    """Objects Terraform found changed OUTSIDE Terraform, from the plan's top-level
+    `resource_drift` array.
+
+    Absent is normal and means "no drift detected", NOT an error -- unlike resource_changes,
+    where absence is a fail-closed signal (see read_resource_changes). Terraform only emits
+    this key when a refresh actually found something, so treating absence as an error would
+    make every clean plan look broken.
+    """
+    drift = (plan_json or {}).get("resource_drift")
+    if not isinstance(drift, list):
+        return []
+    return drift
 
 
 def managed_only(resource_changes):

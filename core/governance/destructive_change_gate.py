@@ -2,25 +2,17 @@
 Destructive-change gate — the plan-JSON classifier that decides whether a plan is eligible for
 autonomous ship-on-green, or must route to the staged/guarded path.
 
-Direction (docs/project_plan.md, generation-time-authoring architecture spec, Phase 1 of the
-gate stack): validate/test/plan passing is necessary but not sufficient proof of safety for
-stateful or destructive changes. This gate does not depend on any single citation to justify
-existing -- the load-bearing evidence is TerraProbe's 71.4% deceptive-fix rate (arXiv 2606.26590,
-peer-reviewed methodology, layered-oracle framework applied to 288 real repairs across three
-models): a fix that passes every automated check while leaving the actual vulnerability in place,
-confirming that "the checks passed" cannot be trusted as "this is safe" for exactly the class of
-change this gate exists to route to staged review. One additional, secondary data point, corrected
-here after review (2026-07): a single unverified preprint ("Hallucinated Resources, Brittle
-Oracles, Decoupled Security") reports no detected correctness-to-security transfer at n=55
-(Pearson r=0.20, p=0.14, 95% CI crossing zero -- a non-significant null result, not a weak positive
-correlation; do not soften this to "weakly correlated" if it is ever restated). Read correctly, a
-null result here is corroborating, not incidental: it means correctness signals (validate/test/plan
-passing) carry no detectable predictive power over security outcomes, which is the same conclusion
-TerraProbe's own real, adjudicated failures demonstrate directly. This citation is included as
-color, single-source and unverified in its own right -- if TerraProbe's number were ever
-retracted, this module's autonomy boundary would still stand on its own design logic (validate/
-test/plan is a syntax-and-plan-shape check, never a safety check) and should never be presented as
-though it depends on the preprint. The autonomy boundary this module enforces:
+Why it exists: validate/test/plan passing is a syntax-and-plan-shape check, never a safety
+check, so it is necessary but not sufficient proof of safety for stateful or destructive
+changes. The supporting evidence is TerraProbe's 71.4% deceptive-fix rate (arXiv 2606.26590,
+peer-reviewed, 288 real repairs across three models): a fix that passes every automated check
+while leaving the vulnerability in place. A secondary, unverified preprint ("Hallucinated
+Resources, Brittle Oracles, Decoupled Security") reports no detected correctness-to-security
+transfer at n=55 (Pearson r=0.20, p=0.14, 95% CI crossing zero). That is a non-significant
+NULL result, not a weak positive correlation -- do not soften it to "weakly correlated" if it
+is ever restated. It corroborates rather than carries the argument: the boundary below stands
+on its own design logic even if either citation were retracted, and must never be presented
+as depending on the preprint. The autonomy boundary this module enforces:
 
   - Ship-on-green is allowed ONLY for net-new, non-destructive, non-stateful creates OF A
     REVIEWED-SAFE RESOURCE TYPE (see AUTO_SHIP_ELIGIBLE_TYPES below).
@@ -30,9 +22,8 @@ though it depends on the preprint. The autonomy boundary this module enforces:
   - This is a hard, non-overridable gate: `classify()` never asks an LLM or a human for an
     opinion, it only reads `terraform show -json` plan facts.
 
-Action-shape ground truth (empirically verified against real `terraform show -json` output,
-Terraform 1.15.7, via a local-only `random_id` resource forced through both replace orderings --
-not assumed from memory, per this project's own verification discipline):
+Action-shape ground truth, verified against real `terraform show -json` output (Terraform
+1.15.7) rather than assumed from documentation:
 
   create                                 -> actions == ["create"]
   delete                                 -> actions == ["delete"]
@@ -54,29 +45,29 @@ This module makes that asymmetry an explicit, structural part of the classificat
 resource type is never autonomous-eligible, regardless of action shape, until a real Databricks
 sandbox-workspace apply equivalent to G9 exists.
 
-FAIL-CLOSED ON UNKNOWN RESOURCE TYPE (docs/g5_autonomy_boundary_scope.md, Phase 6 Step 0,
-2026-07-14): STATEFUL_RESOURCE_TYPES/IAM_RESOURCE_TYPES alone used to be the ENTIRE gating
-condition -- membership meant "stage it," but a type in NEITHER set produced no finding at all,
-regardless of how genuinely stateful or sensitive it was. That is an allowlist-of-DANGER, which
-is fail-OPEN by construction: any resource type this repo's fixed 16-module catalog has never
-produced -- which is exactly what generation-time authoring exists to produce -- would silently
-ship autonomously. Real, not hypothetical: confirmed live, `aws_dynamodb_table` (create-only,
-genuinely stateful, not in either set) classified `autonomous_eligible=True` before this fix.
-STATEFUL_RESOURCE_TYPES/IAM_RESOURCE_TYPES stay exactly as they are -- they still give the most
-specific, most informative staged-reason when a type is known-dangerous -- but they are no
-longer the only gate. AUTO_SHIP_ELIGIBLE_TYPES (below) is a REVIEWED allowlist of types
-confirmed safe, same fail-closed shape as ephemeral_apply.py's RESOURCE_TYPE_ALLOWLIST (G9): a
-type absent from it -- because it's dangerous, or because nobody has reviewed it yet -- stages,
-tagged `unreviewed_resource_type`, distinguishable in the audit trail from a known-dangerous
-finding. No guessing in either direction: membership is a deliberate, reviewed fact.
+FAIL-CLOSED ON UNKNOWN RESOURCE TYPE. The gate is the
+allowlist AUTO_SHIP_ELIGIBLE_TYPES, not the denylists. Gating on STATEFUL_RESOURCE_TYPES/
+IAM_RESOURCE_TYPES membership alone is an allowlist-of-DANGER, fail-OPEN by construction: a
+type in neither set produces no finding however stateful it is, so `aws_dynamodb_table`
+(create-only, genuinely stateful, in neither set) classified `autonomous_eligible=True` under
+that design. Generation-time authoring exists precisely to emit types no fixed catalog has
+seen. The denylists stay because they give the most specific staged-reason for a known-
+dangerous type, but they are not the gate. A type absent from AUTO_SHIP_ELIGIBLE_TYPES --
+dangerous, or merely unreviewed -- stages, tagged `unreviewed_resource_type` and so
+distinguishable in the audit trail from a known-dangerous finding. Same fail-closed shape as
+ephemeral_apply.py's RESOURCE_TYPE_ALLOWLIST (G9). Membership is a reviewed fact, never a
+guess in either direction.
 
-A heuristic (does the type NAME or SCHEMA SHAPE "look" stateful/sensitive) was considered and
-rejected -- found, not assumed, to be structurally blind to a real case in this repo's own
-catalog: `aws_s3_bucket_policy` holds no data itself and has no stateful-looking schema (a single
-opaque JSON string), yet its CONTENT is exactly what this session's own G6 SEC-07 rule exists to
-catch (a bare `Principal: "*"` grants public access). A heuristic keyed on shape would very
-plausibly miss it; an explicit review does not, because nobody has reviewed it as safe, so it
-simply isn't on the list -- no inference required.
+Do not replace the allowlist with a heuristic over type NAME or SCHEMA SHAPE. It is
+structurally blind to a real case in this repo's own catalog: `aws_s3_bucket_policy` holds no
+data and has no stateful-looking schema (one opaque JSON string), yet its CONTENT is what G6's
+SEC-07 rule catches (a bare `Principal: "*"` grants public access). Explicit review handles it
+without inference -- nobody reviewed it safe, so it is simply not on the list.
+
+Depends on: plan_reader
+Shells out to: nothing -- it reads already-parsed plan JSON
+Used by: core/governance/plan_gate.py, core/governance/address_churn.py
+    (STATEFUL_RESOURCE_TYPES)
 """
 import json
 import sys
@@ -85,10 +76,9 @@ import plan_reader
 
 _SAFE_ACTIONS = ("create",)
 
-# Scoped deliberately to what MinusOps' own 16 modules can actually produce today (see
-# modules/*/main.tf) -- not a general-purpose cloud-resource classifier. Extend this list when
-# a new module introduces a new data-bearing or catastrophic-blast-radius resource type; don't
-# try to pre-empt resource types nothing in this repo provisions.
+# Scoped deliberately to what this repo's own modules can produce today (see modules/*/main.tf)
+# -- not a general-purpose cloud-resource classifier. Extend it when a new module introduces a
+# data-bearing or catastrophic-blast-radius type; do not pre-empt types nothing here provisions.
 STATEFUL_RESOURCE_TYPES = frozenset({
     "aws_s3_bucket",                       # holds objects (data)
     "aws_kms_key",                         # anything encrypted under it is unrecoverable if lost
@@ -96,11 +86,45 @@ STATEFUL_RESOURCE_TYPES = frozenset({
     "aws_glue_catalog_table",              # catalog entry pointing at real underlying data
     "aws_kinesis_stream",                  # in-flight/retained streaming data
     "aws_kinesis_firehose_delivery_stream",
+    # The Kafka equivalent of aws_kinesis_stream above, and unreviewed until the catalog sweep
+    # first ran (2026-09-01). Brokers hold topic data for a retention period; destroying the
+    # cluster destroys every partition with it, and unlike aws_emr_cluster -- which is in
+    # REVIEWED_UNSAFE_TYPES for being expensive rather than for holding anything -- there is
+    # data here to lose, which is the higher bar.
+    "aws_msk_cluster",
     "aws_mwaa_environment",                # DAG run history/connections/variables; ~20-30min to recreate
     "databricks_metastore",                # root of the entire Unity Catalog governance tree
     "databricks_metastore_assignment",     # governs which workspace can reach which metastore's data
     "databricks_catalog",                  # schemas/tables/permissions
     "databricks_mws_workspaces",           # root of an entire environment (notebooks, jobs, clusters)
+    # Same bar as the entries above: what the TYPE represents, not what one plan does to it.
+    "aws_sqs_queue",                       # holds in-flight events; a replace drops the backlog
+    "aws_secretsmanager_secret",           # the container IS the secret's identity; recreating
+                                           # it orphans every consumer's ARN reference
+    # aws_dynamodb_table: this is the type test_destructive_change_gate.py's own regression-lock
+    # comment names as the confirmed historical fail-open gap (see that file). It is reviewed IN
+    # here, not left unreviewed, now that modules/metadata-control-table declares one: it holds
+    # live pipeline-config rows every DAG queries at parse time, so a replace/recreate silently
+    # blanks every pipeline's schedule and cluster sizing until the table is repopulated -- the
+    # same "holds data" bar as aws_s3_bucket and aws_kinesis_stream above.
+    "aws_dynamodb_table",
+    # Reviewed IN on the same bar, after tests/test_destructive_change_gate.py's catalog sweep
+    # ran for the first time (2026-09-01) and reported it as unreviewed_resource_type. The
+    # module answers the question itself: modules/cube-semantic-layer describes it as the
+    # "Cube pre-aggregation cache", says "the cache holds business metrics", and turns on
+    # at-rest encryption so those pre-aggregations do not rest in the clear. A type whose own
+    # declaration argues its contents need encrypting is not a type a teardown should pass
+    # unreviewed. Dropping it is not silent either: every dashboard falls back to full scans
+    # against the warehouse until it refills.
+    "aws_elasticache_replication_group",
+    # Holds log data under a retention period, and deleting the group deletes the streams with
+    # it -- there is no undo and no snapshot. The asymmetric-downside test this file applies
+    # settles it: staging a log-group deletion costs one human glance, auto-shipping one
+    # destroys the record of what a pipeline did. Unreviewed until the catalog sweep first ran
+    # (2026-09-01); streaming-msk-kafka declares one for broker logs. Note the neighbouring
+    # CloudWatch types (metric_alarm, event_rule, event_target) are auto-ship eligible on
+    # purpose: they carry configuration, not history.
+    "aws_cloudwatch_log_group",
 })
 
 # IAM is a separate dimension from "holds data" -- a privilege-escalation-risk category the
@@ -110,6 +134,38 @@ STATEFUL_RESOURCE_TYPES = frozenset({
 IAM_RESOURCE_TYPES = frozenset({
     "aws_iam_role",
     "aws_iam_role_policy",
+    # The standalone managed policy. aws_iam_role_policy (inline) and
+    # aws_iam_role_policy_attachment (the binding) were both here and the policy DOCUMENT
+    # itself was not, so a change to the permissions every consumer role carries reported as
+    # "nobody has looked at this type" rather than "this is IAM". Surfaced by the catalog
+    # sweep's first run (2026-09-01); modules/security-iam-scoped has declared one since
+    # 2026-08-22.
+    "aws_iam_policy",
+    # Privilege-granting in exactly the sense this set exists for: an instance profile hands a
+    # role to every EC2 node in a cluster, and a policy attachment binds an AWS-MANAGED policy
+    # whose contents this repo does not author and cannot scan (compute-emr-ec2-spot attaches
+    # AmazonEMRServicePolicy_v2). A wildcard inside a managed policy is invisible to SEC-02.
+    "aws_iam_instance_profile",
+    "aws_iam_role_policy_attachment",
+    # Lake Formation is IAM for the lake, and none of it was classified until the catalog
+    # sweep ran for the first time (2026-09-01). Every type below decides who can read what,
+    # and every one of them fails OPEN when removed -- which is precisely the direction this
+    # set exists to catch.
+    #
+    #   data_lake_settings   names the account's data lake administrators
+    #   permissions          the grant itself
+    #   resource             registers an S3 location, so LF governs it at all; deregistering
+    #                        leaves the data in place and the governance gone
+    #   lf_tag               the tag vocabulary TBAC policies are written against; deleting a
+    #                        key invalidates every policy referencing it
+    #   resource_lf_tags     the assignment that makes a TBAC grant apply to a table
+    #   data_cells_filter    the row/column restriction; removing one WIDENS access
+    "aws_lakeformation_data_lake_settings",
+    "aws_lakeformation_permissions",
+    "aws_lakeformation_resource",
+    "aws_lakeformation_lf_tag",
+    "aws_lakeformation_resource_lf_tags",
+    "aws_lakeformation_data_cells_filter",
 })
 
 # Types explicitly reviewed and found NOT safe to auto-ship, despite being neither
@@ -121,59 +177,96 @@ IAM_RESOURCE_TYPES = frozenset({
 # everything into one generic "staged" bucket.
 REVIEWED_UNSAFE_TYPES = frozenset({
     # aws_s3_bucket_policy: its own schema carries no stateful shape (a single opaque policy
-    # string) but its CONTENT can grant public access -- the exact case this session's own G6
-    # SEC-07 rule exists for. G6 is shadow-only, so this classifier is the only thing that could
-    # actually stage it today.
+    # string) but its CONTENT can grant public access -- the case G6's SEC-07 rule exists for.
+    # G6 is shadow-only, so this classifier is the only thing that could actually stage it.
     "aws_s3_bucket_policy",
-    # aws_default_security_group: a real decision made here, not defaulted either way. Confirmed
-    # live against this repo's OWN real module (modules/networking-vpc/main.tf): even this
-    # repo's correctly-configured usage sets `egress { cidr_blocks = ["0.0.0.0/0"] }` -- an
-    # unrestricted CIDR block is present in the type's typical, intended real-world
-    # configuration here, not merely a hypothetical misconfiguration. A security group's content
-    # (which direction, which CIDR) is a network-layer equivalent of an IAM/KMS/S3 policy's
-    # Principal/Action content, and this classifier reads only the plan's resource type and
-    # action, never rule content -- it has no way to tell "this occurrence is the standard
-    # self-referencing-ingress pattern" from "this occurrence just opened ingress to 0.0.0.0/0"
-    # any more than a heuristic could. Asymmetric downside decided this: staging a genuine
-    # hardening change costs one human glance; auto-shipping the one that opens inbound to the
-    # world is the exact failure mode this whole fix exists to prevent.
+    # The same shape, one service over, and unreviewed until the catalog sweep first ran
+    # (2026-09-01): no stateful content, one opaque policy string, and that string is what
+    # decides whether another account can read the queue. modules/ingestion-webhook declares
+    # one so API Gateway can write to its queue; nothing here can tell that from a policy
+    # that opens it wider.
+    "aws_sqs_queue_policy",
+    # aws_default_security_group: excluded on a decision, not by default. This repo's own
+    # correctly-configured usage (modules/networking-vpc/main.tf) sets
+    # `egress { cidr_blocks = ["0.0.0.0/0"] }`, so an unrestricted CIDR block is present in the
+    # type's intended configuration here, not only in a misconfiguration. A security group's
+    # content (direction, CIDR) is the network-layer equivalent of an IAM/KMS/S3 policy's
+    # Principal/Action content, and this classifier reads only resource type and action, never
+    # rule content -- it cannot tell the standard self-referencing-ingress pattern from one that
+    # just opened ingress to the world. Asymmetric downside decides it: staging a genuine
+    # hardening change costs one human glance; auto-shipping the bad one is the failure mode
+    # this gate exists to prevent.
     "aws_default_security_group",
+
+    # Every type below was considered for AUTO_SHIP_ELIGIBLE_TYPES and rejected on its own
+    # reason, against that same asymmetric-downside test.
+
+    # Internet-facing surfaces. A partner SFTP endpoint and a webhook receiver are, by design,
+    # reachable from outside the account -- the network-layer equivalent of the public-exposure
+    # content risk that put aws_s3_bucket_policy and aws_default_security_group here. This
+    # classifier reads type and action only; it cannot tell a correctly-scoped endpoint from one
+    # that exposes the wrong prefix.
+    "aws_transfer_server",
+    "aws_transfer_user",                   # grants an external party a credentialed path in
+    "aws_transfer_ssh_key",                # the credential binding itself
+    "aws_apigatewayv2_api",
+    "aws_apigatewayv2_route",
+    "aws_apigatewayv2_stage",
+    "aws_apigatewayv2_integration",        # carries credentials_arn: the API's write path into SQS
+
+    # Continuously-running, materially-priced compute. Creating one of these is not a
+    # configuration change that can be glanced past on a cost report a month later; an EMR
+    # cluster at the tier this module targets is the largest single line item this repo can
+    # produce. auto_termination_policy bounds a FORGOTTEN cluster, not an unintended one.
+    "aws_emr_cluster",
+    "aws_emr_instance_fleet",
+    "aws_dms_replication_instance",
+
+    # Data MOVEMENT. Unlike the storage types in STATEFUL_RESOURCE_TYPES, these do not hold
+    # data -- they copy it, continuously, somewhere else. A replication task pointed at the
+    # wrong schema, a flow pulling the wrong SaaS object, or a CRR rule targeting the wrong
+    # destination bucket is an exfiltration path that plans as an ordinary create.
+    "aws_dms_endpoint",
+    "aws_dms_s3_endpoint",
+    "aws_dms_replication_task",
+    "aws_appflow_flow",
+    "aws_s3_bucket_replication_configuration",
+
+    # Audit and retention integrity. A CloudTrail with S3 data events bills per event and is
+    # the record SecOps reads; object lock makes objects undeletable for the full window, by
+    # anyone, which is a commitment rather than a setting. Both are usually hardening -- and
+    # both are worth one human glance precisely because they are hard to walk back.
+    "aws_cloudtrail",
+    "aws_s3_bucket_object_lock_configuration",
 })
 
 # Reviewed allowlist of resource types confirmed safe to auto-ship (docs/
 # g5_autonomy_boundary_scope.md section 3) -- the inverted gate. A type absent from this set
 # stages, tagged `unreviewed_resource_type` (or `reviewed_unsafe_resource_type` if it's in
-# REVIEWED_UNSAFE_TYPES above). Reviewed against the real 41-type catalog (ephemeral_apply.py's
-# RESOURCE_TYPE_ALLOWLIST) one type at a time, not migrated wholesale from "not currently
+# REVIEWED_UNSAFE_TYPES above). Each entry was reviewed individually against the catalog in
+# ephemeral_apply.py's RESOURCE_TYPE_ALLOWLIST, not migrated wholesale from "not currently
 # flagged".
 #
-# CONFIG-DEPENDENT ENTRIES -- RESOLVED (docs/phase6_step1_authoring_scope.md section 4.2,
-# 2026-07-14). 6 entries were flagged at Step 0 for Step-1 re-examination before generation
-# could produce novel configurations of them (the scope doc's own prose said "7"; the actual
-# count in this set has always been 6 -- a real miscount in the scope doc, corrected here
-# rather than silently carried forward). Each got its own per-type disposition, same standard
-# `aws_default_security_group`'s exclusion was held to above -- decided, not left implicit:
+# CONFIG-DEPENDENT ENTRIES. Some entries are safe as a TYPE but carry configuration that can
+# flip that. Each has an explicit disposition, marked inline below; do not remove an entry
+# without reading the matching case here:
 #
-#   (a) NEW G6 RULE, stays eligible -- `aws_redshiftserverless_workgroup`, `aws_subnet`,
-#       `aws_s3_object`. Each has a real, schema-verified boolean/string attribute that flips
-#       public exposure without changing resource type (`publicly_accessible`,
-#       `map_public_ip_on_launch`, `acl`). SEC-08/SEC-09/SEC-10 (policy/g6/rules.rego) now
-#       check exactly those attributes, shadow-proven zero-FP the same way SEC-06/SEC-07 were.
-#       A generated instance setting the risky attribute is caught on CONTENT by G6, even
-#       though G5 still only sees the type and stays silent.
+#   (a) COVERED BY A G6 RULE, stays eligible -- `aws_redshiftserverless_workgroup`,
+#       `aws_subnet`, `aws_s3_object`. Each has a schema-verified boolean/string attribute that
+#       flips public exposure without changing resource type (`publicly_accessible`,
+#       `map_public_ip_on_launch`, `acl`). SEC-08/SEC-09/SEC-10 (policy/g6/rules.rego) check
+#       exactly those attributes. G5 sees only the type and stays silent; G6 catches the
+#       CONTENT. Deleting one of those Rego rules re-opens the hole here.
 #   (b) NO G6 RULE POSSIBLE, stays eligible on reasoned exception -- `aws_glue_job`,
 #       `aws_kinesisanalyticsv2_application`, `aws_sfn_state_machine`. Each carries an
 #       arbitrary executable payload (a Spark script, a Flink/SQL app, a state-machine
 #       definition) whose risk is in what it DOES at runtime, not in any single attribute a
-#       plan-time Rego rule could pattern-match -- there is no attribute-content check
-#       equivalent to SEC-08/09/10 to write here. The actual privilege boundary for all three
-#       is the IAM role each one assumes: a genuinely new role attached to one of these is
-#       itself a separate `aws_iam_role`/`aws_iam_policy` resource, independently caught by
-#       SEC-02/SEC-05 (wildcard resource/action, missing external ID) if it's newly authored.
-#       Accepted as the real, disclosed boundary -- not a gap silently left open -- because
-#       the alternative (moving all three to REVIEWED_UNSAFE_TYPES) would stage every future
-#       occurrence of an already-reviewed-safe type shape for a risk this gate structurally
-#       cannot see any better staged than un-staged.
+#       plan-time Rego rule could pattern-match. The actual privilege boundary for all three is
+#       the IAM role each assumes: a genuinely new role is itself a separate `aws_iam_role`/
+#       `aws_iam_policy` resource, independently caught by SEC-02/SEC-05 (wildcard resource/
+#       action, missing external ID). This is a disclosed boundary, not an oversight -- moving
+#       all three to REVIEWED_UNSAFE_TYPES would stage every future occurrence for a risk this
+#       gate can see no better staged than un-staged.
 AUTO_SHIP_ELIGIBLE_TYPES = frozenset({
     "aws_athena_workgroup",
     "aws_budgets_budget",
@@ -192,7 +285,7 @@ AUTO_SHIP_ELIGIBLE_TYPES = frozenset({
     "aws_kms_alias",
     "aws_nat_gateway",
     "aws_redshiftserverless_workgroup",    # CONFIG-DEPENDENT (a): G6 SEC-08 covers publicly_accessible
-    "aws_route_table",                     # real bug: reviewed safe, initially left out of this set
+    "aws_route_table",
     "aws_route_table_association",
     "aws_s3_bucket_lifecycle_configuration",
     "aws_s3_bucket_public_access_block",
@@ -205,15 +298,20 @@ AUTO_SHIP_ELIGIBLE_TYPES = frozenset({
     "aws_subnet",                          # CONFIG-DEPENDENT (a): G6 SEC-09 covers map_public_ip_on_launch
     "aws_vpc",
     "aws_vpc_endpoint",
+    # A replication subnet group is a named list of existing subnet ids -- it holds no data,
+    # grants no permission, has no endpoint, and costs nothing.
+    "aws_dms_replication_subnet_group",
+    # Reviewed on the same reasoning, and by direct precedent above, after the catalog sweep
+    # ran for the first time (2026-09-01) and reported it unreviewed. modules/cube-semantic-
+    # layer's is `subnet_ids = var.subnet_ids` and nothing else. The cluster it serves is
+    # separately reviewed as stateful, which is where the data question is answered.
+    "aws_elasticache_subnet_group",
     # Not cloud resources -- test-utility types with zero cloud footprint, used by this repo's
-    # own test suite as create/delete/replace and end-to-end apply fixtures without needing
-    # real credentials. Reviewed and added deliberately, same as any other entry, not a
-    # real-world type judgment. A real gap found running this fix's own CI proof (not caught
-    # locally, since this repo's test files were never run exhaustively against the fixed
-    # classifier before pushing -- a real process gap, corrected by the repo-wide grep below,
-    # not just these two additions): confirmed via `grep -rn 'resource "..."' tests/*.py` that
-    # only these two non-cloud types are used as test fixtures anywhere in this repo's test
-    # suite, so this is now a complete, not partial, exemption list.
+    # test suite as create/delete/replace and end-to-end apply fixtures without real
+    # credentials. Deliberately reviewed in, not a real-world type judgment. `grep -rn
+    # 'resource "..."' tests/*.py` confirms these are the only non-cloud fixture types in the
+    # suite, so the exemption is complete rather than partial; re-run that grep before adding
+    # a third.
     "random_id",             # hashicorp/random, tests/test_destructive_change_gate.py
     "terraform_data",        # built into Terraform core itself, tests/test_gate_e2e.py
 })
@@ -242,29 +340,25 @@ def _fail_closed(reason, address=None, rtype=None):
 
 
 def classify(plan_json):
-    """Classify a parsed `terraform show -json` plan. Fail-closed on any malformed input --
-    2026-07-10 audit finding: the mode-field fix (below) was one gap found by accident; a
-    systematic sweep of every field this function reads found five more of the same shape
-    (three silent fail-opens, three crashes instead of a graceful fail-closed), all fixed here
-    together. "Real terraform show -json always sets X" is exactly the reasoning that caused
-    the original mode bug -- this function no longer assumes well-formed input anywhere, it
-    only classifies a genuinely empty, well-typed `resource_changes: []` as autonomous-eligible
-    (a real no-op plan, correctly safe), never a missing/malformed one."""
-    # plan_reader.py (G4 consolidation, docs/phase4_scope.md) -- shared with architecture_
-    # model.py. G5's own policy (absent resource_changes is a fail-closed BLOCK, not "nothing to
-    # check") is preserved via treat_absent_as_error=True; this is a deliberate difference from
-    # G6's shadow-mode reader, which treats absent as "zero managed changes" -- see plan_reader's
-    # module docstring. Not changed here, not in scope for this consolidation.
+    """Classify a parsed `terraform show -json` plan. Fail-closed on any malformed input.
+
+    Every field read here is validated rather than assumed. "Real terraform show -json always
+    sets X" is the reasoning that produced the original fail-open mode-field bug, so do not
+    reintroduce it. Only a genuinely empty, well-typed `resource_changes: []` (a real no-op
+    plan) classifies as autonomous-eligible -- never a missing or malformed one.
+    """
+    # treat_absent_as_error=True is G5's own policy: an absent resource_changes is a fail-closed
+    # BLOCK, not "nothing to check". Deliberately different from G6's shadow-mode reader, which
+    # treats absent as "zero managed changes" -- see plan_reader's module docstring.
     raw_resource_changes, error = plan_reader.read_resource_changes(plan_json, treat_absent_as_error=True)
     if error:
         return _fail_closed(error)
 
-    # Exclude mode == "data" only (not: require mode == "managed"). A data source's plan-time
-    # "read" is not a resource being changed and must never be treated as a destructive action
-    # -- same filter coverage_audit.py already applies, see its test_classify_ignores_data_
-    # sources. An ALLOWLIST on "managed" would fail OPEN on a missing/unrecognized `mode` field
-    # (the original bug this docstring refers to); a DENYLIST on "data" only excludes what
-    # we're confident is a non-mutating read, so anything else stays in scope.
+    # Exclude mode == "data" only; do NOT invert this to require mode == "managed". A data
+    # source's plan-time "read" is not a resource being changed (the same filter
+    # coverage_audit.py applies). An allowlist on "managed" fails OPEN on a missing or
+    # unrecognized `mode` field; a denylist on "data" excludes only what is certainly a
+    # non-mutating read, so everything else stays in scope.
     resource_changes, malformed = plan_reader.managed_only(raw_resource_changes)
     findings = [{"address": None, "type": None, **m} for m in malformed]
 
@@ -273,10 +367,9 @@ def classify(plan_json):
         rtype = rc.get("type")
         change = rc.get("change")
 
-        # A missing or non-string type can't be looked up in STATEFUL_RESOURCE_TYPES/
-        # IAM_RESOURCE_TYPES (a real lookup would just safely return False) -- but silently
-        # treating "don't know what this is" as "therefore not stateful/IAM" is the exact
-        # fail-open shape this sweep exists to close. Malformed type data blocks outright.
+        # A missing or non-string type would look up safely (returning False) against the type
+        # sets -- but treating "don't know what this is" as "therefore not stateful/IAM" is the
+        # fail-open shape this gate exists to close. Malformed type data blocks outright.
         if not isinstance(rtype, str) or not rtype:
             findings.append({"address": address, "type": rtype, "reason": "missing_or_invalid_resource_type"})
             continue
@@ -298,28 +391,22 @@ def classify(plan_json):
         elif rtype in IAM_RESOURCE_TYPES:
             findings.append({"address": address, "type": rtype, "reason": "iam_resource_type"})
         elif rtype in REVIEWED_UNSAFE_TYPES:
-            # Distinct from unreviewed_resource_type below: this type WAS reviewed, and the
-            # review's answer was "not safe to auto-ship" (docs/g5_autonomy_boundary_scope.md
-            # section 3) -- a materially different fact for an audit-chain reader than "nobody
-            # has looked at this yet."
+            # Distinct from unreviewed_resource_type below: this type WAS reviewed and the
+            # answer was "not safe to auto-ship" -- a materially different fact for an
+            # audit-chain reader than "nobody has looked at this yet."
             findings.append({"address": address, "type": rtype, "reason": "reviewed_unsafe_resource_type"})
         elif rtype.startswith(_DATABRICKS_PREFIX):
-            # docs/g5_autonomy_boundary_scope.md was scoped to the real 41 AWS types only --
-            # Databricks resource types were deliberately NOT reviewed into AUTO_SHIP_ELIGIBLE_
-            # TYPES, matching G9's own AWS-only scope. Real bug found running this fix's own
-            # 16-module regression proof: without this branch, a Databricks type absent from
-            # STATEFUL_RESOURCE_TYPES (e.g. databricks_mws_credentials) fell through to
-            # unreviewed_resource_type -- technically not wrong, but redundant and out of this
-            # scope's stated boundary, since EVERY databricks_* type already, unconditionally,
-            # never autonomous-eligible via `reduced_assurance` below regardless of this check.
-            # Skip rather than double-flag; Databricks resource-type review is real, future,
-            # separately-scoped work, not silently declared done by this AWS-only fix.
+            # Deliberately no finding, not an oversight. Databricks types were never reviewed
+            # into AUTO_SHIP_ELIGIBLE_TYPES (that review was AWS-only, matching G9's scope), so
+            # without this branch a databricks_* type absent from STATEFUL_RESOURCE_TYPES falls
+            # through to unreviewed_resource_type -- redundant, because `reduced_assurance`
+            # below already makes EVERY databricks_* type unconditionally ineligible. Skip
+            # rather than double-flag. Databricks type review is separate, still-open work.
             pass
         elif rtype not in AUTO_SHIP_ELIGIBLE_TYPES:
-            # The fix (docs/g5_autonomy_boundary_scope.md): a type that's neither known-
-            # dangerous NOR reviewed-safe stages -- because it's genuinely new (generation-time
-            # authoring's whole point) or because it's simply been overlooked, never because
-            # "we don't recognize it" was silently read as "therefore fine."
+            # A type that is neither known-dangerous NOR reviewed-safe stages -- whether it is
+            # genuinely new (generation-time authoring's whole point) or simply overlooked.
+            # "We don't recognize it" must never be read as "therefore fine."
             findings.append({"address": address, "type": rtype, "reason": "unreviewed_resource_type"})
 
     databricks_resources = sorted(

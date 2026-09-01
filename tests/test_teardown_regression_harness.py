@@ -1,5 +1,5 @@
 """
-Phase 6 Step 5 (docs/phase6_step5_teardown_scope.md section 1.1) -- the regression-baseline
+Phase 6 Step 5 -- the regression-baseline
 harness. Decided by the user: Option B (the catalog stays the real composition source; nothing
 retires or relocates on the strength of this harness alone). This harness still needs to exist
 and run, under either option, because it is what turns "the authored-content path is
@@ -35,17 +35,30 @@ import subprocess
 
 import pytest
 
+
+
 import architecture_decision as archdec
 import modules as module_registry
 import schema_lint
 import synthesizer
-import test_destructive_change_gate as dcg
-import test_rego_gate as g6test
+try:
+    import test_destructive_change_gate as dcg
+except ImportError:
+    from tests import test_destructive_change_gate as dcg
+try:
+    import test_rego_gate as g6test
+except ImportError:
+    from tests import test_rego_gate as g6test
 import toolpath
 
 TERRAFORM = toolpath.find_tool("terraform")
 
-pytestmark = pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+# Live Terraform: minutes, not seconds. Deselected from the default run (pyproject
+# addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = [
+    pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed"),
+    pytest.mark.slow,
+]
 
 _CANNOT_PLAN_STANDALONE = g6test._CANNOT_PLAN_STANDALONE
 _DUMMY_AWS_PROVIDER = g6test._DUMMY_AWS_PROVIDER
@@ -57,10 +70,6 @@ _strip_caller_identity = g6test._strip_caller_identity
 # own same-named variable over verbatim into the NEW path's root would be a duplicate
 # declaration; these are already declared (and, except name_prefix/owner, already defaulted) by
 # compose() itself, regardless of which/how-many modules are actually selected.
-_COMPOSE_STANDARD_VARIABLES = {
-    "name_prefix", "owner", "environment", "region", "tags", "run_id", "daily_data_gb",
-}
-
 _DUMMY_VERSIONS = '''terraform {
   required_version = ">= 1.5"
   required_providers {
@@ -112,9 +121,26 @@ _DUMMY_VERSIONS_WITH_DATABRICKS = '''terraform {
 '''
 
 
-def _run_tf(dst, *args, timeout=120):
-    result = subprocess.run([TERRAFORM, f"-chdir={dst}", *args],
-                            capture_output=True, text=True, timeout=timeout)
+# A `terraform init` on a platform that cannot symlink COPIES the whole provider out of
+# TF_PLUGIN_CACHE_DIR -- roughly 900 MB for hashicorp/aws -- instead of linking to it. Windows
+# refuses symlinks without Developer Mode or admin, so every init pays that copy.
+#
+# Measured directly on this repo's dev machine 2026-09-01: 147.7 seconds for a bare
+# single-provider init against a warm cache, versus the 120 this used to allow. Three modules
+# (streaming-msk-kafka, speed-layer-kinesis, dq-great-expectations) failed on TimeoutExpired for
+# that reason alone, and on the catalog-copy BASELINE path, where nothing under test had run
+# yet. The ones that passed were on the right side of the variance, not meaningfully faster.
+#
+# This timeout exists to stop a hang from wedging the suite, not to assert how fast Terraform
+# is, so it sits well above the measured worst case. On Linux, where symlinking works, init
+# takes seconds and this never binds; enabling Developer Mode on Windows has the same effect.
+# Overridable for a machine slower still.
+_TF_TIMEOUT_SECONDS = int(os.environ.get("MINUS_HARNESS_TF_TIMEOUT", "600"))
+
+
+def _run_tf(dst, *args, timeout=None):
+    result = subprocess.run([TERRAFORM, f"-chdir={dst}", *args], capture_output=True, text=True,
+                            timeout=timeout or _TF_TIMEOUT_SECONDS)
     return result.returncode, (result.stdout or "") + (result.stderr or "")
 
 
@@ -274,20 +300,54 @@ def _new_path_plan(module_id, tmp_path):
     with open(os.path.join(out_dir, "providers.tf"), "w", encoding="utf-8") as f:
         f.write(providers)
 
+    # Read what compose() actually wrote rather than naming the variables it is expected to
+    # write. This was a hardcoded set of seven, and compose()'s own template had grown to
+    # thirteen: glue_number_of_workers, glue_worker_type, monthly_budget_usd, retention_days,
+    # cost_center and data_classification had all been added without it. Any module declaring
+    # one of them collided, and storage-medallion-s3 declares retention_days -- so this path
+    # failed with "Duplicate variable declaration" the first time the parametrization ran.
+    # Deriving it from the composed file cannot drift, and covers the conditional variables
+    # (databricks_account_id) that a fixed list would have to guess at.
+    with open(os.path.join(out_dir, "variables.tf"), encoding="utf-8") as f:
+        composed_variables = {
+            name for name, _ in dcg._iter_top_level_blocks(f.read(), "variable")
+        }
+
+    # `patched`, not `main_tf`. _strip_caller_identity() removes the data
+    # "aws_caller_identity" block AND rewrites references to it, because Terraform reads every
+    # declared data source at plan time and dummy credentials cannot satisfy a real STS call.
+    # The decomposition above already works from `patched`; these three did not, so the data
+    # source was stripped while a locals block still referencing it was carried over verbatim.
+    # warehouse-snowflake-aws failed exactly there: "A data resource \"aws_caller_identity\"
+    # \"current\" has not been declared in the root module". `patched` is by definition the
+    # content this path plans, so everything derived from the module reads from it.
     var_blocks = "\n".join(
         f'variable "{name}" {{\n{body}\n}}\n'
-        for name, body in dcg._iter_top_level_blocks(main_tf, "variable")
-        if name not in _COMPOSE_STANDARD_VARIABLES
+        for name, body in dcg._iter_top_level_blocks(patched, "variable")
+        if name not in composed_variables
     )
-    locals_blocks = "\n".join(_extract_locals_blocks(main_tf))
+    locals_blocks = "\n".join(_extract_locals_blocks(patched))
     with open(os.path.join(out_dir, "_module_vars.tf"), "w", encoding="utf-8") as f:
         f.write(var_blocks + "\n" + locals_blocks)
 
+    # Same drift problem as the variable declarations above, one file over, and the question is
+    # subtly different: what matters here is what compose() ASSIGNED, not what it declared. A
+    # variable compose declares with a default but never assigns still needs its value carried
+    # over, while re-assigning one it already set is a duplicate. Read the file it wrote.
+    tfvars_path = os.path.join(out_dir, "terraform.tfvars")
+    assigned = set()
+    if os.path.exists(tfvars_path):
+        with open(tfvars_path, encoding="utf-8") as f:
+            for line in f:
+                name, sep, _ = line.partition("=")
+                if sep and name.strip():
+                    assigned.add(name.strip())
+
     var_assignments = "\n".join(
-        line for line in dcg._required_variable_lines(main_tf)
-        if line.strip().split(" ", 1)[0] not in _COMPOSE_STANDARD_VARIABLES
+        line for line in dcg._required_variable_lines(patched)
+        if line.strip().split(" ", 1)[0] not in assigned
     )
-    with open(os.path.join(out_dir, "terraform.tfvars"), "a", encoding="utf-8") as f:
+    with open(tfvars_path, "a", encoding="utf-8") as f:
         f.write("\n" + var_assignments + "\n")
 
     return _real_plan_resource_changes(out_dir)
@@ -323,7 +383,7 @@ def _module_args_from_required_variables(main_tf):
 
 
 def _new_module_form_plan(module_id, tmp_path):
-    """The authored-content MODULE form (docs/phase7_item1_module_unit_scope.md, approved): the
+    """The authored-content MODULE form: the
     module's entire real main.tf routed through synthesizer.compose(authored_resources=...) as
     ONE module-shaped unit -- its own directory (authored_modules/<module_id>/), its own
     variable/output namespace, its real companion asset files copied alongside it -- instead of
@@ -376,7 +436,7 @@ def _new_module_form_plan(module_id, tmp_path):
 
 
 # Real, named blockers found RUNNING this harness (not hypothetical, not hacked around) --
-# per docs/phase6_step5_teardown_scope.md section 2: a module the current authored_content
+# A module the current authored_content
 # mechanism can't reproduce to the same bar is a disclosed blocker, not something to paper over
 # by copying extra files into the flat-root composition to make the symptom disappear.
 _NEW_PATH_KNOWN_BLOCKERS = {
@@ -384,7 +444,7 @@ _NEW_PATH_KNOWN_BLOCKERS = {
     # decomposition _new_path_plan() uses (one root file per resource type, no module
     # subdirectory) has no way to carry a companion asset file a `path.module`-relative
     # reference needs (aws_s3_object.script's `filemd5("${path.module}/scripts/....py")`).
-    # CLOSED for real by Phase 7 Item 1 (docs/phase7_item1_module_unit_scope.md): the new
+    # CLOSED for real by Phase 7 Item 1: the new
     # module-shaped authored_content form gives the unit its own directory, so `path.module`
     # resolves correctly -- see test_module_form_closes_the_path_module_asset_blockers below,
     # which proves plan-equivalence for both using that form. Still skipped HERE because this
@@ -399,17 +459,12 @@ _NEW_PATH_KNOWN_BLOCKERS = {
         "flat-decomposition path only -- see test_module_form_closes_the_path_module_asset_"
         "blockers for the real, now-passing proof via the module-shaped authored_content form."
     ),
-    # Same real, disclosed G2 limitation already found and recorded in
-    # tests/test_schema_lint.py::test_every_real_module_passes_g2_cleanly's own known-exceptions
-    # table: a genuinely dynamic `dynamic "columns" { for_each = var.columns }` block that
-    # schema_lint.py structurally cannot resolve statically. Since _validate_novel_resources()
-    # calls the exact same gate_content(), this surfaces here identically, not a new gap.
-    "table-format-iceberg": (
-        "aws_glue_catalog_table.this's dynamic \"columns\" block trips the same structural G2 "
-        "unparseable_reference limitation already disclosed in "
-        "test_schema_lint.py::test_every_real_module_passes_g2_cleanly -- this module was never "
-        "actually G2-clean (no PROVENANCE.json; never pinned)."
-    ),
+    # table-format-iceberg used to be listed here, deferring to the known-exceptions table in
+    # tests/test_schema_lint.py for a `dynamic "columns"` block G2 could not resolve statically.
+    # That table is now empty: the limitation was schema_lint's, not the module's, and a dynamic
+    # block raises the non-blocking dynamic_block_unverified WARNING instead of refusing the
+    # module. _validate_novel_resources() calls the same gate_content(), so the block lifted here
+    # at the same time and this parametrization now runs for real.
 }
 
 

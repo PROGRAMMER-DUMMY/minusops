@@ -5,6 +5,16 @@ This module never hardcodes a specific user's home directory. On Windows it
 refreshes the current process PATH from the registry — winget / MSI installers
 update the registry but not the already-running session — and then searches
 standard, generic install locations. The discovery runs at most once per process.
+
+Depends on: nothing (stdlib only; `winreg` is imported lazily on Windows)
+Shells out to: nothing — it locates `terraform` / `aws` / other binaries but never
+    executes them. Reads the Windows registry (HKLM/HKCU Environment) to refresh PATH.
+Used by: core/reporting/doctor.py, core/reporting/seed.py, core/reporting/health_checker.py,
+    core/reporting/minusctl.py, core/reporting/optimize_analyzer.py (lazy),
+    core/cost/bcm_pricing_calculator.py, core/cost/pricing_catalog.py,
+    core/generation/schema_watch.py, core/generation/synthesizer.py (lazy),
+    core/governance/{audit_logger,ephemeral_apply,plan_gate,rego_gate,tf_validate}.py,
+    core/providers/aws.py (lazy), and many test modules
 """
 import glob
 import os
@@ -63,6 +73,12 @@ def ensure_external_tools():
     if _ensured:
         return
     _refresh_windows_path()
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cache_dir = os.path.join(repo_root, ".agents", "tf-plugin-cache")
+    # makedirs, not isdir: on a fresh clone the cache does not exist yet, so the isdir guard
+    # meant the very first init -- the slow one -- ran without a cache and never populated it.
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ.setdefault("TF_PLUGIN_CACHE_DIR", cache_dir)
     _ensured = True
 
 

@@ -4,6 +4,19 @@ Architecture decision gate.
 Requirements say what must be built. This record says why a particular architecture and module
 set was selected after research. Production synthesis is bound to this file so keyword matching
 cannot silently become a recommendation engine.
+
+validate() is fail-closed and every required list must be non-empty, `validation` and
+`rollback` included: a design that cannot state how it will be checked, or how it is undone
+when it fails, is a hope rather than a decision, and both are the fields under time pressure
+that someone will want to make optional.
+
+Depends on: core/generation/modules.py (module_registry.list_modules, to reject unknown module
+    ids in add_modules). Reads and writes architecture_decision.json.
+Shells out to: nothing. Local JSON record-keeping and validation only.
+Used by: core/generation/synthesizer.py, core/generation/accelerators.py,
+    core/governance/plan_gate.py, core/reporting/minusctl.py, app/console_app.py,
+    tests/test_architecture_decision.py, tests/test_synthesizer.py,
+    tests/test_teardown_regression_harness.py
 """
 import datetime
 import json
@@ -18,6 +31,18 @@ sys.path.insert(0, _CORE_DIR)
 import modules as module_registry
 
 FILENAME = "architecture_decision.json"
+
+# TerraShark's failure-mode taxonomy (NextStackHelper.md section 2). Recorded on the decision
+# so a design states which of these it actively mitigates, and so `grill-me` and the analyzer
+# name the same five things. Optional -- but an id that is not one of these is a typo, not a
+# sixth failure mode, so it is rejected rather than stored.
+FAILURE_MODES = {
+    "FM-01": "Identity churn (count indexing, missing moved {} blocks, plan-unknown keys)",
+    "FM-02": "Secret exposure (hardcoded defaults, state/log leakage, raw plan JSON in CI)",
+    "FM-03": "Blast radius (monolithic root modules, shared state across envs, missing locks)",
+    "FM-04": "CI drift (floating versions, uncommitted lock file, re-planning at apply time)",
+    "FM-05": "Compliance gate gaps (static docs instead of CI policy gates, blanket ignore_changes)",
+}
 
 
 class ArchitectureDecisionIncomplete(Exception):
@@ -40,6 +65,13 @@ def template(requirements_file="requirements.json"):
         ],
         "assumptions": [],
         "risks": [],
+        # Validation + rollback complete TerraShark's 4-part output contract; `assumptions`
+        # and `alternatives` above already carry the other two parts (assumptions, tradeoffs).
+        # A design that cannot say how it will be checked, or how it is undone, is not a
+        # decision -- it is a hope.
+        "validation": [],
+        "rollback": [],
+        "failure_modes": [],
         "sources": [],
         "decided_by": "",
         "decided_at": "",
@@ -78,13 +110,11 @@ def validate(data):
         if not _answered(data.get(field, "")):
             missing.append(field)
     # A decision must select SOMETHING -- catalog modules, novel (authored) resources, or both.
-    # Previously this required selected_modules alone, unconditionally, which made a real,
-    # legitimate decision -- "zero catalog modules, entirely covered by authored content" --
-    # impossible to record at all (docs/phase7_generation_engine_plan.md item 2: synthesize()'s
-    # own zero-catalog path was fixed to allow this, but this gate, one level up, still refused
-    # to accept the decision record before synthesize() ever got to run). novel_resources' own
-    # per-entry completeness is checked separately below; this only asks "is there at least one
-    # entry to check."
+    # Do NOT tighten this back to requiring selected_modules unconditionally: "zero catalog
+    # modules, entirely covered by authored content" is a legitimate decision that synthesize()
+    # supports, and requiring a module id here refuses the record before synthesize() ever runs.
+    # novel_resources' per-entry completeness is checked separately below; this only asks
+    # whether there is at least one entry to check.
     has_selected_modules = _nonempty_list(data.get("selected_modules"))
     novel_resources_present = isinstance(data.get("novel_resources"), list) and len(data.get("novel_resources")) > 0
     if not has_selected_modules and not novel_resources_present:
@@ -95,15 +125,22 @@ def validate(data):
     alternatives = data.get("alternatives") or []
     if not (isinstance(alternatives, list) and any(_valid_alternative(item) for item in alternatives)):
         missing.append("alternatives (at least one named choice with decision and reason)")
-    for field in ("assumptions", "risks", "sources"):
+    for field in ("assumptions", "risks", "validation", "rollback", "sources"):
         if not _nonempty_list(data.get(field)):
             missing.append(f"{field} (at least one item)")
-    # novel_resources (docs/phase6_step1_authoring_scope.md section 1) is additive and OPTIONAL
-    # at the record level -- a decision with no novel resources needs no entries here at all.
-    # But once present, every entry is held to the same completeness bar _valid_alternative
-    # already enforces above: an incomplete entry (missing justification, or no
-    # alternatives_considered answered) fails validation exactly like an incomplete
-    # `alternatives` entry does, rather than silently passing through as a lesser-checked field.
+    # failure_modes is optional (not every design meaningfully touches all five), but an
+    # unrecognised id means the author guessed at the taxonomy rather than reading it.
+    unknown = [item for item in (data.get("failure_modes") or [])
+               if str(item).strip() not in FAILURE_MODES]
+    if unknown:
+        missing.append(
+            "failure_modes has unknown ids " + json.dumps(unknown)
+            + " (valid: " + ", ".join(sorted(FAILURE_MODES)) + ")")
+    # novel_resources is OPTIONAL at the record
+    # level -- a decision with no novel resources needs no entries here at all. But once
+    # present, every entry meets the same bar _valid_alternative enforces above: an entry
+    # missing its justification or its alternatives_considered fails validation exactly like an
+    # incomplete `alternatives` entry, rather than passing through as a lesser-checked field.
     novel_resources = data.get("novel_resources") or []
     if not isinstance(novel_resources, list):
         missing.append("novel_resources (must be a list)")
@@ -206,8 +243,11 @@ def _append_unique(data, field, value):
 
 
 def add_list_item(path, field, value):
-    if field not in {"assumptions", "risks", "sources"}:
+    if field not in {"assumptions", "risks", "validation", "rollback", "failure_modes", "sources"}:
         raise ValueError(f"unsupported list field: {field}")
+    if field == "failure_modes" and str(value).strip() not in FAILURE_MODES:
+        raise ValueError(
+            f"unknown failure mode {value!r} (valid: {', '.join(sorted(FAILURE_MODES))})")
     data = load_or_template(path)
     _append_unique(data, field, value)
     save(path, data)
@@ -272,6 +312,15 @@ def main(argv=None):
     risk = sub.add_parser("add-risk")
     risk.add_argument("path")
     risk.add_argument("risk")
+    val = sub.add_parser("add-validation", help="how this design will be proven correct")
+    val.add_argument("path")
+    val.add_argument("validation")
+    rb = sub.add_parser("add-rollback", help="how this design is undone if it fails")
+    rb.add_argument("path")
+    rb.add_argument("rollback")
+    fm = sub.add_parser("add-failure-mode", help="TerraShark failure mode this design mitigates")
+    fm.add_argument("path")
+    fm.add_argument("failure_mode", choices=sorted(FAILURE_MODES))
     alt = sub.add_parser("add-alternative")
     alt.add_argument("path")
     alt.add_argument("--name", required=True)
@@ -312,6 +361,12 @@ def main(argv=None):
             data = add_list_item(args.path, "assumptions", args.assumption)
         elif args.cmd == "add-risk":
             data = add_list_item(args.path, "risks", args.risk)
+        elif args.cmd == "add-validation":
+            data = add_list_item(args.path, "validation", args.validation)
+        elif args.cmd == "add-rollback":
+            data = add_list_item(args.path, "rollback", args.rollback)
+        elif args.cmd == "add-failure-mode":
+            data = add_list_item(args.path, "failure_modes", args.failure_mode)
         elif args.cmd == "add-alternative":
             data = add_alternative(args.path, args.name, args.decision, args.reason)
         elif args.cmd == "add-novel-resource":

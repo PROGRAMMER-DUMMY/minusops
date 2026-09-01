@@ -11,49 +11,64 @@ Required functional fields: goal, system_class, at least one functional capabili
 Required non-functional axes (value or "deferred: <reason>"): latency, scale, availability,
 retention, security, budget.
 
-Phase 7 Item 3 decision (docs/phase7_generation_engine_plan.md, 2026-07-15): branch (b),
-symbolic/audit-only, WITH a named carve-out -- not a blanket "this schema is decorative." Field-
-by-field verification (every downstream reader grepped, not assumed) found the schema does three
-real jobs, only one of which is "feeds a generator":
+**Most of this schema is deliberately audit-only, and that is not a bug to fix.** A
+field-by-field check of every downstream reader found the record does three jobs, only one of
+which is "feeds a generator":
 
-  1. Forces the grill-me interview to actually happen -- validate()'s fail-closed gate means
+  1. It forces the grill-me interview to happen at all -- validate() is fail-closed, so
      generation cannot proceed on a vague, ungathered request.
-  2. Is audit evidence that a human answered the NFR questions on the record -- including, via
-     is_deferred()/MAX_FREE_NFR_DEFERRALS, that deferring an axis was a stated decision, not an
-     omission. A field doing THIS job is load-bearing for human review while staying inert to
-     machines, and that is not a defect -- deferral_signoff is the clearest case (exists so a
-     human is on record accepting deferred axes; its job is done the moment it's written, nothing
-     downstream should ever need to read it back). Same reasoning applies to `stakeholders`.
-  3. Supplies exactly two real generation inputs today: `non_functional.budget` (parse_budget_usd,
-     wires governance-observability's guardrail) and `data_pipeline.data_volume` (parse_daily_gb,
-     the S3 usage estimate + daily_data_gb module wiring). Both were wireable with a plain regex
-     because both are bounded, numeric answers -- no text-understanding required.
+  2. It is audit evidence that a human answered the NFR questions on the record -- including,
+     via is_deferred()/MAX_FREE_NFR_DEFERRALS, that deferring an axis was a stated decision
+     rather than an omission. Such a field is load-bearing for human review while staying inert
+     to machines. `deferral_signoff` is the clearest case: it exists so a human is on record
+     accepting deferred axes, its job is finished the moment it is written, and nothing
+     downstream should ever read it back. `stakeholders` is the same.
+  3. It supplies the generation inputs. Two of these are long-standing:
+     `non_functional.budget` (parse_budget_usd, wiring the governance-observability guardrail)
+     and `data_pipeline.data_volume` (parse_daily_gb, the S3 usage estimate + daily_data_gb
+     module wiring). Both are wireable with a plain regex because both are bounded, numeric
+     answers.
 
-Why not branch (a) (wire the rest of the schema into generation) now: every field left inert
-either needs real text-understanding (`goal`, `functional`, `constraints` -- free text, no
-structured signal extractable without NLP) or is a plausible-but-unbuilt BOUNDED signal. Building
-several bounded extractors plus accepting NLP work now would mean designing intake for a
-generator that doesn't exist and whose input contract isn't known yet -- and the free-text fields
-need exactly the text-understanding item 5's authoring mechanism itself IS, so wiring them ahead
-of it would build a redundant mini-NLP layer item 5 would then subsume. Wrong order, not wrong
-idea.
+     `pillar_facts` extends that set rather than replacing it. It holds the numeric answers
+     the 19-pillar interview collects -- partition granularity, read pattern, transform shape,
+     runs per day, event rate, record size -- which core/architecture/pillars.py turns into a
+     worker plan, an object-size verdict and a shard count. Before it existed the interview
+     asked eighteen questions into a record with sixteen unrelated slots, so half the answers
+     had nowhere to land and never reached the synthesizer.
 
-The named carve-out -- NOT declared permanently symbolic, unlike goal/functional/constraints --
-is `non_functional.retention`/`security`/`availability`/`latency` and
-`data_pipeline.orchestration`/`catalog`/`consumption`: each is an ENUMERABLE answer already asked
-and recorded (Airflow vs. Step Functions; schema-registry-glue vs. none; Athena vs. Redshift
-Serverless; lifecycle/KMS/multi-AZ toggles), currently collected and never used. Real signal
-already being gathered, deliberately left unwired pending a generator that actually needs a
-module-choice/config input -- not a gap to fix now, and not dead weight to remove. When Item 5
-asks "what drives module choice or resource configuration beyond the catalog's own defaults,"
-this is the pre-analyzed, ready candidate list to start from.
+So: a field with no reader is not automatically dead weight here, and deleting one because
+nothing imports it removes audit evidence. `goal`, `functional` and `constraints` are free text
+with no structured signal extractable without real text-understanding, and are treated as
+permanently symbolic.
+
+Separately carved out -- collected, currently unread, and NOT permanently symbolic --
+are `non_functional.retention`/`security`/`availability`/`latency` and
+`data_pipeline.orchestration`/`catalog`/`consumption`. Each is an ENUMERABLE answer already
+being asked and recorded (Airflow vs. Step Functions; schema-registry-glue vs. none; Athena vs.
+Redshift Serverless; lifecycle/KMS/multi-AZ toggles). They are real signal held back on purpose
+until a generator exists that needs a module-choice or config input -- the candidate list to
+start from, not a gap to close now.
+
+Depends on: core/architecture/pillars.py (stdlib-only, for the pillar catalogue and the
+    sizing derivations); otherwise stdlib only -- datetime/json/os/re
+Shells out to: nothing. Pure validation and parsing over a local JSON record.
+Used by: core/architecture/intent_assertions.py, core/cost/bcm_pricing_calculator.py,
+    core/generation/accelerators.py, core/generation/synthesizer.py,
+    core/generation/workflow.py, core/governance/plan_gate.py, core/governance/reflector.py,
+    core/reporting/minusctl.py, app/dashboard_app.py, tests/test_requirements.py,
+    tests/test_synthesizer.py
 """
 import datetime
 import json
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pillars  # noqa: E402
 
 REQUIRED_NFR = ["latency", "scale", "availability", "retention", "security", "budget"]
+PILLAR_KEYS = pillars.PILLAR_KEYS
 FILENAME = "requirements.json"
 
 # --- Data-pipeline profile (additive; enforced only for data workloads) ------
@@ -97,6 +112,8 @@ def template():
         "functional": [],
         "non_functional": {k: "" for k in REQUIRED_NFR},
         "data_pipeline": {k: "" for k in DATA_FIELDS},
+        "pillars": {k: {"choice": "", "notes": ""} for k in PILLAR_KEYS},
+        "pillar_facts": {k: "" for k in pillars.FACT_KEYS},
         "constraints": "",
         "gathered_by": "",
         "gathered_at": "",
@@ -107,10 +124,10 @@ _DEFERRAL_RE = re.compile(r"^deferred\s*:\s*(.+)$", re.I)
 # Bare filler reasons that technically match "deferred: <text>" but carry no real content.
 _LAZY_DEFERRAL_REASONS = {"tbd", "n/a", "na", "unknown", "later", "todo", "pending", "review"}
 MIN_DEFERRAL_REASON_LEN = 10
-# Audit finding 2026-07-03: an agent could satisfy the whole NFR gate by writing bare
-# "deferred" x6 with no reason at all. Beyond this many deferred axes, an explicit
-# deferral_signoff is required -- deferring a couple of axes is normal; deferring almost
-# everything needs a human to say so out loud.
+# Without this ceiling an agent satisfies the whole NFR gate by writing bare "deferred" six
+# times with no reason at all. Beyond this many deferred axes an explicit deferral_signoff is
+# required -- deferring a couple of axes is normal; deferring almost everything needs a human
+# to say so out loud.
 MAX_FREE_NFR_DEFERRALS = 2
 
 
@@ -193,6 +210,81 @@ def validate_data_pipeline(data):
     return (not missing), missing
 
 
+# --- The 19 pillars ---------------------------------------------------------------------
+#
+# The interview asked 19 questions and the record had 16 slots, none of which matched them.
+# Half the answers had nowhere to land, which is why a module like security-iam-scoped came
+# out with two wired inputs and six REVIEW markers: the operator answered the Lake Formation
+# question and the answer went nowhere.
+#
+# This block is ADDITIVE and validated SEPARATELY, the same way the data-pipeline profile is.
+# Folding eighteen new required fields into validate() would invalidate every record written
+# before today and block generation on runs that were complete by the rules they were
+# gathered under -- a gate that retroactively fails past work teaches people to bypass gates.
+
+def validate_pillars(data):
+    """Return (ok, problems) for the pillar block. Unknown keys are problems, not extras.
+
+    A key that is not a pillar is reported rather than kept: silently accepting it means an
+    interview typo is stored, looks answered in the record, and reaches no derivation.
+    """
+    block = (data or {}).get("pillars") or {}
+    if not isinstance(block, dict):
+        return False, ["pillars (not an object)"]
+    problems = [f"pillars.{key} is not one of the 19 pillars"
+                for key in block if key not in PILLAR_KEYS]
+    problems.extend(f"pillars.{key}" for key in unanswered_pillars(data))
+    return (not problems), problems
+
+
+def unanswered_pillars(data):
+    """Pillar keys with no answer yet. The interview's own to-do list.
+
+    A well-formed `deferred: <reason>` counts as answered on exactly the same terms as an NFR
+    axis -- a deferral is a recorded decision, a bare "deferred: tbd" is not.
+    """
+    block = (data or {}).get("pillars") or {}
+    unanswered = []
+    for key in PILLAR_KEYS:
+        entry = block.get(key)
+        choice = entry.get("choice") if isinstance(entry, dict) else entry
+        if not _field_answered(choice):
+            unanswered.append(key)
+    return unanswered
+
+
+def pillar_facts(data):
+    """The numeric answers the derivations consume, from the record alone.
+
+    Two sources, in priority order: an explicit `pillar_facts` entry wins, and otherwise the
+    prose answers already collected are parsed. The fallback matters because `data_volume` was
+    being asked and parsed long before the pillars existed, and making an operator state the
+    same number twice is how the two copies end up disagreeing.
+
+    Only keys the arithmetic knows about survive. An unrecognised one is dropped rather than
+    passed through, so a typo cannot masquerade as an input.
+    """
+    data = data or {}
+    stated = data.get("pillar_facts") or {}
+    facts = {k: v for k, v in stated.items() if k in pillars.FACT_KEYS and v not in (None, "")}
+
+    if "daily_gb" not in facts:
+        parsed, _source = parse_daily_gb(data)
+        if parsed:
+            facts["daily_gb"] = parsed
+    return facts
+
+
+def derived_sizing(data):
+    """Everything this record's own answers already decide, and what blocks the rest.
+
+    Returns pillars.derive()'s shape: each entry either carries its arithmetic or says which
+    fact is missing. It never fills a gap with a default -- an unstated volume produces
+    `determinable: False`, not a plausible worker count nobody asked for.
+    """
+    return pillars.derive(pillar_facts(data))
+
+
 _VOLUME_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(gb|tb|gigabyte|terabyte)", re.I)
 
 
@@ -217,9 +309,9 @@ _BUDGET_RE = re.compile(r"\$\s?(\d+(?:,\d{3})*(?:\.\d+)?)")
 def parse_budget_usd(data):
     """Best-effort monthly budget ceiling (USD) from the non_functional.budget answer.
 
-    Audit finding 2026-07-04: this field was captured as audit evidence and never actually
-    used anywhere -- the generated aws_budgets_budget guardrail used its own module default
-    instead. This is the missing link.
+    This is the link between the stated budget and the generated aws_budgets_budget guardrail;
+    without it the guardrail falls back to its module default and the answer the operator gave
+    never reaches the infrastructure.
 
     Unlike parse_daily_gb's upper bound (conservative-HIGH for a cost forecast), a budget
     GUARDRAIL should err the other way: if the text mentions more than one dollar figure,
@@ -324,3 +416,48 @@ def main(argv=None):
 if __name__ == "__main__":
     import sys
     sys.exit(main())
+
+# --- The lifecycle an operator is agreeing to ---------------------------------------------
+#
+# Shown before grilling starts. An operator who cannot see the shape of the work cannot tell
+# which step they are being asked to approve, and the approval that matters is at step 7 --
+# seven screens after the one where they said yes to "build me a lakehouse".
+
+LIFECYCLE = (
+    (1, "Requirements grilling",
+     "Interrogate the data pillars, non-functional requirements and budget caps"),
+    (2, "Architecture decision",
+     "Select vetted modules and record why, plus what was rejected"),
+    (3, "Modular HCL synthesis",
+     "Generate Terraform into runs/<run-id>/terraform/"),
+    (4, "Visual topology",
+     "Compile the Draw.io canvas and the dataflow the plan declares"),
+    (5, "Reflector gates",
+     "An independent second look at the composition, before any plan"),
+    (6, "Plan gate and BCM pricing",
+     "Produce the binding plan hash and price it against live AWS rates"),
+    (7, "Human-in-the-loop gate",
+     "A named human approves that exact hash; only then can anything apply"),
+)
+
+
+def lifecycle_roadmap():
+    """The seven steps, as data, so a caller can render or check them."""
+    return [{"step": number, "title": title, "detail": detail}
+            for number, title, detail in LIFECYCLE]
+
+
+def format_roadmap(width=94):
+    """The roadmap as plain ASCII for a terminal.
+
+    ASCII rather than box-drawing characters: this prints into logs, CI output and Windows
+    consoles whose code page mangles anything else, and a roadmap that renders as mojibake
+    communicates less than no roadmap at all.
+    """
+    rule = "-" * width
+    lines = [rule, "MINUSOPS INFRASTRUCTURE LIFECYCLE".center(width), rule]
+    for number, title, detail in LIFECYCLE:
+        lines.append(f"  [{number}] {title:<28} {detail}")
+    lines.append(rule)
+    return "\n".join(lines)
+

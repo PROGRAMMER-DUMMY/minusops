@@ -15,6 +15,23 @@ The plan-hash is the version key: one plan -> one immutable report folder. git v
 .tf; the plan-hash versions the report (manifest records the git commit linking them).
 
 Usage:  python core/reporting/reporter.py --dir path/to/terraform   (any Terraform dir with a tfplan)
+
+Reporting only: it reads an existing `tfplan` and never plans, applies, or destroys. The one
+way it reaches AWS is pricing — BCM payloads are always prepared locally, and when
+credentials allow, a free and deletable BCM pricing estimate object is created (approval
+stays on APPLY, not on pricing). No cost number is ever invented offline; an unpriced service
+is reported as unpriced rather than as $0.
+
+Depends on: core/reporting/plan_inspector.py, core/cost/bcm_pricing_calculator.py,
+    core/providers/base.py; and lazily, inside the functions that need them,
+    core/generation/modules.py, core/architecture/architecture_model.py,
+    core/reporting/optimize_analyzer.py, core/governance/verification_coverage.py
+Shells out to: `terraform show -json` (read-only) to materialize plan.json, and a headless
+    Chrome/Edge via the DevTools protocol to print the HTML reports to PDF. Reaches AWS
+    read-only plus BCM pricing-estimate creation, through bcm_pricing_calculator.
+Used by: core/governance/plan_gate.py (lazy), core/cost/bcm_pricing_calculator.py (lazy),
+    core/generation/demo.py, app/dashboard_app.py, tests/test_reporter.py,
+    tests/test_pdf_outline.py and other test modules
 """
 import os
 import sys
@@ -22,11 +39,13 @@ import json
 import html
 import hashlib
 import argparse
+import contextlib
 import datetime
 import subprocess
 import base64
 import pathlib
 import secrets
+import shutil
 import socket
 import struct
 import tempfile
@@ -41,6 +60,7 @@ sys.path.insert(0, _CORE_DIR)
 from providers.base import active_cloud  # noqa: E402
 import plan_inspector  # noqa: E402
 import bcm_pricing_calculator  # noqa: E402
+import drawio_generator  # noqa: E402
 
 WORKSPACE = os.getcwd()
 REPORTS = os.path.join(WORKSPACE, "artifacts", "reports")
@@ -59,10 +79,10 @@ def reports_root_for_dir(dir_):
 
 # --- tier map (mirrors docs/architecture_svg_spec.md §5) -------------------
 TIERS = ["sources", "storage", "compute", "orchestration", "observability", "security"]
-TIER_HUE = {"sources": "#d4a373", "storage": "#d95d39", "compute": "#e8825f",
-            "orchestration": "#8da189", "observability": "#cb9a3e", "security": "#b09c93"}
+TIER_HUE = {"sources": "#b45309", "storage": "#d95d39", "compute": "#e8825f",
+            "orchestration": "#8da189", "observability": "#cb9a3e", "security": "#64748b"}
 TIER_X = {"sources": 24, "storage": 272, "compute": 520, "orchestration": 768, "observability": 1016}
-ACTION_TINT = {"create": "#8da189", "update": "#cb9a3e", "delete": "#d95d39", "no-op": "#b09c93"}
+ACTION_TINT = {"create": "#8da189", "update": "#cb9a3e", "delete": "#d95d39", "no-op": "#64748b"}
 
 
 def _tier_for(rtype):
@@ -225,38 +245,38 @@ def _flow_edge(p1, p2, node_h, kind):
     return (p1[0] + 232, p1[1] + node_h // 2, p2[0], p2[1] + node_h // 2, kind)
 
 
-def _pipeline_flow(rowmap, pos, node_h):
-    """Real medallion data flow for the standard pipeline blueprint."""
-    def find(pred):
-        return next((a for a, r in rowmap.items() if pred(r)), None)
-    bronze = find(lambda r: r["type"] == "aws_s3_bucket" and _instance_key(r["address"]) == "bronze")
-    silver = find(lambda r: r["type"] == "aws_s3_bucket" and _instance_key(r["address"]) == "silver")
-    gold = find(lambda r: r["type"] == "aws_s3_bucket" and _instance_key(r["address"]) == "gold")
-    g1 = find(lambda r: r["type"] == "aws_glue_job" and r["name"] == "bronze_to_silver")
-    g2 = find(lambda r: r["type"] == "aws_glue_job" and r["name"] == "silver_to_gold")
-    athena = find(lambda r: r["type"] == "aws_athena_workgroup")
-    sfn = find(lambda r: r["type"] == "aws_sfn_state_machine")
-    edges = []
-    for a, b in zip([bronze, g1, silver, g2, gold, athena], [g1, silver, g2, gold, athena, None]):
-        if a in pos and b in pos:
-            edges.append(_flow_edge(pos[a], pos[b], node_h, "data"))
-    for g in (g1, g2):  # orchestration controls the Glue jobs (dashed)
-        if sfn in pos and g in pos:
-            edges.append(_flow_edge(pos[sfn], pos[g], node_h, "ctrl"))
+def declared_hops(plan):
+    """The hops the plan states, from the one derivation both renderers share.
+
+    This file used to build its own edges by matching resource NAMES -- a bucket whose
+    instance key was "bronze", a Glue job called "bronze_to_silver" -- and then drew an arrow
+    between every pair of slots that happened to be filled. `_generic_flow` went further and
+    joined the first node of consecutive tiers so the picture would have arrows in it. Both
+    are the defect deleted from `drawio_generator` in 14ab3f1, and they shipped in
+    architecture.svg, which minusctl lists as a required report artifact.
+
+    `discover_data_edges` reads only data-carrying arguments, so an arrow here means the same
+    thing it means on the draw.io canvas: one resource names the other's path.
+    """
+    return drawio_generator.discover_data_edges(plan or {})
+
+
+def _anchored_flow(plan, pos, node_h):
+    """Declared hops between nodes this layout actually placed."""
+    edges, drawn = [], set()
+    for hop in declared_hops(plan):
+        pair = (hop["source"], hop["target"])
+        if pair in drawn or pair[0] not in pos or pair[1] not in pos:
+            continue
+        drawn.add(pair)
+        edges.append(_flow_edge(pos[pair[0]], pos[pair[1]], node_h, "data"))
     return edges
 
 
-def _generic_flow(by_tier, pos, node_h, visible_tiers):
-    """Fallback: connect the first node of consecutive non-empty tiers (anchored, no floaters)."""
-    firsts = [by_tier[t][0]["address"] for t in visible_tiers if by_tier[t]]
-    return [_flow_edge(pos[a], pos[b], node_h, "data")
-            for a, b in zip(firsts, firsts[1:]) if a in pos and b in pos]
-
-
 _SEV_ORDER = ("HIGH", "MEDIUM", "LOW", "EXTERNAL")
-_SEV_COLOR = {"HIGH": "#d95d39", "MEDIUM": "#cb9a3e", "LOW": "#8da189", "EXTERNAL": "#b09c93"}
-_LOCK = ('<rect x="0" y="5" width="13" height="9" rx="2" fill="none" stroke="#d4a373" stroke-width="1.3"/>'
-         '<path d="M2.5,5 V3.2 a4,4 0 0 1 8,0 V5" fill="none" stroke="#d4a373" stroke-width="1.3"/>')
+_SEV_COLOR = {"HIGH": "#d95d39", "MEDIUM": "#cb9a3e", "LOW": "#8da189", "EXTERNAL": "#64748b"}
+_LOCK = ('<rect x="0" y="5" width="13" height="9" rx="2" fill="none" stroke="#b45309" stroke-width="1.3"/>'
+         '<path d="M2.5,5 V3.2 a4,4 0 0 1 8,0 V5" fill="none" stroke="#b45309" stroke-width="1.3"/>')
 
 # Inline, self-contained service glyphs (generic — not AWS's trademarked icon set), drawn
 # in an ~18x18 local frame. Stroked in the tier hue so they stay on-palette and embed in PDFs.
@@ -316,11 +336,11 @@ def _icon_for(rtype):
 
 def _component_box(x, y, w, h, hue, title, sub, action, findings, locked, address, esc, icon="cube", detail=""):
     """One service component box (collapses a service + its config into a single node)."""
-    tint = ACTION_TINT.get(action, "#b09c93")
+    tint = ACTION_TINT.get(action, "#64748b")
     df = f' data-findings="{esc(",".join(f["id"] for f in findings))}"' if findings else ""
     out = [
         f'<g class="node" data-address="{esc(address)}" data-action="{esc(action)}"{df} transform="translate({x},{y})">',
-        f'<rect class="card" width="{w}" height="{h}" rx="12" fill="#1c1714" stroke="{hue}" stroke-width="1.6"/>',
+        f'<rect class="card" width="{w}" height="{h}" rx="12" fill="#ffffff" stroke="{hue}" stroke-width="1.6"/>',
         f'<rect width="4" height="{h}" rx="2" fill="{tint}"/>',
         _icon(icon, hue, 16, h // 2 - 9),
     ]
@@ -342,7 +362,7 @@ def _component_box(x, y, w, h, hue, title, sub, action, findings, locked, addres
         label = top["id"] + (f" +{len(findings) - 1}" if len(findings) > 1 else "")
         bw = 10 + len(label) * 6
         out.append(f'<g transform="translate({w - bw - 8},{h - 22})">'
-                   f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], "#b09c93")}"/>'
+                   f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], "#64748b")}"/>'
                    f'<text class="badge" x="{bw // 2}" y="10" text-anchor="middle">{esc(label)}</text></g>')
     out.append('</g>')
     return "".join(out)
@@ -357,7 +377,7 @@ def _ortho_edge(b1, b2, kind="data", channel=None):
     """
     x1, y1, w1, h1 = b1
     x2, y2, w2, h2 = b2
-    color = "#8da189" if kind == "ctrl" else "#fbf7f4"
+    color = "#8da189" if kind == "ctrl" else "#1e293b"
     dash = ' stroke-dasharray="6 5"' if kind == "ctrl" else ''
     if channel is not None:
         sx, sy = x1 + w1 // 2, y1
@@ -423,7 +443,7 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
         "iam": (640, 404, 152, 72), "cw": (840, 404, 152, 72), "budget": (1040, 404, 152, 72),
     }
     META = {
-        "source": ("#d4a373", "Batch Source", "external files", "inbox"),
+        "source": ("#b45309", "Batch Source", "external files", "inbox"),
         "bronze": ("#d95d39", "S3 Bronze", "raw landing", "bucket"),
         "silver": ("#d95d39", "S3 Silver", "cleaned", "bucket"),
         "gold": ("#d95d39", "S3 Gold", "curated", "bucket"),
@@ -432,9 +452,9 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
         "glue2": ("#e8825f", "Glue Job", "silver to gold", "gears"),
         "athena": ("#8da189", "Athena", "query gold", "search"),
         "sfn": ("#8da189", "Step Functions", "starts & waits Glue", "workflow"),
-        "catalog": ("#b09c93", "Glue Catalog", "table metadata", "book"),
-        "kms": ("#b09c93", "KMS", "CMK encryption", "key"),
-        "iam": ("#b09c93", "IAM", "scoped roles", "shield"),
+        "catalog": ("#64748b", "Glue Catalog", "table metadata", "book"),
+        "kms": ("#64748b", "KMS", "CMK encryption", "key"),
+        "iam": ("#64748b", "IAM", "scoped roles", "shield"),
         "cw": ("#cb9a3e", "CloudWatch", "failure alarm", "bell"),
         "budget": ("#cb9a3e", "Budget", "spend guardrail", "coin"),
     }
@@ -491,25 +511,25 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
         'and per-resource security/cost findings overlaid.</desc>',
         '<defs>'
         '<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
-        'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#fbf7f4"/></marker>'
+        'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1e293b"/></marker>'
         '<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">'
         '<path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.06)" stroke-width="0.5"/></pattern>'
         '<style>'
-        '.title{font:600 22px Outfit,system-ui,sans-serif;fill:#fbf7f4}'
-        '.sub{font:500 12px "JetBrains Mono",ui-monospace,monospace;fill:#b09c93}'
-        '.tier-h{font:600 12px Outfit,system-ui,sans-serif;fill:#fbf7f4;letter-spacing:.12em}'
-        '.n-type{font:600 13px Inter,system-ui,sans-serif;fill:#fbf7f4}'
-        '.n-name{font:400 11px "JetBrains Mono",ui-monospace,monospace;fill:#b09c93}'
-        '.n-meta{font:500 9px "JetBrains Mono",ui-monospace,monospace;fill:#d4a373}'
-        '.badge{font:600 9px Inter,system-ui,sans-serif;fill:#14110f}'
-        '.legend{font:500 11px Inter,system-ui,sans-serif;fill:#b09c93}'
-        '.p-l{font:600 9px Inter,system-ui,sans-serif;fill:#b09c93;letter-spacing:.06em}'
-        '.p-v{font:600 13px Inter,system-ui,sans-serif;fill:#fbf7f4}'
-        '.swim{fill:#1c1714;fill-opacity:.3;stroke:rgba(217,93,57,.14)}'
+        '.title{font:600 22px Outfit,system-ui,sans-serif;fill:#1e293b}'
+        '.sub{font:500 12px "JetBrains Mono",ui-monospace,monospace;fill:#64748b}'
+        '.tier-h{font:600 12px Outfit,system-ui,sans-serif;fill:#1e293b;letter-spacing:.12em}'
+        '.n-type{font:600 13px Inter,system-ui,sans-serif;fill:#1e293b}'
+        '.n-name{font:400 11px "JetBrains Mono",ui-monospace,monospace;fill:#64748b}'
+        '.n-meta{font:500 9px "JetBrains Mono",ui-monospace,monospace;fill:#b45309}'
+        '.badge{font:600 9px Inter,system-ui,sans-serif;fill:#ffffff}'
+        '.legend{font:500 11px Inter,system-ui,sans-serif;fill:#64748b}'
+        '.p-l{font:600 9px Inter,system-ui,sans-serif;fill:#64748b;letter-spacing:.06em}'
+        '.p-v{font:600 13px Inter,system-ui,sans-serif;fill:#1e293b}'
+        '.swim{fill:#ffffff;fill-opacity:.75;stroke:rgba(217,93,57,.14)}'
         '</style></defs>',
-        '<g id="bg"><rect x="0" y="0" width="1280" height="760" fill="#14110f"/>'
+        '<g id="bg"><rect x="0" y="0" width="1280" height="760" fill="#fbf7f4"/>'
         '<rect x="0" y="0" width="1280" height="760" fill="url(#grid)"/></g>',
-        '<g id="titlebar"><rect x="0" y="0" width="1280" height="64" fill="#1c1714"/>'
+        '<g id="titlebar"><rect x="0" y="0" width="1280" height="64" fill="#ffffff"/>'
         '<rect x="0" y="63" width="1280" height="1" fill="rgba(217,93,57,.18)"/>'
         f'<text class="title" x="24" y="34">{esc(template)}</text>'
         f'<text class="sub" x="24" y="52">{esc(cloud)} · plan {esc(short_hash)} · {esc(ts)}</text></g>',
@@ -519,18 +539,21 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
         '<text class="tier-h" x="44" y="396">ORCHESTRATION &amp; GOVERNANCE</text>',
     ]
 
-    # edges first (under nodes)
+    # Edges first (under nodes). The slots are a fixed layout; which of them are JOINED is
+    # read from the plan. This drew the whole chain source -> bronze -> glue1 -> silver ->
+    # glue2 -> gold -> athena -> results whenever the slots were filled, so a stack whose
+    # Glue job declares no source or target path still showed a complete medallion pipeline.
+    slot_of = {address: key for key, addresses in R.items() for address in addresses}
     edges = ['<g id="edges">']
-    chain = [k for k in ["source", "bronze", "glue1", "silver", "glue2", "gold"] if present(k)]
-    for a, b in zip(chain, chain[1:]):
+    drawn = set()
+    for hop in declared_hops(plan):
+        a, b = slot_of.get(hop["source"]), slot_of.get(hop["target"])
+        if not a or not b or a == b or (a, b) in drawn:
+            continue
+        if not (present(a) and present(b)):
+            continue
+        drawn.add((a, b))
         edges.append(_ortho_edge(LAYOUT[a], LAYOUT[b], "data"))
-    if present("gold") and present("athena"):
-        edges.append(_ortho_edge(LAYOUT["gold"], LAYOUT["athena"], "data"))
-    if present("athena") and present("results"):
-        edges.append(_ortho_edge(LAYOUT["athena"], LAYOUT["results"], "data"))
-    for i, g in enumerate(("glue1", "glue2")):  # orchestration controls the Glue jobs
-        if present("sfn") and present(g):
-            edges.append(_ortho_edge(LAYOUT["sfn"], LAYOUT[g], "ctrl", channel=364 - i * 8))
     edges.append('</g>')
     parts += edges
 
@@ -582,7 +605,7 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
     parts.append('<g id="posture"><text class="tier-h" x="24" y="500">DEPLOYMENT POSTURE</text>')
     cw, cx, cy = 194, 24, 510
     for label, val in cells:
-        parts.append(f'<rect x="{cx}" y="{cy}" width="{cw}" height="74" rx="10" fill="#1c1714" '
+        parts.append(f'<rect x="{cx}" y="{cy}" width="{cw}" height="74" rx="10" fill="#ffffff" '
                      f'fill-opacity="0.6" stroke="rgba(217,93,57,.16)"/>'
                      f'<text class="p-l" x="{cx + 14}" y="{cy + 28}">{esc(label.upper())}</text>'
                      f'<text class="p-v" x="{cx + 14}" y="{cy + 52}">{esc(_fit_text(str(val), 22))}</text>')
@@ -591,7 +614,7 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
 
     # legend (same key set as the grid layout)
     parts.append('<g id="legend">'
-                 '<line x1="24" y1="700" x2="58" y2="700" stroke="#fbf7f4" stroke-width="1.6" marker-end="url(#arrow)"/>'
+                 '<line x1="24" y1="700" x2="58" y2="700" stroke="#1e293b" stroke-width="1.6" marker-end="url(#arrow)"/>'
                  '<text class="legend" x="64" y="704">data flow</text>'
                  '<line x1="146" y1="700" x2="180" y2="700" stroke="#8da189" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
                  '<text class="legend" x="186" y="704">control</text>'
@@ -606,103 +629,6 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
                  '</g>')
     parts.append('</svg>')
     return "\n".join(parts)
-
-
-def build_gate_flow_svg():
-    """
-    Deterministic process-flow diagram of the deploy gate (verify -> plan -> approve ->
-    apply) with its decision gates and refusal paths. The gate logic is fixed, so this
-    takes no inputs and always renders the same governed, self-contained SVG (MinusOps
-    palette). Used in docs and the deploy report to explain the safety model.
-    """
-    # Semantic step types (process-flow convention) mapped to the MinusOps palette:
-    # pill/start-end = sand, automated = terra-soft, manual/review = sage, decision = gold,
-    # refuse/exception = terracotta. Decisions are diamonds with Yes/No branches; refusals
-    # are dashed exception paths into a single REFUSED sink.
-    AUTO, MANUAL, START, DEC, REFUSE = "#e8825f", "#8da189", "#d4a373", "#cb9a3e", "#d95d39"
-
-    def pill(x, y, w, label, hue):
-        return (f'<g><rect x="{x}" y="{y}" width="{w}" height="64" rx="32" fill="#1c1714" stroke="{hue}" '
-                f'stroke-width="1.7"/><text class="pill" x="{x + w // 2}" y="{y + 39}" text-anchor="middle">{label}</text></g>')
-
-    def stepbox(n, x, y, w, title, sub, hue):
-        return (f'<g><rect x="{x}" y="{y}" width="{w}" height="70" rx="9" fill="#1c1714" stroke="{hue}" stroke-width="1.6"/>'
-                f'<circle cx="{x}" cy="{y}" r="12" fill="#14110f" stroke="{hue}" stroke-width="1.5"/>'
-                f'<text class="bd" x="{x}" y="{y + 4}" text-anchor="middle">{n}</text>'
-                f'<text class="st" x="{x + 18}" y="{y + 31}">{title}</text>'
-                f'<text class="ss" x="{x + 18}" y="{y + 50}">{sub}</text></g>')
-
-    def diamond(cx, cy, label, sub):
-        r = 42
-        pts = f"{cx},{cy - r} {cx + r},{cy} {cx},{cy + r} {cx - r},{cy}"
-        return (f'<g><polygon points="{pts}" fill="#1c1714" stroke="{DEC}" stroke-width="1.6"/>'
-                f'<text class="dl" x="{cx}" y="{cy - r - 7}" text-anchor="middle">{label}</text>'
-                f'<text class="dsub" x="{cx}" y="{cy + r + 15}" text-anchor="middle">{sub}</text></g>')
-
-    def arrow(d, color="#b8a79e", dash=False):
-        da = ' stroke-dasharray="6 5"' if dash else ''
-        return f'<path d="{d}" stroke="{color}" stroke-width="1.6" fill="none" marker-end="url(#a)"{da}/>'
-
-    def lbl(x, y, text, cls="al"):
-        return f'<text class="{cls}" x="{x}" y="{y}" text-anchor="middle">{text}</text>'
-
-    style = ("<style>"
-             ".t{font:600 18px Outfit,system-ui,sans-serif;fill:#fbf7f4}"
-             ".pill{font:600 12px Outfit,system-ui,sans-serif;fill:#fbf7f4}"
-             ".st{font:600 12px Outfit,system-ui,sans-serif;fill:#fbf7f4}"
-             ".ss{font:500 9px 'JetBrains Mono',ui-monospace,monospace;fill:#b09c93}"
-             ".bd{font:600 10px Inter,system-ui,sans-serif;fill:#fbf7f4}"
-             ".dl{font:600 10px Outfit,system-ui,sans-serif;fill:#cb9a3e}"
-             ".dsub{font:500 8px 'JetBrains Mono',ui-monospace,monospace;fill:#d4a373}"
-             ".al{font:600 9px Inter,system-ui,sans-serif;fill:#b8a79e}"
-             ".lg{font:500 11px Inter,system-ui,sans-serif;fill:#b09c93}</style>")
-
-    refuse = (f'<g><rect x="556" y="330" width="220" height="60" rx="9" fill="#1c1714" stroke="{REFUSE}" stroke-width="1.6"/>'
-              f'<text class="st" x="574" y="358">REFUSED</text>'
-              f'<text class="ss" x="574" y="376">audited · approval preserved</text></g>')
-
-    legend = ('<g><rect x="24" y="424" width="14" height="14" rx="7" fill="none" stroke="#d4a373" stroke-width="1.6"/>'
-              '<text class="lg" x="46" y="435">start/end</text>'
-              '<rect x="150" y="424" width="14" height="14" rx="3" fill="none" stroke="#e8825f" stroke-width="1.6"/>'
-              '<text class="lg" x="172" y="435">automated</text>'
-              '<rect x="280" y="424" width="14" height="14" rx="3" fill="none" stroke="#8da189" stroke-width="1.6"/>'
-              '<text class="lg" x="302" y="435">manual / review</text>'
-              '<polygon points="445,424 459,431 445,438 431,431" fill="none" stroke="#cb9a3e" stroke-width="1.6"/>'
-              '<text class="lg" x="466" y="435">decision</text>'
-              '<line x1="560" y1="431" x2="592" y2="431" stroke="#b8a79e" stroke-width="1.6" marker-end="url(#a)"/>'
-              '<text class="lg" x="598" y="435">Yes / pass</text>'
-              '<line x1="690" y1="431" x2="722" y2="431" stroke="#d95d39" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#a)"/>'
-              '<text class="lg" x="728" y="435">No / refuse</text></g>')
-
-    p = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 470" width="100%" role="img">',
-         '<title>MinusOps deploy gate — process flow</title>',
-         '<desc>verify, plan, approve, apply with decision gates and refusal paths; apply runs only the approved plan hash.</desc>',
-         '<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
-         'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#fbf7f4"/></marker>'
-         '<pattern id="g" width="40" height="40" patternUnits="userSpaceOnUse">'
-         '<path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.06)" stroke-width="0.5"/></pattern>' + style + '</defs>',
-         '<rect width="1400" height="470" fill="#14110f"/><rect width="1400" height="470" fill="url(#g)"/>',
-         '<rect width="1400" height="54" fill="#1c1714"/><rect y="53" width="1400" height="1" fill="rgba(217,93,57,.18)"/>',
-         '<text class="t" x="24" y="33">Deploy Gate — process flow</text>',
-         # happy path (left -> right)
-         pill(24, 143, 124, "plan ready", START),
-         stepbox(1, 178, 140, 148, "verify", "fmt·validate·scan", AUTO),
-         stepbox(2, 356, 140, 148, "plan", "record plan-hash", AUTO),
-         stepbox(3, 556, 140, 148, "approve", "RBAC · review", MANUAL),
-         diamond(800, 175, "approve gate", "authorized·CURRENT·hash"),
-         stepbox(4, 882, 140, 148, "apply", "exact tfplan", AUTO),
-         diamond(1126, 175, "apply gate", "hash==approved·MFA"),
-         pill(1212, 143, 128, "APPLIED", START),
-         arrow("M148,175 H178"), arrow("M326,175 H356"), arrow("M504,175 H556"), arrow("M704,175 H758"),
-         arrow("M842,175 H882"), arrow("M1030,175 H1084"), arrow("M1168,175 H1212"),
-         lbl(862, 166, "Yes"), lbl(1190, 166, "Yes"),
-         # exception paths -> REFUSED
-         refuse,
-         arrow("M800,217 V300 H666 V330", REFUSE, True), lbl(816, 280, "No"),
-         arrow("M1126,217 V360 H776", REFUSE, True), lbl(1142, 300, "No"),
-         legend,
-         '</svg>']
-    return "\n".join(p)
 
 
 def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
@@ -749,12 +675,11 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         return fmap.get(address.split("[")[0], [])
 
     # layout pass — record node positions so edges anchor to real nodes
-    pos, rowmap = {}, {}
+    pos = {}
     for t in visible_tiers:
         y = 108
         for r in by_tier[t]:
             pos[r["address"]] = (TIER_X[t], y)
-            rowmap[r["address"]] = r
             y += node_h + gap
 
     parts = [
@@ -765,33 +690,32 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         'markers, and a per-resource overlay of security/cost/observability findings.</desc>',
         '<defs>'
         '<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
-        'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#fbf7f4"/></marker>'
+        'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1e293b"/></marker>'
         '<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">'
         '<path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.06)" stroke-width="0.5"/></pattern>'
         '<style>'
-        '.title{font:600 22px Outfit,system-ui,sans-serif;fill:#fbf7f4}'
-        '.sub{font:500 12px "JetBrains Mono",ui-monospace,monospace;fill:#b09c93}'
-        '.tier-h{font:600 13px Outfit,system-ui,sans-serif;fill:#fbf7f4;letter-spacing:.12em}'
-        '.n-type{font:600 12px Inter,system-ui,sans-serif;fill:#fbf7f4}'
-        '.n-name{font:400 11px "JetBrains Mono",ui-monospace,monospace;fill:#b09c93}'
-        '.badge{font:600 9px Inter,system-ui,sans-serif;fill:#14110f}'
-        '.legend{font:500 11px Inter,system-ui,sans-serif;fill:#b09c93}'
+        '.title{font:600 22px Outfit,system-ui,sans-serif;fill:#1e293b}'
+        '.sub{font:500 12px "JetBrains Mono",ui-monospace,monospace;fill:#64748b}'
+        '.tier-h{font:600 13px Outfit,system-ui,sans-serif;fill:#1e293b;letter-spacing:.12em}'
+        '.n-type{font:600 12px Inter,system-ui,sans-serif;fill:#1e293b}'
+        '.n-name{font:400 11px "JetBrains Mono",ui-monospace,monospace;fill:#64748b}'
+        '.badge{font:600 9px Inter,system-ui,sans-serif;fill:#ffffff}'
+        '.legend{font:500 11px Inter,system-ui,sans-serif;fill:#64748b}'
         '</style></defs>',
-        f'<g id="bg"><rect x="0" y="0" width="1280" height="{total_h}" fill="#14110f"/>'
+        f'<g id="bg"><rect x="0" y="0" width="1280" height="{total_h}" fill="#fbf7f4"/>'
         f'<rect x="0" y="0" width="1280" height="{total_h}" fill="url(#grid)"/></g>',
-        '<g id="titlebar"><rect x="0" y="0" width="1280" height="64" fill="#1c1714"/>'
+        '<g id="titlebar"><rect x="0" y="0" width="1280" height="64" fill="#ffffff"/>'
         '<rect x="0" y="63" width="1280" height="1" fill="rgba(217,93,57,.18)"/>'
         f'<text class="title" x="24" y="34">{esc(template)}</text>'
         f'<text class="sub" x="24" y="52">{esc(cloud)} · plan {esc(short_hash)} · {esc(ts)}</text></g>',
     ]
 
     # edges — real flow anchored to node positions
-    flow = (_pipeline_flow(rowmap, pos, node_h) if template == "aws-data-pipeline-standard"
-            else _generic_flow(by_tier, pos, node_h, visible_tiers))
+    flow = _anchored_flow(plan, pos, node_h)
     edges = ['<g id="edges">']
     for x1, y1, x2, y2, kind in flow:
         mx = (x1 + x2) // 2
-        color = "#8da189" if kind == "ctrl" else "#fbf7f4"
+        color = "#8da189" if kind == "ctrl" else "#1e293b"
         dash = ' stroke-dasharray="6 5"' if kind == "ctrl" else ''
         edges.append(f'<path d="M{x1},{y1} C{mx},{y1} {mx},{y2} {x2},{y2}" stroke="{color}" '
                      f'stroke-width="1.6" fill="none" marker-end="url(#arrow)" opacity="0.6"{dash}/>')
@@ -806,7 +730,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         items = by_tier[t]
         y = 108
         for r in items:
-            tint = ACTION_TINT.get(r["action"], "#b09c93")
+            tint = ACTION_TINT.get(r["action"], "#64748b")
             nf = node_findings(r["address"])
             locked = has_kms and (r["type"].startswith("aws_s3_") or "athena" in r["type"]
                                   or r["type"].startswith("aws_kms"))
@@ -815,7 +739,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
             node = [
                 f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}"{df_attr} '
                 f'transform="translate({x},{y})">',
-                f'<rect class="card" width="232" height="{node_h}" rx="12" fill="#1c1714" '
+                f'<rect class="card" width="232" height="{node_h}" rx="12" fill="#ffffff" '
                 f'stroke="{TIER_HUE[t]}" stroke-width="1.5"/>',
                 f'<rect width="4" height="{node_h}" rx="2" fill="{tint}"/>',
                 _icon(_icon_for(r["type"]), TIER_HUE[t], 14, node_h // 2 - 9),
@@ -830,7 +754,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
                 bw = 10 + len(label) * 6
                 bx = (200 if locked else 224) - bw
                 node.append(f'<g transform="translate({bx},6)">'
-                            f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], "#b09c93")}"/>'
+                            f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], "#64748b")}"/>'
                             f'<text class="badge" x="{bw // 2}" y="10" text-anchor="middle">{esc(label)}</text></g>')
             node.append('</g>')
             parts.append("".join(node))
@@ -844,7 +768,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     for r in sec:
         sec_groups.setdefault(r["name"], []).append(r)
     parts.append(f'<g id="band-security"><rect x="24" y="{632 + dy}" width="1224" height="56" rx="10" fill="none" '
-                 'stroke="#b09c93" stroke-dasharray="4 4"/>'
+                 'stroke="#64748b" stroke-dasharray="4 4"/>'
                  f'<text class="tier-h" x="40" y="{654 + dy}">SECURITY &amp; IAM</text>')
     chip_cap = 6
     grouped = list(sec_groups.items())
@@ -852,12 +776,12 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         cx = 220 + i * 168
         r = members[0]
         nf = [f for m in members for f in node_findings(m["address"])]
-        stroke = _SEV_COLOR.get(nf[0]["severity"], "#b09c93") if nf else "#b09c93"
+        stroke = _SEV_COLOR.get(nf[0]["severity"], "#64748b") if nf else "#64748b"
         df_attr = f' data-findings="{esc(",".join(f["id"] for f in nf))}"' if nf else ""
         label = name + (f" ×{len(members)}" if len(members) > 1 else "")
         parts.append(
             f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}"{df_attr}>'
-            f'<rect x="{cx}" y="{646 + dy}" width="150" height="28" rx="8" fill="#1c1714" stroke="{stroke}" stroke-width="1"/>'
+            f'<rect x="{cx}" y="{646 + dy}" width="150" height="28" rx="8" fill="#ffffff" stroke="{stroke}" stroke-width="1"/>'
             f'<text class="n-name" x="{cx + 8}" y="{664 + dy}">{esc(_fit_text(label, 18))}</text></g>')
     if len(grouped) > chip_cap:
         parts.append(f'<text class="legend" x="1196" y="{664 + dy}">+{len(grouped) - chip_cap}</text>')
@@ -871,7 +795,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
                      f'<text class="legend" x="{lx + 18}" y="{713 + dy}">{t.capitalize()}</text>')
         lx += 70 + len(t) * 6
     parts.append(
-        f'<line x1="24" y1="{736 + dy}" x2="58" y2="{736 + dy}" stroke="#fbf7f4" stroke-width="1.6" marker-end="url(#arrow)"/>'
+        f'<line x1="24" y1="{736 + dy}" x2="58" y2="{736 + dy}" stroke="#1e293b" stroke-width="1.6" marker-end="url(#arrow)"/>'
         f'<text class="legend" x="64" y="{740 + dy}">data flow</text>'
         f'<line x1="146" y1="{736 + dy}" x2="180" y2="{736 + dy}" stroke="#8da189" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
         f'<text class="legend" x="186" y="{740 + dy}">control</text>'
@@ -887,39 +811,9 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     return "\n".join(parts)
 
 
-def _v3_summary_cards(rows, findings):
-    """Deterministic content for the three summary cards (Services / Security / Findings)."""
-    services = [f"{label} ×{count}" for label, count in _service_summary(rows)][:6]
-    pab = any(r["type"] == "aws_s3_bucket_public_access_block" for r in rows)
-    sse = any("server_side_encryption" in r["type"] for r in rows)
-    lifecycle = any("lifecycle" in r["type"] for r in rows)
-    kms = any(r["type"].startswith("aws_kms_key") for r in rows)
-    roles = sum(1 for r in rows if r["type"] == "aws_iam_role")
-    controls = []
-    if pab:
-        controls.append("S3 public access blocked")
-    if sse:
-        controls.append("Server-side encryption")
-    if lifecycle:
-        controls.append("Lifecycle retention policies")
-    if kms:
-        controls.append("Customer-managed KMS key")
-    if roles:
-        controls.append(f"{roles} scoped IAM role(s)")
-    if not controls:
-        controls = ["No governance controls detected"]
-    cats = {}
-    for f in (findings or []):
-        cats[f.get("category", "Other")] = cats.get(f.get("category", "Other"), 0) + 1
-    finds = [f"{k}: {v}" for k, v in sorted(cats.items())] or ["No findings — passes scan"]
-    return [("Services", SAND_C, services[:6]),
-            ("Security & IAM", SAGE_C, controls[:6]),
-            ("Findings", GOLD_C, finds[:6])]
-
-
-# palette constants shared by v3 (the MinusOps warm dusk palette)
-BG_C = "#14110f"; PANEL_C = "#1c1714"; PANEL2_C = "#221a16"; TEXT_C = "#fbf7f4"
-MUTED_C = "#b09c93"; FAINT_C = "#6f635c"; TERRA_C = "#d95d39"; SAND_C = "#d4a373"
+# palette constants shared by v3 (the MinusOps Monad light palette)
+BG_C = "#fbf7f4"; PANEL_C = "#ffffff"; PANEL2_C = "#f4ece6"; TEXT_C = "#1e293b"
+MUTED_C = "#64748b"; FAINT_C = "#94a3b8"; TERRA_C = "#d95d39"; SAND_C = "#b45309"
 SAGE_C = "#8da189"; GOLD_C = "#cb9a3e"
 
 # Clean display names + semantic role lines (deterministic, per resource type).
@@ -938,15 +832,6 @@ _V3_ROLE = {
     "aws_cloudwatch_metric_alarm": "failure alarm", "aws_kms_key": "encryption key",
     "aws_lambda_function": "function",
 }
-# Tier-to-tier relationship verbs for the numbered flow narrative.
-_V3_REL = {
-    ("storage", "compute"): "read", ("compute", "orchestration"): "run",
-    ("orchestration", "observability"): "watch", ("storage", "orchestration"): "orchestrate",
-    ("compute", "observability"): "monitor", ("storage", "observability"): "monitor",
-    ("sources", "storage"): "ingest", ("sources", "compute"): "ingest",
-}
-
-
 def _v3_role(r):
     """A short, deterministic role line for a node (falls back to zone key / action)."""
     role = _V3_ROLE.get(r["type"])
@@ -957,195 +842,6 @@ def _v3_role(r):
         return f"{key} zone" if key in ("bronze", "silver", "gold") else "object store"
     cfg = r.get("config_count", 0)
     return f"+{cfg} config" if cfg else r["action"]
-
-
-def build_svg_v3(rows, template, cloud, short_hash, ts, findings=None, plan=None, region="us-east-1"):
-    """Architecture diagram v3 (PROTOTYPE) — deterministic and plan-derived like build_svg,
-    with a richer presentation adapted from the Cocoon diagram style but in the MinusOps
-    warm palette: a dashed AWS Region containment box, three-line nodes (type / name / a
-    real accent detail), labelled data-flow edges, only non-empty tiers evenly spaced, and
-    Services / Security / Findings summary cards below the canvas.
-
-    Not wired into the report; build_svg remains the contract renderer until this is approved.
-    """
-    def esc(s):
-        return html.escape(str(s), quote=True)
-
-    fmap = {}
-    for f in (findings or []):
-        if f.get("resource"):
-            fmap.setdefault(f["resource"].split("[")[0], []).append(f)
-
-    def nfind(addr):
-        return fmap.get(addr.split("[")[0], [])
-
-    original = list(rows)
-    has_kms = any(r["type"].startswith("aws_kms_key") for r in rows)
-    comps = _collapse_components(rows)
-    order = ["sources", "storage", "compute", "orchestration", "observability"]
-    by_tier = {t: [c for c in comps if c["tier"] == t] for t in order}
-    sec = [c for c in comps if c["tier"] == "security"]
-    tiers = [t for t in order if by_tier[t]]  # only non-empty tiers
-
-    # geometry
-    node_w, node_h, vgap = 212, 68, 18
-    region_x, region_w, region_top = 40, 1200, 96
-    region_side, head_h = 30, 56
-    inner_w = region_w - 2 * region_side
-    n = max(len(tiers), 1)
-    col_gap = (inner_w - n * node_w) / (n - 1) if n > 1 else 0
-    colx = {t: region_x + region_side + int(i * (node_w + col_gap)) for i, t in enumerate(tiers)}
-    maxrows = max((len(by_tier[t]) for t in tiers), default=1)
-    rows_top = region_top + head_h
-    region_h = head_h + maxrows * (node_h + vgap) + 8
-    region_bottom = region_top + region_h
-    sec_y = region_bottom + 18
-    sec_h = 60 if sec else 0
-    canvas_bottom = (sec_y + sec_h if sec else region_bottom) + 20
-    cards_y = canvas_bottom + 26
-    card_h = 150
-    legend_y = cards_y + card_h + 30
-    total_h = legend_y + 22
-
-    P = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 {total_h}" width="100%" role="img">',
-        f'<title>Architecture v3 — {esc(template)}</title>',
-        f'<desc>Deterministic plan-derived architecture (v3) for {esc(template)} on {esc(cloud)}.</desc>',
-        '<defs>'
-        '<marker id="av3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
-        f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{MUTED_C}"/></marker>'
-        '<pattern id="g3" width="40" height="40" patternUnits="userSpaceOnUse">'
-        '<path d="M40 0H0V40" fill="none" stroke="rgba(217,93,57,.05)" stroke-width="0.5"/></pattern>'
-        '<style>'
-        f'.t{{font:600 22px Outfit,system-ui,sans-serif;fill:{TEXT_C}}}'
-        f'.s{{font:500 12px "JetBrains Mono",monospace;fill:{MUTED_C}}}'
-        f'.rg{{font:600 12px "JetBrains Mono",monospace;fill:{SAND_C};letter-spacing:.08em}}'
-        f'.ch{{font:600 12px Outfit,system-ui,sans-serif;letter-spacing:.14em}}'
-        f'.nt{{font:600 13px Inter,system-ui,sans-serif;fill:{TEXT_C}}}'
-        f'.nn{{font:400 11px "JetBrains Mono",monospace;fill:{MUTED_C}}}'
-        f'.nd{{font:600 10px "JetBrains Mono",monospace}}'
-        f'.el{{font:500 9px "JetBrains Mono",monospace;fill:{MUTED_C}}}'
-        f'.ct{{font:600 13px Outfit,system-ui,sans-serif;fill:{TEXT_C}}}'
-        f'.cb{{font:400 11px Inter,system-ui,sans-serif;fill:{MUTED_C}}}'
-        f'.lg{{font:500 11px Inter,system-ui,sans-serif;fill:{MUTED_C}}}'
-        f'.bd{{font:600 9px Inter,system-ui,sans-serif;fill:{BG_C}}}'
-        '</style></defs>',
-        f'<rect x="0" y="0" width="1280" height="{total_h}" fill="{BG_C}"/>',
-        f'<rect x="0" y="0" width="1280" height="{total_h}" fill="url(#g3)"/>',
-        # title bar
-        f'<text class="t" x="24" y="34">{esc(template)}</text>'
-        f'<text class="s" x="24" y="54">{esc(cloud)} · plan {esc(short_hash)} · {esc(ts)}</text>',
-        # canvas panel
-        f'<rect x="16" y="{region_top - 18}" width="1248" height="{canvas_bottom - (region_top - 18)}" '
-        f'rx="16" fill="{PANEL_C}" stroke="rgba(217,93,57,.16)"/>',
-        # region containment box
-        f'<rect x="{region_x}" y="{region_top}" width="{region_w}" height="{region_h}" rx="14" '
-        f'fill="rgba(217,93,57,.04)" stroke="{TERRA_C}" stroke-width="1.3" stroke-dasharray="8 4"/>',
-        f'<text class="rg" x="{region_x + 20}" y="{region_top + 26}">AWS Region: {esc(region)}</text>',
-    ]
-
-    # column headers
-    for t in tiers:
-        x = colx[t]
-        P.append(f'<text class="ch" x="{x}" y="{region_top + head_h - 6}" fill="{TIER_HUE[t]}">{t.upper()}</text>'
-                 f'<rect x="{x}" y="{region_top + head_h + 2}" width="{node_w}" height="2" fill="{TIER_HUE[t]}"/>')
-
-    # edges: numbered choreography between consecutive tiers, with a relationship verb
-    ecx = rows_top + node_h // 2
-    P.append('<g id="edges3">')
-    for i, (a, b) in enumerate(zip(tiers, tiers[1:]), start=1):
-        x1 = colx[a] + node_w
-        x2 = colx[b]
-        mx = (x1 + x2) // 2
-        rel = _V3_REL.get((a, b), "flow")
-        P.append(f'<path d="M{x1},{ecx} C{mx},{ecx} {mx},{ecx} {x2},{ecx}" stroke="{MUTED_C}" '
-                 f'stroke-width="1.5" fill="none" marker-end="url(#av3)" opacity="0.75"/>')
-        # numbered step badge on the line + the relationship verb beneath it
-        P.append(f'<circle cx="{mx}" cy="{ecx}" r="11" fill="{TERRA_C}" stroke="{BG_C}" stroke-width="2"/>'
-                 f'<text class="bd" x="{mx}" y="{ecx + 3}" text-anchor="middle" fill="{TEXT_C}">{i}</text>'
-                 f'<text class="el" x="{mx}" y="{ecx + 26}" text-anchor="middle">{esc(rel)}</text>')
-    P.append('</g>')
-
-    # nodes
-    for t in tiers:
-        x = colx[t]
-        y = rows_top
-        for r in by_tier[t]:
-            tint = ACTION_TINT.get(r["action"], MUTED_C)
-            locked = has_kms and (r["type"].startswith("aws_s3_") or "athena" in r["type"]
-                                  or r["type"].startswith("aws_kms"))
-            detail, dcol = _v3_role(r), SAND_C
-            nf = nfind(r["address"])
-            df = f' data-findings="{esc(",".join(f["id"] for f in nf))}"' if nf else ""
-            P.append(
-                f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}"{df} '
-                f'transform="translate({x},{y})">'
-                f'<rect width="{node_w}" height="{node_h}" rx="11" fill="{PANEL2_C}" '
-                f'stroke="{TIER_HUE[t]}" stroke-width="1.5"/>'
-                f'<rect width="4" height="{node_h}" rx="2" fill="{tint}"/>'
-                + _icon(_icon_for(r["type"]), TIER_HUE[t], 15, 15)
-                + f'<text class="nt" x="44" y="26">{esc(_fit_text(_V3_NICE.get(r["type"], _humanize(r["type"])), 22))}</text>'
-                f'<text class="nn" x="44" y="44">{esc(_fit_text(_node_label(r), 24))}</text>'
-                f'<text class="nd" x="44" y="59" fill="{dcol}">{esc(_fit_text(detail, 24))}</text>')
-            if locked:
-                P.append(f'<g transform="translate({node_w - 22},9)">' + _LOCK + '</g>')
-            if nf:
-                top = min(nf, key=lambda f: _SEV_ORDER.index(f["severity"]) if f["severity"] in _SEV_ORDER else 9)
-                lab = top["id"] + (f" +{len(nf) - 1}" if len(nf) > 1 else "")
-                bw = 12 + len(lab) * 6
-                bx = (node_w - 26 if locked else node_w - 8) - bw
-                P.append(f'<g transform="translate({bx},{node_h - 20})">'
-                         f'<rect width="{bw}" height="14" rx="7" fill="{_SEV_COLOR.get(top["severity"], MUTED_C)}"/>'
-                         f'<text class="bd" x="{bw // 2}" y="10" text-anchor="middle">{esc(lab)}</text></g>')
-            P.append('</g>')
-            y += node_h + vgap
-
-    # security band
-    if sec:
-        P.append(f'<rect x="{region_x}" y="{sec_y}" width="{region_w}" height="{sec_h}" rx="10" '
-                 f'fill="none" stroke="{MUTED_C}" stroke-dasharray="4 4"/>'
-                 f'<text class="ch" x="{region_x + 18}" y="{sec_y + 24}" fill="{MUTED_C}">SECURITY &amp; IAM</text>')
-        cap = 6
-        for i, r in enumerate(sec[:cap]):
-            cx = region_x + 200 + i * 158
-            nf = nfind(r["address"])
-            st = _SEV_COLOR.get(nf[0]["severity"], MUTED_C) if nf else MUTED_C
-            P.append(f'<g class="node" data-address="{esc(r["address"])}" data-action="{esc(r["action"])}">'
-                     f'<rect x="{cx}" y="{sec_y + 16}" width="142" height="28" rx="8" fill="{PANEL2_C}" '
-                     f'stroke="{st}" stroke-width="1"/>'
-                     f'<text class="nn" x="{cx + 10}" y="{sec_y + 34}">{esc(_fit_text(_V3_NICE.get(r["type"], _humanize(r["type"])), 17))}</text></g>')
-        if len(sec) > cap:
-            P.append(f'<text class="lg" x="{region_x + region_w - 30}" y="{sec_y + 34}">+{len(sec) - cap}</text>')
-
-    # summary cards
-    cards = _v3_summary_cards(original, findings)
-    cw = (1248 - 2 * 20) // 3
-    for i, (title_, dot, bullets) in enumerate(cards):
-        cx = 16 + i * (cw + 20)
-        P.append(f'<rect x="{cx}" y="{cards_y}" width="{cw}" height="{card_h}" rx="12" '
-                 f'fill="{PANEL_C}" stroke="rgba(217,93,57,.14)"/>'
-                 f'<circle cx="{cx + 20}" cy="{cards_y + 26}" r="4" fill="{dot}"/>'
-                 f'<text class="ct" x="{cx + 32}" y="{cards_y + 30}">{esc(title_)}</text>')
-        by = cards_y + 56
-        for b in bullets:
-            P.append(f'<text class="cb" x="{cx + 20}" y="{by}">• {esc(_fit_text(b, 40))}</text>')
-            by += 20
-
-    # legend
-    P.append(f'<line x1="24" y1="{legend_y}" x2="58" y2="{legend_y}" stroke="{MUTED_C}" stroke-width="1.5" '
-             f'marker-end="url(#av3)"/><text class="lg" x="64" y="{legend_y + 4}">data flow</text>'
-             f'<g transform="translate(150,{legend_y - 8})">' + _LOCK + '</g>'
-             f'<text class="lg" x="172" y="{legend_y + 4}">encrypted (KMS)</text>'
-             f'<rect x="292" y="{legend_y - 7}" width="12" height="12" rx="3" fill="{SAGE_C}"/>'
-             f'<text class="lg" x="310" y="{legend_y + 4}">create</text>'
-             f'<rect x="360" y="{legend_y - 7}" width="12" height="12" rx="3" fill="{MUTED_C}"/>'
-             f'<text class="lg" x="378" y="{legend_y + 4}">no-op</text>'
-             f'<rect x="430" y="{legend_y - 7}" width="12" height="12" rx="3" fill="{TERRA_C}"/>'
-             f'<text class="lg" x="448" y="{legend_y + 4}">delete</text>'
-             f'<text class="lg" x="520" y="{legend_y + 4}">dashed boundary = AWS Region containment</text>')
-
-    P.append('</svg>')
-    return "\n".join(P)
 
 
 _SVG_ACTIVE_ELEMS = ("script", "foreignobject", "iframe", "embed", "object", "image", "animate", "set")
@@ -1477,7 +1173,8 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
                      + _df_embed_icon(c["type"], re.sub(r"\W", "", c["address"]), x - 24, band_y + 28, 48, MUTED_C, icons_dir)
                      + f'<text x="{x}" y="{band_y + 94}" text-anchor="middle" style="font:600 12px Inter,sans-serif;fill:{TEXT_C}">{esc(_fit_text(lab, 18))}</text></g>')
 
-    # Edge-semantics legend — each dashed style means ONE thing (they were overloaded).
+    # Edge-semantics legend. Each dashed style must mean exactly ONE thing; reusing a style
+    # for a second meaning makes every edge in the diagram ambiguous.
     ly = total_h - 18
     lt = f"font:500 11px Inter,sans-serif;fill:{MUTED_C}"
     P.append(
@@ -1556,25 +1253,24 @@ def build_inspect_html(manifest, plan, report_files=(), drift_status="CURRENT", 
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Inspect {esc(manifest.get('short', ''))}</title>
 <style>
-@page{{size:A4;margin:10mm;background:#14110f}}
-body{{background:#14110f;color:#fbf7f4;font-family:Inter,system-ui,sans-serif;margin:0;padding:28px;
--webkit-print-color-adjust:exact;print-color-adjust:exact}}
-h1{{font-size:24px;margin:0 0 8px}}.sub{{color:#b09c93;font-family:Consolas,monospace;margin-bottom:20px}}
-h2{{display:inline;font-size:15px;margin:0;font-weight:600}}
-details{{background:#1c1714;border:1px solid rgba(217,93,57,.18);border-radius:12px;margin-bottom:14px;
-break-inside:avoid-page}}
-summary{{cursor:pointer;padding:14px 18px;font-size:15px;list-style:none;display:flex;
-justify-content:space-between;align-items:baseline}}
+@page{{size:A4;margin:12mm 14mm;background:#ffffff}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#ffffff;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;margin:0;padding:24px;
+-webkit-print-color-adjust:exact;print-color-adjust:exact;font-size:13px;line-height:1.5}}
+h1{{font-size:24px;margin:0 0 6px;color:#111827;font-weight:700}}
+.sub{{color:#6b7280;font-family:Consolas,monospace;margin-bottom:20px;font-size:12px}}
+h2{{display:inline;font-size:15px;margin:0;font-weight:600;color:#1e3a8a}}
+details{{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:14px;break-inside:avoid-page}}
+summary{{cursor:pointer;padding:12px 16px;font-size:14px;list-style:none;display:flex;justify-content:space-between;align-items:baseline;font-weight:600}}
 summary::-webkit-details-marker{{display:none}}
-summary .meta{{color:#b09c93;font:500 12px Consolas,monospace}}
-details[open] summary{{border-bottom:1px solid rgba(255,255,255,.06)}}
-table{{width:100%;border-collapse:collapse}}
-th,td{{text-align:left;border-bottom:1px solid rgba(255,255,255,.06);padding:9px 14px;font-size:12px;vertical-align:top}}
-th{{color:#b09c93;text-transform:uppercase;font-size:10.5px;letter-spacing:.08em}}
+summary .meta{{color:#6b7280;font:500 12px Consolas,monospace}}
+details[open] summary{{border-bottom:1px solid #e5e7eb}}
+table{{width:100%;border-collapse:collapse;background:#ffffff}}
+th,td{{text-align:left;border-bottom:1px solid #e5e7eb;padding:8px 12px;font-size:12px;vertical-align:top;color:#374151}}
+th{{background:#f3f4f6;color:#4b5563;text-transform:uppercase;font-size:10px;letter-spacing:.08em;font-weight:600}}
 td{{font-family:Consolas,monospace;word-break:break-word}}
-pre{{padding:14px 18px;overflow:hidden;white-space:pre-wrap;line-height:1.45;font-size:11.5px;color:#e8e2dc;margin:0}}
-.note{{color:#b09c93;font-size:11.5px;background:#1c1714;border:1px solid rgba(212,163,115,.22);
-border-radius:8px;padding:10px 12px}}
+pre{{padding:12px 16px;overflow:hidden;white-space:pre-wrap;line-height:1.45;font-size:11.5px;color:#1f2937;margin:0;background:#ffffff}}
+.note{{color:#166534;font-size:11.5px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:10px 12px;margin-top:12px}}
 </style></head><body>
 <h1>Report inspection</h1>
 <div class="sub">plan {esc(manifest.get('short', ''))} · {esc(manifest.get('template', ''))} ·
@@ -2022,8 +1718,8 @@ def _etag_drift_note(plan):
     """SSE-KMS bucket + aws_s3_object.etag = filemd5(...) is a known, harmless false-positive:
     S3 computes a different ETag for KMS-encrypted objects than the local filemd5() value, so
     Terraform shows a perpetual 'update' on etag alone even when the uploaded file hasn't
-    changed (confirmed via direct content diff during the 2026-07-04 sandbox test -- not real
-    drift). Flagged only when etag is the SOLE real difference: keys that are merely 'known
+    changed (confirmed by direct content diff -- not real drift). Flagged only when etag is
+    the SOLE real difference: keys that are merely 'known
     after apply' (e.g. version_id, a side effect of the same etag-triggered re-upload when the
     bucket has versioning enabled) are excluded from the comparison, not counted as extra
     drift -- without that exclusion this would never fire against a real plan."""
@@ -2056,11 +1752,12 @@ def _etag_drift_note(plan):
 
 
 def _architecture_sentence(manifest):
-    """Audit finding 2026-07-04: this used to be a static sentence describing the full
-    canonical lakehouse (S3 + Glue + Step Functions + Athena + ...) regardless of what was
-    actually composed. Build it from the real manifest instead -- if the manifest or its
-    module list is unavailable, say so plainly rather than falling back to a description
-    that might describe infrastructure that doesn't exist in THIS plan."""
+    """One sentence describing what THIS plan composes, built from the real manifest.
+
+    Never fall back to a canned description of the full canonical lakehouse (S3 + Glue +
+    Step Functions + Athena + ...): it reads as authoritative while describing
+    infrastructure that may not exist in this plan. When the manifest or its module list is
+    unavailable, say so plainly instead."""
     module_ids = (manifest or {}).get("modules") or []
     if not module_ids:
         return ("Composed module list unavailable for this report -- see Section 6 "
@@ -2073,7 +1770,33 @@ def _architecture_sentence(manifest):
     return "The composed modules for this plan are: " + "; ".join(titles) + "."
 
 
-def build_html(template, cloud, short_hash, ts, rows, counts, cost, svg, plan=None, manifest=None, tf_dir=None, git_sha=None):
+def _verification_coverage_html(coverage):
+    """Render what the gate actually checked. Without this the reviewer cannot distinguish
+    'checked and clean' from 'no rule exists for this type' -- both render as silence."""
+    if not coverage or coverage.get("error") or not coverage.get("types"):
+        return ('<p class="flow muted">Verification coverage unavailable for this plan.</p>')
+    label = {"rule_covered": "Policy rule fired",
+             "claim_informed": "No rule — claims only (informational, not verification)",
+             "unchecked": "No rule, no claims"}
+    body = "".join(
+        f"<tr><td class=\"mono\">{html.escape(r['resource_type'])}</td>"
+        f"<td>{r['resource_count']}</td>"
+        f"<td>{html.escape(label.get(r['state'], r['state']))}</td>"
+        f"<td>{html.escape(', '.join(r['rule_ids']) or '-')}</td></tr>"
+        for r in coverage["types"])
+    ratio = coverage.get("coverage_ratio")
+    pct = f"{ratio * 100:.0f}%" if ratio is not None else "n/a"
+    return (
+        f'<p class="flow">Policy-rule coverage for this plan: <strong>{pct}</strong> '
+        f'({coverage["rule_covered_count"]} of {coverage["type_count"]} resource types had an '
+        f'executable rule fire). Types marked <em>no rule</em> were not checked by policy — '
+        f'a clean result for them means nothing was evaluated, not that nothing is wrong. '
+        f'Claims inform authoring only and never grant permission to ship.</p>'
+        f'<table><thead><tr><th>Resource type</th><th>Count</th><th>Verification</th>'
+        f'<th>Rules fired</th></tr></thead><tbody>{body}</tbody></table>')
+
+
+def build_html(template, cloud, short_hash, ts, rows, counts, cost, svg, plan=None, manifest=None, tf_dir=None, git_sha=None, coverage=None):
     def esc(s):
         return html.escape(str(s))
 
@@ -2158,48 +1881,49 @@ def build_html(template, cloud, short_hash, ts, rows, counts, cost, svg, plan=No
     outputs_html = _outputs_html(plan)
     iam_html = _iam_summary_html(plan)
     security_html = _security_governance_html(rows)
+    coverage_html = _verification_coverage_html(coverage)
     approval_html = _approval_status_html(manifest, tf_dir)
     artifacts_html = _artifact_index_html(short_hash)
     toc_html = _toc_html(sections)
 
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Plan Report - {esc(template)}</title><style>
-@page{{size:A4;margin:0;background:#14110f}}
+@page{{size:A4;margin:12mm 14mm;background:#ffffff}}
 *{{box-sizing:border-box;margin:0;padding:0}}
-html,body{{min-height:100%;background:#14110f;color:#f5efe9;font-family:Inter,Segoe UI,Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+html,body{{min-height:100%;background:#ffffff;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 body{{padding:0}}
 .mono{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;font-size:.8rem}}
-h1{{font-size:1.65rem;font-weight:720;line-height:1.15}}h2{{font-size:1.02rem;margin:1rem 0 .55rem;color:#e8b58f}}h3{{font-size:.9rem;margin:.85rem 0 .3rem;color:#d4a373}}
-.sub{{color:#b8a79e;font-family:Consolas,ui-monospace,monospace;font-size:.78rem;margin-top:.35rem}}
-.page{{page-break-after:always;min-height:1122px;padding:42px 46px;background:#14110f}}.page:last-child{{page-break-after:auto}}
-.header{{border-bottom:1px solid rgba(212,163,115,.26);padding-bottom:14px;margin-bottom:16px}}
-.panel{{background:#1c1714;border:1px solid rgba(212,163,115,.22);border-radius:8px;padding:1rem;margin-top:.85rem}}
-.section-no{{color:#d4a373;font-family:Consolas,ui-monospace,monospace;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem}}
-.architecture{{padding:.25rem;background:#14110f;border:none}}
+h1{{font-size:1.65rem;font-weight:700;line-height:1.2;color:#111827}}h2{{font-size:1.05rem;margin:1.2rem 0 .55rem;color:#1e3a8a;font-weight:600}}h3{{font-size:.92rem;margin:1rem 0 .35rem;color:#374151;font-weight:600}}
+.sub{{color:#6b7280;font-family:Consolas,ui-monospace,monospace;font-size:.78rem;margin-top:.35rem}}
+.page{{page-break-after:always;min-height:1080px;padding:36px 40px;background:#ffffff}}.page:last-child{{page-break-after:auto}}
+.header{{border-bottom:2px solid #2b59d1;padding-bottom:12px;margin-bottom:16px}}
+.panel{{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:1rem;margin-top:.85rem}}
+.section-no{{color:#2b59d1;font-family:Consolas,ui-monospace,monospace;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem;font-weight:600}}
+.architecture{{padding:.25rem;background:#ffffff;border:none}}
 svg{{width:100%;height:auto;display:block}}
-table{{width:100%;border-collapse:collapse;margin-top:.5rem}}
-th,td{{text-align:left;padding:.45rem .5rem;border-bottom:1px solid rgba(255,255,255,.07);font-size:.78rem;vertical-align:top}}
-th{{color:#b8a79e;text-transform:uppercase;font-size:.64rem;letter-spacing:.06em}}
-.badge{{padding:.12rem .5rem;border-radius:20px;font-size:.72rem;font-weight:600}}
-.badge.create{{background:rgba(141,161,137,.18);color:#8da189}}
-.badge.update{{background:rgba(203,154,62,.18);color:#cb9a3e}}
-.badge.delete{{background:rgba(217,93,57,.18);color:#d95d39}}
-.badge.no-op{{background:rgba(176,156,147,.15);color:#b09c93}}
+table{{width:100%;border-collapse:collapse;margin-top:.5rem;background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden}}
+th,td{{text-align:left;padding:.5rem .6rem;border-bottom:1px solid #e5e7eb;font-size:.78rem;vertical-align:top;color:#374151}}
+th{{background:#f3f4f6;color:#4b5563;text-transform:uppercase;font-size:.66rem;letter-spacing:.06em;font-weight:600}}
+.badge{{padding:.14rem .5rem;border-radius:20px;font-size:.72rem;font-weight:600}}
+.badge.create{{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}}
+.badge.update{{background:#fffbeb;color:#92400e;border:1px solid #fde68a}}
+.badge.delete{{background:#fef2f2;color:#991b1b;border:1px solid #fecaca}}
+.badge.no-op{{background:#f3f4f6;color:#4b5563;border:1px solid #e5e7eb}}
 .kpis{{display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem}}
-.kpi{{background:#181411;border:1px solid rgba(212,163,115,.18);border-radius:8px;padding:.8rem}}
-.kl{{color:#b8a79e;font-size:.64rem;text-transform:uppercase;letter-spacing:.05em}}
-.kv{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;font-size:1.2rem;margin-top:.35rem}}
-.counts span{{margin-right:1rem;font-family:Consolas,ui-monospace,monospace}}
-.muted{{color:#b8a79e}}.small{{font-size:.74rem;margin-top:.55rem}}.flow{{line-height:1.55;color:#d8c8bf;margin-top:.45rem;font-size:.86rem}}
-code{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;color:#f5efe9;font-size:.78rem}}
-footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid rgba(212,163,115,.18);color:#7d7068;font-size:.72rem}}
+.kpi{{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:.8rem}}
+.kl{{color:#6b7280;font-size:.64rem;text-transform:uppercase;letter-spacing:.05em;font-weight:600}}
+.kv{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;font-size:1.2rem;margin-top:.35rem;color:#111827}}
+.counts span{{margin-right:1rem;font-family:Consolas,ui-monospace,monospace;font-weight:600}}
+.muted{{color:#6b7280}}.small{{font-size:.74rem;margin-top:.55rem}}.flow{{line-height:1.55;color:#374151;margin-top:.45rem;font-size:.86rem}}
+code{{font-family:'JetBrains Mono',Consolas,ui-monospace,monospace;color:#111827;background:#f3f4f6;padding:2px 4px;border-radius:4px;font-size:.78rem}}
+footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:.72rem}}
 </style></head><body>
 <section class="page cover">
 <div class="header"><div class="section-no">Cover</div><h1>Terraform Plan Report</h1>
 <div class="sub">{esc(template)} | {esc(cloud)} | plan {esc(short_hash)} | {esc(ts)}</div></div>
-<div class="counts panel"><span style="color:#8da189">+{counts['create']} create</span>
-<span style="color:#cb9a3e">~{counts['update']} update</span>
-<span style="color:#d95d39">-{counts['delete']} delete</span>
+<div class="counts panel"><span style="color:#059669">+{counts['create']} create</span>
+<span style="color:#d97706">~{counts['update']} update</span>
+<span style="color:#dc2626">-{counts['delete']} delete</span>
 <span class="muted">{counts['no-op']} no-op</span></div>
 <div class="panel"><p class="flow">This report is a review artifact for a Terraform plan. It is not an apply approval and it does not create cloud resources. Deployment remains blocked until the plan gate records approval for this exact plan hash.</p></div>
 </section>
@@ -2241,6 +1965,8 @@ footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid rgba(212,163,11
 <div class="sub">IAM resources and controls reviewers should inspect before approval.</div></div>
 <div class="panel">{security_html}</div>
 <div class="panel">{iam_html}</div>
+<h2>Verification coverage</h2>
+<div class="panel">{coverage_html}</div>
 </section>
 <section class="page">
 <div class="header"><div class="section-no">Section 8</div><h1>Cost Summary</h1>
@@ -2252,7 +1978,7 @@ footer{{margin-top:1.2rem;padding-top:.8rem;border-top:1px solid rgba(212,163,11
 <div class="sub">Terraform loads all .tf files in this directory. Files are split by concern for reviewability.</div></div>
 <div class="panel">{_terraform_structure_html(tf_dir)}</div>
 <h2>Safe execution flow</h2>
-<div class="panel"><p class="flow"><code>terraform init</code> prepares providers. <code>python core/governance/plan_gate.py verify --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')} --policy-mode production</code> formats, validates, runs native SEC checks, and requires external scanner evidence. <code>python core/governance/plan_gate.py plan --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')}</code> generates <code>tfplan</code> and this report. Apply is intentionally absent from this report and remains gated.</p></div>
+<div class="panel"><p class="flow"><code>terraform init</code> prepares providers. <code>minusctl gate verify --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')} --policy-mode production</code> formats, validates, runs native SEC checks, and requires external scanner evidence. <code>minusctl gate plan --dir {esc(tf_dir or 'runs/&lt;run-id&gt;/terraform')}</code> generates <code>tfplan</code> and this report. Apply is intentionally absent from this report and remains gated.</p></div>
 </section>
 <section class="page">
 <div class="header"><div class="section-no">Section 10</div><h1>Terraform Outputs</h1>
@@ -2342,9 +2068,9 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         priced_at = cost.get("priced_at") or ts
 
         def card(label, val):
-            return (f'<div style="background:#1c1714;border:1px solid rgba(212,163,115,.22);border-radius:8px;padding:12px">'
-                    f'<span style="display:block;color:#b8a79e;font-size:10px;text-transform:uppercase;letter-spacing:.05em">{esc(label)}</span>'
-                    f'<strong style="display:block;margin-top:5px;font-size:15px;color:#f5efe9">{esc(val)}</strong></div>')
+            return (f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px">'
+                    f'<span style="display:block;color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:600">{esc(label)}</span>'
+                    f'<strong style="display:block;margin-top:5px;font-size:15px;color:#111827">{esc(val)}</strong></div>')
 
         cards = ('<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0">'
                  + card("Monthly total", f"${total:,.2f}" if total is not None else "provided by BCM")
@@ -2381,7 +2107,7 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         for svc in cost.get("not_estimated_services") or []:
             citation = pricing_catalog.rate_citation_for_service_code(svc)
             message = citation or "not estimated — no reviewed catalog usage line for this service"
-            rows += (f'<tr style="color:#b8a79e"><td>{esc(svc)}</td>'
+            rows += (f'<tr style="color:#6b7280"><td>{esc(svc)}</td>'
                      f'<td colspan="4">{esc(message)}</td>'
                      '<td class="money">unpriced</td><td class="money">-</td></tr>')
 
@@ -2393,8 +2119,8 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
             w = max(2, round(c / total * 100))
             drivers += (f'<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:12px">'
                         f'<span>{esc(it.get("serviceCode") or "-")}</span><span class="money">${c:,.2f} · {c / total * 100:.1f}%</span></div>'
-                        f'<div style="background:#231d19;border-radius:5px;height:8px;margin-top:3px">'
-                        f'<div style="width:{w}%;height:8px;border-radius:5px;background:#d95d39"></div></div></div>')
+                        f'<div style="background:#e5e7eb;border-radius:5px;height:8px;margin-top:3px">'
+                        f'<div style="width:{w}%;height:8px;border-radius:5px;background:#2b59d1"></div></div></div>')
 
         assumptions = cost.get("assumptions") or {}
         assume_html = (_kv_table(assumptions.items()) if assumptions
@@ -2406,7 +2132,7 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
         budget = cost.get("monthly_budget_usd")
         if budget and total is not None:
             util = total / budget * 100
-            tone = "#8da189" if util <= 80 else "#cb9a3e" if util <= 100 else "#d95d39"
+            tone = "#059669" if util <= 80 else "#d97706" if util <= 100 else "#dc2626"
             verdict = ("within budget" if util <= 80 else
                        "approaching budget" if util <= 100 else "EXCEEDS BUDGET")
             budget_html = (
@@ -2415,7 +2141,7 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
                 f'<b>${budget:,.2f}/mo</b> — <b style="color:{tone}">{util:.0f}% · {verdict}</b>. '
                 "Both numbers are real: the forecast is AWS BCM's, the budget is the "
                 "aws_budgets_budget this plan provisions.</p>"
-                f'<div style="background:#231d19;border-radius:6px;height:10px;margin:8px 0 14px">'
+                f'<div style="background:#e5e7eb;border-radius:6px;height:10px;margin:8px 0 14px">'
                 f'<div style="width:{min(100, max(2, util)):.0f}%;height:10px;border-radius:6px;background:{tone}"></div></div>')
 
         # Unit economics for the data domain: cost per GB processed, derived strictly from
@@ -2512,43 +2238,29 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
     return _simple_report_html("Cost Report", template, cloud, short_hash, ts, body)
 
 
-def build_plan_html(template, cloud, short_hash, ts, rows, counts):
-    def esc(s):
-        return html.escape(str(s))
-
-    table_rows = "".join(
-        f"<tr><td>{esc(r['address'])}</td><td>{esc(_humanize(r['type']))}</td><td>{esc(r['action'])}</td></tr>"
-        for r in rows
-    )
-    body = (
-        f"<p>Summary: +{counts['create']} create, ~{counts['update']} update, "
-        f"-{counts['delete']} delete, {counts['no-op']} no-op.</p>"
-        f"<table><thead><tr><th>Resource</th><th>Type</th><th>Action</th></tr></thead><tbody>{table_rows}</tbody></table>"
-    )
-    return _simple_report_html("Plan Report", template, cloud, short_hash, ts, body)
-
-
 def _simple_report_html(title, template, cloud, short_hash, ts, body):
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>{html.escape(title)} - {html.escape(template)}</title>
 <style>
-@page{{size:A4;margin:0;background:#14110f}}
-*{{box-sizing:border-box}}
-html,body{{min-height:100%;background:#14110f;color:#f5efe9;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-body{{font-family:Inter,Segoe UI,Arial,sans-serif;padding:34px 38px;line-height:1.42}}
-h1{{font-size:27px;margin:0 0 4px 0;line-height:1.15}}h2{{font-size:17px;margin:24px 0 8px;color:#e8b58f}}
-.sub{{color:#b8a79e;font-family:Consolas,ui-monospace,monospace;margin-bottom:22px;font-size:12px}}
-table{{width:100%;border-collapse:collapse;margin-top:10px;background:#1c1714;border:1px solid rgba(212,163,115,.20);border-radius:8px;overflow:hidden}}
-th,td{{text-align:left;border-bottom:1px solid rgba(255,255,255,.07);padding:8px;font-size:11.5px;vertical-align:top}}
-th{{font-size:9.5px;text-transform:uppercase;color:#b8a79e;letter-spacing:.05em}}.money{{font-family:Consolas,ui-monospace,monospace;text-align:right;white-space:nowrap}}
-.summary{{display:grid;grid-template-columns:1fr 1fr 2fr;gap:10px;margin:18px 0}}
-.summary div{{background:#1c1714;border:1px solid rgba(212,163,115,.22);border-radius:8px;padding:12px}}
-.summary span{{display:block;color:#b8a79e;font-size:10px;text-transform:uppercase;letter-spacing:.05em}}
-.summary strong{{display:block;margin-top:5px;font-size:16px;color:#f5efe9}}
-.total td{{font-weight:700;background:#231d19}}
-.note{{margin-top:18px;color:#b8a79e;font-size:11.5px;background:#1c1714;border:1px solid rgba(212,163,115,.22);border-radius:8px;padding:12px}}
-code{{font-family:Consolas,ui-monospace,monospace;font-size:10.5px;color:#f5efe9}}
-pre{{background:#1c1714;padding:14px;border-radius:8px;white-space:pre-wrap;border:1px solid rgba(212,163,115,.22)}}
+@page{{size:A4;margin:12mm 14mm;background:#ffffff}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{min-height:100%;background:#ffffff;color:#1f2937;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;padding:28px 32px;line-height:1.45;font-size:13px}}
+h1{{font-size:26px;margin:0 0 4px 0;line-height:1.2;color:#111827;font-weight:700}}
+h2{{font-size:16px;margin:20px 0 8px;color:#1e3a8a;font-weight:600}}
+.sub{{color:#6b7280;font-family:Consolas,ui-monospace,monospace;margin-bottom:18px;font-size:12px}}
+table{{width:100%;border-collapse:collapse;margin-top:10px;background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden}}
+th,td{{text-align:left;border-bottom:1px solid #e5e7eb;padding:8px 10px;font-size:11.5px;vertical-align:top;color:#374151}}
+th{{background:#f3f4f6;font-size:10px;text-transform:uppercase;color:#4b5563;letter-spacing:.05em;font-weight:600}}
+.money{{font-family:Consolas,ui-monospace,monospace;text-align:right;white-space:nowrap}}
+.summary{{display:grid;grid-template-columns:1fr 1fr 2fr;gap:10px;margin:16px 0}}
+.summary div{{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px}}
+.summary span{{display:block;color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}}
+.summary strong{{display:block;margin-top:5px;font-size:16px;color:#111827}}
+.total td{{font-weight:700;background:#f3f4f6}}
+.note{{margin-top:16px;color:#374151;font-size:11.5px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px}}
+code{{font-family:Consolas,ui-monospace,monospace;font-size:10.5px;color:#111827;background:#f3f4f6;padding:2px 4px;border-radius:4px}}
+pre{{background:#f9fafb;padding:14px;border-radius:8px;white-space:pre-wrap;border:1px solid #e5e7eb;color:#1f2937;font-family:Consolas,monospace;font-size:11px}}
 </style></head><body>
 <h1>{html.escape(title)} - {html.escape(template)}</h1>
 <div class="sub">{html.escape(cloud)} | plan {html.escape(short_hash)} | {html.escape(ts)}</div>
@@ -2672,18 +2384,6 @@ def render_pdf(html_path, pdf_path):
     return False, info or err or "render failed"
 
 
-def render_png(input_path, png_path, window_size="1400,1000"):
-    browser = find_browser()
-    if not browser:
-        return False, "no headless browser (Edge/Chrome) found"
-    rc, _, err = run([browser, "--headless", "--disable-gpu", "--no-first-run",
-                      f"--window-size={window_size}", f"--screenshot={png_path}", input_path],
-                     timeout=40)
-    if rc == 0 and os.path.exists(png_path):
-        return True, browser
-    return False, err or "screenshot failed"
-
-
 def _free_local_port():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
@@ -2769,14 +2469,39 @@ def _ws_connect(ws_url):
     return sock
 
 
+@contextlib.contextmanager
+def _browser_profile_dir():
+    """A throwaway Chrome profile directory that cleans up without ever raising.
+
+    NOT `TemporaryDirectory(ignore_cleanup_errors=True)`. That flag exists from 3.10, but on
+    3.10/3.11 it does not actually suppress this case: Chrome keeps a handle open on
+    `Default/Shared Dictionary/cache/index-dir` for a few milliseconds after the process
+    exits, `shutil.rmtree` hits WinError 32, and the error surfaces out of the context
+    manager and fails the caller. Observed in CI on Windows/py3.10 -- a PDF that rendered
+    perfectly well, reported as a failure by its own cleanup.
+
+    Retry briefly, then give up and leave the directory. It is under the system temp root
+    and a few kilobytes; the OS reclaims it. Losing a report because a browser was slow to
+    release a cache file is the worse outcome.
+    """
+    path = tempfile.mkdtemp(prefix="minus-report-browser-")
+    try:
+        yield path
+    finally:
+        for attempt in range(5):
+            try:
+                shutil.rmtree(path)
+                return
+            except OSError:
+                if attempt == 4:
+                    return          # deliberate: cleanup failure is not the caller's problem
+                time.sleep(0.1)
+
+
 def _cdp_print_pdf(browser, html_path, pdf_path):
     file_url = pathlib.Path(html_path).resolve().as_uri()
     port = _free_local_port()
-    try:
-        temp_ctx = tempfile.TemporaryDirectory(prefix="minus-report-browser-", ignore_cleanup_errors=True)
-    except TypeError:
-        temp_ctx = tempfile.TemporaryDirectory(prefix="minus-report-browser-")
-    with temp_ctx as user_data_dir:
+    with _browser_profile_dir() as user_data_dir:
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         proc = subprocess.Popen(
             [
@@ -2870,6 +2595,28 @@ def git_commit():
     return out.strip() if rc == 0 else None
 
 
+def _verification_coverage(plan, findings):
+    """Per-plan disclosure of what was actually checked. Never raises -- a report that fails
+    to render because its own honesty section broke would be worse than the ambiguity it
+    exists to remove."""
+    try:
+        import verification_coverage
+        import synthesizer
+        claims_by_type = {}
+        for rc in (plan or {}).get("resource_changes") or []:
+            rtype = rc.get("type") if isinstance(rc, dict) else None
+            if rtype and rtype not in claims_by_type:
+                claims_by_type[rtype] = [
+                    c for c in synthesizer._grounding_claims(rtype)
+                    if c.get("resource_type") == rtype
+                ]
+        return verification_coverage.classify(plan, findings=findings,
+                                              claims_by_type=claims_by_type)
+    except Exception as exc:
+        return {"error": str(exc), "types": [], "type_count": 0,
+                "rule_covered_count": 0, "coverage_ratio": None}
+
+
 def _generate_report_bundle(dir_, data, template=None):
     h = plan_hash(data)
     short = h[:12]
@@ -2899,12 +2646,11 @@ def _generate_report_bundle(dir_, data, template=None):
     except Exception:
         region = "us-east-1"
 
-    # 2026-07-06, Item 6 finding 2: a destroy plan's resource_changes are all actions=["delete"]
-    # -- every resource in it already has real cost evidence from when it was CREATED. Pricing
-    # them again here would derive a "creating this costs $X/mo" BCM estimate for infrastructure
-    # that's being torn down, which is backwards, not just unhelpful. Detect that shape from the
-    # same counts summarize() already computed and skip BCM entirely rather than publish a
-    # forecast for the wrong direction.
+    # A destroy plan's resource_changes are all actions=["delete"], and every resource in it
+    # already has real cost evidence from when it was CREATED. Pricing them again would derive
+    # a "creating this costs $X/mo" BCM estimate for infrastructure being torn down -- a
+    # forecast pointing the wrong direction. Detect that shape from the counts summarize()
+    # already computed and skip BCM entirely.
     is_destroy_plan = counts["delete"] > 0 and counts["create"] == 0 and counts["update"] == 0
 
     # BCM pricing: payloads are always prepared; the estimate itself is created
@@ -2940,7 +2686,11 @@ def _generate_report_bundle(dir_, data, template=None):
             manifest = json.load(f)
     except Exception:
         manifest = None
-    htmldoc = build_html(template, cloud, short, ts, rows, counts, cost, svg, data, manifest, dir_, git_commit())
+    # Computed once and shared by the PDF and the manifest -- it queries the claim store,
+    # so doing it twice would double that work for identical output.
+    coverage = _verification_coverage(data, findings)
+    htmldoc = build_html(template, cloud, short, ts, rows, counts, cost, svg, data, manifest,
+                         dir_, git_commit(), coverage=coverage)
 
     # v3 lake-house data-flow diagram (additive; shares the six-layer classifier with the
     # conformance model). Icons resolve inside the renderer (_default_icons_dir). When an
@@ -2961,17 +2711,26 @@ def _generate_report_bundle(dir_, data, template=None):
 
     with open(os.path.join(out, "architecture.svg"), "w", encoding="utf-8") as f:
         f.write(svg)
+        
+    try:
+        drawio_result = drawio_generator.generate_drawio_from_plan(data)
+        with open(os.path.join(out, "architecture.drawio"), "w", encoding="utf-8") as f:
+            f.write(drawio_result["xml"])
+        with open(os.path.join(out, "architecture_url.txt"), "w", encoding="utf-8") as f:
+            f.write(drawio_result["url"])
+    except Exception as e:
+        pass
     if dataflow_svg:
         with open(os.path.join(out, "dataflow.svg"), "w", encoding="utf-8") as f:
             f.write(dataflow_svg)
     with open(os.path.join(out, "cost.json"), "w", encoding="utf-8") as f:
         json.dump(cost, f, indent=2)
     source_hashes = plan_inspector.write_source_snapshot(dir_, out)
-    html_path = os.path.join(out, "plan.html")
+    # One HTML per report: report.html is both the UI-served document and the print source
+    # for plan.pdf. Deliberately not also written as plan.html -- that was a byte-identical
+    # second copy with nothing reading it.
+    html_path = os.path.join(out, "report.html")
     with open(html_path, "w", encoding="utf-8") as f:
-        f.write(htmldoc)
-    report_html_path = os.path.join(out, "report.html")
-    with open(report_html_path, "w", encoding="utf-8") as f:
         f.write(htmldoc)
 
     pdf_path = os.path.join(out, "plan.pdf")
@@ -3003,7 +2762,7 @@ def _generate_report_bundle(dir_, data, template=None):
     files = [
         "plan.json", "architecture.svg", "cost.json",
         "bcm-assumptions.json", "bcm-create-workload-estimate.json", "bcm-usage.json", "bcm-commands.json",
-        "plan.html", "cost.html", "report.html",
+        "cost.html", "report.html",
     ]
     if dataflow_svg:
         files.append("dataflow.svg")
@@ -3024,6 +2783,9 @@ def _generate_report_bundle(dir_, data, template=None):
         "files": files,
         "public_files": (["architecture.svg", "dataflow.svg"] if dataflow_svg else ["architecture.svg"])
         + ["plan.pdf", "cost.pdf"] + (["inspect.pdf"] if inspect_pdf_ok else []),
+        # What the gate actually checked, per resource type. A green report must not be
+        # mistakable for a verified one -- see core/governance/verification_coverage.py.
+        "verification_coverage": coverage,
         "source_snapshot": "source_snapshot",
         "source_hashes_file": "source_hashes.json",
         "source_file_count": len(source_hashes),

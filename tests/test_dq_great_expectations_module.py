@@ -13,11 +13,18 @@ import subprocess
 
 import pytest
 
+
+
 import toolpath
 
 TERRAFORM = toolpath.find_tool("terraform")
 
-pytestmark = pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+# Live Terraform: minutes, not seconds. Deselected from the default run (pyproject
+# addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = [
+    pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed"),
+    pytest.mark.slow,
+]
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
 MODULE_SRC = os.path.join(_REPO_ROOT, "modules", "dq-great-expectations")

@@ -349,33 +349,63 @@ def test_fail_closed_sweep_does_not_break_a_genuine_create_only_plan():
 
 def test_novel_stateful_type_now_stages_the_gap_this_fix_closes():
     """The specific case that was manually verified, live, against the unmodified classifier
-    before AUTO_SHIP_ELIGIBLE_TYPES existed: aws_dynamodb_table -- not in STATEFUL_RESOURCE_TYPES,
-    not in IAM_RESOURCE_TYPES (this repo's catalog has never declared it, confirmed by grep
-    across modules/*/main.tf, docs/g5_autonomy_boundary_scope.md proof-bar item 4) -- used to
-    classify autonomous_eligible=True. Must now stage, tagged distinctly from a known-dangerous
-    finding."""
-    assert "aws_dynamodb_table" not in gate.STATEFUL_RESOURCE_TYPES
-    assert "aws_dynamodb_table" not in gate.IAM_RESOURCE_TYPES
-    assert "aws_dynamodb_table" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    before AUTO_SHIP_ELIGIBLE_TYPES existed: a genuinely novel stateful type -- not in
+    STATEFUL_RESOURCE_TYPES, not in IAM_RESOURCE_TYPES, never declared anywhere in this repo's
+    real catalog -- used to classify autonomous_eligible=True. Must now stage, tagged distinctly
+    from a known-dangerous finding.
+
+    Fixture changed 2026-08-21 (same pattern as the aws_secretsmanager_secret swap below):
+    this used aws_dynamodb_table, which stopped being a novel type when
+    modules/metadata-control-table started declaring one (metadata control table module,
+    PRD 6.8.5) -- it is now a reviewed member of STATEFUL_RESOURCE_TYPES (see
+    test_dynamodb_table_is_reviewed_stateful_not_unreviewed below). That is the fail-closed
+    design doing its job, not a regression. aws_documentdb_cluster replaces it, confirmed absent
+    from modules/, core/, and tests/ by the same grep."""
+    assert "aws_documentdb_cluster" not in gate.STATEFUL_RESOURCE_TYPES
+    assert "aws_documentdb_cluster" not in gate.IAM_RESOURCE_TYPES
+    assert "aws_documentdb_cluster" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
     plan = {"resource_changes": [
-        {"address": "aws_dynamodb_table.sessions", "mode": "managed", "type": "aws_dynamodb_table",
-         "change": {"actions": ["create"]}},
+        {"address": "aws_documentdb_cluster.sessions", "mode": "managed",
+         "type": "aws_documentdb_cluster", "change": {"actions": ["create"]}},
     ]}
     result = gate.classify(plan)
     assert result["autonomous_eligible"] is False
     assert result["findings"][0]["reason"] == "unreviewed_resource_type"
 
 
+def test_dynamodb_table_is_reviewed_stateful_not_unreviewed():
+    """modules/metadata-control-table declares aws_dynamodb_table (fallback pipeline control
+    table), which forced the review docs/g5_autonomy_boundary_scope.md and the test above both
+    anticipated: growing the catalog is supposed to move a type out of 'nobody has looked at
+    this yet' and into an explicit, reasoned disposition -- here, stateful (it holds live
+    pipeline-config rows every DAG queries at parse time)."""
+    assert "aws_dynamodb_table" in gate.STATEFUL_RESOURCE_TYPES
+    assert "aws_dynamodb_table" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    plan = {"resource_changes": [
+        {"address": "aws_dynamodb_table.control", "mode": "managed",
+         "type": "aws_dynamodb_table", "change": {"actions": ["create"]}},
+    ]}
+    result = gate.classify(plan)
+    assert result["autonomous_eligible"] is False
+    assert result["findings"][0]["reason"] == "stateful_resource_type"
+
+
 def test_a_second_genuinely_novel_type_also_stages_not_just_the_one_hardcoded_example():
     """Proves the FIX is a real default, not a special case bolted on for one type. A
     completely different, also-never-declared type (docs/g5_autonomy_boundary_scope.md proof-bar
     item 4 -- confirmed absent from the real catalog by the same grep) must land on the exact
-    same fail-closed path."""
-    assert "aws_secretsmanager_secret" not in gate.STATEFUL_RESOURCE_TYPES
-    assert "aws_secretsmanager_secret" not in gate.IAM_RESOURCE_TYPES
-    assert "aws_secretsmanager_secret" not in gate.AUTO_SHIP_ELIGIBLE_TYPES
+    same fail-closed path.
+
+    Fixture changed 2026-08-18: this used `aws_secretsmanager_secret`, which stopped being a
+    novel type when modules/ingestion-webhook started declaring one -- it is now a
+    reviewed member of STATEFUL_RESOURCE_TYPES. That is the fail-closed design doing its job,
+    not a regression: growing the catalog is supposed to force a review. `aws_neptune_cluster`
+    replaces it, re-confirmed absent from modules/, core/, and tests/ by the same grep."""
+    for bucket in (gate.STATEFUL_RESOURCE_TYPES, gate.IAM_RESOURCE_TYPES,
+                   gate.AUTO_SHIP_ELIGIBLE_TYPES, gate.REVIEWED_UNSAFE_TYPES):
+        assert "aws_neptune_cluster" not in bucket
     plan = {"resource_changes": [
-        {"address": "aws_secretsmanager_secret.x", "mode": "managed", "type": "aws_secretsmanager_secret",
+        {"address": "aws_neptune_cluster.x", "mode": "managed", "type": "aws_neptune_cluster",
          "change": {"actions": ["create"]}},
     ]}
     result = gate.classify(plan)
@@ -517,6 +547,27 @@ def _placeholder_for_type(type_expr):
     return '"placeholder"'
 
 
+# ARN shapes by what the variable name says the ARN is FOR. The provider validates the
+# service and the resource part, not just the "arn:" prefix -- an S3 bucket ARN in an IAM
+# admins list is rejected the same way a bare string is.
+_ARN_BY_HINT = (
+    ("iam_role", "arn:aws:iam::123456789012:role/placeholder-{n}"),
+    ("role",     "arn:aws:iam::123456789012:role/placeholder-{n}"),
+    ("kms",      "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-00000000000{n}"),
+    ("key",      "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-00000000000{n}"),
+    ("topic",    "arn:aws:sns:us-east-1:123456789012:placeholder-{n}"),
+    ("queue",    "arn:aws:sqs:us-east-1:123456789012:placeholder-{n}"),
+)
+_ARN_DEFAULT = "arn:aws:s3:::placeholder-bucket-{n}"
+
+
+def _arn_for(name, index):
+    for hint, template in _ARN_BY_HINT:
+        if hint in name:
+            return template.format(n=index)
+    return _ARN_DEFAULT.format(n=index)
+
+
 def _placeholder_for_variable(name, type_expr):
     """Name-based override, checked before the generic type-based placeholder: a generic
     string satisfies Terraform's own type system but not a provider's attribute-level format
@@ -524,10 +575,31 @@ def _placeholder_for_variable(name, type_expr):
     (real provider-side check, confirmed live: "invalid ARN: arn: invalid prefix" against a
     plain "placeholder" value) -- unrelated to HANDOFF's synthesizer-wiring gap for this same
     variable name, which lives in synthesizer.py's cross-module composition and is never
-    exercised by this standalone-module test. Scoped narrowly to *_arn-suffixed variables so
-    this stays a fixture-format fix, not a broad placeholder-quality rewrite."""
-    if name.endswith("_arn") and "string" in (type_expr or ""):
-        return '"arn:aws:s3:::placeholder-bucket"'
+    exercised by this standalone-module test. Scoped narrowly to ARN-suffixed variables so
+    this stays a fixture-format fix, not a broad placeholder-quality rewrite.
+
+    Covers LISTS of ARNs as well as single ones. `governance-lakeformation` declares
+    `admin_iam_role_arns` as list(string), which matched the generic list rule and got
+    ["placeholder-a", "placeholder-b"] -- rejected by the provider with "is an invalid ARN:
+    arn: invalid prefix". The ARN shape follows the variable name because the provider
+    validates the service too: an S3 ARN in an IAM admins list fails just as hard.
+
+    Two distinct entries, not one repeated: min-item constraints want two, and a list of
+    identical principals is rejected by some resources as a duplicate.
+    """
+    is_arn = name.endswith("_arn") or name.endswith("_arns")
+    if is_arn:
+        expr = type_expr or ""
+        if re.search(r"(list|set)\s*\(", expr):
+            return '["{0}", "{1}"]'.format(_arn_for(name, 1), _arn_for(name, 2))
+        # `map(string)` CONTAINS the substring "string". Checking for it first sent
+        # storage-medallion-s3's `replication_destination_bucket_arns` -- a map -- down the
+        # single-ARN branch and handed a plain string to a map-typed variable. Matching the
+        # constructor before the element type is what keeps that straight.
+        if re.search(r"(map|object)\s*\(", expr):
+            return _placeholder_for_type(expr)
+        if "string" in expr:
+            return '"{0}"'.format(_arn_for(name, 1))
     return _placeholder_for_type(type_expr)
 
 
@@ -608,6 +680,10 @@ def _plan_json_events(output_text):
             yield evt["test_plan"]
 
 
+# 16 sequential `terraform init` + `terraform test` cycles -- 9+ minutes, and the sole reason
+# this suite was never once observed green end to end. Deselected by default via addopts;
+# run explicitly with `python -m pytest -m slow`, which CI does.
+@pytest.mark.slow
 @pytest.mark.parametrize("module_id", _all_module_ids())
 def test_every_current_module_plans_as_create_only(module_id, tmp_path):
     src = os.path.join(MODULES_DIR, module_id)

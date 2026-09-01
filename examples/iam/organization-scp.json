@@ -1,0 +1,95 @@
+{
+  "_comment": [
+    "Service Control Policy for the OU holding the lake and compute accounts.",
+    "",
+    "The only control on this list that no principal in the account can argue with. A",
+    "permissions boundary can be lifted by whoever can edit the boundary policy; an identity",
+    "policy can be widened by whoever can attach policies; an SCP can be changed only from",
+    "the management account. Everything else in this design is a ceiling; this is the roof.",
+    "",
+    "Denies the IRREVERSIBLE subset only. Terraform's convergence model destroys and recreates",
+    "as normal operation -- an immutable field change, a rename -- so a blanket deny on delete",
+    "breaks ordinary applies. What is denied here is the set that cannot be undone: a deleted",
+    "KMS key makes every object under it unreadable forever, a deleted object version removes",
+    "the undo, a stopped trail loses the record of what happened.",
+    "",
+    "Attach at the OU, not the root, so the management account keeps a way back in."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyIrreversibleDataDestruction",
+      "Effect": "Deny",
+      "Action": [
+        "kms:ScheduleKeyDeletion",
+        "kms:DeleteCustomKeyStore",
+        "s3:DeleteObjectVersion",
+        "cloudtrail:StopLogging",
+        "cloudtrail:DeleteTrail",
+        "config:DeleteDeliveryChannel",
+        "config:StopConfigurationRecorder",
+        "guardduty:DeleteDetector",
+        "organizations:LeaveOrganization"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ProtectThePermissionsBoundary",
+      "_comment": [
+        "Scoped to the boundary ARN. A blanket deny on iam:DeletePolicyVersion breaks every",
+        "managed-policy update once the 5-version quota is reached -- including legitimate",
+        "ones -- so the narrow form is the correct one."
+      ],
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:DeletePolicy"
+      ],
+      "Resource": "arn:aws:iam::*:policy/MinusOpsAppPermissionsBoundary"
+    },
+    {
+      "Sid": "RequireABoundaryOnEveryRoleCreated",
+      "_comment": [
+        "The identity policy already conditions CreateRole on the boundary. Repeating it at",
+        "the OU means an account admin cannot create an unbounded role either, which is the",
+        "case the identity policy cannot reach."
+      ],
+      "Effect": "Deny",
+      "Action": ["iam:CreateRole", "iam:PutRolePermissionsBoundary"],
+      "Resource": "arn:aws:iam::*:role/minusops-managed/*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PermissionsBoundary":
+            "arn:aws:iam::*:policy/MinusOpsAppPermissionsBoundary"
+        }
+      }
+    }
+  ],
+  "_not_denied_deliberately": {
+    "s3:PutBucketVersioning": [
+      "Suspending versioning removes the undo, so it looks like it belongs above. It does",
+      "not: ENABLING and SUSPENDING versioning are the SAME API CALL, and there is no",
+      "condition key that separates them.",
+      "",
+      "Verified against this repo: modules/storage-medallion-s3/main.tf declares",
+      "aws_s3_bucket_versioning. Denying the action org-wide fails `terraform apply` on every",
+      "new bucket the primary storage module creates -- the control would break the thing it",
+      "is meant to protect, on day one, for every user.",
+      "",
+      "Catch suspension detectively instead: an AWS Config rule (s3-bucket-versioning-enabled)",
+      "plus MFA Delete on the buckets that hold data. A published SCP template that quietly",
+      "breaks bucket creation is worse than no template."
+    ],
+    "s3:DeleteBucket": [
+      "Terraform legitimately destroys a bucket it created -- tearing down a run workspace is",
+      "ordinary. The bucket that matters is protected by the boundary and by MFA Delete, not",
+      "by an org-wide deny that would make teardown impossible."
+    ],
+    "iam:DeleteRole": [
+      "Same reasoning. A pipeline's execution role is created and destroyed with the pipeline;",
+      "the platform roles are protected by path, not by a blanket deny."
+    ]
+  }
+}

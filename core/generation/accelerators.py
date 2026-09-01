@@ -4,6 +4,12 @@ Explicit architecture accelerators.
 These are not automatic recommendations. They are reviewable starting points an operator can
 choose after requirements gathering, then edit before synthesis. The deploy gate still decides
 whether the resulting Terraform can proceed.
+
+Depends on: core/architecture/architecture_decision.py (as archdec),
+    core/architecture/requirements.py (as reqgate), core/reporting/runs.py,
+    core/architecture/architecture_model.py (lazily, inside lakehouse_decision)
+Shells out to: nothing
+Used by: core/reporting/minusctl.py, app/dashboard_app.py, tests/test_accelerators.py
 """
 import argparse
 import datetime
@@ -157,6 +163,19 @@ def lakehouse_decision(requirements_file="requirements.json", streaming=False, d
             "Network topology, private endpoints, and cross-account access are intentionally not guessed.",
             "BCM cost evidence must be generated before enterprise cost totals are published.",
         ],
+        "validation": [
+            "`minusctl validate` (offline terraform validate) and `plan_gate.py verify` must pass with zero SEC-* findings before any approval.",
+            "`minusctl conformance` must score the composed stack against the analytics reference architecture and the Well-Architected Analytics Lens.",
+            "BCM Pricing Calculator evidence must exist for the plan hash before cost totals are published.",
+        ],
+        "rollback": [
+            "The plan-hash approval is one-shot: an unapproved or edited plan cannot apply, so the pre-apply state is the rollback target.",
+            "Post-apply, `plan_gate.py run --destroy` tears the stack down under the same gate; S3 versioning retains objects written in between.",
+            "Module-level reversal is by reverting the run's Terraform to the previous baseline in `.minus/source_snapshot/` and re-planning.",
+        ],
+        # Accelerator-specific: this is a multi-module stack with persistent data resources,
+        # so identity churn and blast radius are the modes it actively designs against.
+        "failure_modes": ["FM-01", "FM-03", "FM-05"],
         "sources": list(LAKEHOUSE_SOURCES),
         "decided_by": "minusops-accelerator",
         "decided_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),

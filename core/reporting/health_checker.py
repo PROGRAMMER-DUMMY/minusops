@@ -1,3 +1,25 @@
+"""
+Live environment health probes: AWS CLI, credentials, and optional S3 / Glue targets.
+
+Read-only against AWS. Every probe is a describe-style call (`sts get-caller-identity`,
+`s3api head-bucket`, `glue get-job-runs`); nothing here creates, modifies, or deletes.
+Bucket and job names are supplied by the caller, so this stays generic rather than
+assuming a medallion layout.
+
+Severity is deliberately graded rather than boolean: a missing bucket or a failed Glue
+run is DEGRADED (the environment works, one target does not), while absent or invalid
+credentials are UNHEALTHY (nothing downstream can be trusted). Collapsing the two would
+make an unreachable account look like a single bad bucket.
+
+Standalone CLI — no in-repo module imports it. It is invoked as a subprocess or by hand
+(see README.md and AGENTS.md), and writes `<log-dir>/health_report.json`.
+
+Depends on: core/reporting/toolpath.py (aws CLI discovery)
+Shells out to: the `aws` CLI, read-only — `aws --version`, `sts get-caller-identity`,
+    `s3api head-bucket`, `glue get-job-runs`
+Used by: nothing in-repo imports it; run directly
+    (`python core/reporting/health_checker.py [--bronze-bucket ...] [--job-1 ...]`)
+"""
 import os
 import sys
 import json

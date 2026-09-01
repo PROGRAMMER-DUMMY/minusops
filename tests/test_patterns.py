@@ -1,3 +1,15 @@
+"""
+Pattern reuse is scored against the modules a request names, not against token noise.
+
+The regression this guards is subtle and silent: `match_modules` scores a single shared token
+at 1, so every module added to the catalog grew the Jaccard denominator and pushed every
+stored pattern's reuse score down. Approved compositions stopped being offered one at a time,
+with nothing reporting it.
+
+Depends on: core/generation/patterns.py, core/generation/modules.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import patterns
 
 
@@ -31,3 +43,33 @@ def test_match_reuses_a_prior_approved_pattern(tmp_path, monkeypatch):
         "managed airflow data lake with data quality checks and schema enforcement")
     assert hits and hits[0]["id"] == "airflow-dq"
     assert hits[0]["reuse_score"] > 0.5
+
+
+def test_reuse_is_scored_against_modules_the_request_names_not_token_noise(tmp_path,
+                                                                          monkeypatch):
+    """Regression, 2026-08-22.
+
+    `match_modules` is a weak-signal RANKER: any single shared token scores +1, which is how
+    `governance-lakeformation` ("lake formation") surfaces on any request containing "data
+    lake". Building the reuse target from every ranked hit meant each newly added module
+    diluted the Jaccard denominator, and every stored pattern's reuse_score drifted down --
+    a catalog that grows would silently stop reusing approved compositions.
+
+    The docstring already promised "the module set those requirements *would* select".
+    Single-token overlap is not selection.
+    """
+    _isolate(tmp_path, monkeypatch)
+    patterns.capture_pattern(
+        "airflow lakehouse with data quality and schema enforcement",
+        ["storage-medallion-s3", "orchestrator-mwaa", "dq-great-expectations",
+         "schema-registry-glue", "governance-observability"],
+        name="airflow-dq")
+
+    request = "managed airflow data lake with data quality checks and schema enforcement"
+    import modules as module_registry
+
+    ranked = {m["id"] for m in module_registry.match_modules(request)}
+    targeted = patterns._reuse_target(request)
+
+    assert "governance-lakeformation" in ranked, "the ranker still surfaces it (by design)"
+    assert "governance-lakeformation" not in targeted, "selection must not inherit the noise"

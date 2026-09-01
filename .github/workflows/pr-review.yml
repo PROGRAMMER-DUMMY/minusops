@@ -1,0 +1,64 @@
+name: "PR review (MinusOps)"
+
+# Turnkey wiring of .github/actions/pr-reviewer. Point TF_DIR at your Terraform and this
+# reviews every PR that touches it.
+#
+# `pull_request`, not `pull_request_target`: the latter runs with the BASE repo's secrets
+# against the HEAD repo's code, which hands any fork author a write-capable OIDC role. The
+# cost of that choice is that fork PRs get no AWS credentials, so they receive the static
+# review (fmt, validate, SEC scan) and no plan. That is the correct trade.
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - "runs/**/terraform/**"
+      - "modules/**"
+      - ".github/workflows/pr-review.yml"
+  workflow_dispatch:
+    inputs:
+      tf_dir:
+        description: "Terraform directory to review"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write        # OIDC
+  pull-requests: write   # post the review comment
+
+env:
+  TF_DIR: ${{ inputs.tf_dir || 'terraform' }}
+
+# One review per PR at a time. Two concurrent plans on the same directory race for the
+# plan-gate's pending record, and the loser's approval is voided by the winner.
+concurrency:
+  group: minusops-pr-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: "Plan & comment"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MinusOps review
+        id: review
+        uses: ./.github/actions/pr-reviewer
+        with:
+          tf_dir: ${{ env.TF_DIR }}
+          # Read-only role. A PR review needs to read state and plan; it must never hold
+          # permissions that could change anything.
+          role_to_assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws_region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          policy_mode: production
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The comment is for humans; this is what makes the check red. Without it a blocked
+      # review is a comment nobody has to act on.
+      - name: Fail the check when the gate blocked
+        if: steps.review.outputs.verdict != 'pass'
+        run: |
+          echo "::error::MinusOps gate blocked this change. See the PR comment for detail."
+          exit 1

@@ -1,3 +1,14 @@
+"""
+Documentation URLs are built by formula, and the formula is what is asserted.
+
+A wrong URL in a research record is worse than none: it looks citable. These check the shape
+of Terraform Registry, AWS CLI and pricing links, and that a cached record round-trips with
+its sources intact.
+
+Depends on: core/architecture/discovery.py
+Shells out to: nothing (no network)
+Used by: nothing (pytest entry point)
+"""
 import discovery
 
 

@@ -4,6 +4,11 @@ Enterprise intent resolver.
 Turns short user requests into safe, reviewable product decisions. It does not
 generate Terraform and never deploys. Its job is to map intent to approved
 blueprints and identify the minimum inputs needed before generation.
+
+Depends on: core/generation/blueprints.py, core/providers/base.py (both imported
+    relative-first, falling back to flat imports for the sys.path-injected CLI layout)
+Shells out to: nothing
+Used by: core/generation/workflow.py, tests/test_intent_resolver.py, tests/test_create_intent.py
 """
 
 import argparse
@@ -52,9 +57,52 @@ def _contains_term(query, terms):
     return any(re.search(r"\b" + re.escape(term) + r"\b", query) for term in terms)
 
 
+# Words that make a phrase a QUESTION about existing infrastructure rather than a request to
+# build some. Checked first, because "what does my pipeline cost" contains an infra term but is
+# emphatically not a creation request.
+_INTERROGATIVE_TERMS = (
+    "what", "why", "how much", "how many", "when", "who", "which",
+    "show", "list", "inspect", "check", "status", "health", "cost of", "failed", "failing",
+    "debug", "diagnose", "explain",
+)
+
+# Verbs that act on infrastructure that ALREADY EXISTS. "deploy this infrastructure" names a
+# deploy operation, not a request to design something new -- without this veto the loosened
+# noun-phrase rule below would route every deploy request into the requirements gate.
+_OPERATIONAL_TERMS = (
+    "deploy", "apply", "destroy", "teardown", "tear down", "rollback", "roll back",
+    "migrate", "optimize", "optimise", "scan", "audit", "upgrade", "patch", "restart",
+)
+
+
 def is_creation_request(query):
+    """An infra noun phrase IS a creation request unless it reads as a question.
+
+    Previously this required a create VERB *and* an infra NOUN, so
+    `minusctl create "governed AWS data pipeline"` classified as OPERATION and silently
+    created nothing while printing a success-shaped message. The user already typed
+    `create`; making them repeat the verb inside the argument is a trap, and a silent
+    no-op is the worst failure shape for an agent-driven CLI.
+
+    Over-triggering is the risk this guards against in the other direction -- asking ABOUT a
+    pipeline must not provision one -- so interrogatives veto, and an infra term is still
+    required (a bare "make it faster" is not a creation request either).
+    """
     normalized = " ".join((query or "").lower().split())
-    return _contains_term(normalized, CREATE_TERMS) and _contains_term(normalized, INFRA_TERMS)
+    if not normalized:
+        return False
+    if not _contains_term(normalized, INFRA_TERMS):
+        return False
+    # An explicit create verb settles it, even alongside other words.
+    if _contains_term(normalized, CREATE_TERMS):
+        return True
+    # Otherwise a bare infra noun phrase counts, unless it reads as a question about, or an
+    # operation on, infrastructure that already exists.
+    if _contains_term(normalized, _INTERROGATIVE_TERMS):
+        return False
+    if _contains_term(normalized, _OPERATIONAL_TERMS):
+        return False
+    return True
 
 
 def _missing_inputs(blueprint):
@@ -101,7 +149,7 @@ def resolve(query, cloud=None):
         "confidence": "none",
         "blueprint": None,
         "missing_inputs": [],
-        "recommendation": "Use the normal dispatcher or direct tool path.",
+        "recommendation": "Use the direct tool path.",
         "next_safe_actions": [],
     }
 

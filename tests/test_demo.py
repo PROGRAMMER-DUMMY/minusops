@@ -1,3 +1,14 @@
+"""
+The no-cloud demo's synthetic plan carries the resources the reports expect to find.
+
+One test, deliberately. The demo exists so the governance loop can be shown without
+credentials; what can regress is the synthetic plan drifting from the shape reporter.py
+reads, which would fail far from here.
+
+Depends on: core/generation/demo.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import os
 
 import demo

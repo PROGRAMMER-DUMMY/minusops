@@ -85,7 +85,29 @@ data_sources(type_name) := [rc |
 		"change": {"after": r.values, "after_unknown": {}}}
 ]
 
-config_resources := input.configuration.root_module.resources
+# Resources declared at the root, plus those declared inside each module call, each tagged
+# with the prefix its own references are relative to.
+#
+# This read `input.configuration.root_module.resources` and nothing else. On a real
+# 112-resource plan that array holds ONE data source: the other 111 live under `module_calls`,
+# because module composition is the path the generator actually emits. So the sibling
+# SEC-01/COST-01 look for was never in the array they searched, and six correctly-configured
+# buckets reported HIGH on every module-composed plan in `runs/`. The suite stayed green
+# because every fixture in tests/test_rego_gate.py was root-level.
+#
+# Disclosed boundary: one level of module_calls. Verified against every plan in `runs/` -- no
+# catalog module calls another. A nested call would be MISSED, never mis-reported: the failure
+# direction is a false positive on a bucket whose sibling is two levels down, the same
+# direction this fix removes at one level.
+_config_root := object.get(object.get(input, "configuration", {}), "root_module", {})
+
+config_resources := array.concat(
+	[object.union(r, {"minus_module_prefix": ""}) |
+		some r in object.get(_config_root, "resources", [])],
+	[object.union(r, {"minus_module_prefix": sprintf("module.%s.", [name])}) |
+		some name, call in object.get(_config_root, "module_calls", {})
+		some r in object.get(object.get(call, "module", {}), "resources", [])],
+)
 
 # Every address a resource's config references, across all its attribute expressions -- from
 # the plan's `configuration` block, independent of whether the referenced value has resolved
@@ -120,10 +142,18 @@ referenced_addresses(cfg_resource) := addrs if {
 # fail to match a reference that's genuinely there (the same bug class as above, one layer up).
 base_address(addr) := regex.replace(addr, `\[[^\]]*\]$`, "")
 
+# A module's config references its siblings by their MODULE-LOCAL address
+# (`aws_s3_bucket.zone`), while `rc.address` from resource_changes carries the full path
+# (`module.storage.aws_s3_bucket.zone["bronze"]`). The prefix has to come off before
+# comparing, and the resource has to actually be in that module -- otherwise a
+# public-access-block in module A would satisfy a bucket in module B, trading the false
+# positive for a false negative.
 has_sibling_referencing(rc, sibling_type) if {
 	some cfg in config_resources
 	cfg.type == sibling_type
-	base_address(rc.address) in referenced_addresses(cfg)
+	addr := base_address(rc.address)
+	startswith(addr, cfg.minus_module_prefix)
+	trim_prefix(addr, cfg.minus_module_prefix) in referenced_addresses(cfg)
 }
 
 # ---------------------------------------------------------------------------

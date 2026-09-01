@@ -1,5 +1,5 @@
 """
-ephemeral_apply.py is G9 (docs/phase5_scope.md, Phase 5) -- ephemeral create+destroy against a
+ephemeral_apply.py is G9 -- ephemeral create+destroy against a
 real emulator (LocalStack/MiniStack/Floci), catching apply-time-only failures static analysis
 (G1/G2/G6) cannot.
 
@@ -15,7 +15,7 @@ override was written, meaning it wasn't isolated from ambient credentials at all
 `apply_complete`/`apply_errored` shape, including the genuinely-observed case of a crashed
 provider plugin dumping a non-JSON stack trace into the output stream).
 
-RESOURCE_TYPE_ALLOWLIST is per-(type, emulator) (docs/phase5_scope.md section 7). LocalStack's
+RESOURCE_TYPE_ALLOWLIST is per-(type, emulator). LocalStack's
 column is unverified by design (a paid LOCALSTACK_AUTH_TOKEN account this session could not
 provision). MiniStack and Floci needed no token, so BOTH were run through a real gauntlet this
 session (real Docker containers in CI, real terraform apply/destroy) -- the real result for
@@ -198,7 +198,7 @@ def test_resource_outcomes_distinguishes_complete_from_errored():
 
 
 # ---------------------------------------------------------------------------
-# Fail-closed sweep (docs/phase5_scope.md section 4), mocked subprocess for speed
+# Fail-closed sweep, mocked subprocess for speed
 # ---------------------------------------------------------------------------
 
 def test_run_blocks_when_terraform_not_found(monkeypatch, tmp_path):
@@ -299,7 +299,7 @@ def test_run_blocks_on_unsupported_emulator(tmp_path, monkeypatch):
 
 
 def test_every_verdict_names_its_emulator(tmp_path, monkeypatch):
-    """docs/phase5_scope.md section 7.3: every run_ephemeral_apply() result must carry which
+    """: every run_ephemeral_apply() result must carry which
     emulator produced it -- a MiniStack green and a LocalStack green must never be
     presentable as the same evidence. Checked across a spread of real exit paths (not just
     one), since each was a separate dict literal in the source and any one could have been
@@ -318,7 +318,7 @@ def test_every_verdict_names_its_emulator(tmp_path, monkeypatch):
 
 
 def test_run_blocks_on_negative_fidelity_unverified_security_critical_type(tmp_path, monkeypatch):
-    """Real, current finding from this session's actual gauntlet run (docs/phase5_scope.md
+    """Real, current finding from this session's actual gauntlet run (
     section 7): aws_iam_role applies cleanly on both MiniStack and Floci (verified=True) but
     BOTH emulators incorrectly accept a malformed trust-policy principal ARN real AWS rejects
     (negative_fidelity_verified=False on both) -- this must BLOCK, distinctly from

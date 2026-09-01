@@ -15,19 +15,33 @@ explicit, auditable states instead of silently vanishing from the cost report:
                                  silent (a resource type just didn't appear anywhere) — now
                                  it's a visible, auditable gap plan_gate.py can warn or block on.
 
+The point of the fourth state is that it fails closed: a resource type nobody mapped used to
+vanish from the report entirely, which reads exactly like "this costs nothing". It is now a
+named gap, and `main()` exits non-zero on it so plan_gate.py can warn or block. Never resolve
+an `unresolved` type by guessing a serviceCode — add it to aws_resource_map.json (priced) or
+free_resources.json (confirmed free) after checking AWS's own catalog.
+
 Reuses bcm_pricing_calculator._plan_inventory()/_amount_for() rather than re-deriving usage
-logic, and classifies through the CloudProvider abstraction (providers.base.get_provider()) so
-this file is genuinely cloud-agnostic — it never imports pricing_catalog.py directly. Audit
-finding 2026-07-03: an earlier version of this file DID import pricing_catalog directly,
-bypassing the provider contract entirely; that made "multi-cloud coverage" aspirational rather
-than real despite what the provider docstrings implied. Fixed here: whichever cloud MINUS_CLOUD
-selects, this file only ever calls through the provider's resolve_resource_type()/
-confirmed_free() — for AWS that still reaches pricing_catalog.py underneath, for Azure/GCP it
-honestly returns everything unresolved (their pricing methods aren't implemented yet) instead
-of crashing or silently assuming AWS. This file only classifies, it never prices.
+logic, and classifies through providers.base.get_provider() rather than importing
+pricing_catalog.py directly. That indirection is deliberate and has been regressed once: going
+straight to pricing_catalog bypasses the provider and hardcodes AWS into a file that is
+supposed to be cloud-neutral. Only the provider's resolve_resource_type()/confirmed_free() are
+called here — for AWS those reach pricing_catalog.py underneath, and a provider that resolves
+nothing returns everything unresolved instead of crashing or inventing a price. This file
+classifies; it never prices.
 
 Usage:
   python core/cost/coverage_audit.py audit --report-dir artifacts/reports/<hash>
+
+Depends on: core/cost/bcm_pricing_calculator.py (_plan_inventory, _amount_for,
+    DEFAULT_ASSUMPTIONS — the pure, plan-derived parts only), core/providers/base.py,
+    core/generation/modules.py (output_root, for the schema_watch lookup). Reads
+    <report-dir>/plan.json and, through the provider, core/cost/pricing_data/*.json.
+Shells out to: nothing. Classification is plan-derived arithmetic and table lookup — no AWS
+    call, no network, no cost. bcm_pricing_calculator is imported for its pure helpers; none
+    of its aws-CLI paths are reached from here.
+Used by: core/governance/plan_gate.py (lazy import in the cost-coverage stage),
+    tests/test_coverage_audit.py
 """
 import argparse
 import datetime
@@ -54,11 +68,9 @@ def classify(plan, provider=None):
     """Classify every resource type discovered in the plan. Never prices anything — only
     reports which of the four coverage states each resource type is in.
 
-    `provider` defaults to providers.base.get_provider() (whichever cloud MINUS_CLOUD selects).
-    Goes through the CloudProvider contract exclusively — for a cloud whose pricing discovery
-    isn't implemented yet, resolve_resource_type()/confirmed_free() honestly return None for
-    everything, so every resource type lands in `unresolved` rather than this function crashing
-    or silently assuming AWS."""
+    `provider` defaults to providers.base.get_provider(). Goes through the provider
+    exclusively — one that resolves nothing returns None for everything, so every resource
+    type lands in `unresolved` rather than this function crashing or inventing a price."""
     provider = provider or pb.get_provider()
     inventory = bcm._plan_inventory(plan)
     inputs = {k: (v or {}).get("value") for k, v in (plan.get("variables") or {}).items()}

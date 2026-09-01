@@ -1,3 +1,16 @@
+"""
+The requirements gate, and every way of getting past it that must not work.
+
+Deferral is the interesting half. A real deferral carries a reason and counts as answered; a
+bare "deferred", a lazy "TBD", or deferring every axis at once does not. Without that, the
+gate is a formality anyone can satisfy by typing placeholder text, and the record it produces
+reads as reviewed.
+
+Depends on: core/architecture/requirements.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
+import copy
 import pytest
 
 import requirements as reqgate
@@ -155,3 +168,103 @@ def test_parse_budget_usd_never_guesses():
     for spec in ({"non_functional": {"budget": "deferred: pending finance approval"}}, {}, None):
         amount, source = reqgate.parse_budget_usd(spec)
         assert amount == 0 and source == ""
+
+
+def _complete():
+    """A deep copy, because these tests mutate nested blocks."""
+    record = copy.deepcopy(COMPLETE)
+    record.setdefault("data_pipeline", {k: "stated" for k in reqgate.DATA_FIELDS})
+    return record
+
+
+
+# --- The 19 pillars (additive; the interview's answers get a home) -----------------------
+
+def test_the_template_has_a_slot_for_every_pillar():
+    """18 asked, 16 slots, 2 driving generation was the gap. Every pillar now lands."""
+    blank = reqgate.template()
+    assert set(blank["pillars"]) == set(reqgate.PILLAR_KEYS)
+    assert len(blank["pillars"]) == 19
+
+
+def test_a_pillar_slot_carries_the_choice_and_the_operators_own_words():
+    blank = reqgate.template()
+    assert set(blank["pillars"]["ingestion_source"]) == {"choice", "notes"}
+
+
+def test_pillar_validation_is_separate_from_the_generation_gate():
+    """validate() gates generation and predates the pillars. Folding 18 new required fields
+    into it would block every record written before today, so the pillar profile is its own
+    check -- the same shape validate_data_pipeline() already uses."""
+    record = _complete()
+    ok, _missing = reqgate.validate(record)
+    assert ok, "an existing complete record must not be invalidated by the new block"
+
+
+def test_unanswered_pillars_names_what_the_interview_still_owes():
+    record = _complete()
+    record["pillars"] = {"ingestion_source": {"choice": "Batch files landing in S3", "notes": ""}}
+    unanswered = reqgate.unanswered_pillars(record)
+    assert "ingestion_source" not in unanswered
+    assert "worker_sizing" in unanswered
+    assert len(unanswered) == 18
+
+
+def test_a_lazy_pillar_deferral_does_not_count_as_answered():
+    """Same quality bar as the NFR axes: 'deferred: tbd' is not a decision."""
+    record = _complete()
+    record["pillars"] = {"proving": {"choice": "deferred: tbd", "notes": ""}}
+    assert "proving" in reqgate.unanswered_pillars(record)
+
+
+def test_a_real_pillar_deferral_does_count():
+    record = _complete()
+    record["pillars"] = {"proving": {
+        "choice": "deferred: no pre-production account exists until Q3", "notes": ""}}
+    assert "proving" not in reqgate.unanswered_pillars(record)
+
+
+def test_pillar_facts_are_the_numbers_the_derivations_consume():
+    record = _complete()
+    record["pillar_facts"] = {"daily_gb": 50, "partitions_per_day": 24, "nonsense": 1}
+    facts = reqgate.pillar_facts(record)
+    assert facts["daily_gb"] == 50
+    assert "nonsense" not in facts, "only known facts reach the arithmetic"
+
+
+def test_daily_volume_falls_back_to_the_prose_answer():
+    """parse_daily_gb already reads data_pipeline.data_volume. A record that answered it
+    there must not have to repeat itself in pillar_facts."""
+    record = _complete()
+    record["data_pipeline"]["data_volume"] = "about 120 GB per day"
+    assert reqgate.pillar_facts(record)["daily_gb"] == 120
+
+
+def test_an_explicit_pillar_fact_beats_the_parsed_prose():
+    record = _complete()
+    record["data_pipeline"]["data_volume"] = "about 120 GB per day"
+    record["pillar_facts"] = {"daily_gb": 40}
+    assert reqgate.pillar_facts(record)["daily_gb"] == 40
+
+
+def test_derived_sizing_computes_from_the_record_alone():
+    record = _complete()
+    record["pillar_facts"] = {"daily_gb": 2, "partitions_per_day": 24}
+    derived = reqgate.derived_sizing(record)
+    assert derived["partitioning"]["verdict"] == "TOO_SMALL"
+
+
+def test_derived_sizing_refuses_rather_than_defaulting_when_the_record_is_silent():
+    record = _complete()
+    record["data_pipeline"]["data_volume"] = ""
+    derived = reqgate.derived_sizing(record)
+    assert derived["worker_sizing"]["determinable"] is False
+    assert "worker_type" not in derived["worker_sizing"]
+
+
+def test_an_unknown_pillar_key_in_a_record_is_reported_not_silently_kept():
+    record = _complete()
+    record["pillars"] = {"not_a_pillar": {"choice": "x", "notes": ""}}
+    ok, problems = reqgate.validate_pillars(record)
+    assert not ok
+    assert any("not_a_pillar" in p for p in problems)

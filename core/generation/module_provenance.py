@@ -1,5 +1,4 @@
-"""
-module_provenance.py — pin + record provenance for a module in the catalog.
+"""Pin and record provenance for a module in the catalog.
 
 Plumbing for the "fetch live docs at module-update time, never at synthesis time" pattern
 (docs/project_plan.md, Phase E addendum): a maintainer runs
@@ -11,33 +10,32 @@ content hash over the module's current files and writes modules/<id>/PROVENANCE.
 recording *what* informed this version (source, provider version constraint, notes) and
 *when*, and bumping the version counter.
 
-RETIRED AS A GATE (docs/phase6_step5_teardown_scope.md section 3, 2026-07-15): `pin`'s CLI used
-to REFUSE to write a record at all if G2 (schema_lint.gate_module()) found a blocking issue.
-Two real facts, verified against the actual catalog before deciding this, not assumed: (1) only
-2 of this repo's 16 real modules (`databricks-workspace`, `networking-vpc`) have ever actually
-been pinned at all — the other 14 were added directly, bypassing this gate entirely, so "pinned
-means G2-checked" was never true for most of the catalog; (2) nothing anywhere in this codebase
-calls `verify()` automatically — a pin, once written, is never re-checked against later drift
-either. `pin()`'s entire value proposition was "trust this content because it was checked once,
-here, and nothing has changed since" — a proposition this repo's own real usage never actually
-relied on. The retirement's replacement is stronger, not weaker: G2 (`gate_content()`) re-checks
-live, at the point ANY content is actually drawn on for composition or authoring (docs/
-phase6_step1_authoring_scope.md, docs/phase6_step5_teardown_scope.md section 4) — a fresh check
-every time beats a stale one-time pin every time. `pin` now ALWAYS records (a maintainer's own
-decision to keep this version cannot be second-guessed by this tool), but still runs G2 and
-records what it found (`g2_blocking`/`g2_findings`) as part of the historical record, printed
-loudly, not silently swallowed — a real, useful signal for a human reader, just never a refusal.
+NOT A GATE, deliberately. `pin` used to REFUSE to write a record when G2
+(schema_lint.gate_module()) found a blocking issue; do not restore that. Two facts about how
+this repo actually uses the catalog killed it: most modules were added directly and never pinned
+at all, so "pinned means G2-checked" was never true for the catalog as a whole; and nothing calls
+`verify()` automatically, so a pin is never re-checked against later drift either. The
+replacement is stricter, not looser -- G2's `gate_content()` re-checks live at the point any
+content is actually drawn on for composition or authoring,
+so a fresh check happens every time instead of once. `pin` now ALWAYS records (a maintainer's own
+decision to keep a version is not this tool's to override), still runs G2, and still records what
+it found in `g2_blocking`/`g2_findings` and prints it loudly on stderr -- a signal, never a
+refusal.
 
-`verify` recomputes the hash and compares it to what's recorded — drift detection for a
-module whose files changed without a matching pin (e.g. a hand-edit that forgot to re-run
-`pin`), the same tamper-evidence idea audit_chain.py and plan_gate.py's plan-hash already use
-elsewhere in this codebase, applied to the module catalog itself. Still useful as a historical
-diagnostic; never wired as an enforced gate anywhere either.
+`verify` recomputes the hash and compares it against what's recorded: drift detection for a
+module whose files changed without a matching pin, applying the same tamper-evidence idea as
+audit_chain.py and plan_gate.py's plan-hash to the module catalog. Also a historical diagnostic
+only; it is not wired as an enforced gate anywhere.
 
-This file does not talk to any MCP server, AWS API, or Terraform Registry — `--source` and
-`--provider-version` are maintainer-supplied strings. The actual live-fetch step (Terraform
-MCP / AWS MCP) is a separate, later concern that calls into `pin()` once it has fetched
-content, not something this module does itself.
+This file talks to no MCP server, AWS API, or Terraform Registry -- `--source` and
+`--provider-version` are maintainer-supplied strings. Any live-fetch step is a separate concern
+that calls into `pin()` after it has fetched content.
+
+Depends on: core/generation/modules.py (as module_registry), core/generation/schema_lint.py
+    (lazily inside main(), to break an import cycle)
+Shells out to: terraform, transitively -- schema_lint.gate_module() runs `terraform init` +
+    `terraform providers schema -json` against the live provider
+Used by: core/generation/schema_lint.py, tests/test_module_provenance.py, tests/test_schema_lint.py
 """
 import argparse
 import datetime
@@ -102,13 +100,13 @@ def _upgrades_dir():
 def pin(module_id, source, provider_version=None, notes=None, schema_hash=None,
         g2_blocking=None, g2_findings=None):
     """Record a new pinned version of module_id. Bumps `version` by 1 (starts at 1). Never
-    refuses (see module docstring's "RETIRED AS A GATE") -- always writes a record.
+    refuses -- always writes a record (see the module docstring's "NOT A GATE").
 
     `schema_hash` is optional and caller-supplied (e.g. by schema_watch.py, from that module's
     slice of a live-fetched provider schema) -- this function never talks to a live source
-    itself, per the module docstring above. `g2_blocking`/`g2_findings` are likewise
-    caller-supplied (the CLI passes its own `schema_lint.gate_module()` result) -- a historical
-    record of what G2 found AT PIN TIME, not a live guarantee about now.
+    itself. `g2_blocking`/`g2_findings` are likewise caller-supplied (the CLI passes its own
+    `schema_lint.gate_module()` result) -- a record of what G2 found AT PIN TIME, not a live
+    guarantee about now.
 
     When this call is a real re-pin (content_hash changed from the previously recorded one, not
     a first-ever pin), also writes an upgrades/<module_id>-v<new_version>.json report recording
@@ -193,13 +191,11 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.cmd == "pin":
-        # G2 (docs/g2_scope.md) NO LONGER GATES this action (docs/phase6_step5_teardown_scope.md
-        # section 3, "RETIRED AS A GATE" -- see module docstring): still run, still recorded,
-        # still printed loudly -- a maintainer choosing to pin content G2 flags is a real,
-        # visible fact in the historical record, never silently swallowed, but this tool no
-        # longer second-guesses that choice by refusing to write it. Imported lazily to avoid a
-        # module-level import cycle (schema_lint.py itself imports this module, for the
-        # previous-schema_hash WARN comparison).
+        # G2 does NOT gate this action -- see the module docstring's "NOT A
+        # GATE". It is still run, still recorded, and still printed loudly: a maintainer pinning
+        # content G2 flags stays a visible fact, never silently swallowed, but this tool does not
+        # refuse the write. Imported lazily to avoid a module-level import cycle -- schema_lint.py
+        # imports this module for its previous-schema_hash WARN comparison.
         import schema_lint
         lint = schema_lint.gate_module(args.module)
         if lint["blocking"]:

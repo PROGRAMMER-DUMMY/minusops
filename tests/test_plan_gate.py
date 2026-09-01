@@ -41,6 +41,9 @@ PLAN_G9_ELIGIBLE = {
 }
 # terraform_data: neither aws_* nor databricks_* -- classify_coverage() reports "none" (the
 # real bug this session fixed in ephemeral_apply.py while wiring G9 in).
+# A staged plan needs an impact statement; these tests are not about its content.
+STAGED_IMPACT = "Creates the bronze bucket; no existing data is touched."
+
 PLAN_NO_AWS = {
     "resource_changes": [
         {"address": "terraform_data.demo", "type": "terraform_data",
@@ -69,6 +72,13 @@ def gate_env(tmp_path, monkeypatch):
     # authz.operator() with a real STS-derived identity. The verified-identity path has its
     # own dedicated tests below that explicitly re-enable it.
     monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: None)
+    # stage_plan now refuses without a verify receipt. These tests exercise what happens
+    # AFTER a plan is produced -- G9 wiring, identity resolution, approval binding -- so they
+    # need verify to have passed, not to re-run it. A real receipt is written rather than the
+    # check being stubbed out: stubbing it in the shared fixture would disable it for every
+    # test in the file, including any that should catch its absence. Written under the
+    # strictest policy mode so it covers dev and production plans alike.
+    plan_gate._write_verify_receipt("d", "production")
     return log_dir
 
 
@@ -91,6 +101,33 @@ def _stub_apply_success(applied=("aws_s3_bucket.data",), failed=(), errors=None)
         out_errors.update(errors or {})
         return 0 if not failed else 1
     return _apply
+
+
+def test_stage_run_accepts_the_impact_its_own_cli_passes():
+    """`main()` calls stage_run(..., impact=args.impact, ...) and the signature has no such
+    parameter, so `minusctl gate run` raises TypeError before doing anything. The body then
+    passes `impact=impact` to stage_plan, which would be a NameError even if the call landed.
+    Two defects on the gate's primary command, on a path no test exercised."""
+    import inspect
+    parameters = inspect.signature(plan_gate.stage_run).parameters
+    assert "impact" in parameters, list(parameters)
+    assert parameters["impact"].default is None
+
+
+def test_stage_run_forwards_impact_to_the_plan_stage(monkeypatch):
+    """The parameter has to reach stage_plan. Accepting and dropping it would satisfy the
+    signature check while still losing the operator's declared blast radius."""
+    seen = {}
+
+    def fake_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False, impact=None):
+        seen["impact"] = impact
+        return False
+
+    monkeypatch.setattr(plan_gate, "stage_verify", lambda *a, **k: True)
+    monkeypatch.setattr(plan_gate, "stage_plan", fake_plan)
+    plan_gate.stage_run("d", "gatekeeper", impact="high")
+
+    assert seen["impact"] == "high"
 
 
 def test_plan_hash_is_deterministic(monkeypatch):
@@ -150,7 +187,7 @@ def test_approve_then_apply_happy_path(gate_env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# G9 wiring into the real flow (docs/phase6_step1_authoring_scope.md section 3): stage_plan()
+# G9 wiring into the real flow: stage_plan()
 # computes a real G9 verdict (or a synthetic "not configured" one), carries it through the
 # approval record, and stage_apply(mode="auto-approve") refuses to proceed unless it's clean.
 # ---------------------------------------------------------------------------
@@ -222,7 +259,7 @@ def test_auto_approve_apply_unaffected_when_plan_has_no_aws_content(gate_env, mo
 
 
 def test_destroy_plan_skips_g9(gate_env, monkeypatch):
-    """G9 exists to catch CREATE-order apply-time failures (docs/phase5_scope.md); a destroy
+    """G9 exists to catch CREATE-order apply-time failures; a destroy
     plan has nothing new for it to check, same reasoning the pre-existing cost-coverage skip
     already uses for destroy plans."""
     monkeypatch.delenv(plan_gate.G9_EMULATOR_ENV, raising=False)
@@ -424,12 +461,16 @@ def test_apply_refuses_approval_from_another_directory(gate_env, monkeypatch):
     assert not os.path.exists(plan_gate._approved_path("target", current))
 
 
-def _record_pending(dir_, plan_hash, planner=None, destroy=False):
+def _record_pending(dir_, plan_hash, planner=None, destroy=False, planner_verified=True):
+    """`planner_verified` defaults True: a plan produced normally, under an authenticated
+    session, is what almost every test means by "a recorded plan". Production approval refuses
+    a planner it cannot prove was STS-established, so tests that want that case pass False."""
     os.makedirs(plan_gate._state_dir(dir_), exist_ok=True)
     rec = {"plan_hash": plan_hash, "dir": dir_, "canonical_dir": plan_gate._canonical_dir(dir_),
            "destroy": destroy}
     if planner is not None:
         rec["planner"] = planner
+        rec["planner_verified"] = planner_verified
     with open(plan_gate._pending_path(dir_), "w", encoding="utf-8") as f:
         json.dump(rec, f)
 
@@ -454,6 +495,9 @@ def test_production_rejects_self_approval(gate_env, monkeypatch, capsys):
     monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
     monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
     monkeypatch.setattr(plan_gate.authz, "operator", lambda: "alice")
+    # Verified on both sides: production refuses an unverified approver before it ever compares
+    # names, so this test has to get past that to exercise the comparison it is about.
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "alice")
     monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
     current, _ = plan_gate._plan_hash("d")
     _record_pending("d", current, planner="alice")
@@ -463,6 +507,100 @@ def test_production_rejects_self_approval(gate_env, monkeypatch, capsys):
     assert "cannot approve their own plan" in capsys.readouterr().err
     audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
     assert "self_approval_in_production" in audit
+
+
+def test_production_refuses_an_approver_who_only_claims_to_be_someone(gate_env, monkeypatch,
+                                                                       capsys):
+    """The bypass this rule exists to stop, run end to end.
+
+    dave plans in production under a real STS-verified session, so the pending record names a
+    principal that was actually proven. He then approves his own plan by dropping that session
+    and exporting MINUS_OPERATOR=bob. Before the planner_verified/approver_verified checks, the
+    two names simply differed, so the two-person comparison passed and the audit trail recorded
+    an approval by "bob" that bob had nothing to do with.
+
+    The comment on the planner field asserted this was impossible. Nothing recorded which side
+    of the comparison had been verified, so it was not.
+    """
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
+
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "dave@corp")
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "dave@corp")
+    assert plan_gate.stage_plan("d", policy_mode="production", impact=STAGED_IMPACT) is True
+    pending = json.load(open(plan_gate._pending_path("d"), encoding="utf-8"))
+    assert pending["planner"] == "dave@corp"
+    assert pending["planner_verified"] is True
+
+    # No cloud session; the identity is now nothing but an environment variable.
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: None)
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "bob")
+
+    current, _ = plan_gate._plan_hash("d")
+    assert plan_gate.stage_approve("d", mode="gatekeeper", policy_mode="production") is False
+    assert not os.path.exists(plan_gate._approved_path("d", current))
+    assert "self-reported" in capsys.readouterr().err
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "unverified_approver_in_production" in audit
+
+
+def test_production_refuses_a_planner_who_was_never_verified(gate_env, monkeypatch, capsys):
+    """The same hole from the other side: plan with no session so the planner is only an env
+    var, then approve under a real verified identity. The names differ, so the comparison
+    passes -- but it compares a proven principal against a string anyone could have written."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "carol@corp")
+
+    current, _ = plan_gate._plan_hash("d")
+    _record_pending("d", current, planner="alice", planner_verified=False)
+
+    assert plan_gate.stage_approve("d", mode="gatekeeper", policy_mode="production") is False
+    assert not os.path.exists(plan_gate._approved_path("d", current))
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "unverified_planner_in_production" in audit
+
+
+def test_a_pending_record_without_the_verified_flag_is_treated_as_unproven(gate_env, monkeypatch):
+    """A plan recorded before planner_verified existed has no claim either way. Production
+    must read that as "cannot prove it", not as "assume it was fine" -- the whole failure being
+    fixed here came from treating an absent proof as a passing one."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "carol@corp")
+
+    current, _ = plan_gate._plan_hash("d")
+    os.makedirs(plan_gate._state_dir("d"), exist_ok=True)
+    with open(plan_gate._pending_path("d"), "w", encoding="utf-8") as f:
+        json.dump({"plan_hash": current, "dir": "d",
+                   "canonical_dir": plan_gate._canonical_dir("d"),
+                   "planner": "alice", "destroy": False}, f)  # no planner_verified key at all
+
+    assert plan_gate.stage_approve("d", mode="gatekeeper", policy_mode="production") is False
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "unverified_planner_in_production" in audit
+
+
+def test_dev_mode_still_approves_without_a_verified_identity(gate_env, monkeypatch):
+    """Dev is explicitly single-operator and relaxed, and planning before credentials are
+    configured is a normal thing to do there. The tightening is production-only."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: None)
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "solo")
+
+    current, _ = plan_gate._plan_hash("d")
+    _record_pending("d", current, planner="solo", planner_verified=False)
+
+    assert plan_gate.stage_approve("d", mode="gatekeeper", policy_mode="dev") is True
+    assert os.path.exists(plan_gate._approved_path("d", current))
 
 
 def test_production_rejects_missing_planner(gate_env, monkeypatch, capsys):
@@ -484,6 +622,7 @@ def test_production_approves_with_allowlist_and_distinct_approver(gate_env, monk
     monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
     monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
     monkeypatch.setattr(plan_gate.authz, "operator", lambda: "carol")
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "carol")
     monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
     current, _ = plan_gate._plan_hash("d")
     _record_pending("d", current, planner="dave")
@@ -556,6 +695,15 @@ def test_verify_fails_when_security_scan_blocks(gate_env, monkeypatch):
     assert plan_gate.stage_verify("d") is False
 
 
+
+def _with_policy_engine(monkeypatch):
+    """MINUS-155: production policy mode now REFUSES when OPA is absent -- a passing verify
+    with no evaluator would assert a compliance check that never ran. These tests exercise the
+    scanner and identity paths, not that refusal, so they declare an engine explicitly."""
+    real = plan_gate.toolpath.find_tool
+    monkeypatch.setattr(plan_gate.toolpath, "find_tool",
+                        lambda name, *a, **k: "/usr/bin/opa" if name == "opa" else real(name, *a, **k))
+
 def test_verify_passes_policy_mode_and_log_dir_to_scanner(gate_env, monkeypatch):
     seen = {}
 
@@ -569,6 +717,7 @@ def test_verify_passes_policy_mode_and_log_dir_to_scanner(gate_env, monkeypatch)
     monkeypatch.setattr(plan_gate, "_tf", ok_tf)
     monkeypatch.setattr(plan_gate, "_run", scan)
     monkeypatch.setattr(plan_gate, "SCAN", __file__)
+    _with_policy_engine(monkeypatch)
 
     assert plan_gate.stage_verify("d", policy_mode="production") is True
     assert "--policy-mode" in seen["args"]
@@ -648,7 +797,9 @@ def test_planner_and_approver_prefer_verified_aws_identity_over_env_var(gate_env
     monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "dave@corp")
     monkeypatch.setattr(plan_gate.authz, "operator", lambda: "carol")
 
-    ok = plan_gate.stage_plan("d", policy_mode="production")
+    # Staged (PLAN_A creates a stateful aws_s3_bucket), so an impact statement is
+    # required to reach the identity behaviour this test is about.
+    ok = plan_gate.stage_plan("d", policy_mode="production", impact=STAGED_IMPACT)
     assert ok is True
     pending = json.load(open(plan_gate._pending_path("d"), encoding="utf-8"))
     assert pending["planner"] == "dave@corp"  # the verified identity, not the spoofed env var
@@ -727,8 +878,12 @@ def test_apply_identity_check_skipped_when_approval_predates_verified_identity(g
     monkeypatch.setattr(plan_gate, "_apply_with_json_capture", _stub_apply_success())
     monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
     current, _ = plan_gate._plan_hash("d")
-    # verified_operator() was None at approval time (env-var fallback used instead).
-    _approve_as("d", current, None, monkeypatch, policy_mode="production")
+    # verified_operator() was None at approval time (env-var fallback used instead). Recorded
+    # through a DEV approval, because production now refuses to create such a record at all --
+    # which is the point of the fix, and does not change what this test is about: an approval
+    # that carries no approver_verified_identity, however it got written, must not make a
+    # production APPLY invent a rejection out of nothing verifiable.
+    _approve_as("d", current, None, monkeypatch, policy_mode="dev")
 
     # Apply-time DOES have a verified identity now -- still nothing to compare against.
     monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "anyone@corp")
@@ -743,7 +898,10 @@ def test_planner_falls_back_to_env_var_without_a_cloud_session(gate_env, monkeyp
     monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: None)
     monkeypatch.setattr(plan_gate.authz, "operator", lambda: "eve")
 
-    assert plan_gate.stage_plan("d") is True
+    # PLAN_A creates an aws_s3_bucket, a STATEFUL_RESOURCE_TYPE, so the plan is staged and an
+    # impact statement is required. This test is about which identity is recorded as the
+    # planner, not about the statement -- it just has to satisfy the gate to get that far.
+    assert plan_gate.stage_plan("d", impact=STAGED_IMPACT) is True
     pending = json.load(open(plan_gate._pending_path("d"), encoding="utf-8"))
     assert pending["planner"] == "eve"
 
@@ -801,3 +959,197 @@ def test_g6_shadow_surfaces_a_real_sec06_finding_not_just_field_unresolved(tmp_p
     assert "SEC-06" in result["divergence"], (
         f"SEC-06 finding was silently dropped from the divergence report: {result}")
     assert result["divergence"]["SEC-06"]["new_in_rego"] == ["aws_kms_key.wide_open"]
+
+
+# --- Plan requires a verify receipt -------------------------------------------------------
+#
+# Measured before this existed: `plan --dir <never-verified>` produced an approvable plan
+# hash, printed no warning, and recorded nothing about the omission. The gap was not "scan
+# one directory and apply another" -- it was simply that verify could be skipped, and the
+# fmt check, `terraform validate` and the SEC scan with it.
+
+MINIMAL_TF = '''terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    random = { source = "hashicorp/random", version = ">= 3.0" }
+  }
+}
+
+resource "random_id" "x" {
+  byte_length = 4
+}
+'''
+
+
+@pytest.fixture
+def unverified_dir(tmp_path):
+    work = tmp_path / "terraform"
+    work.mkdir()
+    (work / "main.tf").write_text(MINIMAL_TF, encoding="utf-8")
+    return str(work)
+
+
+def test_plan_refuses_when_verify_has_never_run(unverified_dir):
+    """The whole premise of the gate is that a plan reaching a human was checked first."""
+    assert plan_gate.stage_plan(unverified_dir) is False
+
+
+def test_the_refusal_says_what_to_run(unverified_dir, capsys):
+    plan_gate.stage_plan(unverified_dir)
+    err = capsys.readouterr().err
+    assert "verify" in err.lower()
+
+
+def test_a_receipt_is_written_by_verify_and_read_by_plan(unverified_dir):
+    digest = plan_gate._source_digest(unverified_dir)
+    plan_gate._write_verify_receipt(unverified_dir, "dev")
+
+    receipt = plan_gate._read_verify_receipt(unverified_dir)
+    assert receipt["source_digest"] == digest
+    assert receipt["policy_mode"] == "dev"
+
+
+def test_editing_the_source_after_verify_invalidates_the_receipt(unverified_dir):
+    """A receipt that survives an edit certifies content nobody checked -- the same reasoning
+    that makes any .tf change void an approved plan hash."""
+    plan_gate._write_verify_receipt(unverified_dir, "dev")
+    assert plan_gate._verify_state(unverified_dir, "dev")["ok"] is True
+
+    with open(os.path.join(unverified_dir, "main.tf"), "a", encoding="utf-8") as handle:
+        handle.write('\nresource "random_id" "y" {\n  byte_length = 8\n}\n')
+
+    state = plan_gate._verify_state(unverified_dir, "dev")
+    assert state["ok"] is False
+    assert state["reason"] == "source_changed_since_verify"
+
+
+def test_a_dev_receipt_does_not_satisfy_a_production_plan(unverified_dir):
+    """production additionally requires external policy-scanner evidence. A dev verify never
+    ran those scanners, so honouring its receipt would report a production check that did not
+    happen."""
+    plan_gate._write_verify_receipt(unverified_dir, "dev")
+
+    assert plan_gate._verify_state(unverified_dir, "dev")["ok"] is True
+    state = plan_gate._verify_state(unverified_dir, "production")
+    assert state["ok"] is False
+    assert state["reason"] == "verified_under_weaker_policy_mode"
+
+
+def test_a_production_receipt_satisfies_a_dev_plan(unverified_dir):
+    """Stricter evidence covers the weaker ask; refusing it would be nonsense."""
+    plan_gate._write_verify_receipt(unverified_dir, "production")
+    assert plan_gate._verify_state(unverified_dir, "dev")["ok"] is True
+
+
+def test_a_receipt_from_another_directory_does_not_count(tmp_path):
+    """Receipts are keyed by canonical directory, but the record carries it too, so a copied
+    state directory cannot vouch for a different tree."""
+    first = tmp_path / "a"
+    first.mkdir()
+    (first / "main.tf").write_text(MINIMAL_TF, encoding="utf-8")
+    plan_gate._write_verify_receipt(str(first), "dev")
+
+    receipt = plan_gate._read_verify_receipt(str(first))
+    assert receipt["canonical_dir"] == plan_gate._canonical_dir(str(first))
+
+
+def test_a_corrupt_receipt_is_treated_as_absent_not_as_valid(unverified_dir):
+    """Fail closed on an unreadable record. Treating a truncated file as a pass is how a
+    disk-full event silently turns the gate off."""
+    plan_gate._write_verify_receipt(unverified_dir, "dev")
+    path = plan_gate._verify_receipt_path(unverified_dir)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("{not json")
+
+    assert plan_gate._read_verify_receipt(unverified_dir) is None
+    assert plan_gate._verify_state(unverified_dir, "dev")["ok"] is False
+
+
+# --- Forced articulation before a staged plan ---------------------------------------------
+#
+# The gate already knew a plan was staged and printed machine-readable findings. What nobody
+# had to do was say what BREAKS. A y/N over a 400-resource diff is a rubber stamp, so the
+# author states the consequence at plan time and the approver reads that sentence.
+
+def test_a_staged_plan_without_an_impact_statement_is_refused(gate_env, monkeypatch):
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_G9_ELIGIBLE))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_classify_plan",
+                        lambda _d: {"autonomous_eligible": False, "resource_change_count": 1,
+                                    "findings": [{"address": "aws_s3_bucket.b",
+                                                  "type": "aws_s3_bucket",
+                                                  "reason": "stateful_resource_type"}],
+                                    "reduced_assurance": False,
+                                    "reduced_assurance_reason": None})
+
+    assert plan_gate.stage_plan("d") is False
+
+
+def test_a_refused_staged_plan_leaves_nothing_approvable_behind(gate_env, monkeypatch):
+    """A pending record left after a refusal is a plan a human could still approve."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_G9_ELIGIBLE))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_classify_plan",
+                        lambda _d: {"autonomous_eligible": False, "resource_change_count": 1,
+                                    "findings": [], "reduced_assurance": False,
+                                    "reduced_assurance_reason": None})
+
+    plan_gate.stage_plan("d")
+
+    assert not os.path.exists(plan_gate._pending_path("d"))
+
+
+def test_a_keystroke_does_not_count_as_an_impact_statement(gate_env, monkeypatch):
+    """No length check makes a sentence true. This one only stops the field being satisfied
+    by "ok", which is the failure mode a free-text box actually has."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_G9_ELIGIBLE))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_classify_plan",
+                        lambda _d: {"autonomous_eligible": False, "resource_change_count": 1,
+                                    "findings": [], "reduced_assurance": False,
+                                    "reduced_assurance_reason": None})
+
+    for weak in ("", "   ", "ok", "n/a", "fine"):
+        assert plan_gate.stage_plan("d", impact=weak) is False, weak
+
+
+def test_a_staged_plan_with_an_impact_statement_proceeds_and_records_it(gate_env, monkeypatch):
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_G9_ELIGIBLE))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_classify_plan",
+                        lambda _d: {"autonomous_eligible": False, "resource_change_count": 1,
+                                    "findings": [], "reduced_assurance": False,
+                                    "reduced_assurance_reason": None})
+
+    statement = "Replaces the bronze bucket; 400 GB of raw clickstream is deleted first."
+    assert plan_gate.stage_plan("d", impact=statement) is True
+
+    pending = json.load(open(plan_gate._pending_path("d"), encoding="utf-8"))
+    assert pending["impact"]["statement"] == statement
+    assert pending["impact"]["stated_by"]
+
+
+def test_an_autonomous_eligible_plan_needs_no_impact_statement(gate_env, monkeypatch):
+    """The requirement is scoped to staged plans. Demanding a sentence for every create-only
+    plan trains people to type one without reading it, which is worse than not asking."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_G9_ELIGIBLE))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+
+    assert plan_gate.stage_plan("d") is True
+
+
+def test_the_approver_is_shown_the_impact_statement(capsys):
+    """It is written at plan time and read at approve time -- if the approver never sees it,
+    the whole requirement is paperwork."""
+    plan_gate._print_impact({"impact": {"statement": "Deletes the gold catalog tables.",
+                                        "stated_by": "shubh",
+                                        "stated_at": "2026-08-26T10:00:00+00:00"}})
+
+    out = capsys.readouterr().out
+    assert "Deletes the gold catalog tables." in out
+    assert "shubh" in out
+
+
+def test_no_impact_block_is_printed_when_there_is_none(capsys):
+    plan_gate._print_impact({})
+    assert capsys.readouterr().out == ""

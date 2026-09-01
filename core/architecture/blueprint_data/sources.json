@@ -1,0 +1,230 @@
+[
+  {
+    "key": "aws-prescriptive-data-lake-growth-scale",
+    "provider": "AWS",
+    "title": "Data lake for growth and scale, reference architecture",
+    "url": "https://docs.aws.amazon.com/prescriptive-guidance/latest/data-lake-for-growth-scale/reference-architecture.html"
+  },
+  {
+    "key": "aws-prescriptive-data-lake-components",
+    "provider": "AWS",
+    "title": "Data lake reference architecture components",
+    "url": "https://docs.aws.amazon.com/prescriptive-guidance/latest/data-lake-for-growth-scale/reference-architecture-components.html"
+  },
+  {
+    "key": "aws-ara-data-lake",
+    "provider": "AWS",
+    "title": "AWS Analytics Reference Architecture, data lake module",
+    "url": "https://aws-samples.github.io/aws-analytics-reference-architecture/high-level-design/modules/data-lake/"
+  },
+  {
+    "key": "aws-ara-batch-analytics",
+    "provider": "AWS",
+    "title": "AWS Analytics Reference Architecture, batch analytics module",
+    "url": "https://aws-samples.github.io/aws-analytics-reference-architecture/high-level-design/modules/batch-analytics/"
+  },
+  {
+    "key": "aws-ara-streaming-analytics",
+    "provider": "AWS",
+    "title": "AWS Analytics Reference Architecture, streaming analytics module",
+    "url": "https://aws-samples.github.io/aws-analytics-reference-architecture/high-level-design/modules/streaming-analytics/"
+  },
+  {
+    "key": "aws-ara-data-warehouse",
+    "provider": "AWS",
+    "title": "AWS Analytics Reference Architecture, data warehouse module",
+    "url": "https://aws-samples.github.io/aws-analytics-reference-architecture/high-level-design/modules/data-warehouse/"
+  },
+  {
+    "key": "aws-serverless-analytics-pipeline",
+    "provider": "AWS",
+    "title": "AWS serverless data analytics pipeline reference architecture",
+    "url": "https://aws.amazon.com/blogs/big-data/aws-serverless-data-analytics-pipeline-reference-architecture/"
+  },
+  {
+    "key": "aws-data-lake-solution",
+    "provider": "AWS",
+    "title": "Guidance for data lakes on AWS",
+    "url": "https://docs.aws.amazon.com/solutions/latest/data-lake-solution/architecture-overview.html"
+  },
+  {
+    "key": "aws-wa-analytics-lens",
+    "provider": "AWS",
+    "title": "Well-Architected Data Analytics Lens",
+    "url": "https://docs.aws.amazon.com/wellarchitected/latest/analytics-lens/analytics-lens.html"
+  },
+  {
+    "key": "aws-wa-analytics-scenarios",
+    "provider": "AWS",
+    "title": "Analytics Lens reference scenarios",
+    "url": "https://docs.aws.amazon.com/wellarchitected/latest/analytics-lens/scenarios.html"
+  },
+  {
+    "key": "aws-lakeformation-how-it-works",
+    "provider": "AWS",
+    "title": "How AWS Lake Formation works",
+    "url": "https://docs.aws.amazon.com/lake-formation/latest/dg/how-it-works.html"
+  },
+  {
+    "key": "aws-glue-programming",
+    "provider": "AWS",
+    "title": "AWS Glue ETL programming and job patterns",
+    "url": "https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming.html"
+  },
+  {
+    "key": "aws-glue-vpc-s3-endpoint",
+    "provider": "AWS",
+    "title": "Amazon VPC endpoints for Amazon S3 in AWS Glue",
+    "url": "https://docs.aws.amazon.com/glue/latest/dg/vpc-endpoints-s3.html"
+  },
+  {
+    "key": "aws-firehose-destinations",
+    "provider": "AWS",
+    "title": "Firehose delivery destinations",
+    "url": "https://docs.aws.amazon.com/firehose/latest/dev/create-destination.html"
+  },
+  {
+    "key": "aws-athena-workgroups",
+    "provider": "AWS",
+    "title": "Athena workgroups and query result location",
+    "url": "https://docs.aws.amazon.com/athena/latest/ug/manage-queries-control-costs-with-workgroups.html"
+  },
+  {
+    "key": "aws-redshift-serverless-considerations",
+    "provider": "AWS",
+    "title": "Amazon Redshift Serverless considerations",
+    "url": "https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-usage-considerations.html"
+  },
+  {
+    "key": "aws-emr-serverless-vpc",
+    "provider": "AWS",
+    "title": "EMR Serverless VPC access",
+    "url": "https://docs.aws.amazon.com/emr/latest/EMR-Serverless-UserGuide/vpc-access.html"
+  },
+  {
+    "key": "aws-mwaa-networking",
+    "provider": "AWS",
+    "title": "Amazon MWAA networking requirements",
+    "url": "https://docs.aws.amazon.com/mwaa/latest/mwaa-serverless-userguide/networking.html"
+  },
+  {
+    "key": "aws-stepfunctions-glue",
+    "provider": "AWS",
+    "title": "Step Functions integration with AWS Glue",
+    "url": "https://docs.aws.amazon.com/step-functions/latest/dg/connect-glue.html"
+  },
+  {
+    "key": "aws-dms-s3-target",
+    "provider": "AWS",
+    "title": "AWS DMS with Amazon S3 as a target",
+    "url": "https://docs.aws.amazon.com/dms/latest/userguide/CHAP_Target.S3.html"
+  },
+  {
+    "key": "aws-transfer-family",
+    "provider": "AWS",
+    "title": "AWS Transfer Family with Amazon S3",
+    "url": "https://docs.aws.amazon.com/transfer/latest/userguide/what-is-aws-transfer-family.html"
+  },
+  {
+    "key": "aws-msk-overview",
+    "provider": "AWS",
+    "title": "What is Amazon MSK",
+    "url": "https://docs.aws.amazon.com/msk/latest/developerguide/what-is-msk.html"
+  },
+  {
+    "key": "aws-kinesis-concepts",
+    "provider": "AWS",
+    "title": "Kinesis Data Streams terminology and concepts",
+    "url": "https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html"
+  },
+  {
+    "key": "aws-glue-schema-registry",
+    "provider": "AWS",
+    "title": "AWS Glue Schema Registry",
+    "url": "https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html"
+  },
+  {
+    "key": "aws-s3-storage-classes",
+    "provider": "AWS",
+    "title": "Amazon S3 storage classes",
+    "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/storage-class-intro.html"
+  },
+  {
+    "key": "aws-s3-tables",
+    "provider": "AWS",
+    "title": "Amazon S3 Tables and Apache Iceberg",
+    "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables.html"
+  },
+  {
+    "key": "aws-lakeformation-tbac",
+    "provider": "AWS",
+    "title": "Lake Formation tag-based access control",
+    "url": "https://docs.aws.amazon.com/lake-formation/latest/dg/tag-based-access-control.html"
+  },
+  {
+    "key": "aws-datazone-concepts",
+    "provider": "AWS",
+    "title": "Amazon DataZone concepts",
+    "url": "https://docs.aws.amazon.com/datazone/latest/userguide/datazone-concepts.html"
+  },
+  {
+    "key": "aws-quicksight-datasources",
+    "provider": "AWS",
+    "title": "Amazon QuickSight supported data sources",
+    "url": "https://docs.aws.amazon.com/quicksight/latest/user/supported-data-sources.html"
+  },
+  {
+    "key": "aws-lz-accelerator-networking",
+    "provider": "AWS",
+    "title": "Landing Zone Accelerator networking",
+    "url": "https://awslabs.github.io/landing-zone-accelerator-on-aws/latest/faq/networking/general/"
+  },
+  {
+    "key": "aws-caf-data-governance",
+    "provider": "AWS",
+    "title": "AWS CAF governance perspective, data governance",
+    "url": "https://docs.aws.amazon.com/whitepapers/latest/aws-caf-governance-perspective/data-governance.html"
+  },
+  {
+    "key": "aws-wa-rto-rpo",
+    "provider": "AWS",
+    "title": "Well-Architected, understand RTO and RPO requirements",
+    "url": "https://docs.aws.amazon.com/wellarchitected/latest/data-residency-hybrid-cloud-services-lens/drhcops03-bp01.html"
+  },
+  {
+    "key": "aws-glue-crawlers",
+    "provider": "AWS",
+    "title": "Defining crawlers in AWS Glue",
+    "url": "https://docs.aws.amazon.com/glue/latest/dg/add-crawler.html"
+  },
+  {
+    "key": "aws-emr-serverless-overview",
+    "provider": "AWS",
+    "title": "What is Amazon EMR Serverless",
+    "url": "https://docs.aws.amazon.com/emr/latest/EMR-Serverless-UserGuide/emr-serverless.html"
+  },
+  {
+    "key": "databricks-lakehouse-reference",
+    "provider": "Databricks",
+    "title": "Databricks lakehouse reference architectures",
+    "url": "https://docs.databricks.com/aws/en/lakehouse-architecture/reference"
+  },
+  {
+    "key": "databricks-medallion",
+    "provider": "Databricks",
+    "title": "Medallion architecture, bronze silver gold",
+    "url": "https://docs.databricks.com/aws/en/lakehouse/medallion.html"
+  },
+  {
+    "key": "dbt-project-structure",
+    "provider": "dbt Labs",
+    "title": "How we structure our dbt projects",
+    "url": "https://docs.getdbt.com/best-practices/how-we-structure/1-guide-overview"
+  },
+  {
+    "key": "iceberg-table-spec",
+    "provider": "Apache Iceberg",
+    "title": "Apache Iceberg table specification",
+    "url": "https://iceberg.apache.org/spec/"
+  }
+]

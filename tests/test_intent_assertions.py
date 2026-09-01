@@ -26,6 +26,11 @@ import json
 
 import pytest
 
+
+# Live Terraform/provider-schema access: minutes, not seconds. Deselected from the
+# default run (see pyproject addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = pytest.mark.slow
+
 import intent_assertions
 import blueprints
 import toolpath
@@ -454,7 +459,7 @@ def test_real_demo_blueprint_plan_matches_manually_verified_dispositions(tmp_pat
 
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
 def test_real_composed_plan_module_presence_across_catalog(tmp_path):
-    """Proof-bar item (docs/phase4_scope.md section 6 item 1): a real multi-module composition
+    """Proof-bar item: a real multi-module composition
     (not the hand-built dicts above), dummy AWS credentials, three real modules from the
     catalog spanning storage/compute/consumption (storage-medallion-s3, compaction-glue,
     query-athena -- avoiding orchestrator-stepfunctions and databricks-workspace, both with

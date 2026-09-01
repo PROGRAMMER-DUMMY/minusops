@@ -10,6 +10,7 @@ import os
 
 import pytest
 
+import base_hook
 import finops_agent
 
 
@@ -30,6 +31,23 @@ class FakeProvider:
 
     def owner(self, resource_hint):
         return self._owner_map.get(resource_hint)
+
+
+def test_exporting_to_a_named_file_reports_success(tmp_path, monkeypatch):
+    """`main()` does `sys.exit(0 if ok else 1)`. Only the DIRECTORY branch returned True; both
+    single-file branches fell off the end returning None, so writing `report.xlsx` succeeded
+    and exited 1. A CI step calling this failed while producing the file it was asked for."""
+    written = []
+    monkeypatch.setattr(finops_agent, "cmd_export_excel", finops_agent.cmd_export_excel)
+    import excel_finops_generator as gen
+    monkeypatch.setattr(gen, "generate_executive_project_summary_excel",
+                        lambda path, records: written.append(path))
+    monkeypatch.setattr(gen, "generate_both_enterprise_reports",
+                        lambda d: written.append(d) or (d, d))
+
+    assert finops_agent.cmd_export_excel(str(tmp_path / "project_summary.xlsx")) is True
+    assert finops_agent.cmd_export_excel(str(tmp_path / "ledger.xlsx")) is True
+    assert written
 
 
 def test_cmd_cost_prints_spend_and_month_over_month(monkeypatch, capsys):
@@ -116,9 +134,9 @@ def test_notify_slack_denied_returns_false_and_sends_nothing(monkeypatch, capsys
     provider = FakeProvider(anomalies_result=(
         [{"id": "a1", "date": "2026-06-15", "service": "Amazon EC2", "impact": 10.0}], None))
     monkeypatch.setattr(finops_agent, "get_provider", lambda: provider)
-    monkeypatch.setattr(finops_agent, "request_approval", lambda *a, **k: False)
+    monkeypatch.setattr(base_hook, "request_approval", lambda *a, **k: False)
     called = []
-    monkeypatch.setattr(finops_agent.urllib.request, "urlopen", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(base_hook.urllib.request, "urlopen", lambda *a, **k: called.append(1))
     assert finops_agent.cmd_notify_slack("gatekeeper") is False
     assert "Not authorised" in capsys.readouterr().out
     assert called == []  # never even attempted to send
@@ -128,7 +146,7 @@ def test_notify_slack_approved_without_webhook_prepares_but_does_not_send(monkey
     provider = FakeProvider(anomalies_result=(
         [{"id": "a1", "date": "2026-06-15", "service": "Amazon EC2", "impact": 10.0}], None))
     monkeypatch.setattr(finops_agent, "get_provider", lambda: provider)
-    monkeypatch.setattr(finops_agent, "request_approval", lambda *a, **k: True)
+    monkeypatch.setattr(base_hook, "request_approval", lambda *a, **k: True)
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     assert finops_agent.cmd_notify_slack("auto-approve") is True
     assert "not sent" in capsys.readouterr().out
@@ -138,7 +156,7 @@ def test_notify_jira_writes_real_ticket_payload(monkeypatch, tmp_path):
     provider = FakeProvider(anomalies_result=(
         [{"id": "a1", "date": "2026-06-15", "service": "Amazon EC2", "impact": 10.0}], None))
     monkeypatch.setattr(finops_agent, "get_provider", lambda: provider)
-    monkeypatch.setattr(finops_agent, "request_approval", lambda *a, **k: True)
+    monkeypatch.setattr(base_hook, "request_approval", lambda *a, **k: True)
     monkeypatch.setattr(finops_agent, "LOG_DIR", str(tmp_path))
 
     assert finops_agent.cmd_notify_jira("auto-approve") is True
@@ -153,7 +171,7 @@ def test_notify_jira_denied_writes_no_file(monkeypatch, tmp_path):
     provider = FakeProvider(anomalies_result=(
         [{"id": "a1", "date": "2026-06-15", "service": "Amazon EC2", "impact": 10.0}], None))
     monkeypatch.setattr(finops_agent, "get_provider", lambda: provider)
-    monkeypatch.setattr(finops_agent, "request_approval", lambda *a, **k: False)
+    monkeypatch.setattr(base_hook, "request_approval", lambda *a, **k: False)
     monkeypatch.setattr(finops_agent, "LOG_DIR", str(tmp_path))
 
     assert finops_agent.cmd_notify_jira("gatekeeper") is False

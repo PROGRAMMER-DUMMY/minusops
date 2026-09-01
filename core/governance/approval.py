@@ -3,9 +3,9 @@ Approval gate for side-effecting / mutating actions (notifications, ticket creat
 infrastructure changes, etc.).
 
 Two selectable modes:
-  - gatekeeper   : require explicit human approval before the action proceeds.
+  - gatekeeper: require explicit human approval before the action proceeds.
                    In a non-interactive session (no TTY) this safely DENIES.
-  - auto-approve : proceed without prompting (still fully audited).
+  - auto-approve: proceed without prompting (still fully audited).
 
 Authorization (RBAC): in BOTH modes, if an approver allowlist is configured
 (MINUS_APPROVERS / .minus/approvers.json) the acting operator must be on it, or the
@@ -22,6 +22,12 @@ Usage as a library:
 Usage from the CLI (for testing / scripting):
     python approval.py --action send-slack --details "..." --mode gatekeeper
     # exit code 0 = approved, 1 = denied
+
+Depends on: audit_chain, authz
+Shells out to: nothing
+Used by: core/cost/bcm_pricing_calculator.py, core/integrations/base_hook.py (the single
+    gate for every outbound integration hook, and therefore for finops_agent's notify path),
+    core/reporting/seed.py, core/reporting/minusctl.py (lazy import)
 """
 import os
 import sys

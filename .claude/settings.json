@@ -1,0 +1,23 @@
+{
+  "$comment": [
+    "Checked in, unlike settings.local.json, because the guardrail is a property of the",
+    "repository rather than of one developer's machine. core/governance/agent_guardrails.py",
+    "spent its whole life with zero call sites; this registration is what gives it one.",
+    "It stops a mistake, not an intent -- real containment is an OS jail, a read-only mount,",
+    "or credentials that cannot perform the action. See .claude/hooks/guardrails.py."
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/guardrails.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

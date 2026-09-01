@@ -1,0 +1,40 @@
+# Governed metrics. These are the names every dashboard, notebook and text-to-SQL agent
+# should ask for by name instead of re-deriving.
+#
+# The point of the `description` on each one is not documentation for its own sake: it is
+# where the exclusions live. "Net revenue" that silently includes test accounts is the single
+# most common reason two teams' numbers disagree, and the only durable fix is writing the
+# exclusion down next to the definition.
+
+metrics:
+  - name: total_events
+    label: Total events
+    type: simple
+    description: Every interaction, including repeat visits by the same customer.
+    type_params:
+      measure: event_count
+
+  - name: net_revenue
+    label: Net revenue
+    type: derived
+    description: >-
+      Gross revenue minus refunds, in account currency. Refunds are attributed to the date of
+      the original transaction, not the refund date -- which is why this is derived rather
+      than a second simple metric someone subtracts in a dashboard.
+    type_params:
+      expr: revenue_amount - refund_amount
+      metrics:
+        - name: revenue_amount
+        - name: refund_amount
+
+  - name: monthly_active_users
+    label: Monthly active users
+    type: simple
+    description: >-
+      Distinct customers with at least one event in the trailing 30 days. The window is part
+      of the metric, not a filter the caller supplies, so two teams cannot report "MAU" over
+      two different windows.
+    type_params:
+      measure: event_count
+    filter: |
+      {{ Dimension('customer__event_date') }} >= dateadd('day', -30, current_date)

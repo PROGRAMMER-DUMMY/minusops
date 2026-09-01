@@ -26,30 +26,45 @@ Guarantees:
 
 Cross-platform (Windows / macOS / Linux): os.path, list-form subprocess, no shell.
 
-Destroy (2026-07-05): teardown goes through the exact same loop, not a raw `terraform
-destroy` — pass --destroy to `plan`. approve/apply are unchanged: a destroy plan's
-resource_changes are just actions=["delete"], which hash-binding, RBAC, and the audit
-chain already handle like any other plan.
+Destroy: teardown goes through the exact same loop, not a raw `terraform destroy` — pass
+--destroy to `plan`. approve/apply are unchanged: a destroy plan's resource_changes are just
+actions=["delete"], which hash-binding, RBAC, and the audit chain already handle like any
+other plan.
 
 Examples (point --dir at any Terraform directory — the engine is workload-agnostic):
-    python core/governance/plan_gate.py verify  --dir path/to/terraform
-    python core/governance/plan_gate.py plan    --dir path/to/terraform
-    python core/governance/plan_gate.py approve --dir path/to/terraform
-    python core/governance/plan_gate.py apply   --dir path/to/terraform
-    python core/governance/plan_gate.py run     --dir path/to/terraform [--mode auto-approve]
+    minusctl gate verify  --dir path/to/terraform
+    minusctl gate plan    --dir path/to/terraform
+    minusctl gate approve --dir path/to/terraform
+    minusctl gate apply   --dir path/to/terraform
+    minusctl gate run     --dir path/to/terraform [--mode auto-approve]
 
-    python core/governance/plan_gate.py plan    --dir path/to/terraform --destroy   # governed teardown
-    python core/governance/plan_gate.py approve --dir path/to/terraform
-    python core/governance/plan_gate.py apply   --dir path/to/terraform
+    minusctl gate plan    --dir path/to/terraform --destroy   # governed teardown
+    minusctl gate approve --dir path/to/terraform
+    minusctl gate apply   --dir path/to/terraform
+
+Depends on: providers.base (get_provider), plan_inspector, cli_diagnostics, team_resolver,
+    toolpath, audit_chain, authz, destructive_change_gate, cloud_drift, address_churn,
+    rule_stages, optimize_analyzer, rego_gate, intent_assertions, requirements (as reqgate),
+    architecture_decision (as adecision), ephemeral_apply; plus lazy imports of reporter and
+    coverage_audit inside the cost/report paths. All resolved through the core/ sys.path shim
+    below, not by package path.
+Shells out to: terraform (fmt -check, init, validate, plan, show -json, apply -json), the
+    cloud CLI indirectly via providers.base for identity/credential posture, opa via
+    rego_gate/toolpath, and core/reporting/optimize_analyzer.py as a subprocess.
+Used by: core/governance/reflector.py (lazy, for _pending_path), core/reporting/doctor.py,
+    core/reporting/cli_diagnostics.py (lazy)
 """
 import os
+import re
 import sys
 import json
 import hashlib
 import getpass
 import argparse
 import datetime
+import textwrap
 import threading
+import time
 import subprocess
 
 _CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -58,16 +73,22 @@ for _sub in ("generation", "architecture", "governance", "cost", "reporting", "p
 sys.path.insert(0, _CORE_DIR)
 from providers.base import get_provider  # noqa: E402
 import plan_inspector  # noqa: E402
+import cli_diagnostics  # noqa: E402
+import team_resolver  # noqa: E402
 import toolpath  # noqa: E402
 import audit_chain  # noqa: E402
 import authz  # noqa: E402
 import destructive_change_gate  # noqa: E402
+import cloud_drift  # noqa: E402
+import address_churn  # noqa: E402
+import rule_stages  # noqa: E402
 import optimize_analyzer  # noqa: E402
 import rego_gate  # noqa: E402
 import intent_assertions  # noqa: E402
 import requirements as reqgate  # noqa: E402
 import architecture_decision as adecision  # noqa: E402
 import ephemeral_apply  # noqa: E402
+import source_guard  # noqa: E402
 
 WORKSPACE = os.getcwd()
 LOG_DIR = os.path.join(WORKSPACE, ".agents", "logs")
@@ -93,6 +114,62 @@ def _audit(action, status, **extra):
         audit_chain.append(os.path.join(LOG_DIR, "audit.jsonl"), rec)
     except Exception as e:
         print(f"[gate] WARNING: could not write audit record: {e}", file=sys.stderr)
+
+
+def _gate_state_lock(path):
+    """Mutual exclusion for read-modify-write on gate state.
+
+    Reuses audit_chain._AppendLock -- threading.Lock for intra-process plus an OS-native
+    advisory lock for inter-process, already hardened against this repo's recurring Windows
+    lock/handle divergences. Writing a second one is how the first acquired its bugs.
+
+    Needed because atomicity alone does not prevent LOST UPDATES: operator B's write can
+    land between A reading and A approving, so A records an approval bound to B's plan hash
+    while believing it is their own. That is approval integrity, the guarantee everything
+    else rests on.
+    """
+    return audit_chain._AppendLock(path)
+
+
+def _write_json_atomic(path, payload):
+    """Write gate state so a crash can never leave it truncated.
+
+    open(path, "w") truncates immediately, so a process killed mid-write destroys the
+    pending plan or the approval record outright. os.replace is atomic on POSIX and Windows.
+
+    The temp file carries pid+thread so two concurrent writers cannot clobber each other's
+    staging file -- a single shared "<path>.tmp" made this corrupt under contention, which
+    is exactly the failure atomicity was supposed to remove (caught by
+    tests/test_gate_concurrency.py, not by inspection).
+
+    Atomic per write. For read-modify-write, hold _gate_state_lock across the whole cycle.
+    """
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        # Windows: os.replace maps to MoveFileEx, which transiently fails with
+        # ERROR_ACCESS_DENIED while any other handle touches the destination -- a competing
+        # writer, an indexer, antivirus. POSIX rename has no such window. Retry briefly
+        # rather than surfacing a spurious PermissionError as gate-state corruption. Bounded
+        # so a GENUINE permissions problem still raises instead of hanging.
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _canonical_dir(dir_):
@@ -164,17 +241,15 @@ def _apply_with_json_capture(dir_, applied, failed, errors):
     resource start/complete/error, plus progress pings for long-running resources -- not
     Terraform's own colored UI) while capturing structured per-resource outcomes.
 
-    Audit finding 2026-07-04: the audit chain recorded FAILED/OK for an apply but nothing
-    about WHICH resources succeeded before a failure -- a real partial-apply during a sandbox
-    test had to be reconstructed by hand via `terraform state list` + AWS CLI. This is what
-    actually closes that gap.
+    The per-resource outcomes exist so the audit chain records WHICH resources succeeded
+    before a failure. Without them a partial apply has to be reconstructed by hand from
+    `terraform state list` plus the cloud CLI.
 
-    audit finding 2026-07-05: applied/failed/errors used to be built as local variables here
-    and only returned at the very end -- an interrupt (Ctrl+C) partway through this function
-    unwound the stack before that return ever ran, losing the partial data and skipping the
-    caller's audit write entirely. The caller now owns these mutable containers and passes
-    them in; appending to them here mutates the SAME objects the caller already holds, so
-    whatever happened before an interrupt survives regardless of how this function exits.
+    applied/failed/errors are caller-owned containers on purpose. Building them as locals and
+    returning them at the end loses everything when Ctrl+C unwinds the stack before the
+    return, taking the caller's audit write with it. Appending here mutates the same objects
+    the caller already holds, so partial data survives however this function exits. Do not
+    convert these back into return values.
 
     Returns returncode; resources_applied/resources_failed/resource_errors are accumulated
     into the caller-provided applied/failed/errors.
@@ -281,19 +356,18 @@ def _classify_plan(dir_):
 
 G6_RULE_IDS = ("SEC-01", "COST-01", "SEC-03", "SEC-04", "COST-02", "COST-03", "SEC-05", "SEC-02",
                "SEC-06", "SEC-07", "SEC-08", "SEC-09", "SEC-10")
-# SEC-06/SEC-07 (docs/g6_iam_extension_scope.md) have NO regex counterpart at all -- a real bug
-# found running the extension's own parity pass, not anticipated in the scope doc: leaving a new
-# rule ID out of this tuple doesn't just skip a comparison, it silently drops that rule's real
-# (non-unresolved) findings from BOTH the divergence report AND the audit chain entirely, since
-# _g6_shadow_eval's divergence loop only ever iterates this tuple. The one thing that WOULD still
-# surface for an unlisted rule is its field_unresolved findings (a separate, unfiltered list) --
-# meaning the uncertain case would have been visible while the confirmed-violation case silently
-# wasn't, backwards from what the whole shadow mechanism exists to guarantee. Every new rule ID
-# must be added here the moment it's added to rules.rego, not deferred.
+# Every new rule ID must be added here the moment it lands in rules.rego. Leaving one out does
+# not merely skip a comparison: _g6_shadow_eval's divergence loop iterates only this tuple, so
+# an unlisted rule's real (non-unresolved) findings vanish from both the divergence report and
+# the audit chain. Its field_unresolved findings would still surface (separate, unfiltered
+# list), so the uncertain case stays visible while the confirmed violation goes silent --
+# backwards from what the shadow mechanism exists to guarantee. SEC-06/SEC-07
+# have no regex counterpart at all, which is how that gap
+# first appeared.
 
 
 def _g6_shadow_eval(dir_, plan_json):
-    """G6 (docs/g6_scope.md): Rego-over-plan-JSON evaluation run in SHADOW MODE alongside the
+    """G6: Rego-over-plan-JSON evaluation run in SHADOW MODE alongside the
     existing regex-over-HCL scan -- logged and printed, never blocks stage_plan, never
     enforces. `optimize_analyzer.scan_hcl_files(dir_)` is re-run here (a second, redundant,
     harmless read-only invocation on the same dir -- stage_verify's own call happens earlier,
@@ -392,38 +466,34 @@ def _print_g6_shadow(result):
 
 
 G9_EMULATOR_ENV = "MINUS_G9_EMULATOR"
-# Explicit opt-in, not a default-on assumption: G9 (docs/phase6_step1_authoring_scope.md
-# section 3) runs a real terraform init/plan/apply/destroy cycle against a real emulator
-# container -- calling that unconditionally on every stage_plan() invocation would make the
-# entire existing test suite (hundreds of calls, none of which run Docker) depend on emulator
-# infrastructure that doesn't exist in most environments this gate runs in, including this
-# session's own. Setting MINUS_G9_EMULATOR to a supported emulator name is what actually turns
-# real ephemeral-apply invocation on; unset means "not configured" -- SYNCHRONOUS (docs/
-# phase6_step1_authoring_scope.md section 3's own recorded decision), fail-CLOSED at the
-# auto-approve enforcement boundary (see _reject_if_g9_not_clean_and_auto_approve below), never
-# silently treated as "nothing to check, must be safe."
+# Explicit opt-in, deliberately not default-on. G9 runs a real terraform
+# init/plan/apply/destroy cycle against an emulator container; invoking that unconditionally
+# from stage_plan() would make the whole test suite (none of which runs Docker) depend on
+# emulator infrastructure most environments running this gate do not have. Setting
+# MINUS_G9_EMULATOR to a supported emulator name turns real ephemeral-apply on. Unset means
+# "not configured", which is fail-CLOSED at the auto-approve enforcement boundary (see
+# _reject_if_g9_not_clean_and_auto_approve) -- never read as "nothing to check, must be safe."
 
 
 def _g9_eval(dir_, plan_json):
-    """G9 (docs/phase5_scope.md Phase 5, wired into the real flow per docs/
-    phase6_step1_authoring_scope.md section 3): real ephemeral-apply verdict for the current
-    plan, computed once here at plan time and carried through the approval record to apply time
-    (the same "computed once at plan, reused at apply" shape destroy already uses) rather than
-    re-run at apply time, since a real init/apply/destroy cycle is genuinely expensive -- running
-    it twice per deploy for no new information would be pure waste, not extra safety.
+    """G9: real ephemeral-apply verdict for the current plan.
 
-    Coverage "none" (no AWS content in the plan at all -- a Databricks-only or
-    zero-cloud-footprint plan like the terraform_data-based e2e fixtures) means G9 has nothing
-    to prove here and is skipped cleanly -- matches ephemeral_apply.py's own honest "none"
-    verdict, never silently reported as if G9 ran and passed.
+    Computed once here at plan time and carried through the approval record to apply time --
+    the same shape destroy already uses -- rather than re-run at apply. A real
+    init/apply/destroy cycle is expensive, and running it twice per deploy yields no new
+    information.
 
-    No emulator configured (MINUS_G9_EMULATOR unset -- the disclosed, real, current-environment
-    state: no LocalStack token is provisioned this session, and both evaluated free emulators
-    (MiniStack, Floci) already failed IAM/KMS/S3 negative-fidelity -- docs/phase5_scope.md
-    section 7.5/8.6) returns a synthetic, always-non-clean verdict in the same {evaluation_failed,
-    reason, ...} shape ephemeral_apply.py's own _fail() produces for `terraform_not_found`, so
-    downstream code (the enforcement check, the audit record) treats it identically to any other
-    G9 failure -- never a special-cased "skip because it's not set up" path.
+    Coverage "none" (no AWS content at all: a Databricks-only plan, or a zero-cloud-footprint
+    one like the terraform_data e2e fixtures) means G9 has nothing to prove and is skipped
+    cleanly, matching ephemeral_apply.py's own "none" verdict -- never reported as if G9 ran
+    and passed.
+
+    No emulator configured (MINUS_G9_EMULATOR unset, the current state here: no LocalStack
+    token, and both free emulators fail IAM/KMS/S3 negative fidelity --
+    section 7.5/8.6) returns a synthetic, always-non-clean verdict in the same
+    {evaluation_failed, reason, ...} shape ephemeral_apply.py's _fail() produces, so the
+    enforcement check and the audit record treat it identically to any other G9 failure. Do
+    not special-case it into a "skip because it isn't set up" path.
     """
     if plan_json is None:
         return {"evaluation_failed": True, "reason": "plan_unreadable", "detail": "",
@@ -455,7 +525,7 @@ def _print_g9_result(result):
 
 
 def _print_intent_assertions(result):
-    """Phase 4 (docs/phase4_scope.md, G3/G4): intent-vs-reality advisory findings. ADVISORY
+    """Phase 4: intent-vs-reality advisory findings. ADVISORY
     ONLY -- printed and audited, never blocks stage_plan, same shadow discipline as G6."""
     if result.get("evaluation_failed"):
         print(f"[gate] Phase 4 intent-assertions evaluation failed: "
@@ -487,6 +557,147 @@ def _print_classification(classification):
         print(f"  - reduced assurance: {classification['reduced_assurance_reason']}", file=sys.stderr)
         for addr in classification["databricks_resources"]:
             print(f"    - {addr}", file=sys.stderr)
+
+
+# --- Verify receipts ----------------------------------------------------------------------
+#
+# `plan` used to run on a directory `verify` had never seen. Measured: a plan hash was minted,
+# an approval could be attached to it, and nothing recorded that the fmt check, `terraform
+# validate` and the SEC scan had all been skipped. The G6 evaluation inside stage_plan is
+# shadow-only by design and never blocked anything, so there was no second line holding it.
+#
+# The fix is the plan-hash pattern one stage earlier: verify binds a receipt to the SOURCE
+# content, and plan refuses without a receipt matching what is on disk right now. An edit
+# after verify invalidates it for exactly the reason an edit after plan voids an approval --
+# the evidence describes content that is no longer there.
+
+VERIFY_RECEIPT = "verified.json"
+
+# Long enough that "ok", "fine" and "n/a" cannot pass for a consequence. Not a quality bar --
+# no length check makes a sentence true -- but it stops the field being satisfied by a
+# keystroke, which is the failure mode a free-text box actually has.
+MIN_IMPACT_CHARS = 20
+
+# Ordered weakest to strongest. A receipt satisfies a plan when it was produced under a mode
+# at least as strict, so production evidence covers a dev plan but never the reverse: a dev
+# verify never ran the external policy scanners production requires, and honouring it would
+# report a check that did not happen.
+_POLICY_STRENGTH = {"dev": 0, "production": 1}
+
+
+def _verify_receipt_path(dir_):
+    return os.path.join(_state_dir(dir_), VERIFY_RECEIPT)
+
+
+def _source_digest(dir_):
+    """One digest over the content of every source file in the directory.
+
+    Built on source_guard.source_hashes(), which already walks the tree and hashes each file
+    for the drift check -- this only folds that mapping into a single comparable value.
+    """
+    hashes = source_guard.source_hashes(dir_)
+    canonical = json.dumps(hashes, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _write_verify_receipt(dir_, policy_mode):
+    """Record that verify passed, and over exactly what."""
+    os.makedirs(_state_dir(dir_), exist_ok=True)
+    record = {
+        "source_digest": _source_digest(dir_),
+        "policy_mode": policy_mode,
+        "canonical_dir": _canonical_dir(dir_),
+        "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "verified_by": getpass.getuser(),
+    }
+    with open(_verify_receipt_path(dir_), "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(record, handle, indent=2)
+    return record
+
+
+def _read_verify_receipt(dir_):
+    """The receipt, or None. A corrupt record reads as ABSENT, never as valid -- treating a
+    truncated file as a pass is how a disk-full event silently turns the gate off."""
+    path = _verify_receipt_path(dir_)
+    if not os.path.exists(path):
+        return None
+    try:
+        record = json.load(open(path, encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _verify_state(dir_, policy_mode):
+    """{ok, reason, detail} -- whether verify's evidence covers a plan of this directory now."""
+    receipt = _read_verify_receipt(dir_)
+    if receipt is None:
+        return {"ok": False, "reason": "verify_not_run",
+                "detail": "no verify receipt for this directory"}
+    if receipt.get("canonical_dir") != _canonical_dir(dir_):
+        return {"ok": False, "reason": "verified_another_directory",
+                "detail": f"receipt was written for {receipt.get('canonical_dir')!r}"}
+    if receipt.get("source_digest") != _source_digest(dir_):
+        return {"ok": False, "reason": "source_changed_since_verify",
+                "detail": "the Terraform source changed after verify passed"}
+    have = _POLICY_STRENGTH.get(receipt.get("policy_mode"), -1)
+    want = _POLICY_STRENGTH.get(policy_mode, 0)
+    if have < want:
+        return {"ok": False, "reason": "verified_under_weaker_policy_mode",
+                "detail": f"verified under {receipt.get('policy_mode')!r}, "
+                          f"planning under {policy_mode!r}"}
+    return {"ok": True, "reason": None, "detail": None, "receipt": receipt}
+
+
+def _record_impact(dir_, impact_text, classification):
+    """Attach the author's impact statement to the pending plan, so approve can show it."""
+    with _gate_state_lock(_pending_path(dir_)):
+        try:
+            pending = json.load(open(_pending_path(dir_), encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        pending["impact"] = {
+            "statement": impact_text,
+            "stated_by": authz.verified_operator() or authz.operator(),
+            "stated_at": _now(),
+            "finding_count": len(classification.get("findings") or []),
+        }
+        _write_json_atomic(_pending_path(dir_), pending)
+
+
+def _clear_pending(dir_):
+    """Remove the pending record. A refused plan must leave nothing approvable behind."""
+    try:
+        os.remove(_pending_path(dir_))
+    except OSError:
+        pass
+
+
+def _print_impact(pending):
+    """Show the impact statement to the approver, above the y/N."""
+    impact = (pending or {}).get("impact") or {}
+    statement = impact.get("statement")
+    if not statement:
+        return
+    print("")
+    print("  WHAT THIS CHANGES, stated by the author of the plan:")
+    for line in textwrap.wrap(statement, width=76):
+        print(f"    {line}")
+    print(f"    -- {impact.get('stated_by')}, {impact.get('stated_at', '')[:19]}")
+    print("")
+
+
+def _reject_if_unverified(dir_, policy_mode):
+    """True when plan must not proceed. Prints what to run rather than only what went wrong."""
+    state = _verify_state(dir_, policy_mode)
+    if state["ok"]:
+        return False
+    print(f"[gate] refusing to plan: {state['detail']}.", file=sys.stderr)
+    print(f"[gate] run `minusctl gate verify --dir {dir_}` first -- a plan a human can "
+          f"approve must have been format-checked, validated and security-scanned.",
+          file=sys.stderr)
+    _audit("plan", "REJECTED", reason=state["reason"], dir=dir_, policy_mode=policy_mode)
+    return True
 
 
 def _source_status_for_hash(plan_hash):
@@ -542,6 +753,60 @@ def _identity():
         return get_provider().identity()
     except Exception:
         return None, False
+
+
+def _backend_team(dir_):
+    """The team id this directory's remote state is scoped to, or None.
+
+    Read from the generated backend key rather than a flag: the flag is what an operator
+    TYPED, the key is what the stack actually writes. Checking the flag would let a wrong
+    --team argument authorise an apply against another team's state.
+    """
+    for name in ("providers.tf", "backend.tf", "main.tf"):
+        path = os.path.join(dir_, name)
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError:
+            continue
+        match = re.search(r'key\s*=\s*"teams/([a-z0-9][a-z0-9-]*)/', text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _reject_if_wrong_team_role(dir_, posture, mode):
+    """Refuse to approve when the active session is not the team's deploy role.
+
+    Only applies to a stack whose state is team-scoped -- an unscoped stack has no team to
+    check against, and inventing one would block every existing run.
+
+    Fails CLOSED on an unreadable identity: if we cannot tell whose session this is, we
+    cannot tell that it is allowed to write another squad's state. `auto-approve` gets NO
+    exemption; an unattended runner is exactly the case this exists for.
+    """
+    team_id = _backend_team(dir_)
+    if not team_id:
+        return False
+
+    record = team_resolver.resolve(team_id)
+    pattern = record["deploy_role_pattern"]
+    arn = (posture or {}).get("arn")
+    if not arn:
+        print(f"[gate] REFUSED - state is scoped to team {team_id!r} but the active identity "
+              f"could not be read, so it cannot be shown to be that team's deploy role.",
+              file=sys.stderr)
+        return True
+    if team_resolver.role_matches(arn, pattern):
+        print(f"[gate] team role OK: {arn} matches {pattern}")
+        return False
+    print(f"[gate] REFUSED - this session is not authorised to apply team {team_id!r}.",
+          file=sys.stderr)
+    print(f"        active session : {arn}", file=sys.stderr)
+    print(f"        required role  : {pattern}", file=sys.stderr)
+    if not record["configured"]:
+        print(f"        (no entry for {team_id!r} in {team_resolver.config_path()}; the "
+              "pattern above is the default. Add the team to override it.)", file=sys.stderr)
+    return True
 
 
 def _credential_posture():
@@ -615,11 +880,12 @@ def _reject_if_nonsandbox_dev(dir_, account, policy_mode, destroy=False):
 
 
 def _reject_if_apply_identity_mismatches_approver(dir_, approval, policy_mode, destroy=False):
-    """2026-07-07, Phase 1 item 2: the approval record proves WHO approved a plan hash, but
-    until now nothing checked that the credentials actually running `apply` belong to that
-    same approver -- two different people could satisfy "someone approved" and "someone
-    applied" without ever being the same person. Compares the CURRENT (apply-time) verified
-    AWS identity against the approver recorded at approval time.
+    """Require the credentials running `apply` to belong to the recorded approver.
+
+    The approval record proves WHO approved a plan hash; without this check two different
+    people can satisfy "someone approved" and "someone applied" without ever being the same
+    person. Compares the current apply-time verified AWS identity against the approver
+    recorded at approval time.
 
     Only compares when BOTH sides are real, AWS-STS-verified identities (not the
     env-var/OS-user fallback) -- an unverifiable approval predates this feature or ran with
@@ -650,19 +916,37 @@ def _reject_if_apply_identity_mismatches_approver(dir_, approval, policy_mode, d
 
 
 def _clear_approvals(dir_, plan_hash=None):
-    try:
-        if plan_hash:
-            path = _approved_path(dir_, plan_hash)
+    """Remove approval records, returning the paths that could not be removed."""
+    # This used to swallow every exception and return nothing, which quietly broke the one-shot
+    # contract its own call site states. An approval that cannot be deleted is still a valid
+    # approval: the next apply of the same plan finds it, validates it, and runs again. One
+    # approval, two applies.
+    #
+    # Not hypothetical on this platform. os.remove raises PermissionError on Windows whenever
+    # anything else holds the file open -- an indexer or a scanner is enough -- and this repo
+    # has hit Windows lock semantics diverging from POSIX more than once already.
+    #
+    # A caller that is rejecting anyway can ignore the return: it has already refused, and the
+    # leftover record is re-validated (hash, canonical dir) on any later attempt, so it cannot
+    # authorise anything on its own. The consuming caller cannot ignore it, and does not.
+    if plan_hash:
+        targets = [_approved_path(dir_, plan_hash)]
+    else:
+        approvals = _approval_dir(dir_)
+        try:
+            targets = [os.path.join(approvals, name) for name in os.listdir(approvals)
+                       if name.endswith(".json")] if os.path.isdir(approvals) else []
+        except OSError:
+            return [approvals]
+
+    unremoved = []
+    for path in targets:
+        try:
             if os.path.exists(path):
                 os.remove(path)
-            return
-        approvals = _approval_dir(dir_)
-        if os.path.isdir(approvals):
-            for name in os.listdir(approvals):
-                if name.endswith(".json"):
-                    os.remove(os.path.join(approvals, name))
-    except Exception:
-        pass
+        except OSError:
+            unremoved.append(path)
+    return unremoved
 
 
 # ---------------------------------------------------------------------------
@@ -701,8 +985,58 @@ def stage_verify(dir_, policy_mode=None):
                 print(err, file=sys.stderr)
             _audit("verify", "FAILED", reason="scan", dir=dir_, policy_mode=policy_mode)
             return False
+    # G6 is a verify-stage AVAILABILITY requirement, not a blanket blocker. Two separate facts,
+    # deliberately kept apart:
+    #
+    #   1. Can policy be evaluated at all? In production, OPA being absent means the run can
+    #      make no claim about Rego compliance, and printing "verify OK" while the evaluator is
+    #      missing is exactly the false assurance this check removes -- so it fails hard. In
+    #      standard mode it stays a warning; a developer without OPA must still be able to
+    #      iterate.
+    #
+    #   2. Does a violated rule stop the run? That stays with the per-rule promotion registry
+    #      (policy/rule_stages.json, enforced at plan by _reject_if_promoted_policy_violated).
+    #      Do not flip every rule to blocking here -- see the G6 coverage note in stage_plan for
+    #      why. The path is shadow -> warn -> enforce, per rule, on an attributable promotion.
+    if not _reject_if_policy_engine_unavailable(dir_, policy_mode):
+        return False
+
+    receipt = _write_verify_receipt(dir_, policy_mode)
     print("[gate] verify OK")
-    _audit("verify", "OK", dir=dir_, policy_mode=policy_mode)
+    _audit("verify", "OK", dir=dir_, policy_mode=policy_mode,
+           source_digest=receipt["source_digest"])
+    return True
+
+
+def _reject_if_policy_engine_unavailable(dir_, policy_mode):
+    """True to continue. In production mode an unusable Rego engine fails verify.
+
+    Checked here rather than at plan because verify is where an operator learns whether this
+    machine can produce a governed result at all -- discovering it after a plan has already
+    been recorded wastes the plan and buries the reason.
+    """
+    opa = toolpath.find_tool("opa")
+    stages = rule_stages.summary() if hasattr(rule_stages, "summary") else None
+    if opa:
+        detail = f"opa at {opa}"
+        if stages:
+            detail += f"; rule stages: {stages}"
+        print(f"[gate] policy engine available ({detail})")
+        return True
+
+    if policy_mode == "production":
+        print("[gate] REFUSED - production policy mode requires OPA, and it is not on PATH.",
+              file=sys.stderr)
+        print("        Without it no Rego rule is evaluated, so a passing verify would be "
+              "asserting a compliance check that never ran.", file=sys.stderr)
+        print("        Install OPA, or run with --policy-mode standard and accept that "
+              "G6 findings are unavailable.", file=sys.stderr)
+        _audit("verify", "FAILED", reason="opa_missing_production", dir=dir_,
+               policy_mode=policy_mode)
+        return False
+
+    print("[gate] policy engine UNAVAILABLE (opa not on PATH) -- G6 rules are not evaluated "
+          "in this run. Production policy mode refuses this state.")
     return True
 
 
@@ -740,17 +1074,42 @@ def _check_coverage(dir_, plan_hash_, policy_mode):
     return True
 
 
-def stage_plan(dir_, policy_mode=None, destroy=False):
+TELEMETRY_ENV = "MINUS_TELEMETRY"
+
+
+def _telemetry_requested(with_telemetry=False):
+    """Opt-in only: the flag, or MINUS_TELEMETRY=1 for CI where there is no flag to type but
+    there are ambient role credentials.
+
+    Off is the default because the common case is an offline plan on a laptop with no
+    credentials, and a gate that reaches for CloudTrail there is slower for no answer."""
+    if with_telemetry:
+        return True
+    return os.environ.get(TELEMETRY_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _drift_for_plan(plan_json, with_telemetry=False):
+    """Classify cloud drift, correlating it with CloudTrail/Glue telemetry only on request.
+
+    The lookup is passed in rather than looked up inside cloud_drift so the default path
+    makes no AWS call at all -- see that module on why correlation is advisory and
+    fail-open. A telemetry failure never changes the verdict."""
+    telemetry_fn = cloud_drift.aws_telemetry if _telemetry_requested(with_telemetry) else None
+    return cloud_drift.classify(plan_json or {}, telemetry=telemetry_fn)
+
+
+def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
+               impact=None):
     """destroy=True governs teardown through the exact same hash-bind -> approve -> apply loop
-    as create/modify (2026-07-05 audit finding: destroy was the one ungated path -- raw
-    `terraform destroy`, no plan-hash binding, no RBAC, no audit chain). A destroy plan's
-    resource_changes carry actions=["delete"]; _plan_hash/_apply_with_json_capture/stage_apply
-    already handle that shape correctly (verified against real terraform: apply -json on a
-    saved destroy-plan file emits the same apply_start/apply_complete stream, and _ACTION_VERB/
-    _ACTION_DONE already render "delete" as Destroying/destruction) -- nothing downstream of
-    this function needed to change."""
+    as create/modify, so teardown is never a raw `terraform destroy` with no plan-hash binding,
+    no RBAC, and no audit chain. A destroy plan's resource_changes carry actions=["delete"],
+    which the rest of the pipeline handles unchanged: `apply -json` on a saved destroy plan
+    emits the same apply_start/apply_complete stream, and _ACTION_VERB/_ACTION_DONE already
+    render "delete" as Destroying/destruction."""
     print("== plan (destroy) ==" if destroy else "== plan ==")
     policy_mode = _policy_mode(policy_mode)
+    if _reject_if_unverified(dir_, policy_mode):
+        return False
     plan_args = ["plan", f"-out={PLAN_FILE}"]
     if destroy:
         plan_args.insert(1, "-destroy")
@@ -765,22 +1124,28 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
         _audit("plan", "FAILED", reason="hash", dir=dir_, destroy=destroy)
         return False
     os.makedirs(_state_dir(dir_), exist_ok=True)
-    with open(_pending_path(dir_), "w", encoding="utf-8") as f:
-        json.dump({
+    _verified_planner = authz.verified_operator()
+    _planner_identity = (_verified_planner or authz.operator(), bool(_verified_planner))
+    _write_json_atomic(_pending_path(dir_), {
             "plan_hash": h,
             "dir": dir_,
             "canonical_dir": _canonical_dir(dir_),
-            # 2026-07-07: prefer the AWS-STS-verified identity (cannot be spoofed by
-            # MINUS_OPERATOR) so the two-person production rule below compares real
-            # authenticated principals, not two self-reported strings. Falls back to
-            # operator() when no cloud session is active yet (e.g. dev mode planning
-            # before credentials are configured).
-            "planner": authz.verified_operator() or authz.operator(),
+            # Prefer the AWS-STS-verified identity (cannot be spoofed by MINUS_OPERATOR) so
+            # the two-person production rule below compares real authenticated principals,
+            # not two self-reported strings. Falls back to operator() when no cloud session
+            # is active yet, e.g. dev-mode planning before credentials are configured.
+            "planner": _planner_identity[0],
+            # Whether that name was cryptographically established or self-reported. Recording
+            # only the name left the two-person rule comparing two strings, with no way to tell
+            # a verified principal from an environment variable -- see
+            # _enforce_production_approval, which now requires both sides to be verified in
+            # production. Absent on a record written before this field existed, which
+            # production treats as unproven.
+            "planner_verified": _planner_identity[1],
             "created": _now(),
             "destroy": destroy,
-        }, f, indent=2)
+    })
     _clear_approvals(dir_)  # a new plan for this dir invalidates prior approvals
-    print(f"[gate] plan saved. plan_hash = {h[:16]}...")
 
     # Destructive-change classification (core/governance/destructive_change_gate.py, Phase 1 of
     # the generation-time-authoring gate stack). SHADOW ONLY here: logged and printed, never
@@ -789,13 +1154,50 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     classification = _classify_plan(dir_)
     _print_classification(classification)
 
-    # G6 (docs/g6_scope.md, Phase 3): SEC-*/COST-* rules over real plan JSON via OPA/Rego,
-    # run alongside the existing regex-over-HCL scan (core/reporting/optimize_analyzer.py,
-    # still invoked separately in stage_verify above -- unchanged). SHADOW ONLY: this never
-    # blocks stage_plan and never enforces anything -- BLOCKING_PREFIXES / real enforcement
-    # stays exactly where it already is (optimize_analyzer.py's own SEC- prefix check,
-    # unchanged) until 16-module parity is proven and Phase 3 is explicitly closed for real,
-    # same discipline as G2/G5.
+    # A staged plan must arrive with a written impact statement (FR: forced articulation).
+    #
+    # The gate already KNEW the plan was staged and printed why -- machine-readable findings
+    # naming the address and the reason. What nobody had to do was say what BREAKS. A human
+    # reading "STAGED PATH REQUIRED (3 finding(s))" over a 400-resource diff is being asked to
+    # rubber-stamp, and a y/N on a diff nobody can hold in their head is not review.
+    #
+    # So the author states the consequence at plan time, and the human reads that sentence at
+    # approve time. Modelled on the awslabs ccapi-mcp-server, which requires an explain() call
+    # describing deletion impact before it will accept a confirmation.
+    if not classification.get("autonomous_eligible", False):
+        impact_text = (impact or "").strip()
+        if len(impact_text) < MIN_IMPACT_CHARS:
+            print(f"[gate] refusing to stage this plan: it is not autonomous-eligible and "
+                  f"carries no impact statement.", file=sys.stderr)
+            print(f"[gate] re-run with --impact \"<what breaks, and for whom>\" "
+                  f"({MIN_IMPACT_CHARS} characters minimum). The approver reads this "
+                  f"sentence, not the {len(classification['findings'])} finding(s) above.",
+                  file=sys.stderr)
+            _audit("plan", "REJECTED", reason="staged_plan_without_impact_statement",
+                   dir=dir_, plan_hash=h, destroy=destroy)
+            _clear_pending(dir_)
+            return False
+        _record_impact(dir_, impact_text, classification)
+
+    # Announced only once the plan has actually survived staging. Printing it earlier said
+    # "plan saved" and then refused two lines later, and an operator reading the tail of the
+    # output saw a success that had been discarded.
+    print(f"[gate] plan saved. plan_hash = {h[:16]}...")
+
+    # G6: SEC-*/COST-* rules over real plan JSON via OPA/Rego, run alongside
+    # the regex-over-HCL scan (core/reporting/optimize_analyzer.py, invoked separately in
+    # stage_verify above). SHADOW ONLY: this never blocks stage_plan and never enforces.
+    # Enforcement stays where it already is, in optimize_analyzer.py's own SEC- prefix check.
+    #
+    # WHY IT IS STILL SHADOW. Parity is not the blocker -- tests/test_rego_gate.py::
+    # test_g6_zero_false_positives_across_real_catalog proves zero unexpected false positives
+    # across the real module catalog using real terraform plans, green in CI (opa v1.18.2
+    # pinned). COVERAGE is the blocker: the tracked rule IDs reach only a small minority of the
+    # resource types reviewed in destructive_change_gate.py (STATEFUL_RESOURCE_TYPES +
+    # IAM_RESOURCE_TYPES + REVIEWED_UNSAFE_TYPES + AUTO_SHIP_ELIGIBLE_TYPES), and most of the
+    # stateful danger set has no rule at all. Enforcing at that reach reads as "policy is
+    # enforced" while the large remainder passes unexamined -- worse than an honest shadow
+    # gate. Widen coverage first, then go shadow -> warn -> enforce; never shadow -> enforce.
     plan_json_for_g6, plan_json_err = _plan_json(dir_)
     g6_result = _g6_shadow_eval(dir_, plan_json_for_g6) if plan_json_for_g6 is not None else {
         "comparable": False, "regex_error": None,
@@ -803,16 +1205,23 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     }
     _print_g6_shadow(g6_result)
 
-    # G9 (docs/phase5_scope.md Phase 5, wired into the real flow per docs/
-    # phase6_step1_authoring_scope.md section 3): unlike G6, this is NOT shadow-only -- a
-    # not-clean verdict blocks the auto-approve enforcement path below (see
-    # _reject_if_g9_not_clean_and_auto_approve in stage_apply). Skipped for destroy plans (same
-    # reasoning as the cost-coverage skip below: G9 exists to catch CREATE-order apply-time
-    # failures; a teardown has nothing new for it to check). Computed once here, carried through
-    # the pending record -> approval record -> stage_apply, never re-run at apply time (a real
-    # init/apply/destroy cycle is genuinely expensive; re-running it a second time per deploy for
-    # no new information would be pure waste, not extra safety -- docs/
-    # phase6_step1_authoring_scope.md section 3's own recorded sync/async decision).
+    # The shadow -> warn -> enforce path the comment above calls for, made per-rule rather
+    # than all-or-nothing. Every rule defaults to warn, and only a
+    # human promotion in policy/rule_stages.json lets one block. That is what makes accepting
+    # agent-authored rules safe: adding a rule cannot change what ships until someone signs
+    # off on it. Today every rule is seeded at warn, so this is a no-op until first promotion.
+    if plan_json_for_g6 is not None:
+        _rego_for_promotion = rego_gate.evaluate(plan_json_for_g6)
+        if _reject_if_promoted_policy_violated(dir_, _rego_for_promotion, destroy):
+            return False
+
+    # G9: unlike G6, NOT shadow-only -- a not-clean verdict blocks the
+    # auto-approve path (see _reject_if_g9_not_clean_and_auto_approve in stage_apply). Skipped
+    # for destroy plans on the same reasoning as the cost-coverage skip below: G9 catches
+    # create-order apply-time failures, and a teardown gives it nothing new to check. Computed
+    # once here and carried pending record -> approval record -> stage_apply, never re-run at
+    # apply; a real init/apply/destroy cycle is expensive and the second run adds no
+    # information.
     g9_result = _g9_eval(dir_, plan_json_for_g6) if not destroy else {
         "evaluation_failed": False, "reason": None, "detail": "destroy plan -- G9 not applicable",
         "coverage": None, "databricks_resources": [], "findings": [], "emulator": None,
@@ -820,25 +1229,67 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     _print_g9_result(g9_result)
     # Merge into the pending record already written above rather than recomputing it (planner
     # identity can be a real AWS STS call -- doing that twice per plan would be pure waste).
-    try:
-        pending_for_update = json.load(open(_pending_path(dir_), encoding="utf-8"))
-    except Exception:
-        pending_for_update = {}
-    pending_for_update["g9_result"] = g9_result
-    with open(_pending_path(dir_), "w", encoding="utf-8") as f:
-        json.dump(pending_for_update, f, indent=2)
+    # Did the CLOUD change outside Terraform, and does this plan undo it? Computed from the
+    # same plan JSON, carried to apply like g9_result.
+    drift_result = _drift_for_plan(plan_json_for_g6, with_telemetry=with_telemetry)
+    print(cloud_drift.format_result(drift_result))
 
-    # Phase 4 (docs/phase4_scope.md, G3/G4): intent-vs-reality advisory checks. ADVISORY ONLY --
-    # never blocks stage_plan, same shadow discipline as G6. requirements.json/architecture_
-    # decision.json are looked up in dir_'s parent (the run root, matching runs.new_run()'s own
-    # terraform_dir = root/"terraform" convention) -- their absence just means this run isn't
-    # part of the requirements-first workflow, not an error. check_controls (blueprint-specific)
-    # is deliberately NOT wired here: the demo blueprint's own synthetic plan (demo.py's
-    # synthetic_plan(), not a real terraform plan) has no `configuration` key at all, so the two
-    # checks needing sibling-reference tracing (public access blocks, versioning/lifecycle)
-    # would false-positive on every demo run regardless of real correctness -- a real limitation
-    # discovered while wiring this, not silently papered over. check_module_presence and
-    # check_numerics both work correctly here since they need only resource_changes.
+    # A rename-shaped destroy+create of a STATEFUL resource is data loss wearing an ordinary
+    # update's clothes. Blocks the PLAN outright rather than
+    # deferring to apply -- unlike the auto-approve checks, there is no mode in which
+    # silently destroying a bucket is the intended outcome, so a human reviewing it at
+    # approve time is not a sufficient answer. The fix is one `moved` block.
+    churn_result = address_churn.classify(
+        plan_json_for_g6 or {}, moved_blocks=address_churn.read_moved_blocks(dir_))
+
+    # All three verdicts merge in ONE locked read-modify-write. Computed above, outside the
+    # lock, because none of them touch the file and two shell out to terraform -- holding the
+    # lock across that would serialise unrelated work. Held end to end here so a second
+    # operator planning the same directory cannot land a write between the read and the
+    # write, silently dropping whichever verdict lost the race.
+    with _gate_state_lock(_pending_path(dir_)):
+        try:
+            pending_for_update = json.load(open(_pending_path(dir_), encoding="utf-8"))
+        except Exception as exc:
+            # This file was written a few lines above, so failing to read it back means
+            # something outside this process interfered. Starting from {} and writing that back
+            # replaces the record's plan_hash, canonical_dir, planner and planner_verified with
+            # nothing. Approval then refuses -- correctly, but reporting "stale plan", which
+            # sends the operator looking for a plan that changed rather than for whatever
+            # damaged the file.
+            #
+            # Still fail-closed on {}: continuing with a record that could not be read is not an
+            # option. What changes is that it stops being silent.
+            print(f"[gate] WARNING: the pending plan record could not be read back after being "
+                  f"written ({exc}). Rebuilding it from this plan only -- the recorded planner "
+                  "identity is gone, so approval will refuse until `plan` is re-run.",
+                  file=sys.stderr)
+            _audit("plan", "WARN", reason="pending_record_unreadable_after_write", dir=dir_,
+                   detail=str(exc), destroy=destroy)
+            pending_for_update = {}
+        pending_for_update["g9_result"] = g9_result
+        pending_for_update["cloud_drift"] = drift_result
+        pending_for_update["address_churn"] = churn_result
+        _write_json_atomic(_pending_path(dir_), pending_for_update)
+    if churn_result["blocked"]:
+        print(address_churn.format_result(churn_result), file=sys.stderr)
+        _audit("plan", "REJECTED", reason="rename_shaped_address_churn", dir=dir_,
+               destroy=destroy, address_churn=churn_result)
+        return False
+    if churn_result["advisory"]:
+        print(address_churn.format_result(churn_result))
+
+    # Phase 4: intent-vs-reality advisory checks. ADVISORY ONLY
+    # -- never blocks stage_plan, same shadow discipline as G6. requirements.json and
+    # architecture_decision.json are looked up in dir_'s parent (the run root, matching
+    # runs.new_run()'s terraform_dir = root/"terraform" convention); their absence just means
+    # this run is not part of the requirements-first workflow, not an error.
+    #
+    # check_controls is deliberately NOT wired here. The demo blueprint's synthetic plan
+    # (demo.py's synthetic_plan(), not a real terraform plan) has no `configuration` key, so
+    # its two sibling-reference checks (public access blocks, versioning/lifecycle) would
+    # false-positive on every demo run regardless of real correctness. check_module_presence
+    # and check_numerics need only resource_changes and are wired.
     run_root = os.path.dirname(os.path.normpath(dir_))
     requirements_record = reqgate.load(run_root)
     architecture_decision_record = adecision.load(run_root)
@@ -873,13 +1324,15 @@ def stage_plan(dir_, policy_mode=None, destroy=False):
     return _check_coverage(dir_, h, policy_mode)
 
 
-def _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, plan_hash):
+def _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, plan_hash,
+                                  approver_verified=False):
     """Production controls (enforced): approvals must be attributable and segregated.
 
-    Returns True if approval may proceed, False if it must be blocked. In production
-    an approver allowlist is required, and the approver must be a principal distinct
-    from the planner (two-person rule); a plan with no recorded planner cannot prove
-    that separation and is refused. Dev mode always proceeds.
+    Returns True if approval may proceed, False if it must be blocked. In production an
+    approver allowlist is required, both the planner and the approver must be identities AWS
+    STS actually established, and the approver must be a principal distinct from the planner
+    (two-person rule); a plan with no recorded planner cannot prove that separation and is
+    refused. Dev mode always proceeds.
     """
     if policy_mode != "production":
         return True
@@ -897,6 +1350,32 @@ def _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pendin
               file=sys.stderr)
         _audit("approve", "REJECTED", reason="missing_planner_in_production",
                plan_hash=plan_hash, dir=dir_, approver=approver)
+        return False
+    # Both identities must be ones AWS STS actually established, checked here rather than
+    # earlier so a misconfiguration still reports as a misconfiguration. Comparing two
+    # self-reported strings proves nothing about separation of duties: `dave@corp` could plan
+    # under a real verified session, then approve his own plan by dropping that session and
+    # exporting MINUS_OPERATOR=bob. The names differ, so the comparison below passed and the
+    # audit trail recorded bob. That was demonstrated end to end before this was added -- the
+    # comment on the planner field claimed it was already impossible, and it was not, because
+    # nothing recorded which side had been verified.
+    if not approver_verified:
+        print("[gate] refusing approval (production): the approver identity is self-reported, "
+              "not established by AWS STS. Authenticate (`aws sso login`, or assume your "
+              "MFA-gated deploy role) so the approval names a principal that can be proven. "
+              "MINUS_OPERATOR alone cannot satisfy the two-person rule.", file=sys.stderr)
+        _audit("approve", "REJECTED", reason="unverified_approver_in_production",
+               plan_hash=plan_hash, dir=dir_, approver=approver, planner=planner)
+        return False
+    # Absent on a pending record written before this field existed, which production treats as
+    # unproven rather than assuming the best about it.
+    if not (pending or {}).get("planner_verified"):
+        print("[gate] refusing approval (production): the plan's recorded planner was "
+              "self-reported rather than established by AWS STS, so separation of duties "
+              "cannot be proven against it. Re-run `plan` under an authenticated session.",
+              file=sys.stderr)
+        _audit("approve", "REJECTED", reason="unverified_planner_in_production",
+               plan_hash=plan_hash, dir=dir_, approver=approver, planner=planner)
         return False
     if planner == approver:
         print(f"[gate] refusing approval (production): {approver} cannot approve their own plan "
@@ -931,7 +1410,120 @@ def _warn_if_over_budget(dir_, plan_hash_):
         pass
 
 
-def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
+def _reject_if_not_asserted_role(posture, role_arn):
+    """Refuse to approve unless the ambient session IS the role the operator asserted.
+
+    `--role-arn` states which role this approval is being made under. It is an ASSERTION the
+    gate verifies, never a role the gate assumes: this process handles no credentials, and
+    minting a session here would put secrets in a tool whose whole contract is that it has
+    none. Same shape as _reject_if_wrong_team_role, which verifies the same posture against
+    the state key.
+
+    There is deliberately no `--mfa-arn` companion. `sts get-caller-identity` returns
+    Account, Arn and UserId -- no MFA claim -- so the gate cannot verify one. MFA is enforced
+    by the deploy role's trust policy (`aws:MultiFactorAuthPresent`) at AssumeRole time,
+    upstream of anything this process can see. A flag accepted and never checked would be an
+    unverified assertion sitting in an audit record, which is worse than no flag at all.
+
+    Fails closed on an unreadable identity: if we cannot tell whose session this is, we
+    cannot tell it is the asserted role.
+    """
+    if not role_arn:
+        return False
+    arn = (posture or {}).get("arn")
+    if not arn:
+        print("[gate] refusing approve: --role-arn was asserted but the active session "
+              "identity could not be read. Run `aws sts get-caller-identity` to check your "
+              "credentials.", file=sys.stderr)
+        return True
+    if team_resolver.role_matches(arn, role_arn):
+        return False
+    print(f"[gate] refusing approve: --role-arn asserted {role_arn}, but this session is "
+          f"{arn}. Assume the right role, or drop the assertion.", file=sys.stderr)
+    return True
+
+
+def gate_status(dir_):
+    """Recorded gate state for a directory, read from disk only.
+
+    Deliberately does NOT re-hash the plan. Doing so shells out to `terraform show` on every
+    call, which needs an initialised directory and turns a status check into a slow,
+    credential-shaped operation -- and nobody runs a status command that takes ten seconds.
+    What this reports is what the gate RECORDED: the pending plan hash, whether an approval
+    exists bound to that exact hash, and the verdicts carried alongside it.
+
+    An approval for a different hash is not an approval. That is the whole point of the hash
+    binding, and reporting it as approved here would undo it in the one place an operator
+    looks before running apply.
+    """
+    state = _state_dir(dir_)
+    pending = {}
+    pending_path = _pending_path(dir_)
+    if os.path.exists(pending_path):
+        try:
+            pending = json.load(open(pending_path, encoding="utf-8")) or {}
+        except Exception:
+            pending = {}
+
+    plan_hash = pending.get("plan_hash")
+    approval = {}
+    if plan_hash and os.path.exists(_approved_path(dir_, plan_hash)):
+        try:
+            approval = json.load(open(_approved_path(dir_, plan_hash), encoding="utf-8")) or {}
+        except Exception:
+            approval = {}
+
+    drift = pending.get("cloud_drift") or {}
+    g9 = pending.get("g9_result") or {}
+    churn = pending.get("address_churn") or {}
+    return {
+        "dir": dir_,
+        "state_dir": state,
+        "planned": bool(plan_hash),
+        "plan_hash": plan_hash,
+        "planned_at": pending.get("planned_at") or pending.get("created_at"),
+        "approved": bool(approval),
+        "approver": approval.get("approver"),
+        "approved_at": approval.get("approved_at"),
+        "approval_mode": approval.get("approval_mode"),
+        "drift_count": drift.get("drift_count"),
+        "reverts_out_of_band_changes": bool(drift.get("reverts_out_of_band_changes")),
+        "telemetry_available": bool(drift.get("telemetry_available")),
+        "g9": g9.get("reason") or g9.get("detail"),
+        "address_churn_blocked": bool(churn.get("blocked")),
+        "next": _status_next(bool(plan_hash), bool(approval)),
+    }
+
+
+def _status_next(planned, approved):
+    if not planned:
+        return "minusctl gate verify, then minusctl gate plan"
+    if not approved:
+        return "minusctl gate approve"
+    return "minusctl gate apply"
+
+
+def format_status(status):
+    """ASCII only (NFR-01). Two columns, because this is read at a glance before an apply."""
+    rows = [
+        ("directory", status["dir"]),
+        ("planned", "yes" if status["planned"] else "no"),
+        ("plan hash", (status["plan_hash"] or "-")[:16] + ("..." if status["plan_hash"] else "")),
+        ("approved", "yes" if status["approved"] else "no"),
+        ("approver", status["approver"] or "-"),
+        ("approved at", status["approved_at"] or "-"),
+        ("cloud drift", "-" if status["drift_count"] is None else str(status["drift_count"])),
+        ("reverts out-of-band", "YES" if status["reverts_out_of_band_changes"] else "no"),
+        ("G9", status["g9"] or "-"),
+        ("next", status["next"]),
+    ]
+    width = max(len(label) for label, _ in rows)
+    lines = ["== gate status =="]
+    lines.extend(f"  {label.ljust(width)}  {value}" for label, value in rows)
+    return "\n".join(lines)
+
+
+def stage_approve(dir_, mode="gatekeeper", policy_mode=None, role_arn=None):
     policy_mode = _policy_mode(policy_mode)
     print("== approve ==")
     h, herr = _plan_hash(dir_)
@@ -939,6 +1531,20 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
         print(f"[gate] no valid plan to approve ({herr}). Run `plan` first.", file=sys.stderr)
         return False
     _warn_if_over_budget(dir_, h)
+
+    # Before recording any approval, prove this session may write this team's state. Placed
+    # here rather than at apply so an unauthorised operator never produces an approval record
+    # at all -- an approval that exists is one somebody can later act on.
+    posture = _credential_posture()
+    if _reject_if_wrong_team_role(dir_, posture, mode):
+        return False
+    # Checked here, alongside the team-role check and for the same reason: an approval that
+    # exists is one somebody can later act on, so an unauthorised session must never produce
+    # one.
+    if _reject_if_not_asserted_role(posture, role_arn):
+        _audit("approve", "REJECTED", reason="asserted_role_mismatch", dir=dir_,
+               asserted_role=role_arn)
+        return False
 
     pending = {}
     pending_path = _pending_path(dir_)
@@ -967,7 +1573,8 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
         _audit("approve", "DENIED_NOT_AUTHORIZED", plan_hash=h, dir=dir_, approver=approver, authz_mode=authz_mode)
         return False
 
-    if not _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, h):
+    if not _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, h,
+                                         approver_verified=bool(approver_verified_identity)):
         return False
 
     account, connected = _identity()
@@ -976,9 +1583,17 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
     print(f"  identity  : {account if connected else 'NOT AUTHENTICATED'}")
     print(f"  approver  : {approver} ({authz_mode})")
     print(f"  mode      : {mode}")
+    _print_impact(pending)
     if not connected:
         print("[gate] WARNING: no active cloud session. Authenticate before apply "
               "(`aws sso login`, or assume the MFA-gated deploy role).")
+
+    destroy = pending.get("destroy", False)
+    if mode == "auto-approve" and destroy:
+        print("[gate] REFUSING auto-approve — teardowns and destroy plans cannot be auto-approved by any agent or harness.", file=sys.stderr)
+        print("[gate] Teardowns require interactive human review. Run `approve` interactively with --mode gatekeeper.", file=sys.stderr)
+        _audit("approve", "REJECTED", reason="destroy_auto_approve_forbidden", dir=dir_, destroy=True)
+        return False
 
     if mode == "gatekeeper":
         ans = _timed_input(f"Approve this exact plan? [y/N] ({CONFIRM_TIMEOUT}s): ", CONFIRM_TIMEOUT)
@@ -995,37 +1610,36 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None):
         "cloud": get_provider().name,
         "approved_by": getpass.getuser(),
         "approver": approver,
-        # 2026-07-07, Phase 1 item 2: set ONLY when approver came from a real AWS-STS
-        # identity, not the env-var fallback -- lets apply-time distinguish "verify this
-        # matches" from "nothing to verify," instead of comparing two fallback strings
-        # and calling that a security check.
+        "approval_mode": mode,
+        # Set ONLY when the approver came from a real AWS-STS identity, never the env-var
+        # fallback. That lets apply time distinguish "verify this matches" from "nothing to
+        # verify", instead of comparing two fallback strings and calling it a security check.
         "approver_verified_identity": approver_verified_identity,
         "authz_mode": authz_mode,
         "approved_at": _now(),
-        # Carried forward from the plan-stage pending record (2026-07-06, Item 6 finding 1):
-        # the plan-stage audit record already notes destroy=True/False, but the apply-stage
-        # record didn't -- a reviewer reading only the apply audit trail couldn't tell create
-        # from teardown without cross-referencing the earlier plan record. Threading it through
-        # the approval record (the thing stage_apply actually reads) closes that gap.
+        # Carried forward from the plan-stage pending record so the apply-stage audit record
+        # says whether this was a teardown. Without it a reviewer reading only the apply trail
+        # cannot tell create from destroy without cross-referencing the plan record.
         "destroy": pending.get("destroy", False),
-        # Carried forward the same way, for the same reason (docs/
-        # phase6_step1_authoring_scope.md section 3): stage_apply's auto-approve enforcement
-        # reads this rather than re-running a real, expensive ephemeral-apply cycle.
+        # Carried forward the same way: stage_apply's auto-approve enforcement reads this
+        # rather than re-running an expensive ephemeral-apply cycle.
         "g9_result": pending.get("g9_result"),
+        # Same carry-forward: the reviewer approved a plan whose out-of-band-revert status was
+        # known at plan time; apply enforces against that recorded verdict.
+        "cloud_drift": pending.get("cloud_drift"),
     }
     os.makedirs(_approval_dir(dir_), exist_ok=True)
-    with open(_approved_path(dir_, h), "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2)
+    _write_json_atomic(_approved_path(dir_, h), record)
     print("[gate] approved — bound to this plan hash. (No credentials stored.)")
     _audit("approve", "APPROVED", plan_hash=h, dir=dir_, identity=account, approver=approver, authz_mode=authz_mode)
     return True
 
 
 def _reject_if_audit_chain_tampered():
-    """Audit finding 2026-07-03: audit_chain.verify() existed and worked, but nothing in the
-    deploy path ever called it — tamper-evidence was real but opt-in, not load-bearing. This
-    makes it load-bearing: apply refuses to proceed if the trail that's supposed to record every
-    prior gate decision has itself been edited, reordered, or truncated out-of-band."""
+    """Refuse to apply when the audit trail has been edited, reordered, or truncated.
+
+    This call is what makes audit_chain.verify() load-bearing rather than opt-in: without it,
+    tamper-evidence exists but nothing in the deploy path ever consults it."""
     audit_path = os.path.join(LOG_DIR, "audit.jsonl")
     ok, errors = audit_chain.verify(audit_path)
     if ok:
@@ -1039,6 +1653,63 @@ def _reject_if_audit_chain_tampered():
     return True
 
 
+def _reject_if_promoted_policy_violated(dir_, rego_result, destroy, registry_path=None):
+    """Block the plan on a policy rule a HUMAN promoted to blocking.
+
+    This is what makes agent-authored rules safe to accept. An agent can add a
+    rule to the Rego and it changes nothing about what ships: every rule defaults to
+    warn-only, and only an attributable human promotion in policy/rule_stages.json gives one
+    teeth. Warn-stage findings are still printed and still counted in verification coverage;
+    only their ability to stop an apply is withheld.
+
+    A failed EVALUATION is not a violation. OPA is optional, and treating "opa not
+    installed" as a policy breach would make an optional tool a hard dependency of every
+    plan. plan_gate logs that case separately via the shadow reporting.
+    """
+    if rego_result.get("evaluation_failed"):
+        return False
+    split = rule_stages.partition(rego_result.get("findings") or [], registry_path=registry_path)
+    if not split["blocking"]:
+        if split["warning"]:
+            print(f"[gate] policy: {split['warning_count']} warn-stage finding(s) "
+                  f"(not promoted to blocking -- reported, not enforced)")
+        return False
+    print("[gate] REFUSING plan -- promoted policy rules are violated:", file=sys.stderr)
+    for f in split["blocking"]:
+        print(f"  - {f.get('id')}: {f.get('title') or ''} [{f.get('resource') or '-'}]",
+              file=sys.stderr)
+    print("[gate] These rules were explicitly promoted to blocking in policy/rule_stages.json. "
+          "Fix the plan, or demote the rule with a recorded reason if it is wrong.",
+          file=sys.stderr)
+    _audit("plan", "REJECTED", reason="promoted_policy_violation", dir=dir_, destroy=destroy,
+           blocking_findings=split["blocking"])
+    return True
+
+
+def _reject_if_reverts_out_of_band_and_auto_approve(dir_, mode, drift_result, destroy):
+    """Same hard, non-overridable shape as the destructive check below, and for the same
+    reason: auto-approve means nobody looks. A plan that silently undoes a change someone
+    made directly in the account -- an emergency permission fix, a hand-widened security
+    group -- is exactly the case a human must see. Terraform renders it as an ordinary
+    `update`, so without this it sails through unreviewed.
+
+    Drift the plan does NOT revert is advisory only; nothing is being undone, so it prints
+    but never blocks.
+    """
+    if mode != "auto-approve" or not drift_result.get("reverts_out_of_band_changes"):
+        return False
+    print("[gate] REFUSING auto-approve apply — this plan reverts changes made outside "
+          "Terraform:", file=sys.stderr)
+    for row in drift_result["reverted"]:
+        print(f"  - {row['address']}: {', '.join(row['attributes'])}", file=sys.stderr)
+    print("[gate] Someone changed these directly in the account. Re-run with --mode gatekeeper "
+          "so a human can confirm the revert is intended. There is no bypass flag.",
+          file=sys.stderr)
+    _audit("apply", "REJECTED", reason="plan_reverts_out_of_band_changes", dir=dir_,
+           destroy=destroy, cloud_drift=drift_result)
+    return True
+
+
 def _reject_if_destructive_and_auto_approve(dir_, mode, classification, destroy):
     """Hard, non-overridable gate -- unlike every other _reject_if_* in this file, there is
     deliberately no MINUS_ALLOW_* env var or policy-mode carve-out for this one, in dev or
@@ -1048,9 +1719,9 @@ def _reject_if_destructive_and_auto_approve(dir_, mode, classification, destroy)
     "gatekeeper" already puts a human in the loop (the y/N prompt at approve time) -- that IS
     the staged/guarded path this routes to, so a gatekeeper-mode apply is never blocked here
     regardless of what the plan contains; only the credential-free autonomous path is."""
-    if mode != "auto-approve" or classification["autonomous_eligible"]:
+    if mode != "auto-approve" or (classification.get("autonomous_eligible", False) and not destroy):
         return False
-    print("[gate] REFUSING auto-approve apply — this plan is not autonomous-eligible:", file=sys.stderr)
+    print("[gate] REFUSING auto-approve apply — this plan is not autonomous-eligible or is a destroy plan:", file=sys.stderr)
     _print_classification(classification)
     print("[gate] Re-run with --mode gatekeeper for human review. There is no bypass flag "
           "for this check.", file=sys.stderr)
@@ -1069,10 +1740,10 @@ def _reject_if_g9_not_clean_and_auto_approve(dir_, mode, g9_result, destroy):
     "none"/destroy-skip (evaluation_failed=False) always passes; anything with
     evaluation_failed=True blocks, whether the reason is a real apply-time failure
     (resource_type_unverified, negative_fidelity_unverified, a genuine apply error) or the
-    disclosed current-environment gap (g9_not_configured -- no LocalStack token provisioned,
-    both free emulators already failed IAM/KMS/S3 negative-fidelity this session). This is the
-    real, present-tense consequence of wiring G9 in today: an AWS-touching auto-approve plan
-    stages rather than auto-ships until a fidelity-proven emulator is actually configured."""
+    disclosed environment gap (g9_not_configured -- no LocalStack token, and both free
+    emulators fail IAM/KMS/S3 negative fidelity). The present consequence is deliberate: an
+    AWS-touching auto-approve plan stages rather than auto-ships until a fidelity-proven
+    emulator is actually configured."""
     if mode != "auto-approve" or destroy:
         return False
     if g9_result is None or g9_result.get("evaluation_failed"):
@@ -1104,6 +1775,13 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
     _print_classification(classification)
     approval_path = _approved_path(dir_, current)
     if not os.path.exists(approval_path):
+        # Name the exact command, not just the stage: an agent reading "run approve first"
+        # has to reconstruct the --dir argument it already had.
+        print(cli_diagnostics.format_agent_error(
+            "`apply` needs step 5 (Approval), which has not run for this plan.",
+            f"no approval record for plan {current[:12]}... in {dir_}",
+            f"minusctl gate approve --dir {dir_}"),
+            file=sys.stderr)
         print("[gate] no approval on record for this directory and plan hash. Run `approve` first.",
               file=sys.stderr)
         _audit("apply", "REJECTED", reason="no_matching_approval", dir=dir_)
@@ -1118,10 +1796,9 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
     # Same shadow-visibility principle as classification above: a gatekeeper-mode operator sees
     # the recorded G9 verdict too, even though only auto-approve mode can be blocked by it.
     _print_g9_result(approval.get("g9_result") or {"evaluation_failed": True, "reason": "g9_result_missing"})
-    # 2026-07-06, Item 6 finding 1: the apply-stage audit record used to say nothing about
-    # direction -- a reviewer reading only this record couldn't tell create/modify from
-    # teardown without cross-referencing the plan-stage record. destroy now rides along on
-    # the approval record (see stage_approve) so every apply-stage entry self-describes.
+    # destroy rides along on the approval record (see stage_approve) so every apply-stage audit
+    # entry self-describes -- otherwise a reviewer reading only this record cannot tell
+    # create/modify from teardown without cross-referencing the plan-stage record.
     destroy = approval.get("destroy", False)
     if approval.get("canonical_dir") != _canonical_dir(dir_):
         print("[gate] approval was recorded for a different Terraform directory.", file=sys.stderr)
@@ -1152,25 +1829,29 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
     if _reject_if_apply_identity_mismatches_approver(dir_, approval, policy_mode, destroy=destroy):
         return False  # approval kept; apply as the identity that actually approved this
 
-    if _reject_if_destructive_and_auto_approve(dir_, mode, classification, destroy):
+    effective_mode = "auto-approve" if (mode == "auto-approve" or approval.get("approval_mode") == "auto-approve") else "gatekeeper"
+    if _reject_if_destructive_and_auto_approve(dir_, effective_mode, classification, destroy):
         return False  # approval kept; re-run apply with --mode gatekeeper for human review
 
-    if _reject_if_g9_not_clean_and_auto_approve(dir_, mode, approval.get("g9_result"), destroy):
+    # Computed from the approved plan JSON, not re-read from the cloud -- same "decided once
+    # at plan, enforced at apply" shape the other checks use.
+    if _reject_if_reverts_out_of_band_and_auto_approve(
+            dir_, effective_mode, approval.get("cloud_drift") or {}, destroy):
+        return False  # approval kept; re-run apply with --mode gatekeeper for human review
+
+    if _reject_if_g9_not_clean_and_auto_approve(dir_, effective_mode, approval.get("g9_result"), destroy):
         return False  # approval kept; re-run apply with --mode gatekeeper for human review
 
     print(f"[gate] applying approved plan (hash {current[:16]}...) as {account} ...")
-    # audit finding 2026-07-05: applied/failed/errors are created HERE (not inside
-    # _apply_with_json_capture) and passed in to be mutated in place, and status starts
-    # pessimistic. A hard interrupt (Ctrl+C) during the apply raises KeyboardInterrupt out of
-    # _apply_with_json_capture before it would otherwise return -- previously that skipped the
-    # _audit() call entirely, leaving NO record of a real, possibly-partial apply. The `finally`
-    # now guarantees an audit entry always gets written, with whatever partial data was
-    # gathered before the interrupt, and status stays "INTERRUPTED" unless a clean return
-    # upgrades it to OK/FAILED. The interrupt itself is not swallowed: it keeps propagating
-    # after `finally` runs, same as if this block weren't here.
-    # Known, accepted gap (like authz.py's operator-spoofing gap): this covers Ctrl+C
-    # (SIGINT/KeyboardInterrupt) and any other exception, not a bare `kill` (SIGTERM has no
-    # handler installed) or `kill -9` (SIGKILL is uncatchable by any process, on any platform).
+    # applied/failed/errors are created HERE, not inside _apply_with_json_capture, and passed
+    # in to be mutated in place; status starts pessimistic. Ctrl+C during the apply raises
+    # KeyboardInterrupt out of _apply_with_json_capture before it can return, which would skip
+    # the _audit() call entirely and leave NO record of a real, possibly-partial apply. The
+    # `finally` guarantees an audit entry with whatever partial data was gathered, and status
+    # stays "INTERRUPTED" unless a clean return upgrades it. The interrupt is not swallowed --
+    # it keeps propagating after `finally`.
+    # Accepted gap: this covers Ctrl+C and any other exception, not a bare `kill` (no SIGTERM
+    # handler is installed) or `kill -9` (SIGKILL is uncatchable on any platform).
     applied, failed, errors = [], [], {}
     status = "INTERRUPTED"
     try:
@@ -1182,17 +1863,31 @@ def stage_apply(dir_, mode="gatekeeper", policy_mode=None):
                destroy=destroy)
     print("[gate] apply complete." if status == "OK" else f"[gate] apply {status}.")
     if status != "INTERRUPTED":
-        _clear_approvals(dir_, current)  # one-shot: the approval is consumed
+        unconsumed = _clear_approvals(dir_, current)  # one-shot: the approval is consumed
+        if unconsumed:
+            # The apply already happened and cannot be undone, so the only honest thing left is
+            # to make the surviving approval loud. Staying quiet here would leave a replayable
+            # approval on disk with nothing in the record to say so.
+            print("[gate] WARNING: the apply completed but its one-shot approval could not be "
+                  f"removed ({', '.join(unconsumed)}). That approval is still valid and this "
+                  "plan can be applied again without a new one. Delete it by hand.",
+                  file=sys.stderr)
+            _audit("apply", "WARN", reason="approval_not_consumed", dir=dir_, plan_hash=current,
+                   unremoved=unconsumed, destroy=destroy)
     return status == "OK"
 
 
-def stage_run(dir_, mode, policy_mode=None, destroy=False):
-    return (stage_verify(dir_, policy_mode) and stage_plan(dir_, policy_mode, destroy=destroy)
-            and stage_approve(dir_, mode, policy_mode) and stage_apply(dir_, mode, policy_mode))
+def stage_run(dir_, mode, policy_mode=None, destroy=False, with_telemetry=False,
+              role_arn=None, impact=None):
+    return (stage_verify(dir_, policy_mode)
+            and stage_plan(dir_, policy_mode, destroy=destroy, with_telemetry=with_telemetry,
+                           impact=impact)
+            and stage_approve(dir_, mode, policy_mode, role_arn=role_arn)
+            and stage_apply(dir_, mode, policy_mode))
 
 
 # ---------------------------------------------------------------------------
-def main(argv=None):
+def _build_parser():
     p = argparse.ArgumentParser(description="Plan-bound Terraform deploy gate (uses the CLI credential chain)")
     p.add_argument("stage", choices=["verify", "plan", "approve", "apply", "run"])
     p.add_argument("--dir", required=True, help="Terraform directory to deploy (no default — this is a generic engine)")
@@ -1203,18 +1898,41 @@ def main(argv=None):
     p.add_argument("--destroy", action="store_true",
                    help="plan a teardown (terraform plan -destroy) instead of a create/modify plan; "
                         "approve/apply are unchanged -- same hash-bind, RBAC, and audit chain as any plan")
-    args = p.parse_args(argv)
+    p.add_argument("--role-arn", default=None,
+                   help="assert the active session is this deploy role; approve refuses if "
+                        "it is not. An assertion the gate VERIFIES -- it never assumes a "
+                        "role and never handles credentials. (No --mfa-arn: an MFA claim is "
+                        "not visible to sts get-caller-identity, so the gate cannot check "
+                        "one; MFA is enforced by the role's trust policy at AssumeRole.)")
+    p.add_argument("--impact", default=None,
+                   help="What this change breaks, and for whom. REQUIRED when the plan is "
+                        "not autonomous-eligible (stateful, IAM or unreviewed resource "
+                        "types). The approver reads this sentence rather than the raw "
+                        "finding list, which is what makes the y/N a review instead of a "
+                        "rubber stamp.")
+    p.add_argument("--with-telemetry", action="store_true",
+                   help="on detected cloud drift, ask CloudTrail who changed the resource and "
+                        "Glue what failed first (read-only, advisory, fail-open). Off by "
+                        f"default; ${TELEMETRY_ENV}=1 also enables it")
+    return p
+
+
+def main(argv=None):
+    args = _build_parser().parse_args(argv)
 
     if args.stage == "verify":
         ok = stage_verify(args.dir, args.policy_mode)
     elif args.stage == "plan":
-        ok = stage_plan(args.dir, args.policy_mode, destroy=args.destroy)
+        ok = stage_plan(args.dir, args.policy_mode, destroy=args.destroy,
+                        with_telemetry=args.with_telemetry, impact=args.impact)
     elif args.stage == "approve":
-        ok = stage_approve(args.dir, args.mode, args.policy_mode)
+        ok = stage_approve(args.dir, args.mode, args.policy_mode, role_arn=args.role_arn)
     elif args.stage == "apply":
         ok = stage_apply(args.dir, args.mode, args.policy_mode)
     else:
-        ok = stage_run(args.dir, args.mode, args.policy_mode, destroy=args.destroy)
+        ok = stage_run(args.dir, args.mode, args.policy_mode, destroy=args.destroy,
+                       impact=args.impact, with_telemetry=args.with_telemetry,
+                       role_arn=args.role_arn)
     return 0 if ok else 1
 
 

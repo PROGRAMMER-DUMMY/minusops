@@ -1,6 +1,6 @@
 """
 schema_lint.py (G2) checks a module's actual resource/data-source attribute references against
-the REAL, LIVE provider schema before the pin CLI accepts it -- docs/g2_scope.md. Unlike
+the REAL, LIVE provider schema before the pin CLI accepts it --. Unlike
 schema_watch.py (a diff engine, no-ops without a prior snapshot), this is a single-point check
 against live-schema-now on every call, no baseline required. Unit tests below use synthetic
 schema fixtures (fast, hermetic, no network); the tests at the bottom are real-terraform proof
@@ -13,6 +13,11 @@ import json
 import os
 
 import pytest
+
+
+# Live Terraform/provider-schema access: minutes, not seconds. Deselected from the
+# default run (see pyproject addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = pytest.mark.slow
 
 import modules as module_registry
 import module_provenance
@@ -223,9 +228,9 @@ def test_reduce_full_keeps_every_attribute_with_type_and_deprecated_flag():
     reduced = schema_lint._reduce_full(schema, {("resource", "aws_s3_bucket")})
     entry = reduced[("resource", "aws_s3_bucket")]
     assert entry["version"] == 1
-    assert entry["attributes"]["bucket"] == {"type": "string", "deprecated": False}
-    assert entry["attributes"]["acl"] == {"type": "string", "deprecated": True}
-    assert entry["attributes"]["versioning.enabled"] == {"type": "bool", "deprecated": False}
+    assert entry["attributes"]["bucket"] == {"type": "string", "deprecated": False, "required": False}
+    assert entry["attributes"]["acl"] == {"type": "string", "deprecated": True, "required": False}
+    assert entry["attributes"]["versioning.enabled"] == {"type": "bool", "deprecated": False, "required": False}
 
 
 def test_reduce_full_recurses_more_than_one_level_deep():
@@ -316,10 +321,12 @@ def test_reduce_full_records_none_for_a_type_absent_from_the_schema():
 # gate_module(): the full classification, network stubbed via _fetch_schema
 # ---------------------------------------------------------------------------
 
-def _stub_schema(attrs=None, deprecated=()):
+def _stub_schema(attrs=None, deprecated=(), required=()):
     attrs = attrs or {"bucket": {"type": "string"}}
     for name in deprecated:
         attrs[name] = {**attrs.get(name, {"type": "string"}), "deprecated": True}
+    for name in required:
+        attrs[name] = {**attrs.get(name, {"type": "string"}), "required": True}
     return {
         "resource_schemas": {"aws_s3_bucket": {"version": 0, "block": {
             "attributes": attrs, "block_types": {},
@@ -425,6 +432,54 @@ def test_gate_module_type_mismatch_blocks(fake_module, monkeypatch):
     assert findings and findings[0]["attribute"] == "bucket"
 
 
+def test_gate_module_missing_required_top_level_attribute_blocks(fake_module, monkeypatch):
+    # The symmetric inverse of unknown_attribute: name is required (per the stub schema) but
+    # never set -- must block, same as authoring an attribute the schema doesn't recognize.
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = "x"\n}\n')
+    monkeypatch.setattr(
+        schema_lint, "_fetch_schema",
+        lambda provider, workdir: (_stub_schema(required=["name"]), "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
+    assert result["blocking"] is True
+    findings = [f for f in result["findings"] if f["finding"] == "required_attribute_absent"]
+    assert findings and findings[0]["attribute"] == "name"
+
+
+def test_gate_module_required_attribute_that_is_set_does_not_block(fake_module, monkeypatch):
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = "x"\n  name = "y"\n}\n')
+    monkeypatch.setattr(
+        schema_lint, "_fetch_schema",
+        lambda provider, workdir: (_stub_schema(required=["name"]), "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
+    assert result["blocking"] is False
+    assert [f for f in result["findings"] if f["finding"] == "required_attribute_absent"] == []
+
+
+def test_gate_module_missing_required_field_inside_unopened_nested_block_is_not_flagged(
+        fake_module, monkeypatch):
+    # Named boundary from gate_content()'s own docstring: a nested block_types entry's required
+    # field only matters if that block is actually opened in the HCL. A bucket that correctly
+    # omits an entire optional nested block (e.g. no versioning {} at all) must not be flagged
+    # for that nested block's own required field.
+    schema = _stub_schema()
+    schema["resource_schemas"]["aws_s3_bucket"]["block"]["block_types"] = {
+        "versioning": {"nesting_mode": "list", "block": {
+            "attributes": {"status": {"type": "string", "required": True}},
+        }},
+    }
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = "x"\n}\n')
+    monkeypatch.setattr(schema_lint, "_fetch_schema", lambda provider, workdir: (schema, "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
+    assert result["blocking"] is False
+    assert [f for f in result["findings"] if f["finding"] == "required_attribute_absent"] == []
+
+
 def test_gate_module_matching_type_does_not_block():
     # Regression guard for the type-mismatch check specifically: a correctly-typed literal
     # must never be flagged. Exercised via the full clean-module test above (bucket = "x",
@@ -442,7 +497,12 @@ def test_gate_module_dynamic_expression_skips_type_check_not_a_finding(fake_modu
     assert result["blocking"] is False
 
 
-def test_gate_module_unparseable_dynamic_block_blocks(fake_module, monkeypatch):
+def test_gate_module_dynamic_block_warns_without_blocking(fake_module, monkeypatch):
+    # A dynamic block is a region the linter did not inspect, which is a statement about the
+    # linter rather than about the module. It must be REPORTED -- staying silent would be the
+    # fail-open _scan_body's docstring warns about -- but it must not block: `dynamic "grant"`
+    # is ordinary, correct HCL, and blocking on it refused 14 of the real catalog's own modules
+    # the first time this file's parametrised catalog sweep ever ran.
     _write(fake_module,
            'resource "aws_s3_bucket" "b" {\n'
            '  dynamic "grant" {\n    for_each = var.grants\n    content {\n      x = 1\n    }\n  }\n'
@@ -451,8 +511,44 @@ def test_gate_module_unparseable_dynamic_block_blocks(fake_module, monkeypatch):
 
     result = schema_lint.gate_module("widget")
 
+    assert result["blocking"] is False
+    assert result["findings"] == []
+    warned = [w for w in result["warnings"] if w["finding"] == "dynamic_block_unverified"]
+    assert warned, result["warnings"]
+    # The gap has to name where it is, or it discloses nothing actionable.
+    assert warned[0]["detail"] == "dynamic:grant"
+    assert warned[0]["block"] == "b"
+
+
+def test_gate_module_bool_literal_into_string_attribute_is_not_a_mismatch(fake_module,
+                                                                          monkeypatch):
+    # modules/cube-semantic-layer writes at_rest_encryption_enabled = true on an
+    # aws_elasticache_replication_group. The AWS provider types that attribute `string` (it
+    # models a tri-state: unset is not false) while the adjacent transit_encryption_enabled is
+    # typed `bool`. HCL widens bool to string automatically and losslessly, so both lines apply
+    # cleanly -- flagging one of them was a false positive on correct code.
+    schema = _stub_schema({"bucket": {"type": "string"}})
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = true\n}\n')
+    monkeypatch.setattr(schema_lint, "_fetch_schema", lambda provider, workdir: (schema, "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
+    assert result["blocking"] is False, result["findings"]
+    assert not [f for f in result["findings"] if f["finding"] == "type_mismatch"]
+
+
+def test_gate_module_string_literal_into_bool_attribute_still_mismatches(fake_module,
+                                                                         monkeypatch):
+    # The guard above must stay one-directional. string -> bool succeeds only when the content
+    # happens to parse, so it is a real risk rather than a guarantee, and must still block.
+    schema = _stub_schema({"bucket": {"type": "bool"}})
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = "not-a-bool"\n}\n')
+    monkeypatch.setattr(schema_lint, "_fetch_schema", lambda provider, workdir: (schema, "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
     assert result["blocking"] is True
-    assert any(f["finding"] == "unparseable_reference" for f in result["findings"])
+    assert [f for f in result["findings"] if f["finding"] == "type_mismatch"]
 
 
 def test_gate_module_count_based_index_reference_resolves_and_does_not_block(fake_module, monkeypatch):
@@ -678,7 +774,7 @@ def test_gate_module_no_warning_on_first_ever_pin_nothing_to_compare(fake_module
 
 
 # ---------------------------------------------------------------------------
-# module_provenance.py CLI wiring: G2 no longer GATES `pin` (docs/phase6_step5_teardown_scope.md
+# module_provenance.py CLI wiring: G2 no longer GATES `pin` (
 # section 3, 2026-07-15) -- it still runs, still prints a loud warning on a blocking verdict, and
 # still records the result in PROVENANCE.json (g2_blocking/g2_findings), but never refuses to
 # write the record. See module_provenance.py's own module docstring ("RETIRED AS A GATE") for the
@@ -777,7 +873,7 @@ def test_real_aws_catches_the_name_to_region_deprecation(fake_module, monkeypatc
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
 def test_real_databricks_catches_a_real_deprecation(fake_module, monkeypatch):
     """Confirms G2's fetch/reduce machinery works against the Databricks provider too, not
-    just AWS (docs/g2_scope.md #3) -- proven, not disclosed. `databricks_mws_credentials`'s
+    just AWS -- proven, not disclosed. `databricks_mws_credentials`'s
     `account_id` attribute is deprecated on the real, live Databricks provider (Databricks'
     own docs: it should come from the provider instance instead) -- modules/databricks-
     workspace/main.tf already knows this and deliberately avoids setting it (see the comment
@@ -810,7 +906,7 @@ def test_real_aws_clean_module_is_not_blocking(fake_module, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# gate_content()/gate_module() parity (docs/phase6_step1_authoring_scope.md section 2, proof-bar
+# gate_content()/gate_module() parity (, proof-bar
 # item 3): the refactor split gate_module()'s disk-read from its linting logic into a thin
 # wrapper calling gate_content() -- this proves the split changed NOTHING about the verdict,
 # against every one of this repo's 16 real, currently-pinned modules, not a synthetic sample.
@@ -833,7 +929,7 @@ def test_gate_content_is_byte_identical_to_gate_module_for_every_real_module(mod
 
 
 # ---------------------------------------------------------------------------
-# G2 per-module "is clean" (docs/phase6_step5_teardown_scope.md section 1.3): the parity test
+# G2 per-module "is clean": the parity test
 # above proves the two call paths AGREE with each other -- it does not itself assert either one
 # is actually clean. That every real module passes G2 today was, until this test, an inference
 # ("they're pinned, so they must be clean") rather than a regression-tested fact. This is a real
@@ -847,23 +943,28 @@ def test_gate_content_is_byte_identical_to_gate_module_for_every_real_module(mod
 # is what makes it one, and it surfaced exactly the gap that assumption was hiding.
 # ---------------------------------------------------------------------------
 
-_G2_KNOWN_EXCEPTIONS = {
-    # aws_glue_catalog_table.this's storage_descriptor declares a genuinely dynamic
-    # `dynamic "columns" { for_each = var.columns }` block -- real, user-configurable schema
-    # (var.columns has no fixed shape), not something to rewrite into a static block just to
-    # dodge this finding. schema_lint.py's own design deliberately reports every dynamic block
-    # as unparseable_reference rather than silently skipping it, since a dynamic block's real
-    # emitted attributes depend on evaluating its for_each expression, which is not statically
-    # resolvable -- a structural G2 limitation, not a bug in this module or this test. No
-    # PROVENANCE.json exists for this module (confirmed live) -- it was never actually pinned.
-    "table-format-iceberg": (
-        'aws_glue_catalog_table.this has a genuinely dynamic "columns" block driven by '
-        "var.columns -- schema_lint.py structurally cannot resolve a dynamic block's emitted "
-        "attributes statically, by design, and reports it as unparseable_reference. Real, "
-        "disclosed, pre-existing gap: this module was never pinned (no PROVENANCE.json) and "
-        "was never actually G2-clean."
-    ),
-}
+# Empty, and that is the point. This held one entry -- table-format-iceberg -- whose reason
+# read "a structural G2 limitation, not a bug in this module or this test". That diagnosis was
+# correct and the conclusion drawn from it was not: the limitation was written down as one
+# module's exception when it belonged to the linter.
+#
+# Running this parametrisation for the first time (2026-09-01) failed on 14 of the catalog's
+# modules, not one. Every failure was the same shape -- a `dynamic` block, reported as
+# unparseable_reference, which schema_lint counted as blocking. `dynamic "statement"` is simply
+# how an IAM policy document with a variable number of statements is written, so the gate was
+# refusing the normal way to write the thing it governs. The fix went into schema_lint, where
+# the limitation actually lives: a dynamic block now raises the `dynamic_block_unverified`
+# WARNING, which reports the unverified region without failing a module over it. See
+# gate_content()'s docstring for the defect-versus-gap distinction that split turns on.
+#
+# The 15th failure was cube-semantic-layer's at_rest_encryption_enabled = true, typed `string`
+# by the AWS provider while its neighbour transit_encryption_enabled is typed `bool`. HCL widens
+# bool to string automatically, so the module was correct and the type_mismatch was a false
+# positive; schema_lint no longer reports safe widening.
+#
+# Keep this dict. An entry here should be a specific module doing something specific and wrong,
+# with a reason that names the module -- never a whole class of correct HCL.
+_G2_KNOWN_EXCEPTIONS = {}
 
 
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")

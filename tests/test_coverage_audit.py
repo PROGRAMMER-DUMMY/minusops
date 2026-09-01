@@ -1,3 +1,15 @@
+"""
+The four honest states every plan resource is sorted into, and the refusal to drop one.
+
+auto_priced, catalog_mapped_needs_usage, confirmed_free, unresolved. The last is why this
+exists: a resource type nobody mapped must surface as a gap rather than silently vanish from
+the cost report, because a total that omits a service reads exactly like a total that
+includes it.
+
+Depends on: core/cost/coverage_audit.py, core/providers/base.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
 import json
 
 import coverage_audit as ca
@@ -109,16 +121,10 @@ def test_classify_goes_through_cloudprovider_not_pricing_catalog_directly():
     assert len(coverage["unresolved"]) == len(resource_types)
 
 
-def test_classify_degrades_honestly_for_a_roadmap_cloud_instead_of_crashing():
-    for cloud in ("azure", "gcp"):
-        provider = pb.get_provider(cloud)
-        coverage = ca.classify(PLAN, provider=provider)  # must not raise
-        assert coverage["provider"] == {"cloud": cloud, "status": "roadmap"}
-        assert coverage["auto_priced"] == []
-        assert coverage["confirmed_free"] == []
-        # every managed resource type in PLAN lands in unresolved, not silently priced
-        resource_types = {c["type"] for c in PLAN["resource_changes"] if c.get("mode") == "managed"}
-        assert {row["resource_type"] for row in coverage["unresolved"]} == resource_types
+# The roadmap-cloud degradation test lived here until multi-cloud was dropped from scope.
+# The property it protected -- a provider that resolves nothing leaves every resource type
+# in `unresolved` rather than silently priced -- is still covered by the stub-provider test
+# above, which is where it always actually came from.
 
 
 def test_classify_defaults_to_the_active_provider(monkeypatch):

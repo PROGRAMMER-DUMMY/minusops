@@ -1,3 +1,15 @@
+"""
+BCM payload preparation, usage derivation, and the placeholders that must not survive it.
+
+`REVIEW_REQUIRED` is the load-bearing string in this file. A usage payload that reaches the
+BCM API with one still in it produces a number that looks evidenced and is not, which is the
+single failure the whole cost subsystem is arranged to prevent -- so `validate_usage` must
+reject it and `derive_usage` must fill it from stated inputs rather than leave it.
+
+Depends on: core/cost/bcm_pricing_calculator.py, core/providers/base.py
+Shells out to: nothing (the AWS CLI is stubbed)
+Used by: nothing (pytest entry point)
+"""
 import json
 import os
 
@@ -26,6 +38,18 @@ PLAN = {
         },
     ],
 }
+
+
+def test_a_total_cost_object_is_read_the_same_way_everywhere():
+    """The live API returns totalCost as {"amount": "...", "unit": "USD"}. `scale_curve`
+    handles that shape when reading the BASE estimate and then does a bare float() on every
+    curve POINT, so a real multi-point run raises TypeError after the AWS calls have already
+    been made and billed."""
+    assert bcm._total_cost_amount({"amount": "123.45", "unit": "USD"}) == 123.45
+    assert bcm._total_cost_amount("123.45") == 123.45
+    assert bcm._total_cost_amount(123.45) == 123.45
+    assert bcm._total_cost_amount(None) is None
+    assert bcm._total_cost_amount({"unit": "USD"}) is None
 
 
 def test_prepare_writes_reviewable_payloads(tmp_path):

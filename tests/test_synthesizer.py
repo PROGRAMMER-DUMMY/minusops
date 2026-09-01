@@ -1,7 +1,25 @@
+"""
+Composition: what gets wired, what gets refused, and what must stay byte-identical.
+
+The byte-identical assertions are deliberate. A root template that shifts when an unrelated
+module is added means every composed stack produces a different plan hash for the same
+architecture, and the gate's whole binding rests on that hash being stable. The refusals
+cover the two gates -- incomplete requirements and an incomplete decision record -- plus
+authored content that fails G2 schema linting.
+
+Depends on: core/generation/synthesizer.py, modules.py, architecture_decision.py, runs.py
+Shells out to: terraform fmt where available; the slow-marked cases run terraform
+Used by: nothing (pytest entry point)
+"""
 import json
 import os
 
 import pytest
+
+
+# Live Terraform/provider-schema access: minutes, not seconds. Deselected from the
+# default run (see pyproject addopts) and executed explicitly with `pytest -m slow`.
+pytestmark = pytest.mark.slow
 
 import architecture_decision as archdec
 import requirements as reqgate
@@ -27,6 +45,8 @@ COMPLETE_DECISION = {
     ],
     "assumptions": ["AWS is the target cloud."],
     "risks": ["MWAA cost must be checked during BCM estimate."],
+    "validation": ["terraform validate + SEC scan clean before approval."],
+    "rollback": ["plan_gate.py run --destroy under the same hash-bound gate."],
     "sources": ["AWS MWAA documentation", "Terraform AWS provider registry"],
 }
 
@@ -192,8 +212,13 @@ def test_synthesize_refuses_to_overwrite_nonempty_target_run(tmp_path, monkeypat
     monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
     monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
     run = runs.new_run(blueprint="requirements-first", request="create airflow pipeline")
-    with open(os.path.join(run["terraform_dir"], "main.tf"), "w", encoding="utf-8") as f:
-        f.write("# existing\n")
+    # The guard was narrowed on purpose (issue #3, the file-ownership boundary): a team's
+    # own .tf files are PRESERVED, not a reason to refuse, so writing main.tf no longer
+    # raises. What still refuses is a file MinusOps cannot account for -- neither generated
+    # nor .tf -- which is what this now writes. The test name outlived the rule it tested.
+    with open(os.path.join(run["terraform_dir"], "leftover.tar.gz"), "w",
+              encoding="utf-8") as f:
+        f.write("not terraform, not ours\n")
 
     with pytest.raises(ValueError) as exc:
         synthesizer.synthesize(
@@ -220,7 +245,7 @@ def test_synthesize_refuses_unknown_decision_module(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# novel_resources / authored_content (docs/phase6_step1_authoring_scope.md sections 1/2):
+# novel_resources / authored_content:
 # nothing a generator produces auto-ships on its first real appearance -- synthesize() itself
 # only validates and composes what a caller's authoring step already produced, fail-closed on
 # every way that step's own output could be wrong. Real `opa`/`terraform` not needed for these
@@ -230,6 +255,22 @@ def test_synthesize_refuses_unknown_decision_module(tmp_path, monkeypatch):
 import toolpath
 
 TERRAFORM = toolpath.find_tool("terraform")
+
+# CI hazard, found running this file twice concurrently (2026-07-18): every TERRAFORM-gated test
+# below does a real terraform init/schema fetch through _fetch_schema() (schema_watch.py), which
+# shares ONE provider plugin cache across the whole repo (TF_PLUGIN_CACHE_DIR, set in
+# tests/conftest.py). Two processes racing to download/extract the SAME provider version into
+# that SAME shared cache directory corrupted the cached aws binary -- final file SIZE looked
+# right, but it failed to execute ("%1 is not a valid Win32 application" / "Failed to read any
+# lines from plugin's stdout"). Confirmed via two separate full-file runs launched at the same
+# time: each failed on a DIFFERENT test with the IDENTICAL symptom, and both tests passed clean
+# once isolated -- diagnosing this cost two independent investigations before the shared-cache
+# race was identified as the actual cause. Fix used here: delete the corrupted
+# .agents/tf-plugin-cache/registry.terraform.io/hashicorp/aws/<version>/ entry so it re-downloads
+# clean; not something a test can assert against. Do not run this file's TERRAFORM-gated tests in
+# more than one process at a time against the same TF_PLUGIN_CACHE_DIR -- the moment CI
+# parallelizes any job that calls _fetch_schema() (schema_watch.py, knowledge_diff.py, this
+# file), this WILL recur unless each parallel job gets its own cache directory.
 
 _NOVEL_DECISION = dict(COMPLETE_DECISION, novel_resources=[{
     "resource_type": "aws_dynamodb_table",
@@ -271,6 +312,61 @@ def test_synthesize_composes_a_valid_authored_novel_resource(tmp_path, monkeypat
     assert res["manifest"]["authored_resources"] == res["authored_resources"]
 
 
+_DYNAMIC_DYNAMODB_HCL = (
+    'resource "aws_dynamodb_table" "novel" {\n'
+    '  name         = "novel-table"\n'
+    '  billing_mode = "PAY_PER_REQUEST"\n'
+    '  hash_key     = "id"\n'
+    '  dynamic "attribute" {\n'
+    '    for_each = var.attributes\n'
+    '    content {\n'
+    '      name = attribute.value.name\n'
+    '      type = attribute.value.type\n'
+    '    }\n'
+    '  }\n'
+    '}\n'
+)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_authored_content_with_a_dynamic_block_is_composed_but_flagged_unverified(
+        tmp_path, monkeypatch):
+    """A dynamic block must compose, and must not compose quietly.
+
+    G2 used to report a dynamic block as a blocking finding, so authored content containing one
+    was refused outright -- which is wrong, because `dynamic "attribute"` is ordinary HCL and
+    modules/metadata-control-table declares exactly this shape. It is now a non-blocking
+    dynamic_block_unverified warning. That alone would have traded a false refusal for an
+    invisible one: the region really is unverified, and the person reviewing freshly authored
+    HCL is precisely who needs to be told which parts the schema check did not cover.
+    """
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    res = synthesizer.synthesize(
+        "airflow pipeline needing a low-latency lookup table",
+        spec=COMPLETE_SPEC, decision=_NOVEL_DECISION, owner="data-platform",
+        authored_content={"aws_dynamodb_table": _DYNAMIC_DYNAMODB_HCL},
+    )
+
+    # Composed, not refused.
+    authored_file = os.path.join(res["out_dir"], "authored_aws_dynamodb_table.tf")
+    assert os.path.exists(authored_file)
+
+    # The unverified region is carried on the record rather than dropped.
+    warnings = res["authored_resources"][0]["g2_warnings"]
+    assert [w["finding"] for w in warnings] == ["dynamic_block_unverified"]
+    assert warnings[0]["detail"] == "dynamic:attribute"
+
+    # And it reaches a human in both places a human actually looks.
+    assert any("did not schema-check" in r and "dynamic:attribute" in r for r in res["review"]), \
+        res["review"]
+    composition = open(os.path.join(res["out_dir"], "COMPOSITION.md"), encoding="utf-8").read()
+    assert "NOT SCHEMA-CHECKED" in composition
+    assert "dynamic:attribute" in composition
+
+
 def test_synthesize_refuses_novel_resource_with_no_matching_authored_content(tmp_path, monkeypatch):
     import runs
     monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
@@ -306,7 +402,7 @@ def test_synthesize_refuses_authored_content_with_no_declared_blocks(tmp_path, m
 def test_synthesize_refuses_authored_content_with_hallucinated_type(tmp_path, monkeypatch):
     """The authoring step's own output declaring a REAL type (aws_dynamodb_table, per
     _NOVEL_DECISION) but authoring content for a completely different, nonexistent type --
-    Phase 7 Item 5's declared-vs-authored type-match check (docs/phase7_item5_authoring_scope.md
+    Phase 7 Item 5's declared-vs-authored type-match check (
     section 4) catches this earlier and more specifically than G2's own generic unknown_type
     finding now would: the content doesn't even address what was declared, which is authoring
     malfunction, not "a hallucinated but on-topic attempt." See the sibling test below for the
@@ -331,7 +427,7 @@ def test_synthesize_refuses_authored_content_with_hallucinated_type(tmp_path, mo
 def test_synthesize_refuses_novel_resource_declaring_a_hallucinated_type(tmp_path, monkeypatch):
     """The declared resource_type ITSELF doesn't exist in the live provider schema (a typo/
     hallucination in novel_resources, not just in the authored content) -- Phase 7 Item 5's
-    pre-authoring schema-exists check (docs/phase7_item5_authoring_scope.md section 4) refuses
+    pre-authoring schema-exists check refuses
     before ever reaching G2, since a type that doesn't exist can't be authored correctly no
     matter what content is supplied."""
     import runs
@@ -382,6 +478,27 @@ def test_validate_novel_resources_blocks_content_for_a_different_real_type_direc
             "aws_dynamodb_table": 'resource "aws_s3_bucket" "novel" {\n  bucket = "x"\n}\n',
         })
     assert "does not declare a matching resource/data block" in str(exc.value)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_validate_novel_resources_g2_failure_raises_authored_content_rejected_with_findings():
+    # The exception itself, not any CLI built on top of it: AuthoredContentRejected carries the
+    # structured reason/findings a caller needs to hand a revising agent WHAT to fix, not just
+    # THAT it failed. str(exc.value) is unchanged from before (every pytest.raises(ValueError)
+    # test above still matches this subclass) -- this test proves the NEW structured attributes
+    # specifically, independent of anything that might consume them later.
+    with pytest.raises(synthesizer.AuthoredContentRejected) as exc:
+        synthesizer._validate_novel_resources(_NOVEL_DECISION, {
+            "aws_dynamodb_table": (
+                'resource "aws_dynamodb_table" "novel" {\n'
+                '  this_attribute_does_not_exist = "x"\n'
+                '}\n'
+            ),
+        })
+    assert exc.value.resource_type == "aws_dynamodb_table"
+    assert exc.value.reason == "g2_schema_lint_failed"
+    assert exc.value.findings  # gate_content()'s real findings list, not empty
+    assert any("this_attribute_does_not_exist" in json.dumps(f) for f in exc.value.findings)
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +635,7 @@ def test_write_authoring_record_carries_the_real_measured_full_size_payload(tmp_
 
 
 # ---------------------------------------------------------------------------
-# Phase 7 Item 5, revised (docs/phase7_item5_authoring_scope.md section 1): MinusOps is operated
+# Phase 7 Item 5, revised: MinusOps is operated
 # THROUGH an agentic CLI tool (Claude Code, Codex, agy, etc.) -- it does not embed its own LLM
 # client. assemble_authoring_context() is the real surface: it hands a driving agent the same
 # live schema + grounding context a human author would want, so that agent can write
@@ -570,7 +687,218 @@ def test_author_context_cli_exits_nonzero_for_an_unknown_type(capsys):
 
 
 # ---------------------------------------------------------------------------
-# Phase 7 Item 1 (docs/phase7_item1_module_unit_scope.md) -- authored_content's module-shaped
+# `synthesizer.py author` -- the intake leg (docs/phase7_generation_engine_plan.md): an agent
+# already wrote HCL using author-context's schema/grounding; this submits it through the EXISTING
+# _validate_novel_resources() -> gate_content() -> compose() path -- no new gate, no new
+# validation logic. These tests exercise routing and refusal reporting, not a new mechanism.
+# Deliberately dumb: one accept -> gate -> verdict call, no retry/iteration inside the entrypoint.
+# ---------------------------------------------------------------------------
+
+_VALID_S3_HCL = (
+    'resource "aws_s3_bucket" "novel" {\n'
+    '  bucket = "novel-test-bucket"\n'
+    '}\n'
+)
+
+_BAD_S3_HCL = (
+    'resource "aws_s3_bucket" "novel" {\n'
+    '  this_attribute_does_not_exist = "x"\n'
+    '}\n'
+)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_author_cli_composes_from_file_with_allow_incomplete(tmp_path, monkeypatch, capsys):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    hcl_file = tmp_path / "authored.tf"
+    hcl_file.write_text(_VALID_S3_HCL, encoding="utf-8")
+
+    rc = synthesizer.main([
+        "author", "aws_s3_bucket", "--file", str(hcl_file),
+        "--allow-incomplete", "--justification", "prove the authored-content CLI intake path",
+        "--json",
+    ])
+    out = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert out["status"] == "composed"
+    assert out["resource_type"] == "aws_s3_bucket"
+    authored_file = os.path.join(out["out_dir"], "authored_aws_s3_bucket.tf")
+    assert os.path.exists(authored_file)
+    assert 'resource "aws_s3_bucket" "novel"' in open(authored_file, encoding="utf-8").read()
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_author_cli_composes_from_inline_content_secondary_form(tmp_path, monkeypatch, capsys):
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    rc = synthesizer.main([
+        "author", "aws_s3_bucket", "--content", _VALID_S3_HCL,
+        "--allow-incomplete", "--justification", "test",
+        "--json",
+    ])
+    out = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert out["status"] == "composed"
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_author_cli_reads_from_piped_stdin_when_no_file_or_content_given(tmp_path, monkeypatch, capsys):
+    import io
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(synthesizer.sys, "stdin", io.StringIO(_VALID_S3_HCL))
+
+    rc = synthesizer.main([
+        "author", "aws_s3_bucket", "--allow-incomplete", "--justification", "test", "--json",
+    ])
+    out = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert out["status"] == "composed"
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_author_cli_explicit_file_dash_reads_stdin_even_if_tty(tmp_path, monkeypatch, capsys):
+    # Proves --file - reads stdin unconditionally, independent of isatty() -- distinct from the
+    # auto-detected-piped-stdin test above, which relies on isatty() being False.
+    import io
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    stdin = io.StringIO(_VALID_S3_HCL)
+    monkeypatch.setattr(stdin, "isatty", lambda: True)  # simulate an interactive terminal
+    monkeypatch.setattr(synthesizer.sys, "stdin", stdin)
+
+    rc = synthesizer.main([
+        "author", "aws_s3_bucket", "--file", "-",
+        "--allow-incomplete", "--justification", "test", "--json",
+    ])
+    out = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert out["status"] == "composed"
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_author_cli_refuses_g2_failure_with_structured_findings(tmp_path, monkeypatch, capsys):
+    # THE common expected outcome this entrypoint has to handle gracefully -- must be a clean
+    # structured refusal, never an uncaught traceback. This was the actual bug: ValueError from
+    # _validate_novel_resources() was previously uncaught anywhere in main(), and gate_content()'s
+    # real findings were only ever available as a stringified Python list inside a prose message.
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    rc = synthesizer.main([
+        "author", "aws_s3_bucket", "--content", _BAD_S3_HCL,
+        "--allow-incomplete", "--justification", "test", "--json",
+    ])
+    out = json.loads(capsys.readouterr().out)
+
+    assert rc == 2
+    assert out["status"] == "refused"
+    assert out["reason"] == "g2_schema_lint_failed"
+    assert out["findings"]  # non-empty -- gate_content()'s REAL findings, not just a prose string
+    assert any("this_attribute_does_not_exist" in json.dumps(f) for f in out["findings"])
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_author_cli_rejection_leaves_no_run_workspace_on_disk(tmp_path, monkeypatch, capsys):
+    # The ordering guarantee, not just the refusal itself: synthesize() calls
+    # _validate_novel_resources() BEFORE runs.new_run() (synthesizer.py, ~line 967 vs ~975), and
+    # runs.new_run() creates real directories + writes run.json unconditionally the moment it's
+    # called (runs.py:38-42) -- independent of whether compose() ever runs. So a rejected
+    # authoring attempt must leave the runs/ directory absent entirely, not merely leave the
+    # Terraform files unwritten inside an already-created run.
+    #
+    # Empirically verified to catch a regression, not just assert the current behavior: swapping
+    # the two lines in synthesizer.py (validate-then-new_run -> new_run-then-validate) makes this
+    # exact assertion fail with AssertionError: assert not True, then passes again once reverted
+    # (same standard as the attribute-IS-NULL fix in the knowledge-layer spine -- a test that
+    # can't fail on the thing it's guarding isn't guarding it).
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    synthesizer.main([
+        "author", "aws_s3_bucket", "--content", _BAD_S3_HCL,
+        "--allow-incomplete", "--justification", "test", "--json",
+    ])
+    capsys.readouterr()  # drain, not asserted here -- refusal content is the sibling test's job
+
+    assert not os.path.isdir(tmp_path / "runs")
+
+
+def test_author_cli_refuses_without_decision_source(capsys):
+    rc = synthesizer.main(["author", "aws_s3_bucket", "--content", _VALID_S3_HCL])
+    out = capsys.readouterr().out
+
+    assert rc == 2
+    assert "no_decision_source" in out
+    # --allow-incomplete must not read as second-class relative to --decision-file
+    assert "--decision-file" in out and "--allow-incomplete" in out
+
+
+def test_author_cli_refuses_allow_incomplete_without_justification(capsys):
+    rc = synthesizer.main([
+        "author", "aws_s3_bucket", "--content", _VALID_S3_HCL, "--allow-incomplete",
+    ])
+    out = capsys.readouterr().out
+
+    assert rc == 2
+    assert "missing_justification" in out
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_author_cli_governed_path_via_real_decision_file(tmp_path, monkeypatch, capsys):
+    # The other supported decision source: a real, already-declared architecture_decision.json
+    # (the normal architecture_decision.py add-novel-resource path), no --allow-incomplete needed.
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+    req_dir = tmp_path / "req"
+    reqgate.write(str(req_dir), COMPLETE_SPEC, gathered_by="tester")
+    decision = dict(COMPLETE_DECISION, selected_modules=[], novel_resources=[{
+        "resource_type": "aws_s3_bucket",
+        "justification": "test",
+        "alternatives_considered": ["x"],
+    }])
+    dec_dir = tmp_path / "dec"
+    archdec.write(str(dec_dir), decision, decided_by="tester")
+
+    rc = synthesizer.main([
+        "author", "aws_s3_bucket", "--content", _VALID_S3_HCL,
+        "--decision-file", str(dec_dir), "--requirements-file", str(req_dir),
+        "--json",
+    ])
+    out = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert out["status"] == "composed"
+
+
+def test_author_cli_refuses_decision_file_missing_the_declared_type(tmp_path, capsys):
+    dec_dir = tmp_path / "dec"
+    archdec.write(str(dec_dir), dict(COMPLETE_DECISION, novel_resources=[]), decided_by="tester")
+
+    rc = synthesizer.main([
+        "author", "aws_s3_bucket", "--content", _VALID_S3_HCL, "--decision-file", str(dec_dir),
+    ])
+    out = capsys.readouterr().out
+
+    assert rc == 2
+    assert "resource_not_declared" in out
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Item 1 -- authored_content's module-shaped
 # unit. The flat str form above is completely unchanged (see tests above, all still passing
 # untouched); these cover the new dict form: its own variable/output/locals namespace and
 # path.module resolution via a real Terraform module boundary, not the flat root-file shape.
@@ -831,7 +1159,10 @@ def test_compose_writes_tfvars_with_showback_and_volume(tmp_path):
     assert '= "20260702-x"' in tfvars               # fmt realigns keys
     assert "daily_data_gb = 100" in tfvars and "10 to 100 GB per day" in tfvars
     providers = (out / "providers.tf").read_text(encoding="utf-8")
-    assert "run_id     = var.run_id" in providers   # showback tag on every resource
+    # Whitespace-insensitive on purpose: this asserted `terraform fmt` alignment, and
+    # MINUS-132 adding cost_center/data_classification through merge() shifted the
+    # block by one space. The claim is that the tag is wired, not how it is padded.
+    assert "run_id" in providers and "var.run_id" in providers
 
 
 def test_synthesize_wires_stated_budget_into_governance_module(tmp_path, monkeypatch):
@@ -857,6 +1188,11 @@ def test_synthesize_leaves_budget_as_review_when_unparseable(tmp_path, monkeypat
                                                  "budget": "deferred: pending finance sign-off cycle"}}
     res = synthesizer.synthesize("airflow pipeline", spec=spec, decision=COMPLETE_DECISION, owner="sandbox-test")
     main_tf = open(os.path.join(res["out_dir"], "main.tf"), encoding="utf-8").read()
-    assert "monthly_budget_usd =" not in main_tf  # never guessed -- no wired assignment
-    assert "# REVIEW: set monthly_budget_usd" in main_tf  # stays an explicit review item
+    # The doctrine is that no number the operator did not state reaches the file -- not that
+    # the argument is absent. It is now routed through the root variable so envs/prod.tfvars
+    # can set a ceiling without editing main.tf, and it stays a review item. What must never
+    # appear is a literal.
+    assert "monthly_budget_usd = var.monthly_budget_usd" in main_tf
+    import re as _re
+    assert not _re.search(r"monthly_budget_usd\s*=\s*\d", main_tf), main_tf
     assert any("monthly_budget_usd" in r for r in res["review"])

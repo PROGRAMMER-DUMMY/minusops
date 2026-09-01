@@ -1,7 +1,10 @@
 name: CI
 
-# Proves the engine cross-platform: installs the package and runs the full suite
-# (including the real-terraform gate e2e) on Linux, macOS, and Windows.
+# Proves the engine cross-platform: installs the package and runs the default suite on
+# Linux, macOS, and Windows. `pyproject.toml` sets `addopts = -m 'not slow'`, so this job
+# deliberately does NOT include the real-terraform tests -- the `slow` job below does, once,
+# on Linux. This header used to claim the gate e2e ran here; it did not, and neither did the
+# 362 tests marked slow, in any workflow.
 on:
   push:
     branches: ["**"]
@@ -41,6 +44,9 @@ jobs:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
         shell: bash
+
+      - name: Upgrade pip and packaging tools
+        run: python -m pip install --upgrade pip setuptools wheel
 
       - name: Install package (validates packaging + console scripts)
         run: python -m pip install ".[dev]"
@@ -87,7 +93,11 @@ jobs:
           base_url="https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}"
           curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo "/tmp/${asset}" "${base_url}/${asset}"
           curl --retry 5 --retry-delay 2 --retry-all-errors -fsSLo "/tmp/${asset}.sha256" "${base_url}/${asset}.sha256"
-          (cd /tmp && sha256sum -c "${asset}.sha256")
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd /tmp && sha256sum -c "${asset}.sha256")
+          else
+            (cd /tmp && shasum -a 256 -c "${asset}.sha256")
+          fi
           mkdir -p "$HOME/.local/bin"
           cp "/tmp/${asset}" "$HOME/.local/bin/${bin_name}"
           chmod +x "$HOME/.local/bin/${bin_name}"
@@ -137,6 +147,9 @@ jobs:
         # schema-watch.yml's own already-working pattern.
         env:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+        # `-m 'not slow'` comes from pyproject's addopts. The slow tests run in the `slow`
+        # job, not here: they do real terraform init per temp dir and take tens of minutes,
+        # which across six matrix legs would make every push unaffordable.
         run: python -m pytest -q
 
       - name: No-cloud demo end to end (generation + report + audit chain)
@@ -146,6 +159,96 @@ jobs:
           minusctl demo governed-data-pipeline --owner ci --daily-data-gb 10
           minusctl readiness
           minusctl audit verify
+
+  slow:
+    # The 366 tests marked `slow` had never run in any workflow: pyproject deselects them by
+    # default and every pytest invocation here inherited that, while this file, deploy.yml and
+    # docs/PROGRESS.md all claimed otherwise. They cover the gate end-to-end, the synthesizer,
+    # the schema linter and the teardown harness -- the paths a governance product is judged on.
+    #
+    # One OS rather than the six-leg matrix, stated rather than hidden: these do a real
+    # `terraform init` per temporary directory, and the cost across the matrix is what made
+    # deselecting them attractive in the first place. Linux catches the defects; the matrix
+    # exists for packaging and path handling, which the fast job already covers.
+    name: "slow (real terraform + opa)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          terraform_wrapper: false
+
+      - name: Cache Terraform provider plugins
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/tf-plugin-cache
+          key: tf-plugin-slow-${{ runner.os }}-${{ hashFiles('core/generation/synthesizer.py') }}
+          restore-keys: |
+            tf-plugin-slow-${{ runner.os }}-
+
+      - name: Ensure plugin cache dir exists
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+        shell: bash
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install ".[dev]"
+
+      - name: Install OPA (pinned, checksum-verified)
+        shell: bash
+        env:
+          OPA_VERSION: "1.18.2"
+        run: |
+          set -euxo pipefail
+          base="https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}"
+          asset="opa_linux_amd64"
+          curl -fsSL -o opa "${base}/${asset}"
+          curl -fsSL -o opa.sha256 "${base}/${asset}.sha256"
+          # The published .sha256 names the asset, not the local filename.
+          echo "$(cut -d' ' -f1 opa.sha256)  opa" | sha256sum -c -
+          chmod +x opa
+          sudo mv opa /usr/local/bin/opa
+          opa version
+
+      # Disk is the failure mode this job is most likely to hit, and it is not theoretical:
+      # running these locally on Windows filled a 361 GB disk to zero bytes on 2026-09-01,
+      # and docs/PROGRESS.md records the same thing happening on 2026-08-18. The cause is
+      # that Terraform COPIES a provider out of TF_PLUGIN_CACHE_DIR rather than symlinking it
+      # when the platform cannot symlink, at ~900 MB for hashicorp/aws per `terraform init`.
+      #
+      # A GitHub runner has roughly 14 GB free. `tmp_path_retention_policy = "failed"` in
+      # pyproject deletes a passing test's directory immediately, which caps the peak at the
+      # handful that fail -- but if a lot fail at once the job dies of disk rather than of the
+      # failures, and the log says nothing useful. These two steps make that legible instead:
+      # the reading before and after is the evidence for whether the cap is holding.
+      - name: Disk before
+        run: df -h /
+
+      # The cache dir alone is not enough -- tests/conftest.py also sets
+      # TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE, without which Terraform ignores the
+      # cache entirely and re-downloads the ~490 MB AWS provider on every one of the ~200 inits
+      # this job performs. That is the difference between this job finishing and this job
+      # timing out; see docs/PROGRESS.md section 15 for the measurement.
+      - name: Run the slow suite
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+        run: python -m pytest -m slow -q
+
+      - name: Disk after
+        if: always()
+        run: |
+          df -h /
+          du -sh "${{ runner.temp }}/tf-plugin-cache" 2>/dev/null || true
 
   package:
     name: "wheel asset smoke"

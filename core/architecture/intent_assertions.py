@@ -1,38 +1,37 @@
 """
-intent_assertions.py -- Phase 4 (G3/G4, docs/phase4_scope.md), auto-generated checks that
-verify a run's declared intent against the REAL generated plan. ADVISORY ONLY: nothing here
-blocks generation, plan, or apply. Findings are logged and surfaced in the deploy report
-alongside conformance()'s existing findings, the same way G6's shadow findings are logged
-alongside the regex path -- never enforced until a separate, later, evidence-reviewed decision.
+intent_assertions.py -- checks that verify a run's declared intent against the REAL generated
+plan.
 
-Three claim classes, each traceable to something generation actually consumes today (confirmed
-live before writing this, not assumed -- see docs/phase4_scope.md's own "what currently exists"
-section): free-text functional/non-functional requirements answers are explicitly OUT of scope,
-since terraform_generator.py does not consume most of them -- an assertion checking a free-text
-answer against the plan would be checking something generation never used to shape the build,
-passing or failing by coincidence rather than real traceability.
+ADVISORY ONLY: nothing here blocks generation, plan, or apply. Findings are logged and surfaced
+in the deploy report alongside conformance()'s findings. Promoting any of this to an enforcing
+gate is a separate, evidence-reviewed decision, not a follow-up commit.
+
+Free-text functional/non-functional requirements answers are explicitly OUT of scope. Generation
+does not consume most of them, so an assertion checking one against the plan would pass or fail
+by coincidence rather than tracing anything real. Three claim classes remain, each tied to
+something generation actually consumes:
 
 1. Module presence: every `architecture_decision.json.selected_modules` entry must resolve to a
-   real `module.<id>.*` address in the plan (module ids have hyphens; a real composed plan's
-   module label replaces them with underscores -- verified live against synthesizer.compose()
-   output, synthesizer._label()).
-2. Blueprint control mapping: each blueprint's `controls[]` claim maps (via a hand-authored,
-   reviewed table below -- never derived from the English string at runtime) to a concrete
-   plan-JSON check. A control with no mapping entry logs `control_unmapped` loudly -- never
-   silently skipped, never counted as passed. Verified against the real demo blueprint's
-   generated Terraform (terraform_generator.generate_aws_data_pipeline): two of the six
-   plan-checkable controls are genuinely NOT fully upheld today (no log-group retention despite
-   the "log retention" claim; no cost-anomaly-detection resource despite the "anomaly detection"
-   hooks claim) -- real, previously invisible gaps this checker exists to surface, not
-   hypothetical test cases.
+   real `module.<id>.*` address in the plan. Module ids contain hyphens; a composed plan's
+   module label replaces them with underscores (synthesizer._label()), so the comparison goes
+   through _module_label() rather than the raw id.
+2. Blueprint control mapping: each blueprint's `controls[]` claim maps to a concrete plan-JSON
+   check via the hand-authored, reviewed CONTROL_CHECKS table below -- never derived from the
+   English string at runtime. A control with no mapping entry logs `control_unmapped` loudly:
+   never silently skipped, never counted as passed. Some declared controls really are not upheld
+   by the generated Terraform today (log-group retention, cost-anomaly detection); surfacing
+   those gaps is the point, so a failing finding here is signal, not a broken test.
 3. Numeric ceilings: requirements.json's canonical `parse_budget_usd()` checked against the
-   real plan's `aws_budgets_budget` resource. A parser returning (0, "") -- nothing parseable --
-   skips the check entirely, never a pass or a block, matching the parser's own "never guess"
-   contract. `parse_daily_gb()` is deliberately NOT independently re-checked here: its only
-   plausible new-check candidate (cross-verifying architecture_model.conformance()'s own
-   volume_tier()-driven TIER-* findings) would just re-verify logic conformance() already runs
-   internally, not add a new independent signal -- scoped out and disclosed rather than built
-   as low-value redundant surface.
+   plan's `aws_budgets_budget` resource. A parser returning (0, "") -- nothing parseable --
+   skips the check entirely rather than passing or blocking, matching the parser's own "never
+   guess" contract. `parse_daily_gb()` is deliberately NOT re-checked here: the only candidate
+   check would re-verify the volume_tier()-driven TIER-* findings architecture_model.
+   conformance() already computes internally, adding redundant surface and no new signal.
+
+Depends on: core/governance/plan_reader.py (fail-soft plan access),
+    core/architecture/requirements.py (as reqgate -- parse_budget_usd)
+Shells out to: nothing. Every assertion reads an in-memory plan dict; no AWS call, no network.
+Used by: core/governance/plan_gate.py, tests/test_intent_assertions.py
 """
 import os
 import sys
@@ -51,11 +50,11 @@ def _finding(fid, category, title, detail, severity, resource=None, finding_kind
 
 
 def _plan_malformed_finding(plan_json):
-    """Shared fail-closed guard, used by every check_* function below (condition 4 of the
-    approved Phase 4 scope: plan JSON malformed/unreadable must BLOCK the assertion pass itself,
-    same evaluation_failed-style verdict shape as rego_gate.py, distinct from a legitimately
-    empty/no-op plan). Returns a single-item finding list on malformed input, [] otherwise --
-    callers short-circuit on a non-empty return."""
+    """Shared fail-closed guard, used by every check_* function below. Malformed or unreadable
+    plan JSON must BLOCK the assertion pass itself -- same evaluation_failed verdict shape as
+    rego_gate.py, and deliberately distinct from a legitimately empty/no-op plan, which is a
+    valid input that yields no findings. Returns a single-item finding list on malformed input,
+    [] otherwise; callers short-circuit on a non-empty return."""
     _, error = plan_reader.read_resource_changes(plan_json, treat_absent_as_error=False)
     if error:
         return [_finding("INTENT-PLAN-MALFORMED", "Intent", "Plan JSON malformed",
@@ -74,10 +73,9 @@ def _module_label(module_id):
 
 def check_module_presence(architecture_decision, plan_json):
     """For every selected module id, confirm at least one resource_change address begins with
-    `module.<label>.`. Verified live: a real composed plan (synthesizer.compose()) carries both
-    an address prefix and a direct `module_address` field with the same value -- this checks
-    the address prefix (works even if module_address is absent for some reason), not assumed
-    from a single field."""
+    `module.<label>.`. A composed plan carries both the address prefix and a `module_address`
+    field with the same value; the prefix is used because it still works when module_address is
+    absent."""
     malformed = _plan_malformed_finding(plan_json)
     if malformed:
         return malformed
@@ -173,12 +171,12 @@ def _check_versioning_and_lifecycle(plan_json):
 def _check_scoped_iam(plan_json):
     """Returns True (satisfied), False (a resolved policy has a wildcard Resource), None (no
     IAM in this plan at all -- not applicable), or "unresolved" (at least one policy's content
-    is genuinely unknown until apply -- e.g. built from a not-yet-created bucket's ARN, a real
-    shape confirmed live against the demo blueprint's own generated Terraform). "unresolved"
-    must never silently fall through to True: a real bug caught here before shipping -- the
-    demo blueprint's IAM policies reference aws_s3_bucket.zone[*].arn, so `policy` itself is
-    after_unknown at plan time, and treating "couldn't check" as "checked and fine" is exactly
-    the fail-open shape this session's whole discipline exists to close."""
+    is genuinely unknown until apply -- e.g. built from a not-yet-created bucket's ARN).
+
+    "unresolved" must never collapse into True. This is not hypothetical: the demo blueprint's
+    IAM policies reference aws_s3_bucket.zone[*].arn, so `policy` is after_unknown at plan time,
+    and treating "couldn't check" as "checked and fine" is the fail-open shape this checker
+    exists to prevent."""
     import json as _json
     rc, _ = plan_reader.read_resource_changes(plan_json, treat_absent_as_error=False)
     managed, _ = plan_reader.managed_only(rc or [])
@@ -236,8 +234,8 @@ def _check_budget_and_anomaly(plan_json):
 
 
 # Hand-authored, reviewed mapping. A control string with no entry here logs `control_unmapped`
-# -- never silently skipped, never counted as passed (docs/phase4_scope.md section 2/proof-bar
-# item 2).
+# -- never silently skipped, never counted as passed. Do not generate entries from the control
+# text at runtime: that turns an English claim into a check nobody reviewed.
 CONTROL_CHECKS = {
     "SSE-KMS for storage and logs": _check_sse_kms,
     "S3 public access blocks": _check_public_access_blocks,
@@ -271,9 +269,8 @@ def check_controls(blueprint, plan_json):
             continue  # not applicable to this plan's resource types -- not a failure
         if result == "unresolved":
             # Distinct from both pass and violation, same convention as G6's field_unresolved:
-            # a value this claim depends on isn't known until apply. Must never silently fall
-            # through to "no finding" (a real bug caught before this shipped -- see
-            # _check_scoped_iam's docstring).
+            # a value this claim depends on isn't known until apply. Must never fall through to
+            # "no finding" -- see _check_scoped_iam's docstring for the concrete case.
             findings.append(_finding(
                 "INTENT-CONTROL-UNRESOLVED", "Intent", "Blueprint control not verifiable yet",
                 f"'{control}' depends on a value that is unknown until apply -- cannot be "
@@ -316,9 +313,9 @@ def evaluate(requirements=None, architecture_decision=None, blueprint=None, plan
     generation path (blueprint-based demo, or modules.py-catalog production) is not expected to
     have both records.
 
-    Checks plan validity ONCE upfront (same evaluation_failed-style shape as rego_gate.py):
-    malformed/unreadable plan JSON blocks the whole assertion pass rather than producing the
-    same evaluation_failed finding once per claim class."""
+    Checks plan validity ONCE upfront (same evaluation_failed shape as rego_gate.py): malformed
+    or unreadable plan JSON blocks the whole assertion pass, rather than emitting the identical
+    evaluation_failed finding once per claim class."""
     malformed = _plan_malformed_finding(plan_json)
     if malformed:
         return {"advisory": True, "evaluation_failed": True, "findings": malformed}

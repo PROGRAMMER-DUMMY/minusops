@@ -10,6 +10,18 @@ forking a giant recipe.
 
 The composed Terraform still goes through the normal deploy gate (validate + SEC scan + plan-hash
 approval + BCM cost); these modules are starting blocks, not an apply-without-review shortcut.
+
+Everything this module returns is ADVISORY. match_modules(), compute_tier(), and
+derive_module_ids() all produce recommendations for a human to review into
+architecture_decision.json; nothing here selects or applies anything on its own.
+
+Depends on: nothing (stdlib only)
+Shells out to: nothing
+Used by: core/generation/synthesizer.py, core/generation/schema_lint.py,
+    core/generation/schema_watch.py, core/generation/module_provenance.py,
+    core/generation/patterns.py, core/generation/knowledge_degradation.py,
+    core/architecture/architecture_decision.py, core/cost/coverage_audit.py,
+    core/governance/reflector.py, core/reporting/reporter.py (lazily), and a wide slice of tests/
 """
 import os
 import re
@@ -100,7 +112,9 @@ MODULES = [
         "satisfies": ["data lake", "lakehouse", "medallion", "bronze silver gold",
                       "object storage", "s3", "raw curated", "tiered storage"],
         "services": ["Amazon S3", "AWS KMS"],
-        "inputs": ["name_prefix", "tags", "zones", "retention_days", "run_id"],
+        "inputs": ["name_prefix", "tags", "zones", "retention_days", "run_id", "force_destroy",
+                   "replication_destination_bucket_arns", "replication_destination_kms_key_arn",
+                   "multi_region_kms"],
         "provides": ["bucket_names", "kms_key_arn"],
     },
     {
@@ -118,7 +132,7 @@ MODULES = [
         "satisfies": ["step functions", "state machine", "serverless orchestration",
                       "sequential workflow", "sfn"],
         "services": ["AWS Step Functions", "AWS IAM"],
-        "inputs": ["name_prefix", "tags", "glue_job_names", "task_role_arns"],
+        "inputs": ["name_prefix", "tags", "glue_job_names", "task_role_arns", "schedule_expression"],
         "provides": ["state_machine_arn", "role_arn"],
     },
     {
@@ -126,8 +140,57 @@ MODULES = [
         "title": "AWS Glue Spark ETL jobs",
         "satisfies": ["glue", "spark", "etl", "batch transform", "pyspark", "batch compute"],
         "services": ["AWS Glue", "AWS IAM"],
-        "inputs": ["name_prefix", "tags", "script_s3_bucket", "jobs", "worker_type", "number_of_workers", "alarm_sns_topic_arn", "enable_alarms"],
+        "inputs": ["name_prefix", "tags", "script_s3_bucket", "jobs", "data_buckets", "kms_key_arn",
+                   "source_bucket", "target_bucket", "source_format", "target_format",
+                   "worker_type", "number_of_workers",
+                   "alarm_sns_topic_arn", "enable_alarms"],
         "provides": ["glue_job_names", "glue_job_arns", "glue_role_arn"],
+    },
+    {
+        "id": "compute-emr-ec2-spot", "category": "compute",
+        "title": "EMR on EC2 (Graviton + Spot task fleets)",
+        "satisfies": ["emr cluster", "petabyte", "multi-terabyte", "sustained spark",
+                      "spot instances", "graviton", "instance fleet", "very large scale spark"],
+        "services": ["Amazon EMR", "Amazon EC2", "AWS IAM"],
+        "inputs": ["name_prefix", "tags", "subnet_ids", "release_label", "target_buckets",
+                   "kms_key_arn", "master_instance_types", "core_instance_types",
+                   "task_instance_types", "core_target_capacity", "task_target_spot_capacity",
+                   "spot_timeout_minutes", "idle_timeout_seconds"],
+        "provides": ["cluster_id", "instance_role_arn"],
+    },
+    # --- Warehouse & streaming ---
+    {
+        "id": "warehouse-snowflake-aws", "category": "analytics",
+        "title": "Snowflake external stage integration (AWS side)",
+        "satisfies": ["snowflake", "external stage", "snowpipe", "warehouse integration",
+                      "cross account warehouse", "storage integration"],
+        "services": ["AWS IAM", "Amazon S3", "Amazon SQS"],
+        "inputs": ["name_prefix", "tags", "stage_bucket", "stage_prefixes",
+                   "stage_bucket_kms_key_arn", "snowflake_iam_user_arn",
+                   "snowflake_external_id", "enable_snowpipe_queue"],
+        "provides": ["storage_role_arn", "snowpipe_queue_arn", "handshake_complete"],
+    },
+    {
+        "id": "compute-databricks-delta", "category": "compute",
+        "title": "Unity Catalog external locations & Delta Sharing",
+        "satisfies": ["unity catalog", "external location", "delta sharing",
+                      "storage credential", "databricks catalog", "share tables"],
+        "services": ["Databricks", "AWS IAM", "Amazon S3"],
+        "inputs": ["name_prefix", "tags", "metastore_id", "catalog_name", "bucket_names",
+                   "external_zones", "kms_key_arn", "databricks_account_id",
+                   "delta_share_recipients", "shared_tables"],
+        "provides": ["storage_credential_name", "external_location_urls", "uc_role_arn"],
+    },
+    {
+        "id": "streaming-msk-kafka", "category": "streaming",
+        "title": "Managed Kafka (MSK) with IAM SASL auth",
+        "satisfies": ["kafka", "msk", "managed kafka", "kafka connect", "topic",
+                      "consumer group", "exactly once"],
+        "services": ["Amazon MSK", "AWS IAM", "Amazon CloudWatch"],
+        "inputs": ["name_prefix", "tags", "subnet_ids", "security_group_ids", "kafka_version",
+                   "broker_instance_type", "broker_ebs_volume_size_gb", "kms_key_arn",
+                   "sink_bucket", "sink_bucket_kms_key_arn"],
+        "provides": ["cluster_arn", "bootstrap_brokers_sasl_iam", "connector_role_arn"],
     },
     {
         "id": "speed-layer-kinesis", "category": "streaming",
@@ -144,7 +207,9 @@ MODULES = [
         "satisfies": ["data quality", "great expectations", "validation", "data validation",
                       "quality checks", "deequ", "expectations", "data tests"],
         "services": ["AWS Glue", "Amazon S3", "AWS IAM"],
-        "inputs": ["name_prefix", "tags", "target_buckets", "fail_on_error", "run_id"],
+        "inputs": ["name_prefix", "tags", "target_buckets", "fail_on_error", "run_id",
+                   "script_s3_bucket", "script_s3_key", "quarantine_kms_key_arn",
+                   "alert_topic_arn"],
         "provides": ["dq_job_name", "dq_results_bucket"],
     },
     {
@@ -160,10 +225,15 @@ MODULES = [
         "id": "query-athena", "category": "serving",
         "title": "Athena workgroup for SQL / BI access",
         "satisfies": ["athena", "sql", "ad-hoc query", "bi", "tableau", "powerbi",
-                      "analyst access", "interactive query", "presto"],
+                      "analyst access", "interactive query", "presto",
+                      "partition projection"],
         "services": ["Amazon Athena", "Amazon S3"],
-        "inputs": ["name_prefix", "tags", "results_kms_key_arn", "bytes_scanned_cutoff", "run_id"],
-        "provides": ["workgroup_name", "results_bucket"],
+        "inputs": ["name_prefix", "tags", "results_kms_key_arn", "bytes_scanned_cutoff",
+                   "run_id", "gold_bucket", "create_projected_table", "projected_table_name",
+                   "projected_table_columns", "projection_start_date",
+                   "projection_date_format", "projected_table_prefix"],
+        "provides": ["catalog_database", "workgroup_name", "results_bucket",
+                     "projected_table_name", "partition_projection_enabled"],
     },
     {
         "id": "compaction-glue", "category": "optimization",
@@ -207,8 +277,10 @@ MODULES = [
         "satisfies": ["redshift", "warehouse", "high concurrency", "many analysts",
                       "bi at scale", "dashboards at scale", "concurrent queries"],
         "services": ["Amazon Redshift Serverless"],
-        "inputs": ["name_prefix", "tags", "base_capacity_rpu"],
-        "provides": ["namespace_name", "workgroup_name"],
+        "inputs": ["name_prefix", "tags", "base_capacity_rpu", "max_capacity",
+                   "usage_limit_rpu_hours", "usage_limit_breach_action", "publicly_accessible"],
+        "provides": ["namespace_name", "workgroup_name", "capacity_bounds_rpu",
+                     "usage_limit_configured"],
     },
     {
         "id": "governance-observability", "category": "governance",
@@ -216,8 +288,123 @@ MODULES = [
         "satisfies": ["budget", "cost guardrail", "monitoring", "observability", "alarms",
                       "cloudwatch", "alerting", "finops"],
         "services": ["AWS Budgets", "Amazon CloudWatch"],
-        "inputs": ["name_prefix", "tags", "monthly_budget_usd", "alarm_sns_topic_arn"],
+        "inputs": ["name_prefix", "tags", "monthly_budget_usd", "alarm_sns_topic_arn",
+                   "notification_emails", "enable_siem_trail", "siem_data_bucket_arns",
+                   "siem_kms_key_arn", "siem_retention_days"],
         "provides": ["budget_name", "alerts_topic_arn"],
+    },
+    # --- Upstream ingestion. Do not drop these: without a catalog entry answering "where does
+    # the data come from", synthesis composes a stack whose landing buckets stay empty.
+    {
+        "id": "ingestion-dms", "category": "ingestion",
+        "title": "Database CDC ingestion (AWS DMS)",
+        "satisfies": ["cdc", "change data capture", "rds", "postgres", "mysql", "oracle",
+                      "sql server", "on-premise database", "operational database",
+                      "replicate database", "transactional source", "database sync"],
+        "services": ["AWS DMS", "Amazon S3", "AWS Secrets Manager", "AWS IAM"],
+        "inputs": ["name_prefix", "tags", "subnet_ids", "vpc_security_group_ids",
+                   "source_engine_name", "source_secret_arn", "target_bucket",
+                   "target_bucket_kms_key_arn", "table_mappings_json",
+                   "replication_instance_class", "migration_type"],
+        "provides": ["replication_task_arn", "dms_role_arn"],
+    },
+    {
+        "id": "ingestion-appflow", "category": "ingestion",
+        "title": "SaaS ingestion (Amazon AppFlow)",
+        "satisfies": ["saas", "salesforce", "zendesk", "servicenow", "marketo", "stripe",
+                      "google analytics", "crm", "third party api", "saas connector"],
+        "services": ["Amazon AppFlow", "Amazon S3"],
+        "inputs": ["name_prefix", "tags", "connector_profile_name", "connector_type",
+                   "source_object", "target_bucket", "target_prefix", "schedule_expression",
+                   "mapped_fields"],
+        "provides": ["flow_name", "flow_arn"],
+    },
+    {
+        "id": "ingestion-sftp", "category": "ingestion",
+        "title": "Partner file drops (AWS Transfer Family SFTP)",
+        "satisfies": ["sftp", "ftp", "file drop", "partner files", "external partner",
+                      "managed file transfer", "vendor feed", "file upload"],
+        "services": ["AWS Transfer Family", "Amazon S3", "AWS IAM"],
+        "inputs": ["name_prefix", "tags", "target_bucket", "target_bucket_kms_key_arn",
+                   "users", "security_policy_name"],
+        "provides": ["sftp_endpoint", "sftp_server_id"],
+    },
+    {
+        "id": "ingestion-webhook", "category": "ingestion",
+        "title": "Webhook receiver (API Gateway + SQS)",
+        "satisfies": ["webhook", "http push", "event push", "callback url", "inbound events",
+                      "real-time push", "api endpoint", "third party events"],
+        "services": ["Amazon API Gateway", "Amazon SQS", "AWS Secrets Manager", "AWS IAM"],
+        "inputs": ["name_prefix", "tags", "route_key", "message_retention_seconds",
+                   "visibility_timeout_seconds", "throttling_burst_limit",
+                   "throttling_rate_limit"],
+        "provides": ["webhook_url", "queue_url", "queue_arn", "hmac_secret_arn"],
+    },
+    # --- Metadata-driven orchestration. FALLBACK only: the primary path
+    # (scripts/fetch_pipeline_config.py) reads an EXISTING enterprise control table via a
+    # caller-supplied column mapping and never touches Terraform at all. This module is only
+    # for a greenfield project with no control table yet -- match_modules() surfacing it is not
+    # the same as the synthesizer auto-wiring it; nothing in this catalog composes it in by
+    # default.
+    {
+        "id": "metadata-control-table", "category": "orchestration",
+        "title": "Pipeline metadata control table (DynamoDB) for dynamic DAG parameters",
+        "satisfies": ["metadata control table", "pipeline control table", "control table",
+                      "dynamic dag configuration", "dynamic airflow parameters",
+                      "pipeline metadata store", "dag parameter store",
+                      "cluster config lookup table"],
+        "services": ["Amazon DynamoDB"],
+        "inputs": ["name_prefix", "tags", "run_id", "table_name", "partition_key_name",
+                   "partition_key_type", "sort_key_name", "sort_key_type", "billing_mode",
+                   "read_capacity", "write_capacity", "kms_key_arn", "point_in_time_recovery"],
+        "provides": ["table_name", "table_arn"],
+    },
+    {
+        "id": "governance-lakeformation", "category": "governance",
+        "title": "Lake Formation tag-based access control (row filters + PII column masking)",
+        # Deliberately specific. These phrases come from grill-me Pillar 13; matching on a
+        # bare "governance" or "security" would attach a Lake Formation deployment to every
+        # lakehouse request, which is how a recommendation becomes noise operators skip.
+        "satisfies": ["lake formation", "lakeformation", "lf-tbac", "tag based access control",
+                      "row level security", "row filters", "column masking", "pii masking",
+                      "fine grained access control", "column level security"],
+        "services": ["AWS Lake Formation", "AWS Glue Data Catalog", "AWS IAM"],
+        "inputs": ["name_prefix", "tags", "gold_bucket_arn", "admin_iam_role_arns", "lf_tags",
+                   "consumer_role_arns", "consumer_tag_key", "consumer_tag_values",
+                   "registration_role_arn"],
+        "provides": ["registered_resource_arn", "lf_tag_keys", "governed"],
+    },
+    {
+        "id": "security-iam-scoped", "category": "governance",
+        "title": "Least-privilege consumer IAM: scoped S3/KMS/Athena reads, external-ID trust",
+        "satisfies": ["least privilege", "scoped iam", "cross account access",
+                      "cross account read", "consumer role", "bi team access",
+                      "external id", "data science access", "read only access"],
+        "services": ["AWS IAM", "AWS KMS", "Amazon Athena"],
+        "inputs": ["name_prefix", "tags", "gold_bucket_arn", "gold_prefixes", "kms_key_arn",
+                   "athena_workgroup_arn", "trusted_external_principals", "external_id"],
+        "provides": ["policy_arn", "consumer_role_arn"],
+    },
+    {
+        "id": "dbt-semantic-layer", "category": "serving",
+        "title": "Code-native semantic layer (dbt / MetricFlow) over Gold",
+        "satisfies": ["semantic layer", "dbt", "metricflow", "dbt semantic layer",
+                      "metrics layer", "governed metrics", "metric definitions",
+                      "code native semantic layer", "single source of truth for metrics"],
+        "services": ["Amazon S3", "Amazon Athena", "dbt"],
+        "inputs": ["name_prefix", "tags", "run_id", "manifest_retention_days"],
+        "provides": ["manifest_bucket", "semantic_model_path"],
+    },
+    {
+        "id": "cube-semantic-layer", "category": "serving",
+        "title": "Headless universal semantic layer (Cube) with pre-aggregation cache",
+        "satisfies": ["cube", "cube.js", "headless semantic layer", "headless bi",
+                      "metrics api", "rest and graphql metrics", "graphql metrics api",
+                      "embedded analytics", "pre-aggregation", "universal semantic layer"],
+        "services": ["Amazon ElastiCache", "Amazon Athena", "Cube"],
+        "inputs": ["name_prefix", "tags", "cube_image", "pre_aggregation_refresh_minutes",
+                   "cache_node_type", "subnet_ids", "security_group_ids"],
+        "provides": ["cache_endpoint", "cube_image", "schema_path"],
     },
 ]
 
@@ -240,8 +427,24 @@ def categories():
     return sorted({m["category"] for m in MODULES})
 
 
+# Tokens that appear in so many modules' `satisfies` phrases that a single-token hit on them
+# carries no signal. "data" is the worst offender -- it is inside "change data capture",
+# "data quality", "data lake", "data contracts", so a weak-overlap hit on it makes every
+# module look partly relevant to every data-pipeline request -- concretely, it pulls
+# `ingestion-dms` into an Airflow-lakehouse match and breaks pattern reuse (test_patterns.py).
+# WHOLE-PHRASE matches are unaffected: "change data capture" appearing verbatim is still the
+# strong 3-point signal.
+_WEAK_STOPWORDS = frozenset({
+    "data", "aws", "amazon", "managed", "the", "and", "for", "with", "from", "into", "our",
+})
+
+
 def _tokens(text):
     return set(_WORD.findall((text or "").lower()))
+
+
+def _signal_tokens(text):
+    return _tokens(text) - _WEAK_STOPWORDS
 
 
 def match_modules(requirements, min_score=1):
@@ -260,11 +463,11 @@ def match_modules(requirements, min_score=1):
             if phrase in req:                       # whole-phrase hit is strong signal
                 score += 3
                 matched.append(phrase)
-            elif _tokens(phrase) & req_tokens:      # token overlap is a weak signal
+            elif _signal_tokens(phrase) & req_tokens:  # token overlap is a weak signal
                 score += 1
                 matched.append(phrase)
         for svc in m["services"]:
-            if _tokens(svc) & req_tokens:
+            if _signal_tokens(svc) & req_tokens:
                 score += 1
         # A selection must be explainable by a capability phrase — service-name token
         # overlap alone ("Data", "Amazon") is noise, it only boosts a real match.
@@ -275,9 +478,9 @@ def match_modules(requirements, min_score=1):
 
 def retrieve_grounding_examples(requirements, top_n=3, min_score=1):
     """Repurposes `match_modules()`'s scoring toward retrieval-for-grounding (docs/
-    phase6_scope.md section 2.1, docs/phase6_step5_teardown_scope.md section 3) -- additive, not
-    a rewrite: the scorer itself is untouched and still used exactly as-is by every existing
-    caller (`synthesizer.select_modules()`, `patterns.py`) for final catalog-pick selection.
+    phase6_scope.md section 2.1) -- additive, not a rewrite: the scorer itself is untouched and
+    still used as-is by `synthesizer.select_modules()` and `patterns.py` for final catalog-pick
+    selection.
 
     This is a DIFFERENT consumer of the same ranking: given a requirement, return the top-N
     ranked modules as real, human-reviewed reference examples -- their actual `main.tf` content,
@@ -289,9 +492,9 @@ def retrieve_grounding_examples(requirements, top_n=3, min_score=1):
 
     Returns a list of {id, title, services, score, matched, content} dicts, best-first. `content`
     is the module's real, current `main.tf` text -- read fresh every call, never cached, so a
-    grounding example is never staler than the catalog itself (the same "re-verify live, don't
-    trust from history" principle this session's `module_provenance.py` retirement established
-    for content review applies here too, for content RETRIEVAL)."""
+    grounding example is never staler than the catalog itself. Same "re-verify live, don't trust
+    history" principle module_provenance.py applies to content review, applied to content
+    RETRIEVAL."""
     ranked = match_modules(requirements, min_score=min_score)
     examples = []
     for m in ranked[:top_n]:
@@ -306,6 +509,209 @@ def retrieve_grounding_examples(requirements, top_n=3, min_score=1):
             "score": m["score"], "matched": m["matched"], "content": content,
         })
     return examples
+
+
+# Scoped to requirements.py's own named carve-out (see that module's docstring):
+# non_functional.latency and data_pipeline.consumption/orchestration/catalog are enumerable
+# answers grill-me already gathers and nothing downstream reads. Deliberately NOT
+# storage/compute/data-quality (sources, storage_zones, transforms, data_quality) -- those need
+# real text understanding beyond a closed enumerable answer, so they stay on match_modules()'s
+# free-text path.
+_ENUMERABLE_FIELD_MODULES = {
+    "consumption": ["query-athena", "consumption-redshift-serverless"],
+    "orchestration": ["orchestrator-mwaa", "orchestrator-stepfunctions"],
+    "catalog": ["schema-registry-glue"],
+}
+_LATENCY_STREAMING_MODULES = ["speed-layer-kinesis", "ingest-firehose"]
+
+
+def _is_deferred_or_blank(value):
+    text = str(value or "").strip()
+    return (not text) or text.lower().startswith("deferred")
+
+
+def _match_score(text, module_id):
+    """Count of module_id's own `satisfies` phrases the text hits (whole-phrase substring OR
+    every one of a phrase's tokens present) -- 0 means no match. Used both as a yes/no check
+    (score > 0) and, within one enumerable field's candidate group, as a specificity signal so
+    the single best-matching alternative wins instead of every independently-matching one. On a
+    genuine tie (two alternatives scoring equally), derive_module_ids() surfaces both, labeled as
+    mutually-exclusive alternatives for a human to pick between -- it never silently drops one."""
+    module = get_module(module_id)
+    if module is None:
+        return 0
+    text_tokens = _tokens(text)
+    score = 0
+    for phrase in module["satisfies"]:
+        if phrase in text:
+            score += 1
+        else:
+            phrase_tokens = _tokens(phrase)
+            if phrase_tokens and phrase_tokens <= text_tokens:
+                score += 1
+    return score
+
+
+# Volume decides the engine; the SLA decides whether it can run on discounted capacity. The
+# thresholds are the crossover points where the cheaper option stops being cheaper:
+#
+#   < 1 TB/day   Glue. Per-DPU-second billing with no cluster to idle. Below this, EMR's
+#                startup and idle time costs more than Glue's premium.
+#   1-5 TB/day   EMR Serverless on Graviton. Spark dynamic allocation without cluster ops,
+#                and past ~1 TB Glue's per-DPU rate stops competing.
+#   >= 5 TB/day  EMR on EC2 with Graviton + Spot task fleets. Only here does running an
+#                actual cluster beat serverless, and only because Spot task capacity is
+#                roughly 70% off -- which is also why it needs an interruption-tolerant job.
+#
+# Advisory, like every other recommendation in this module: returned for a human to review
+# into architecture_decision.json, never auto-applied.
+_TB = 1024.0
+
+_TIER_TABLE = (
+    (_TB, "compute-glue-etl",
+     "under 1 TB/day: per-DPU-second billing with no cluster to idle beats EMR startup cost"),
+    (5 * _TB, "compute-emr-serverless",
+     "1-5 TB/day: Spark dynamic allocation on Graviton without cluster operations"),
+    (float("inf"), "compute-emr-ec2-spot",
+     "5+ TB/day: sustained scale is the only point where an actual cluster with Spot task "
+     "capacity beats serverless"),
+)
+
+# Phrases that mean "a person is NOT waiting on this run", which is the precondition for FLEX
+# (spare capacity, unpredictable start, possible interruption, ~35% off).
+_FLEX_TOLERANT = ("nightly", "overnight", "daily", "batch", "hourly", "hours", "next day",
+                  "end of day", "not time sensitive", "not time-sensitive")
+_FLEX_INTOLERANT = ("real-time", "real time", "streaming", "sub-second", "subsecond",
+                    "interactive", "minutes", "near real")
+
+
+# Access patterns that hold both sides of a join in memory. Ruling, 2026-08-21: these
+# mandate G.2X regardless of volume, because the failure is not a crash -- G.1X spills to
+# disk and the job takes hours instead of minutes, which shows up as a slow pipeline and a
+# large bill rather than as an error anyone investigates.
+_MEMORY_INTENSIVE = ("scd_type_2", "scd type 2", "wide_join", "wide join", "merge")
+
+GLUE_WORKER_MODULES = ("compute-glue-etl",)
+
+
+def worker_class(access_pattern, module_id="compute-glue-etl"):
+    """Glue worker class for an access pattern, or None where the concept does not apply.
+
+    `compute_tier()` still selects the ENGINE from volume. Above roughly 5 TB/day that is EMR
+    on EC2, which has instance fleets rather than Glue worker classes -- so the ruling's
+    "regardless of volume" governs the worker *within* Glue, not the engine choice. Asking
+    for a worker class on an EMR module returns None rather than a plausible-looking string.
+
+    An undeclared pattern gets G.1X, matching how an undeclared volume already gets the
+    smallest tier: doubling the DPU rate on no evidence is how a cheap pipeline acquires an
+    expensive bill.
+    """
+    if module_id not in GLUE_WORKER_MODULES:
+        return None
+    text = (access_pattern or "").strip().lower()
+    if any(marker in text for marker in _MEMORY_INTENSIVE):
+        return "G.2X"
+    return "G.1X"
+
+
+def compute_tier(daily_gb, latency_text=""):
+    """Recommend a compute module and execution class for a volume and an SLA.
+
+    Returns {"module_id", "reason", "execution_class", "daily_gb"}. `execution_class` is
+    meaningful only for Glue; it is None for the EMR tiers.
+
+    daily_gb of 0 means "undeclared" -- the caller gets the Glue tier with a reason saying so
+    rather than a guess at scale, because recommending an EMR cluster off no evidence is how
+    a $40/month pipeline acquires a $4,000/month bill.
+    """
+    latency = (latency_text or "").lower()
+    for ceiling, module_id, reason in _TIER_TABLE:
+        if daily_gb < ceiling:
+            break
+    if not daily_gb:
+        module_id, reason = ("compute-glue-etl",
+                             "volume undeclared: defaulting to the smallest tier rather than "
+                             "guessing at scale -- restate once data_volume is answered")
+
+    execution_class = None
+    if module_id == "compute-glue-etl":
+        tolerant = any(p in latency for p in _FLEX_TOLERANT)
+        intolerant = any(p in latency for p in _FLEX_INTOLERANT)
+        # Intolerant wins a tie: "hourly batch feeding a real-time dashboard" must not get FLEX.
+        execution_class = "FLEX" if (tolerant and not intolerant) else "STANDARD"
+        if execution_class == "FLEX":
+            reason += "; FLEX execution class (~35% off) because the stated SLA tolerates an "
+            reason += "unpredictable start"
+    return {"module_id": module_id, "reason": reason,
+            "execution_class": execution_class, "daily_gb": daily_gb}
+
+
+def derive_module_ids(requirements_data):
+    """Read exactly requirements.py's named-carve-out fields and recommend module ids --
+    deterministic and explainable, never a keyword score against one accumulated free-text
+    blob. Returns a list of {module_id, reason, source_field} dicts, for a human/agent to
+    review into architecture_decision.json's `selected_modules` -- never auto-applied, same
+    discipline as match_modules()'s own callers.
+
+    Within data_pipeline.consumption/orchestration/catalog, each field's candidate modules are
+    mutually-exclusive alternatives (e.g. Athena vs. Redshift Serverless) -- only the
+    highest-specificity match(es) (by matched-phrase count) are recommended, never a weaker
+    candidate alongside a stronger one. On a genuine tie between two or more alternatives, ALL
+    tied candidates are surfaced (never silently narrowed to one arbitrary pick), and each tied
+    pick's `reason` is annotated to say so explicitly -- the human reviewing must choose, this
+    function never guesses on their behalf. non_functional.latency's streaming modules are
+    complementary, not alternatives (a real streaming architecture commonly uses both Kinesis
+    and Firehose together), so both are included independently whenever they match -- no
+    tie-break there.
+
+    Known limitation on the latency path: some of speed-layer-kinesis's `satisfies` phrases are
+    bare generic single words ("events", "streaming"), so a batch-cadence answer mentioning one
+    of them in a non-streaming sense ("process events in hourly batches") can false-positive into
+    a streaming recommendation. This is the weak-single-token-match problem the enumerable-field
+    tie-break above avoids, deliberately left unfixed here: the two streaming modules are
+    complementary rather than exclusive, so a specificity threshold that fixed it would also drop
+    ingest-firehose's legitimate weaker single-phrase matches ("near real-time ingest", scoring
+    only 1) for genuinely streaming answers. These picks are advisory, so human review before
+    architecture_decision.json is the safety net -- not a claim that the latency path is
+    airtight."""
+    data_pipeline = (requirements_data or {}).get("data_pipeline") or {}
+    non_functional = (requirements_data or {}).get("non_functional") or {}
+    picks = []
+
+    for field, candidate_ids in _ENUMERABLE_FIELD_MODULES.items():
+        value = str(data_pipeline.get(field) or "")
+        if _is_deferred_or_blank(value):
+            continue
+        text = value.lower()
+        scores = {module_id: _match_score(text, module_id) for module_id in candidate_ids}
+        best = max(scores.values())
+        if best == 0:
+            continue
+        tied = [module_id for module_id in candidate_ids if scores[module_id] == best]
+        for module_id in tied:
+            reason = f"data_pipeline.{field} = {value!r}"
+            if len(tied) > 1:
+                others = ", ".join(m for m in tied if m != module_id)
+                reason += (f" -- tied with {others}: mutually-exclusive alternatives, "
+                           f"a human must pick one")
+            picks.append({
+                "module_id": module_id,
+                "reason": reason,
+                "source_field": f"data_pipeline.{field}",
+            })
+
+    latency = str(non_functional.get("latency") or "")
+    if not _is_deferred_or_blank(latency):
+        text = latency.lower()
+        for module_id in _LATENCY_STREAMING_MODULES:
+            if _match_score(text, module_id) > 0:
+                picks.append({
+                    "module_id": module_id,
+                    "reason": f"non_functional.latency = {latency!r}",
+                    "source_field": "non_functional.latency",
+                })
+
+    return picks
 
 
 def module_dir(module_id):
@@ -346,6 +752,9 @@ def main(argv=None):
     sub.add_parser("validate")
     mp = sub.add_parser("match")
     mp.add_argument("requirements")
+    pp = sub.add_parser(
+        "preplan", help="recommend module ids from a requirements.json's enumerable fields")
+    pp.add_argument("requirements_file")
     args = ap.parse_args(argv)
 
     if args.cmd == "list":
@@ -364,6 +773,17 @@ def main(argv=None):
     if args.cmd == "match":
         for m in match_modules(args.requirements):
             print(f"[{m['score']:>2}] {m['id']:<28} matched: {', '.join(m['matched'])}")
+        return 0
+    if args.cmd == "preplan":
+        with open(args.requirements_file, encoding="utf-8") as f:
+            data = json.load(f)
+        picks = derive_module_ids(data)
+        if not picks:
+            print("[preplan] no enumerable-field recommendations "
+                  "(fields blank/deferred, or no keyword hit)")
+            return 0
+        for p in picks:
+            print(f"{p['module_id']:<28} <- {p['source_field']:<24} {p['reason']}")
         return 0
     return 1
 

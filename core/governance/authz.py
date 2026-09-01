@@ -9,16 +9,19 @@ approve a deploy. If no allowlist is configured the gate runs in "open" mode
 (single-operator dev), which is reported explicitly so it can never be mistaken
 for an enforced control.
 
-2026-07-07: `operator()` itself is unchanged (still MINUS_OPERATOR / OS user) --
-`MINUS_APPROVERS`/`.minus/approvers.json` are compared against whatever string
-`operator()` returns, and an env var is trivially spoofable by anyone with shell
-access. `verified_operator()` is the AWS-IAM-backed alternative: it derives the
-principal from the ARN `sts get-caller-identity` returns for the credentials
-ACTUALLY active right now, not a self-reported string. plan_gate.py's approve/apply
-RBAC (where the two-person production rule needs to mean something) prefers this;
-other callers (e.g. approval.py's Slack/Jira notify gate, which may run with no
-cloud session at all) are unaffected, deliberately -- this is scoped to the deploy
-gate's approver/planner identity, not a global replacement of operator().
+Two identity functions, and the difference is the point. `operator()` returns a
+self-reported string (MINUS_OPERATOR, else the OS user) that anyone with shell access
+can set; the allowlist is compared against it. `verified_operator()` derives the
+principal from the ARN `sts get-caller-identity` returns for the credentials actually
+live right now, so it cannot be spoofed by an env var. plan_gate.py's approve/apply
+RBAC, where the two-person production rule must mean something, prefers the verified
+form. Other callers (approval.py's Slack/Jira notify gate, which may run with no cloud
+session at all) deliberately still use `operator()` -- this is scoped to the deploy
+gate's approver/planner identity, not a global replacement.
+
+Depends on: providers.base (lazy import inside verified_operator)
+Shells out to: AWS STS get-caller-identity, indirectly via provider.credential_posture()
+Used by: core/governance/approval.py, core/governance/plan_gate.py
 """
 import getpass
 import json

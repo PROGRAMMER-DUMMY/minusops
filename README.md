@@ -27,7 +27,6 @@ cost owner), then mapping the answers to an architecture decision and governed s
 A **real screen recording** — dashboard tabs, the architecture diagram with its click-to-code
 service inspector (click a box, see the exact Terraform), and the reports:
 
-![live dashboard walkthrough](docs/demo/minusops-dashboard.gif)
 
 **Try it in 30 seconds** (the non-interactive shortcut for the same blueprint):
 
@@ -35,7 +34,7 @@ service inspector (click a box, see the exact Terraform), and the reports:
 pip install ".[dashboard]"
 minusctl demo governed-data-pipeline --owner data-platform --daily-data-gb 50
 minusctl prove                 # prove the offline governance chain end-to-end (writes evidence.md)
-python app/dashboard_app.py     # the live console at http://127.0.0.1:8050
+minusctl console               # the governance console at http://127.0.0.1:8050
 ```
 
 Each run writes a versioned bundle under `runs/<run-id>/reports/<plan-hash>/`. The stills below
@@ -44,7 +43,7 @@ break the tour down screen by screen.
 
 ### The live FinOps console
 
-`python app/dashboard_app.py` serves a fixed-screen, tabbed console with a Control tab for
+`minusctl console` serves a governance console scoped to one run, with a Control tab for
 requirements, architecture decision, synthesis commands, and report readiness. It binds to
 `127.0.0.1` by default. If you expose it beyond localhost, set `MINUS_DASH_TOKEN` first.
 
@@ -102,7 +101,7 @@ same data grouped by service:
 - **Cost intelligence** — live spend, anomalies, and root-cause correlation (`core/reporting/finops_agent.py`),
   AWS BCM Pricing Calculator payload preparation (`core/cost/bcm_pricing_calculator.py`),
   reviewed usage-profile support for internal services ([`docs/pricing_catalog_support.md`](./docs/pricing_catalog_support.md)),
-  and a Plotly Dash console (`app/dashboard_app.py`).
+  and a Plotly Dash console (`app/console_app.py`).
 - **Safety primitives** — an approval gate with **approver RBAC** (`core/governance/approval.py`,
   `core/governance/authz.py`), a **tamper-evident hash-chained** audit trail (`core/governance/audit_chain.py`,
   verify with `minusctl audit verify`), a **per-resource** HCL security/cost scanner with
@@ -170,16 +169,15 @@ Provision the MFA-gated deploy role and read-only FinOps role from
 python core/generation/intent_resolver.py --validate-blueprints
 python core/generation/intent_resolver.py --list-blueprints
 python core/generation/intent_resolver.py "create a governed AWS data pipeline"
-python core/reporting/dispatcher.py "build a data pipeline"
 
 # 4b. Create a fresh governed requirements workspace
-python core/reporting/minusctl.py create "create a governed AWS data pipeline"
-python core/reporting/minusctl.py decision template --write
-python core/reporting/minusctl.py next
-python core/reporting/minusctl.py readiness
-python core/reporting/minusctl.py guard status
-python core/reporting/minusctl.py guard diff
-python core/reporting/minusctl.py package
+minusctl create "create a governed AWS data pipeline"
+minusctl decision template --write
+minusctl next
+minusctl readiness
+minusctl guard status
+minusctl guard diff
+minusctl package
 
 # The lower-level commands remain available
 python core/generation/workflow.py resolve "create a governed AWS data pipeline"
@@ -188,13 +186,13 @@ python core/governance/source_guard.py diff --dir runs/<run-id>/terraform
 
 # Optional reviewable accelerator, chosen by an operator after requirements gathering.
 # It writes requirements.json + architecture_decision.json; it does not synthesize, plan, or apply.
-python core/reporting/minusctl.py accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
-python core/reporting/minusctl.py next
+minusctl accelerator aws-lakehouse --run <run-id> --owner data-platform --daily-data-gb 100
+minusctl next
 
 # Optional no-cloud demo report, with synthetic plan JSON and no Terraform/AWS calls
-python core/reporting/minusctl.py demo governed-data-pipeline --owner data-platform --daily-data-gb 50
-python core/reporting/minusctl.py reports services --latest
-python core/reporting/minusctl.py reports roles --latest
+minusctl demo governed-data-pipeline --owner data-platform --daily-data-gb 50
+minusctl reports services --latest
+minusctl reports roles --latest
 
 # 5. Inspect cost / health any time (read-only, safe)
 python core/reporting/finops_agent.py --cost
@@ -202,9 +200,9 @@ python core/reporting/health_checker.py --bronze-bucket my-bucket --job-1 my-glu
 python core/reporting/optimize_analyzer.py --source-dir path/to/your/terraform
 
 # 6. Live FinOps console
-python app/dashboard_app.py     # http://127.0.0.1:8050
+minusctl console               # http://127.0.0.1:8050
 # LAN bind requires token auth:
-# MINUS_DASH_TOKEN="$(openssl rand -hex 32)" DASH_HOST=0.0.0.0 python app/dashboard_app.py
+# MINUS_DASH_TOKEN="$(openssl rand -hex 32)" minusctl console --host 0.0.0.0
 ```
 
 Select a different cloud with `MINUS_CLOUD=azure|gcp` (AWS is the only fully-wired provider today).
@@ -245,7 +243,7 @@ core/generation/workflow.py      safe request -> blueprint -> run workspace -> o
 core/governance/source_guard.py  local source baseline and manual edit diff for generated Terraform
 core/reporting/plan_inspector.py inspect services, resources, roles, files, and drift from reports
 core/providers/       cloud abstraction (aws implemented; azure/gcp scaffolds)
-app/dashboard_app.py  live control plane and FinOps console (Plotly Dash)
+app/console_app.py    visual governance console, scoped to one run (Plotly Dash)
 tools/doctor.ps1      local environment diagnostics
 docs/                 doc index, IAM manifesto, architecture-diagram spec
 tests/                pytest suite for the gate, approval, and scanner
@@ -253,3 +251,13 @@ tests/                pytest suite for the gate, approval, and scanner
 ```
 
 You provide the Terraform. MinusOps governs how it ships.
+
+---
+
+## License
+
+MIT License — see [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).
+
+Terraform, the AWS CLI, OPA, Checkov, and tfsec are invoked as external processes and are
+never bundled or redistributed here; each stays under its own license and is installed by
+the operator. The base install has no runtime Python dependencies.

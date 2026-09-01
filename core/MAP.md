@@ -12,7 +12,8 @@ core/
   governance/    verify -> plan -> approve -> apply, plus the audit trail
   cost/          AWS BCM is the only source of a reportable number
   reporting/     turns a plan into something a human can read and run
-  providers/     one CloudProvider interface per cloud (aws implemented; azure/gcp scaffolds)
+  integrations/  approval-gated outbound hooks (Slack, Teams, SMTP, Confluence, Jira)
+  providers/     AWS access -- identity, credential posture, Cost Explorer, pricing
 ```
 
 ## generation/ — composition
@@ -58,7 +59,6 @@ core/
 | `bcm_pricing_calculator.py` | AWS BCM Pricing Calculator integration: `prepare` (no AWS calls) -> `run` (gated estimate). |
 | `pricing_catalog.py` | Terraform-type -> AWS serviceCode resolution; longest-prefix match against `pricing_data/`. |
 | `coverage_audit.py` | Fail-closed gate: every resource type is auto-priced / needs a profile / confirmed free / unresolved — never silently absent. |
-| `budget_calculator.py` | Honest cost guidance for the dispatcher's BUDGET intent — never a number of its own. |
 | `pricing_data/aws_resource_map.json` | Reviewed resource-type -> serviceCode map. |
 | `pricing_data/free_resources.json` | Reviewed allowlist of resource types confirmed to carry no billable SKU. |
 
@@ -72,15 +72,18 @@ core/
 | `finops_agent.py` | Live cost intelligence over the active cloud (cost, anomalies, CloudTrail correlation). |
 | `health_checker.py` | Operational health probes over the active cloud/credential posture. |
 | `runs.py` | Run-workspace manager — `runs/<run-id>/` (gitignored, never source control). |
-| `dispatcher.py` | Natural-language intent router; dispatches to the right script via subprocess. |
 | `minusctl.py` | Operator-facing CLI. Never mutates infrastructure itself. |
 | `toolpath.py` | Cross-platform discovery of external CLIs (terraform, aws). |
 
-## providers/ — cloud abstraction (unchanged by this restructure)
+## providers/ — AWS access
 
-`base.py` (the `CloudProvider` contract) + `aws.py` (implemented) + `azure.py` / `gcp.py`
-(scaffolds). Selected via `MINUS_CLOUD`. Already its own subpackage before this restructure;
-nothing here moved.
+`base.py` (`get_provider()`, `active_cloud()`) + `aws.py` (`AWSProvider`).
+
+**AWS-only, deliberately.** The `azure.py` / `gcp.py` scaffolds and the one-implementation
+`CloudProvider` ABC were deleted when multi-cloud left scope; `get_provider("azure")` raises
+`ValueError`. `base.py`'s own docstring is the authority here -- this file described the
+scaffolds for months after they were removed, and an external research pass read that
+description and reported multi-cloud support the product does not have.
 
 ---
 
@@ -93,11 +96,14 @@ generation/  --> architecture/, governance/, cost/(none), reporting/
 architecture/ --> generation/ (modules.py only)
 governance/  --> reporting/ (plan_inspector, toolpath, reporter — lazy), cost/ (coverage_audit — lazy), providers/
 cost/        --> governance/ (approval), reporting/ (toolpath, reporter — lazy), providers/
-reporting/   --> cost/ (bcm_pricing_calculator, pricing_catalog), governance/ (approval, and via
+reporting/   --> integrations/ (finops_agent's notify path), cost/ (bcm_pricing_calculator,
+                  pricing_catalog), governance/ (approval, and via
                   minusctl.py: audit_chain, source_guard, tf_validate), architecture/ (via
                   minusctl.py: architecture_decision, requirements; via reporter.py lazy:
                   architecture_model), generation/ (via minusctl.py: accelerators, demo,
                   workflow; via reporter.py lazy: modules), providers/
+integrations/ --> governance/ (approval — the gate every hook sends through), providers/
+                  (aws.run_aws, lazy, only for a Secrets Manager ARN)
 providers/   --> reporting/ (toolpath, lazy), cost/ (pricing_catalog, lazy)
 ```
 
@@ -118,7 +124,7 @@ import at load time, make it a lazy (function-body) import like the existing one
 ## The sys.path bootstrap (read this before adding a new file)
 
 Every file in `core/` is written to work two ways at once, unchanged: as a directly-run script
-(`python core/governance/plan_gate.py verify --dir ...`, still the documented CLI form) and as
+(`minusctl gate verify --dir ...`, still the documented CLI form) and as
 an installed package module (`core.governance.plan_gate:main`, the console-script form in
 `pyproject.toml`). Both need bare, flat imports like `import audit_chain` or `import toolpath`
 to resolve — not `from core.governance import audit_chain` — because that's what every existing
@@ -137,8 +143,13 @@ sys.path.insert(0, _CORE_DIR)
 This puts every subpackage directory directly on `sys.path`, so `import toolpath` finds
 `core/reporting/toolpath.py` regardless of which subpackage is doing the importing, and
 `from providers.base import get_provider` still resolves because `core/` itself (the parent of
-`providers/`) is on the path too. `tests/conftest.py` and `app/dashboard_app.py` do the same
+`providers/`) is on the path too. `tests/conftest.py` and `app/console_app.py` do the same
 thing once, centrally, for every test/dashboard import.
+
+`integrations/` is appended to that tuple by the two files that import a hook flat
+(`reporting/finops_agent.py` and `tests/conftest.py`). Import the hooks flat, not as
+`integrations.slack_hook`: the hooks import `base_hook` flat, and the package form would load a
+second copy of the module that owns the approval gate.
 
 **If you add a new file with a bare cross-subpackage import, copy this block in** (see
 `plan_gate.py` or `bcm_pricing_calculator.py` for a live example). A file whose only local
@@ -152,6 +163,5 @@ first.
   just `core/`) needs one more `dirname()` than it did when everything lived flat in `core/` —
   see `discovery.py`, `modules.py` (`REPO_ROOT`), `reporter.py` (`assets/architecture-icons`),
   and `bcm_pricing_calculator.py` (`examples/bcm-usage-profile.example.json`).
-- `dispatcher.py`'s `INTENT_MAPPING` and `plan_gate.py`'s `SCAN` constant hardcode sibling
   script paths for `subprocess` calls, not imports — those need the subpackage segment added
   explicitly when the target script lives in a different subpackage than the caller.

@@ -1,3 +1,17 @@
+"""
+The module registry, and where it resolves module assets from.
+
+Half of this file is path resolution, which looks incidental and is not: the same code runs
+from a source checkout and from an installed wheel, and `output_root` resolving into
+site-packages would write a run workspace inside the installed package. The rest is registry
+validity and keyword matching -- a weak-signal ranker whose scores must not be read as
+selection.
+
+Depends on: core/generation/modules.py
+Shells out to: nothing
+Used by: nothing (pytest entry point)
+"""
+import json
 import os
 
 import modules
@@ -107,7 +121,7 @@ def test_get_and_categories():
 
 
 # ---------------------------------------------------------------------------
-# retrieve_grounding_examples() (docs/phase6_step5_teardown_scope.md section 3): match_modules()
+# retrieve_grounding_examples(): match_modules()
 # repurposed toward retrieval-for-grounding, additive -- the scorer itself is untouched, this is
 # just a different consumer of its ranking.
 # ---------------------------------------------------------------------------
@@ -143,3 +157,234 @@ def test_retrieve_grounding_examples_never_selects_by_itself():
     modules.retrieve_grounding_examples(req)
     after = modules.match_modules(req)
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# derive_module_ids() (Phase 7 Item 3, docs/phase7_generation_engine_plan.md):
+# Read structured requirements fields (not free-text keyword scoring) to recommend
+# module ids deterministically. Fixes the live bug where match_modules() on free text
+# containing "ingest" pulled in streaming modules even for batch requests.
+# ---------------------------------------------------------------------------
+
+def test_derive_module_ids_picks_athena_for_sql_consumption_not_redshift():
+    data = {
+        "data_pipeline": {
+            "consumption": "ad-hoc SQL access for analysts over curated S3 data",
+        },
+        "non_functional": {
+            "latency": "batch job, results needed within 4 hours",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "query-athena" in picked_ids
+    assert "consumption-redshift-serverless" not in picked_ids
+
+
+def test_derive_module_ids_excludes_streaming_modules_for_batch_latency():
+    # This is the exact live bug this plan fixes: match_modules() on a free-text sentence
+    # containing "ingest" pulled in speed-layer-kinesis/ingest-firehose even for a plain
+    # batch request. derive_module_ids reads the structured latency field instead and must
+    # not recommend either streaming module when latency describes a batch cadence.
+    data = {
+        "data_pipeline": {
+            "consumption": "ad-hoc SQL access for analysts over curated S3 data",
+        },
+        "non_functional": {
+            "latency": "batch job, results needed within 4 hours",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "speed-layer-kinesis" not in picked_ids
+    assert "ingest-firehose" not in picked_ids
+
+
+def test_derive_module_ids_picks_streaming_modules_for_real_time_latency():
+    data = {
+        "data_pipeline": {},
+        "non_functional": {
+            "latency": "sub-second streaming ingest, near real-time delivery required",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "speed-layer-kinesis" in picked_ids
+    assert "ingest-firehose" in picked_ids
+
+
+def test_derive_module_ids_picks_redshift_for_high_concurrency_bi():
+    data = {
+        "data_pipeline": {
+            "consumption": "BI dashboards at scale for many analysts, high concurrency",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "consumption-redshift-serverless" in picked_ids
+    assert "query-athena" not in picked_ids
+
+
+def test_derive_module_ids_picks_mwaa_for_airflow_orchestration():
+    data = {
+        "data_pipeline": {
+            "orchestration": "managed Apache Airflow for DAG scheduling",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "orchestrator-mwaa" in picked_ids
+    assert "orchestrator-stepfunctions" not in picked_ids
+
+
+def test_derive_module_ids_picks_schema_registry_for_data_contracts():
+    data = {
+        "data_pipeline": {
+            "catalog": "schema registry with enforced data contracts, Avro compatibility",
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert "schema-registry-glue" in picked_ids
+
+
+def test_derive_module_ids_skips_deferred_and_blank_fields():
+    data = {
+        "data_pipeline": {
+            "consumption": "deferred: not decided yet, revisit after pilot",
+            "orchestration": "",
+            "catalog": "   ",
+        },
+        "non_functional": {
+            "latency": "deferred: revisit after load testing",
+        },
+    }
+    assert modules.derive_module_ids(data) == []
+
+
+def test_derive_module_ids_reports_reason_and_source_field():
+    data = {"data_pipeline": {"catalog": "schema registry with data contracts"}}
+    picks = modules.derive_module_ids(data)
+    assert len(picks) == 1
+    assert picks[0]["module_id"] == "schema-registry-glue"
+    assert picks[0]["source_field"] == "data_pipeline.catalog"
+    assert "data_pipeline.catalog" in picks[0]["reason"]
+
+
+def test_derive_module_ids_picks_more_specific_match_when_consumption_mentions_both():
+    # Real requirements answers can plausibly mention both Athena-ish and Redshift-ish
+    # language. This must not recommend both -- the more specific match (more matched
+    # phrases) should win alone.
+    data = {
+        "data_pipeline": {
+            "consumption": (
+                "ad-hoc SQL access, but also BI dashboards at scale for many analysts "
+                "with high concurrency"
+            ),
+        },
+    }
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert picked_ids == {"consumption-redshift-serverless"}
+
+
+def test_main_preplan_prints_recommendations(tmp_path, capsys):
+    req_path = tmp_path / "requirements.json"
+    req_path.write_text(json.dumps({
+        "data_pipeline": {"catalog": "schema registry with data contracts"},
+    }), encoding="utf-8")
+
+    exit_code = modules.main(["preplan", str(req_path)])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "schema-registry-glue" in out
+    assert "data_pipeline.catalog" in out
+
+
+def test_main_preplan_reports_no_recommendations(tmp_path, capsys):
+    req_path = tmp_path / "requirements.json"
+    req_path.write_text(json.dumps({"data_pipeline": {}, "non_functional": {}}), encoding="utf-8")
+
+    exit_code = modules.main(["preplan", str(req_path)])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "no enumerable-field recommendations" in out
+
+
+def test_derive_module_ids_surfaces_both_alternatives_on_a_genuine_tie():
+    # "interactive BI for many analysts" ties: query-athena matches "bi" (score 1),
+    # consumption-redshift-serverless matches "many analysts" (score 1). A prior review found
+    # a tie silently returned both with no signal they're alternatives -- this locks in the
+    # fix: both are returned, each reason explicitly says they're tied alternatives.
+    data = {"data_pipeline": {"consumption": "interactive BI for many analysts"}}
+    picks = modules.derive_module_ids(data)
+    picked_ids = {p["module_id"] for p in picks}
+    assert picked_ids == {"query-athena", "consumption-redshift-serverless"}
+    for p in picks:
+        assert "tied with" in p["reason"]
+        assert "mutually-exclusive alternatives" in p["reason"]
+
+
+# --- Ruling 1 (2026-08-21): worker class follows the access pattern, not the volume -----
+
+def test_memory_intensive_patterns_mandate_the_larger_worker():
+    """SCD Type 2 merge and wide joins hold both sides in memory. G.1X spills to disk and the
+    job takes hours instead of minutes -- it does not fail, which is why this is a ruling
+    rather than something a test would have caught."""
+    for pattern in ("scd_type_2", "wide_join", "SCD Type 2 merge"):
+        assert modules.worker_class(pattern) == "G.2X", pattern
+
+
+def test_append_only_and_simple_transforms_use_the_smaller_worker():
+    for pattern in ("append_only", "filter_map", "simple filter/map ETL"):
+        assert modules.worker_class(pattern) == "G.1X", pattern
+
+
+def test_an_undeclared_access_pattern_does_not_guess_upward():
+    """Undeclared gets the smaller worker, matching how an undeclared volume already gets the
+    smallest compute tier: silently doubling the DPU rate on no evidence is how a cheap
+    pipeline acquires an expensive bill."""
+    assert modules.worker_class("") == "G.1X"
+    assert modules.worker_class(None) == "G.1X"
+
+
+def test_worker_class_is_meaningless_outside_glue():
+    """compute_tier still selects the ENGINE by volume. Above ~5 TB/day that is EMR on EC2,
+    where Glue worker classes do not exist as a concept -- so the ruling's "regardless of
+    volume" governs the worker within Glue, not the engine choice."""
+    assert modules.worker_class("scd_type_2", module_id="compute-emr-ec2-spot") is None
+    assert modules.worker_class("scd_type_2", module_id="compute-glue-etl") == "G.2X"
+
+
+# --- Ruling 3 (2026-08-21): third-party providers are an allowlist, not a default -------
+
+def test_catalog_third_party_providers_are_an_explicit_allowlist():
+    """Regression lock, not a red-green test: this passes today and exists so it stops
+    passing the moment someone adds a provider.
+
+    Ruling: AWS-native modules are the core default, and Snowflake is authored as an
+    optional registry-composed module through the `architect` skill rather than added here.
+    Databricks predates the ruling and is the one reviewed exception. A new entry means a
+    new credential path, a new provider version to track, and a new blast radius -- it
+    should require amending this list, not slip in with a module.
+    """
+    import glob
+    import os
+    import re
+
+    reviewed = {"databricks/databricks"}
+    root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "modules")
+    found = set()
+    for path in glob.glob(os.path.join(root, "*", "*.tf")):
+        with open(path, encoding="utf-8") as fh:
+            for source in re.findall(r'source\s*=\s*"([a-z0-9-]+/[a-z0-9-]+)"', fh.read()):
+                if not source.startswith("hashicorp/"):
+                    found.add(source)
+
+    assert "snowflake/snowflake" not in found, (
+        "Snowflake belongs in a registry-composed module via the architect skill, "
+        "not in the vetted catalog"
+    )
+    assert found <= reviewed, f"unreviewed third-party providers in the catalog: {found - reviewed}"
