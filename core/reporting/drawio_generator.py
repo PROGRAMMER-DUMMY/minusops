@@ -1029,6 +1029,86 @@ def _edge_anchors(source, target):
     return f"exitX={exit_x};exitY=0.5;entryX={entry_x};entryY=0.5;"
 
 
+_NODE_SIZE = 68
+# The checker inflates every box by 6 before testing whether a segment crosses it, so a lane
+# has to clear that inflation, not merely land somewhere between two icons.
+_LANE_CLEARANCE = 10
+
+
+def _free_lane(start, direction, occupied, span=_NODE_SIZE, clearance=_LANE_CLEARANCE):
+    """First coordinate from `start`, travelling in `direction`, clear of every occupied band.
+
+    `occupied` holds each band's leading edge; a band covers [o, o + span]. Rows are not evenly
+    spaced -- a band gap can be 110 or 350 -- so the lane is found against the real occupied
+    set rather than derived from _SLOT_WIDTH.
+    """
+    candidate = start
+    for _ in range(64):
+        blocking = [o for o in occupied if o - clearance <= candidate <= o + span + clearance]
+        if not blocking:
+            return candidate
+        candidate = (max(blocking) + span + clearance + 1 if direction > 0
+                     else min(blocking) - clearance - 1)
+    return candidate
+
+
+def _edge_route(positions, source, target):
+    """(anchor style, waypoints) for a hop that travels only in the empty lanes.
+
+    Left to itself draw.io draws an L: one run along the source's column centre-line, one along
+    the target's row centre-line. Those are the exact lines the other icons sit on, so a hop
+    between two rows reads as touching everything between them -- 12 of 21 hops across this
+    repo's three plans were flagged that way.
+
+    The grid leaves 27px between columns and at least 42px between rows, occupied by nothing.
+    Routing through those gutters costs no space and removes the ambiguity: out of the source,
+    along a row gutter, down a column gutter, along another row gutter, into the target.
+
+    An earlier attempt put only the horizontal run in a gutter and moved sixteen crossings to
+    fifteen, because the vertical run still shared a column with the icons it passed. Both runs
+    have to move for either to help.
+    """
+    src, tgt = positions.get(source), positions.get(target)
+    if not src or not tgt:
+        return "", []
+    half = _NODE_SIZE / 2.0
+    ax, ay = src[0] + half, src[1] + half
+    bx, by = tgt[0] + half, tgt[1] + half
+    if (ax, ay) == (bx, by):
+        return "", []
+
+    xs = sorted({int(p[0]) for p in positions.values()})
+    ys = sorted({int(p[1]) for p in positions.values()})
+    x_dir = 1 if bx >= ax else -1
+    y_dir = 1 if by >= ay else -1
+    lane_x = _free_lane(src[0] + _NODE_SIZE + 1 if x_dir > 0 else src[0] - 1, x_dir, xs)
+
+    if ax == bx:
+        # Same column. Step sideways into the gutter, run past whatever sits between, step back.
+        return "exitX=1;exitY=0.5;entryX=1;entryY=0.5;", [(lane_x, ay), (lane_x, by)]
+    if ay == by:
+        lane_y = _free_lane(src[1] + _NODE_SIZE + 1 if y_dir > 0 else src[1] - 1, y_dir, ys)
+        exit_y = 1 if lane_y > ay else 0
+        return (f"exitX=0.5;exitY={exit_y};entryX=0.5;entryY={exit_y};",
+                [(ax, lane_y), (bx, lane_y)])
+
+    lane_y_src = _free_lane(src[1] + _NODE_SIZE + 1 if y_dir > 0 else src[1] - 1, y_dir, ys)
+    lane_y_tgt = _free_lane(tgt[1] - 1 if y_dir > 0 else tgt[1] + _NODE_SIZE + 1, -y_dir, ys)
+    # The route leaves and enters vertically, so the anchors have to agree with it -- a
+    # side anchor here would make draw.io turn immediately and re-cross the row it just left.
+    exit_y, entry_y = (1, 0) if y_dir > 0 else (0, 1)
+    return (f"exitX=0.5;exitY={exit_y};entryX=0.5;entryY={entry_y};",
+            [(ax, lane_y_src), (lane_x, lane_y_src), (lane_x, lane_y_tgt), (bx, lane_y_tgt)])
+
+
+def _append_points(geometry, points):
+    if not points:
+        return
+    array = ET.SubElement(geometry, "Array", {"as": "points"})
+    for x, y in points:
+        ET.SubElement(array, "mxPoint", {"x": str(int(x)), "y": str(int(y))})
+
+
 _EDGE_STYLES = {"data": _EDGE_STYLE, "describes": _DESCRIBES_STYLE,
                 "triggers": _TRIGGERS_STYLE}
 
@@ -1482,18 +1562,18 @@ def generate_drawio_from_plan(plan_json, title="Architecture Blueprint", require
         if not source_id or not target_id:
             continue
         kind = edge.get("kind", "data")
+        anchors, points = _edge_route(positions, edge["source"], edge["target"])
         cell = ET.SubElement(root, "mxCell", {
             "id": f"edge_{index}",
             "value": f"[{edge['hop']}]" if kind == "data" else kind,
-            "style": _EDGE_STYLES.get(kind, _EDGE_STYLE)
-                     + _edge_anchors(positions.get(edge["source"]),
-                                     positions.get(edge["target"])),
+            "style": _EDGE_STYLES.get(kind, _EDGE_STYLE) + anchors,
             "edge": "1",
             "parent": "1",
             "source": source_id,
             "target": target_id,
         })
-        ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
+        geometry = ET.SubElement(cell, "mxGeometry", {"relative": "1", "as": "geometry"})
+        _append_points(geometry, points)
 
     canvas_width = max(max_x - _ORIGIN_X + 200, 600)
     _append_walkthrough(root, steps, _ORIGIN_X - 20, walkthrough_top, canvas_width)
