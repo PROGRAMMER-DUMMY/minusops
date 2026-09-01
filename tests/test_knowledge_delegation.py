@@ -332,9 +332,21 @@ def test_delegation_verdict_falls_back_to_ordinary_logic_when_new_evidence_appea
     _insert(conn, "schema", "acl is deprecated", "2026-07-01T00:00:00Z")
     _insert(conn, "web", "acl is fine", "2026-07-05T00:00:00Z")
     request = knowledge_delegation.build_delegation_request(conn, "aws_s3_bucket", "acl")
+    # observed_at is explicit, and has to be. record_delegation_verdict() defaults it to the
+    # wall clock, so this verdict used to be stamped with the real current time while the
+    # "fresh" schema claim below is pinned to 2026-09-01T00:00:00Z. The comparison that decides
+    # this test is `newest_other_ts > newest_schema_ts`, so the test quietly depended on today
+    # being earlier than 2026-09-01 -- and on 2026-09-01 it started failing, with the verdict
+    # stamped 07:47 beating a schema claim stamped 00:00 on the same day. resolve() was right
+    # both times; the test had a date in it that aged into the past.
+    #
+    # Pushing the pinned date further out would only reset the timer. Every timestamp here is
+    # now explicit and ordered relative to the others, the way
+    # test_knowledge_store.py::_record_verdict already does it, so the wall clock cannot decide
+    # the outcome.
     knowledge_delegation.record_delegation_verdict(
         conn, "aws_s3_bucket", "acl", claim_text="acl is deprecated, confirmed by agent review",
-        valid_from="2026-07-10T00:00:00Z", provider="aws",
+        valid_from="2026-07-10T00:00:00Z", observed_at="2026-07-10T00:00:00Z", provider="aws",
         adjudicated_ids=[c["id"] for c in request["claims"]],
     )
     assert knowledge_store.resolve(conn, "aws_s3_bucket", "acl")["reason"] == \
