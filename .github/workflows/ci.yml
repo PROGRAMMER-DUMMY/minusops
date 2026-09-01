@@ -32,7 +32,7 @@ jobs:
           terraform_wrapper: false   # the e2e test invokes the real terraform binary
 
       - name: Cache Terraform provider plugins
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/tf-plugin-cache
           key: tf-plugin-cache-${{ runner.os }}-${{ hashFiles('core/generation/synthesizer.py') }}
@@ -186,7 +186,7 @@ jobs:
           terraform_wrapper: false
 
       - name: Cache Terraform provider plugins
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/tf-plugin-cache
           key: tf-plugin-slow-${{ runner.os }}-${{ hashFiles('core/generation/synthesizer.py') }}
