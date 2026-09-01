@@ -7,7 +7,8 @@ provider that gets constructed at import time would fire AWS CLI calls during
 
 Depends on: base (same package)
 Shells out to: nothing directly (AWSProvider shells out to the `aws` CLI)
-Used by: core/reporting/doctor.py (as `core.providers.base`); most callers import
-    `providers.base` directly via the core/ sys.path shim rather than through here
+Used by: callers import `providers.base` directly via the core/ sys.path shim rather than
+    through here -- doctor.py did reach it as `core.providers.base` until that turned out to
+    load a second copy of its neighbours (tests/test_module_identity.py)
 """
 from .base import get_provider, active_cloud  # noqa: F401

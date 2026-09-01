@@ -45,23 +45,30 @@ import subprocess
 import sys
 import sysconfig
 
-try:
-    from core.governance import ephemeral_apply, plan_gate, toolpath
-    from core.architecture import team_resolver
-    from core.providers.base import get_provider
-    from core.reporting.optimize_analyzer import EXTERNAL_SCANNERS
-except ImportError:
-    _CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for _sub in ("generation", "architecture", "governance", "cost", "reporting", "providers"):
-        sys.path.insert(0, os.path.join(_CORE_DIR, _sub))
-    sys.path.insert(0, _CORE_DIR)
+# The flat bootstrap every other module in core/ performs, unconditionally, rather than
+# preferring the `core.` package path and falling back to it.
+#
+# Preferring the package path made this file the one place that loaded a second copy of a
+# module. `import plan_gate` elsewhere and `from core.governance import plan_gate` here resolve
+# to the same FILE but produce two distinct module objects with independent module-level state.
+# A plain `minusctl doctor` did exactly that, loading plan_gate and ephemeral_apply twice.
+#
+# It happened to be harmless -- doctor only reads plan_gate.G9_EMULATOR_ENV, a constant -- but
+# what it duplicated is the deploy gate. plan_gate._gate_state_lock becomes two different locks,
+# so the serialisation protecting gate-state read-modify-write would not hold between the two
+# copies, and a LOG_DIR set on one copy leaves the other pointing at the real .agents/logs.
+# Neither is worth carrying for an import style used nowhere else in the package.
+_CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _sub in ("generation", "architecture", "governance", "cost", "reporting", "providers"):
+    sys.path.insert(0, os.path.join(_CORE_DIR, _sub))
+sys.path.insert(0, _CORE_DIR)
 
-    import ephemeral_apply  # noqa: E402
-    import team_resolver  # noqa: E402
-    import plan_gate  # noqa: E402
-    import toolpath  # noqa: E402
-    from providers.base import get_provider  # noqa: E402
-    from optimize_analyzer import EXTERNAL_SCANNERS  # noqa: E402
+import ephemeral_apply  # noqa: E402
+import team_resolver  # noqa: E402
+import plan_gate  # noqa: E402
+import toolpath  # noqa: E402
+from providers.base import get_provider  # noqa: E402
+from optimize_analyzer import EXTERNAL_SCANNERS  # noqa: E402
 
 
 def _port_open(host, port, timeout=0.4):
