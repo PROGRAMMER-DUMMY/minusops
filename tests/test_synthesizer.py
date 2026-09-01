@@ -312,6 +312,61 @@ def test_synthesize_composes_a_valid_authored_novel_resource(tmp_path, monkeypat
     assert res["manifest"]["authored_resources"] == res["authored_resources"]
 
 
+_DYNAMIC_DYNAMODB_HCL = (
+    'resource "aws_dynamodb_table" "novel" {\n'
+    '  name         = "novel-table"\n'
+    '  billing_mode = "PAY_PER_REQUEST"\n'
+    '  hash_key     = "id"\n'
+    '  dynamic "attribute" {\n'
+    '    for_each = var.attributes\n'
+    '    content {\n'
+    '      name = attribute.value.name\n'
+    '      type = attribute.value.type\n'
+    '    }\n'
+    '  }\n'
+    '}\n'
+)
+
+
+@pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")
+def test_authored_content_with_a_dynamic_block_is_composed_but_flagged_unverified(
+        tmp_path, monkeypatch):
+    """A dynamic block must compose, and must not compose quietly.
+
+    G2 used to report a dynamic block as a blocking finding, so authored content containing one
+    was refused outright -- which is wrong, because `dynamic "attribute"` is ordinary HCL and
+    modules/metadata-control-table declares exactly this shape. It is now a non-blocking
+    dynamic_block_unverified warning. That alone would have traded a false refusal for an
+    invisible one: the region really is unverified, and the person reviewing freshly authored
+    HCL is precisely who needs to be told which parts the schema check did not cover.
+    """
+    import runs
+    monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(runs, "RUNS_DIR", str(tmp_path / "runs"))
+
+    res = synthesizer.synthesize(
+        "airflow pipeline needing a low-latency lookup table",
+        spec=COMPLETE_SPEC, decision=_NOVEL_DECISION, owner="data-platform",
+        authored_content={"aws_dynamodb_table": _DYNAMIC_DYNAMODB_HCL},
+    )
+
+    # Composed, not refused.
+    authored_file = os.path.join(res["out_dir"], "authored_aws_dynamodb_table.tf")
+    assert os.path.exists(authored_file)
+
+    # The unverified region is carried on the record rather than dropped.
+    warnings = res["authored_resources"][0]["g2_warnings"]
+    assert [w["finding"] for w in warnings] == ["dynamic_block_unverified"]
+    assert warnings[0]["detail"] == "dynamic:attribute"
+
+    # And it reaches a human in both places a human actually looks.
+    assert any("did not schema-check" in r and "dynamic:attribute" in r for r in res["review"]), \
+        res["review"]
+    composition = open(os.path.join(res["out_dir"], "COMPOSITION.md"), encoding="utf-8").read()
+    assert "NOT SCHEMA-CHECKED" in composition
+    assert "dynamic:attribute" in composition
+
+
 def test_synthesize_refuses_novel_resource_with_no_matching_authored_content(tmp_path, monkeypatch):
     import runs
     monkeypatch.setattr(runs, "WORKSPACE", str(tmp_path))

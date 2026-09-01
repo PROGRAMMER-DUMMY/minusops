@@ -1193,8 +1193,9 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
     """Write a composed Terraform root into out_dir from the selected modules, plus any
     generation-time-authored novel resources.
     `authored_resources` is a list of {resource_type, content, justification, decision_source,
-    content_hash} -- already lint-checked by the caller (synthesize()), never linted here; this
-    function only writes what it's given."""
+    content_hash, g2_warnings} -- already lint-checked by the caller (synthesize()), never
+    linted here; this function only writes what it's given. `g2_warnings` carries the regions
+    G2 reported but did not verify, which become review items rather than being dropped."""
     authored_resources = authored_resources or []
     chosen = [module_registry.get_module(i) for i in module_ids]
     chosen = [m for m in chosen if m]
@@ -1314,6 +1315,18 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
             review.append("governance-observability: monthly_budget_usd (routed through "
                           "var.monthly_budget_usd; unset uses the module default, which is "
                           "not a number anyone stated)")
+    # An authored resource that G2 could not fully inspect is a review item, not a silent pass.
+    # gate_content() reports an unverified region rather than refusing it, which is right for a
+    # gate, but the reviewer of newly authored HCL is exactly the person who needs to know that
+    # a region went unchecked.
+    for entry in authored_resources or []:
+        for warning in entry.get("g2_warnings") or []:
+            detail = warning.get("detail") or warning.get("finding")
+            where = warning.get("type") or entry["resource_type"]
+            review.append(f"{entry['resource_type']}: G2 did not schema-check {detail} on "
+                          f"{where} -- a dynamic block's attributes depend on evaluating its "
+                          "for_each, so nothing there was verified against the provider")
+
     doc = ["# Composition", "", f"Request: {request or '(none)'}", "",
            "## Modules", ""]
     for m in chosen:
@@ -1332,6 +1345,9 @@ def compose(module_ids, name_prefix, out_dir, owner="", request="",
         for entry in authored_resources:
             doc.append(f"- **{entry['resource_type']}** (`authored_{entry['resource_type']}.tf`) "
                        f"-- {entry.get('justification') or '(no justification recorded)'}")
+            for warning in entry.get("g2_warnings") or []:
+                doc.append(f"  - NOT SCHEMA-CHECKED: {warning.get('detail')} on "
+                           f"{warning.get('type')} -- read this part yourself")
     doc += ["", "## Next", "",
             "```bash", f"minusctl gate verify --dir {out_dir} --policy-mode production",
             f"minusctl gate plan   --dir {out_dir}", "```",
@@ -1755,6 +1771,13 @@ def _validate_novel_resources(decision, authored_content, verify_type_exists=Tru
             "justification": entry.get("justification", ""),
             "decision_source": f"novel_resources[{i}]",
             "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            # G2's non-blocking warnings, carried rather than dropped. A `dynamic` block used to
+            # be a blocking finding, so authored content containing one never got this far; now
+            # it passes as dynamic_block_unverified, and passing silently would trade a
+            # false refusal for an invisible one. These reach the composition's review list and
+            # COMPOSITION.md, where the reviewer of a newly authored resource can see which parts
+            # of it the schema check did not actually cover.
+            "g2_warnings": lint_result["warnings"],
         })
     return authored_resources
 
