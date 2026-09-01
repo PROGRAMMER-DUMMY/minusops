@@ -41,7 +41,7 @@ jobs:
       # tests/test_databricks_workspace_module.py), just backed by actions/cache in CI instead
       # of a runs/ directory on disk.
       - name: Cache Terraform provider plugins
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/tf-plugin-cache
           key: tf-plugin-cache-${{ runner.os }}-${{ hashFiles('core/generation/synthesizer.py') }}
