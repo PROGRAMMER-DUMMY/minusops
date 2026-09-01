@@ -209,11 +209,14 @@ def test_doctor_skill_manifest_exists_and_names_the_command():
     assert "configs/teams.yaml" in skill and "no such file" in skill.lower()
 
 
-def test_the_opa_check_says_the_rego_tests_skip_without_it():
+def test_the_opa_check_says_the_rego_tests_skip_without_it(monkeypatch):
     """The old remediation said the gate "degrades to warn-only". True, and not the fact
     that costs time: `tests/test_rego_gate.py` carries a module-level skipif on the opa
     binary, so without it the whole G6 suite silently skips. Two real catalog failures sat
     in CI for four commits because every local run reported green while skipping them."""
+    real_find = doctor.toolpath.find_tool
+    monkeypatch.setattr(doctor.toolpath, "find_tool",
+                        lambda name: None if name == "opa" else real_find(name))
     checks = {c["name"]: c for c in doctor.diagnose()["checks"]}
 
     assert "opa" in checks
@@ -222,8 +225,11 @@ def test_the_opa_check_says_the_rego_tests_skip_without_it():
     assert "rego" in remediation or "test_rego_gate" in remediation
 
 
-def test_the_opa_check_pins_the_version_ci_uses():
+def test_the_opa_check_pins_the_version_ci_uses(monkeypatch):
     """A local opa that disagrees with CI's produces findings that do not reproduce."""
+    real_find = doctor.toolpath.find_tool
+    monkeypatch.setattr(doctor.toolpath, "find_tool",
+                        lambda name: None if name == "opa" else real_find(name))
     checks = {c["name"]: c for c in doctor.diagnose()["checks"]}
 
     assert "1.18" in checks["opa"]["fix"]
