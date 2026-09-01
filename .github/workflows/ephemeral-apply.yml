@@ -49,7 +49,7 @@ jobs:
 
       - name: Start LocalStack
         if: steps.token_check.outputs.configured == 'true'
-        uses: LocalStack/setup-localstack@v0.2.2
+        uses: LocalStack/setup-localstack@v0.3.2
         with:
           image-tag: "latest"
         env:
