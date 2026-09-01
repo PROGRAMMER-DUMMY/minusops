@@ -32,7 +32,7 @@ jobs:
         run: cyclonedx-py environment --output-format JSON --outfile sbom.cyclonedx.json || cyclonedx-py requirements requirements.txt --output-format JSON --outfile sbom.cyclonedx.json
 
       - name: Attest build provenance (keyless, Sigstore)
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/*"
 
