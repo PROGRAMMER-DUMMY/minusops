@@ -32,6 +32,60 @@ os.environ.setdefault("TF_PLUGIN_CACHE_DIR", os.path.join(ROOT, ".agents", "tf-p
 os.makedirs(os.environ["TF_PLUGIN_CACHE_DIR"], exist_ok=True)
 
 
+# The plugin cache above fixed re-downloading. It does not fix this, which is a separate leak
+# in the same direction and was the one actually filling the disk.
+#
+# `terraform init` unpacks each provider through a loose file in the system temp directory and
+# removes it on the way out. A run that is killed or dies mid-init never gets to the way out,
+# and leaves a 185 MB file behind with a randomised name. They do not expire and nothing else
+# collects them. Measured on this machine 2026-09-01: 793 files, 62.8 GB, the oldest 6.9 days
+# old -- against 2.4 GB of free space at the time.
+#
+# That is worth a guard rather than a note, because of what the symptom looks like. A test that
+# cannot write a provider binary fails with whatever assertion came next, not with a disk error,
+# so the failure reads as a code defect. This session lost real time to exactly that: a security
+# regression was reported against modules/security-iam-scoped that turned out to be a full disk,
+# and docs/PROGRESS.md records the same class of thing on 2026-08-18. Wrong answers that look
+# like findings are worse than no answers.
+#
+# One hour, not zero: a live `terraform init` in a concurrent session has a temp file seconds
+# old, and reaping that would break a run this suite does not own. Every failure is swallowed --
+# an orphan another process still holds open on Windows is next session's problem, never a
+# reason to fail collection.
+_PROVIDER_TEMP_ORPHAN_AGE_SECONDS = 3600
+
+
+def _reap_provider_temp_orphans():
+    """Delete stale `terraform-provider*` files from the system temp directory."""
+    import glob
+    import tempfile
+    import time
+
+    cutoff = time.time() - _PROVIDER_TEMP_ORPHAN_AGE_SECONDS
+    reclaimed = 0
+    for path in glob.glob(os.path.join(tempfile.gettempdir(), "terraform-provider*")):
+        try:
+            if not os.path.isfile(path) or os.path.getmtime(path) > cutoff:
+                continue
+            size = os.path.getsize(path)
+            os.remove(path)
+            reclaimed += size
+        except OSError:
+            continue
+    return reclaimed
+
+
+def pytest_configure(config):
+    config._minus_reclaimed_bytes = _reap_provider_temp_orphans()
+
+
+def pytest_report_header(config):
+    reclaimed = getattr(config, "_minus_reclaimed_bytes", 0)
+    if not reclaimed:
+        return None
+    return f"reaped {reclaimed / (1024 ** 3):.1f} GB of orphaned terraform provider temp files"
+
+
 # MINUS-140. `record_claim()` exports the whole claim corpus to JSONL on every insert, and
 # `_claims_corpus_dir()` resolves to the repo's own tracked `knowledge/claims/`. Any test that
 # records a claim therefore rewrote committed files -- `ingested_at`/`observed_at` churn on
