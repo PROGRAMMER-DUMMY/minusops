@@ -70,10 +70,6 @@ _strip_caller_identity = g6test._strip_caller_identity
 # own same-named variable over verbatim into the NEW path's root would be a duplicate
 # declaration; these are already declared (and, except name_prefix/owner, already defaulted) by
 # compose() itself, regardless of which/how-many modules are actually selected.
-_COMPOSE_STANDARD_VARIABLES = {
-    "name_prefix", "owner", "environment", "region", "tags", "run_id", "daily_data_gb",
-}
-
 _DUMMY_VERSIONS = '''terraform {
   required_version = ">= 1.5"
   required_providers {
@@ -287,20 +283,46 @@ def _new_path_plan(module_id, tmp_path):
     with open(os.path.join(out_dir, "providers.tf"), "w", encoding="utf-8") as f:
         f.write(providers)
 
+    # Read what compose() actually wrote rather than naming the variables it is expected to
+    # write. This was a hardcoded set of seven, and compose()'s own template had grown to
+    # thirteen: glue_number_of_workers, glue_worker_type, monthly_budget_usd, retention_days,
+    # cost_center and data_classification had all been added without it. Any module declaring
+    # one of them collided, and storage-medallion-s3 declares retention_days -- so this path
+    # failed with "Duplicate variable declaration" the first time the parametrization ran.
+    # Deriving it from the composed file cannot drift, and covers the conditional variables
+    # (databricks_account_id) that a fixed list would have to guess at.
+    with open(os.path.join(out_dir, "variables.tf"), encoding="utf-8") as f:
+        composed_variables = {
+            name for name, _ in dcg._iter_top_level_blocks(f.read(), "variable")
+        }
+
     var_blocks = "\n".join(
         f'variable "{name}" {{\n{body}\n}}\n'
         for name, body in dcg._iter_top_level_blocks(main_tf, "variable")
-        if name not in _COMPOSE_STANDARD_VARIABLES
+        if name not in composed_variables
     )
     locals_blocks = "\n".join(_extract_locals_blocks(main_tf))
     with open(os.path.join(out_dir, "_module_vars.tf"), "w", encoding="utf-8") as f:
         f.write(var_blocks + "\n" + locals_blocks)
 
+    # Same drift problem as the variable declarations above, one file over, and the question is
+    # subtly different: what matters here is what compose() ASSIGNED, not what it declared. A
+    # variable compose declares with a default but never assigns still needs its value carried
+    # over, while re-assigning one it already set is a duplicate. Read the file it wrote.
+    tfvars_path = os.path.join(out_dir, "terraform.tfvars")
+    assigned = set()
+    if os.path.exists(tfvars_path):
+        with open(tfvars_path, encoding="utf-8") as f:
+            for line in f:
+                name, sep, _ = line.partition("=")
+                if sep and name.strip():
+                    assigned.add(name.strip())
+
     var_assignments = "\n".join(
         line for line in dcg._required_variable_lines(main_tf)
-        if line.strip().split(" ", 1)[0] not in _COMPOSE_STANDARD_VARIABLES
+        if line.strip().split(" ", 1)[0] not in assigned
     )
-    with open(os.path.join(out_dir, "terraform.tfvars"), "a", encoding="utf-8") as f:
+    with open(tfvars_path, "a", encoding="utf-8") as f:
         f.write("\n" + var_assignments + "\n")
 
     return _real_plan_resource_changes(out_dir)
