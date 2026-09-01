@@ -161,7 +161,7 @@ jobs:
           minusctl audit verify
 
   slow:
-    # The 362 tests marked `slow` had never run in any workflow: pyproject deselects them by
+    # The 366 tests marked `slow` had never run in any workflow: pyproject deselects them by
     # default and every pytest invocation here inherited that, while this file, deploy.yml and
     # docs/PROGRESS.md all claimed otherwise. They cover the gate end-to-end, the synthesizer,
     # the schema linter and the teardown harness -- the paths a governance product is judged on.
@@ -234,6 +234,11 @@ jobs:
       - name: Disk before
         run: df -h /
 
+      # The cache dir alone is not enough -- tests/conftest.py also sets
+      # TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE, without which Terraform ignores the
+      # cache entirely and re-downloads the ~490 MB AWS provider on every one of the ~200 inits
+      # this job performs. That is the difference between this job finishing and this job
+      # timing out; see docs/PROGRESS.md section 15 for the measurement.
       - name: Run the slow suite
         env:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
