@@ -60,7 +60,7 @@ jobs:
           exit 0
 
       - name: Open a PR with any new/changed recent-changes/ reports
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "chore(schema-watch): update provider schema snapshots"
           title: "Provider schema-diff watch: snapshot update"
