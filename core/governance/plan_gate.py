@@ -1250,7 +1250,22 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
     with _gate_state_lock(_pending_path(dir_)):
         try:
             pending_for_update = json.load(open(_pending_path(dir_), encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            # This file was written a few lines above, so failing to read it back means
+            # something outside this process interfered. Starting from {} and writing that back
+            # replaces the record's plan_hash, canonical_dir, planner and planner_verified with
+            # nothing. Approval then refuses -- correctly, but reporting "stale plan", which
+            # sends the operator looking for a plan that changed rather than for whatever
+            # damaged the file.
+            #
+            # Still fail-closed on {}: continuing with a record that could not be read is not an
+            # option. What changes is that it stops being silent.
+            print(f"[gate] WARNING: the pending plan record could not be read back after being "
+                  f"written ({exc}). Rebuilding it from this plan only -- the recorded planner "
+                  "identity is gone, so approval will refuse until `plan` is re-run.",
+                  file=sys.stderr)
+            _audit("plan", "WARN", reason="pending_record_unreadable_after_write", dir=dir_,
+                   detail=str(exc), destroy=destroy)
             pending_for_update = {}
         pending_for_update["g9_result"] = g9_result
         pending_for_update["cloud_drift"] = drift_result
