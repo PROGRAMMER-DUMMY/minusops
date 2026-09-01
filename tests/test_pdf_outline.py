@@ -39,6 +39,18 @@ def rendered(tmp_path_factory):
     ok, info = reporter.render_pdf(str(src), str(out))
     if not ok:
         pytest.skip(f"pdf render unavailable: {info}")
+    # render_pdf succeeds on three tiers -- CDP, then `--print-to-pdf`, then a hand-written
+    # built-in PDF -- and only the first produces an outline. `ok` is True for all three, so
+    # checking it alone let a fallback reach assertions written about the CDP path. That is
+    # what happened on CI's first run: no usable browser there, so it landed on the built-in
+    # tier (a few hundred bytes, /BaseFont /Helvetica) and three tests reported the outline
+    # missing as though the CDP path had regressed.
+    #
+    # These tests exist to catch the CDP path DEGRADING. When the environment never offered it,
+    # there is nothing to catch, and saying so is different from passing. The `info` string
+    # names the tier, which is exactly the discriminator needed.
+    if "fallback" in (info or "").lower():
+        pytest.skip(f"CDP unavailable, render used a fallback tier: {info}")
     return out.read_bytes()
 
 
