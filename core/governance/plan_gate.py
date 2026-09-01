@@ -1124,6 +1124,8 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
         _audit("plan", "FAILED", reason="hash", dir=dir_, destroy=destroy)
         return False
     os.makedirs(_state_dir(dir_), exist_ok=True)
+    _verified_planner = authz.verified_operator()
+    _planner_identity = (_verified_planner or authz.operator(), bool(_verified_planner))
     _write_json_atomic(_pending_path(dir_), {
             "plan_hash": h,
             "dir": dir_,
@@ -1132,7 +1134,14 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
             # the two-person production rule below compares real authenticated principals,
             # not two self-reported strings. Falls back to operator() when no cloud session
             # is active yet, e.g. dev-mode planning before credentials are configured.
-            "planner": authz.verified_operator() or authz.operator(),
+            "planner": _planner_identity[0],
+            # Whether that name was cryptographically established or self-reported. Recording
+            # only the name left the two-person rule comparing two strings, with no way to tell
+            # a verified principal from an environment variable -- see
+            # _enforce_production_approval, which now requires both sides to be verified in
+            # production. Absent on a record written before this field existed, which
+            # production treats as unproven.
+            "planner_verified": _planner_identity[1],
             "created": _now(),
             "destroy": destroy,
     })
@@ -1300,13 +1309,15 @@ def stage_plan(dir_, policy_mode=None, destroy=False, with_telemetry=False,
     return _check_coverage(dir_, h, policy_mode)
 
 
-def _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, plan_hash):
+def _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, plan_hash,
+                                  approver_verified=False):
     """Production controls (enforced): approvals must be attributable and segregated.
 
-    Returns True if approval may proceed, False if it must be blocked. In production
-    an approver allowlist is required, and the approver must be a principal distinct
-    from the planner (two-person rule); a plan with no recorded planner cannot prove
-    that separation and is refused. Dev mode always proceeds.
+    Returns True if approval may proceed, False if it must be blocked. In production an
+    approver allowlist is required, both the planner and the approver must be identities AWS
+    STS actually established, and the approver must be a principal distinct from the planner
+    (two-person rule); a plan with no recorded planner cannot prove that separation and is
+    refused. Dev mode always proceeds.
     """
     if policy_mode != "production":
         return True
@@ -1324,6 +1335,32 @@ def _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pendin
               file=sys.stderr)
         _audit("approve", "REJECTED", reason="missing_planner_in_production",
                plan_hash=plan_hash, dir=dir_, approver=approver)
+        return False
+    # Both identities must be ones AWS STS actually established, checked here rather than
+    # earlier so a misconfiguration still reports as a misconfiguration. Comparing two
+    # self-reported strings proves nothing about separation of duties: `dave@corp` could plan
+    # under a real verified session, then approve his own plan by dropping that session and
+    # exporting MINUS_OPERATOR=bob. The names differ, so the comparison below passed and the
+    # audit trail recorded bob. That was demonstrated end to end before this was added -- the
+    # comment on the planner field claimed it was already impossible, and it was not, because
+    # nothing recorded which side had been verified.
+    if not approver_verified:
+        print("[gate] refusing approval (production): the approver identity is self-reported, "
+              "not established by AWS STS. Authenticate (`aws sso login`, or assume your "
+              "MFA-gated deploy role) so the approval names a principal that can be proven. "
+              "MINUS_OPERATOR alone cannot satisfy the two-person rule.", file=sys.stderr)
+        _audit("approve", "REJECTED", reason="unverified_approver_in_production",
+               plan_hash=plan_hash, dir=dir_, approver=approver, planner=planner)
+        return False
+    # Absent on a pending record written before this field existed, which production treats as
+    # unproven rather than assuming the best about it.
+    if not (pending or {}).get("planner_verified"):
+        print("[gate] refusing approval (production): the plan's recorded planner was "
+              "self-reported rather than established by AWS STS, so separation of duties "
+              "cannot be proven against it. Re-run `plan` under an authenticated session.",
+              file=sys.stderr)
+        _audit("approve", "REJECTED", reason="unverified_planner_in_production",
+               plan_hash=plan_hash, dir=dir_, approver=approver, planner=planner)
         return False
     if planner == approver:
         print(f"[gate] refusing approval (production): {approver} cannot approve their own plan "
@@ -1521,7 +1558,8 @@ def stage_approve(dir_, mode="gatekeeper", policy_mode=None, role_arn=None):
         _audit("approve", "DENIED_NOT_AUTHORIZED", plan_hash=h, dir=dir_, approver=approver, authz_mode=authz_mode)
         return False
 
-    if not _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, h):
+    if not _enforce_production_approval(dir_, policy_mode, approver, authz_mode, pending, h,
+                                         approver_verified=bool(approver_verified_identity)):
         return False
 
     account, connected = _identity()

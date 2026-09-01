@@ -461,12 +461,16 @@ def test_apply_refuses_approval_from_another_directory(gate_env, monkeypatch):
     assert not os.path.exists(plan_gate._approved_path("target", current))
 
 
-def _record_pending(dir_, plan_hash, planner=None, destroy=False):
+def _record_pending(dir_, plan_hash, planner=None, destroy=False, planner_verified=True):
+    """`planner_verified` defaults True: a plan produced normally, under an authenticated
+    session, is what almost every test means by "a recorded plan". Production approval refuses
+    a planner it cannot prove was STS-established, so tests that want that case pass False."""
     os.makedirs(plan_gate._state_dir(dir_), exist_ok=True)
     rec = {"plan_hash": plan_hash, "dir": dir_, "canonical_dir": plan_gate._canonical_dir(dir_),
            "destroy": destroy}
     if planner is not None:
         rec["planner"] = planner
+        rec["planner_verified"] = planner_verified
     with open(plan_gate._pending_path(dir_), "w", encoding="utf-8") as f:
         json.dump(rec, f)
 
@@ -491,6 +495,9 @@ def test_production_rejects_self_approval(gate_env, monkeypatch, capsys):
     monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
     monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
     monkeypatch.setattr(plan_gate.authz, "operator", lambda: "alice")
+    # Verified on both sides: production refuses an unverified approver before it ever compares
+    # names, so this test has to get past that to exercise the comparison it is about.
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "alice")
     monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
     current, _ = plan_gate._plan_hash("d")
     _record_pending("d", current, planner="alice")
@@ -500,6 +507,100 @@ def test_production_rejects_self_approval(gate_env, monkeypatch, capsys):
     assert "cannot approve their own plan" in capsys.readouterr().err
     audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
     assert "self_approval_in_production" in audit
+
+
+def test_production_refuses_an_approver_who_only_claims_to_be_someone(gate_env, monkeypatch,
+                                                                       capsys):
+    """The bypass this rule exists to stop, run end to end.
+
+    dave plans in production under a real STS-verified session, so the pending record names a
+    principal that was actually proven. He then approves his own plan by dropping that session
+    and exporting MINUS_OPERATOR=bob. Before the planner_verified/approver_verified checks, the
+    two names simply differed, so the two-person comparison passed and the audit trail recorded
+    an approval by "bob" that bob had nothing to do with.
+
+    The comment on the planner field asserted this was impossible. Nothing recorded which side
+    of the comparison had been verified, so it was not.
+    """
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
+
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "dave@corp")
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "dave@corp")
+    assert plan_gate.stage_plan("d", policy_mode="production", impact=STAGED_IMPACT) is True
+    pending = json.load(open(plan_gate._pending_path("d"), encoding="utf-8"))
+    assert pending["planner"] == "dave@corp"
+    assert pending["planner_verified"] is True
+
+    # No cloud session; the identity is now nothing but an environment variable.
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: None)
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "bob")
+
+    current, _ = plan_gate._plan_hash("d")
+    assert plan_gate.stage_approve("d", mode="gatekeeper", policy_mode="production") is False
+    assert not os.path.exists(plan_gate._approved_path("d", current))
+    assert "self-reported" in capsys.readouterr().err
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "unverified_approver_in_production" in audit
+
+
+def test_production_refuses_a_planner_who_was_never_verified(gate_env, monkeypatch, capsys):
+    """The same hole from the other side: plan with no session so the planner is only an env
+    var, then approve under a real verified identity. The names differ, so the comparison
+    passes -- but it compares a proven principal against a string anyone could have written."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "carol@corp")
+
+    current, _ = plan_gate._plan_hash("d")
+    _record_pending("d", current, planner="alice", planner_verified=False)
+
+    assert plan_gate.stage_approve("d", mode="gatekeeper", policy_mode="production") is False
+    assert not os.path.exists(plan_gate._approved_path("d", current))
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "unverified_planner_in_production" in audit
+
+
+def test_a_pending_record_without_the_verified_flag_is_treated_as_unproven(gate_env, monkeypatch):
+    """A plan recorded before planner_verified existed has no claim either way. Production
+    must read that as "cannot prove it", not as "assume it was fine" -- the whole failure being
+    fixed here came from treating an absent proof as a passing one."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+    monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "carol@corp")
+
+    current, _ = plan_gate._plan_hash("d")
+    os.makedirs(plan_gate._state_dir("d"), exist_ok=True)
+    with open(plan_gate._pending_path("d"), "w", encoding="utf-8") as f:
+        json.dump({"plan_hash": current, "dir": "d",
+                   "canonical_dir": plan_gate._canonical_dir("d"),
+                   "planner": "alice", "destroy": False}, f)  # no planner_verified key at all
+
+    assert plan_gate.stage_approve("d", mode="gatekeeper", policy_mode="production") is False
+    audit = open(os.path.join(plan_gate.LOG_DIR, "audit.jsonl"), encoding="utf-8").read()
+    assert "unverified_planner_in_production" in audit
+
+
+def test_dev_mode_still_approves_without_a_verified_identity(gate_env, monkeypatch):
+    """Dev is explicitly single-operator and relaxed, and planning before credentials are
+    configured is a normal thing to do there. The tightening is production-only."""
+    monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
+    monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
+    monkeypatch.setattr(plan_gate, "_timed_input", lambda *a, **k: "y")
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: None)
+    monkeypatch.setattr(plan_gate.authz, "operator", lambda: "solo")
+
+    current, _ = plan_gate._plan_hash("d")
+    _record_pending("d", current, planner="solo", planner_verified=False)
+
+    assert plan_gate.stage_approve("d", mode="gatekeeper", policy_mode="dev") is True
+    assert os.path.exists(plan_gate._approved_path("d", current))
 
 
 def test_production_rejects_missing_planner(gate_env, monkeypatch, capsys):
@@ -521,6 +622,7 @@ def test_production_approves_with_allowlist_and_distinct_approver(gate_env, monk
     monkeypatch.setattr(plan_gate, "_tf", _stub_tf(PLAN_A))
     monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
     monkeypatch.setattr(plan_gate.authz, "operator", lambda: "carol")
+    monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "carol")
     monkeypatch.setattr(plan_gate.authz, "authorize", lambda *a, **k: (True, "enforced", "ok"))
     current, _ = plan_gate._plan_hash("d")
     _record_pending("d", current, planner="dave")
@@ -776,8 +878,12 @@ def test_apply_identity_check_skipped_when_approval_predates_verified_identity(g
     monkeypatch.setattr(plan_gate, "_apply_with_json_capture", _stub_apply_success())
     monkeypatch.setattr(plan_gate, "_identity", lambda: ("123456789012", True))
     current, _ = plan_gate._plan_hash("d")
-    # verified_operator() was None at approval time (env-var fallback used instead).
-    _approve_as("d", current, None, monkeypatch, policy_mode="production")
+    # verified_operator() was None at approval time (env-var fallback used instead). Recorded
+    # through a DEV approval, because production now refuses to create such a record at all --
+    # which is the point of the fix, and does not change what this test is about: an approval
+    # that carries no approver_verified_identity, however it got written, must not make a
+    # production APPLY invent a rejection out of nothing verifiable.
+    _approve_as("d", current, None, monkeypatch, policy_mode="dev")
 
     # Apply-time DOES have a verified identity now -- still nothing to compare against.
     monkeypatch.setattr(plan_gate.authz, "verified_operator", lambda: "anyone@corp")
