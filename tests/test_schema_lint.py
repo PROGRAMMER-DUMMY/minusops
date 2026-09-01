@@ -497,7 +497,12 @@ def test_gate_module_dynamic_expression_skips_type_check_not_a_finding(fake_modu
     assert result["blocking"] is False
 
 
-def test_gate_module_unparseable_dynamic_block_blocks(fake_module, monkeypatch):
+def test_gate_module_dynamic_block_warns_without_blocking(fake_module, monkeypatch):
+    # A dynamic block is a region the linter did not inspect, which is a statement about the
+    # linter rather than about the module. It must be REPORTED -- staying silent would be the
+    # fail-open _scan_body's docstring warns about -- but it must not block: `dynamic "grant"`
+    # is ordinary, correct HCL, and blocking on it refused 14 of the real catalog's own modules
+    # the first time this file's parametrised catalog sweep ever ran.
     _write(fake_module,
            'resource "aws_s3_bucket" "b" {\n'
            '  dynamic "grant" {\n    for_each = var.grants\n    content {\n      x = 1\n    }\n  }\n'
@@ -506,8 +511,44 @@ def test_gate_module_unparseable_dynamic_block_blocks(fake_module, monkeypatch):
 
     result = schema_lint.gate_module("widget")
 
+    assert result["blocking"] is False
+    assert result["findings"] == []
+    warned = [w for w in result["warnings"] if w["finding"] == "dynamic_block_unverified"]
+    assert warned, result["warnings"]
+    # The gap has to name where it is, or it discloses nothing actionable.
+    assert warned[0]["detail"] == "dynamic:grant"
+    assert warned[0]["block"] == "b"
+
+
+def test_gate_module_bool_literal_into_string_attribute_is_not_a_mismatch(fake_module,
+                                                                          monkeypatch):
+    # modules/cube-semantic-layer writes at_rest_encryption_enabled = true on an
+    # aws_elasticache_replication_group. The AWS provider types that attribute `string` (it
+    # models a tri-state: unset is not false) while the adjacent transit_encryption_enabled is
+    # typed `bool`. HCL widens bool to string automatically and losslessly, so both lines apply
+    # cleanly -- flagging one of them was a false positive on correct code.
+    schema = _stub_schema({"bucket": {"type": "string"}})
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = true\n}\n')
+    monkeypatch.setattr(schema_lint, "_fetch_schema", lambda provider, workdir: (schema, "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
+    assert result["blocking"] is False, result["findings"]
+    assert not [f for f in result["findings"] if f["finding"] == "type_mismatch"]
+
+
+def test_gate_module_string_literal_into_bool_attribute_still_mismatches(fake_module,
+                                                                         monkeypatch):
+    # The guard above must stay one-directional. string -> bool succeeds only when the content
+    # happens to parse, so it is a real risk rather than a guarantee, and must still block.
+    schema = _stub_schema({"bucket": {"type": "bool"}})
+    _write(fake_module, 'resource "aws_s3_bucket" "b" {\n  bucket = "not-a-bool"\n}\n')
+    monkeypatch.setattr(schema_lint, "_fetch_schema", lambda provider, workdir: (schema, "6.54.0"))
+
+    result = schema_lint.gate_module("widget")
+
     assert result["blocking"] is True
-    assert any(f["finding"] == "unparseable_reference" for f in result["findings"])
+    assert [f for f in result["findings"] if f["finding"] == "type_mismatch"]
 
 
 def test_gate_module_count_based_index_reference_resolves_and_does_not_block(fake_module, monkeypatch):
@@ -902,23 +943,28 @@ def test_gate_content_is_byte_identical_to_gate_module_for_every_real_module(mod
 # is what makes it one, and it surfaced exactly the gap that assumption was hiding.
 # ---------------------------------------------------------------------------
 
-_G2_KNOWN_EXCEPTIONS = {
-    # aws_glue_catalog_table.this's storage_descriptor declares a genuinely dynamic
-    # `dynamic "columns" { for_each = var.columns }` block -- real, user-configurable schema
-    # (var.columns has no fixed shape), not something to rewrite into a static block just to
-    # dodge this finding. schema_lint.py's own design deliberately reports every dynamic block
-    # as unparseable_reference rather than silently skipping it, since a dynamic block's real
-    # emitted attributes depend on evaluating its for_each expression, which is not statically
-    # resolvable -- a structural G2 limitation, not a bug in this module or this test. No
-    # PROVENANCE.json exists for this module (confirmed live) -- it was never actually pinned.
-    "table-format-iceberg": (
-        'aws_glue_catalog_table.this has a genuinely dynamic "columns" block driven by '
-        "var.columns -- schema_lint.py structurally cannot resolve a dynamic block's emitted "
-        "attributes statically, by design, and reports it as unparseable_reference. Real, "
-        "disclosed, pre-existing gap: this module was never pinned (no PROVENANCE.json) and "
-        "was never actually G2-clean."
-    ),
-}
+# Empty, and that is the point. This held one entry -- table-format-iceberg -- whose reason
+# read "a structural G2 limitation, not a bug in this module or this test". That diagnosis was
+# correct and the conclusion drawn from it was not: the limitation was written down as one
+# module's exception when it belonged to the linter.
+#
+# Running this parametrisation for the first time (2026-09-01) failed on 14 of the catalog's
+# modules, not one. Every failure was the same shape -- a `dynamic` block, reported as
+# unparseable_reference, which schema_lint counted as blocking. `dynamic "statement"` is simply
+# how an IAM policy document with a variable number of statements is written, so the gate was
+# refusing the normal way to write the thing it governs. The fix went into schema_lint, where
+# the limitation actually lives: a dynamic block now raises the `dynamic_block_unverified`
+# WARNING, which reports the unverified region without failing a module over it. See
+# gate_content()'s docstring for the defect-versus-gap distinction that split turns on.
+#
+# The 15th failure was cube-semantic-layer's at_rest_encryption_enabled = true, typed `string`
+# by the AWS provider while its neighbour transit_encryption_enabled is typed `bool`. HCL widens
+# bool to string automatically, so the module was correct and the type_mismatch was a false
+# positive; schema_lint no longer reports safe widening.
+#
+# Keep this dict. An entry here should be a specific module doing something specific and wrong,
+# with a reason that names the module -- never a whole class of correct HCL.
+_G2_KNOWN_EXCEPTIONS = {}
 
 
 @pytest.mark.skipif(TERRAFORM is None, reason="terraform CLI not installed")

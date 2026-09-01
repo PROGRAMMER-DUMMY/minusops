@@ -86,8 +86,10 @@ def _scan_body(body, prefix=""):
 
     A `dynamic "name" { ... }` block's actual emitted attributes depend on evaluating its
     for_each expression -- not resolvable statically, so it is never descended into and is
-    always reported as unparseable rather than silently skipped. Skipping would be a fail-open:
-    "couldn't parse, so treat it as nothing to check" is not "confirmed nothing to check"."""
+    always reported rather than silently skipped. Skipping would be a fail-open: "couldn't
+    parse, so treat it as nothing to check" is not "confirmed nothing to check". The caller
+    raises these as the `dynamic_block_unverified` WARNING rather than a blocking finding --
+    reporting the gap is the point, refusing the module over it is not."""
     set_attrs = set()
     unparseable = []
     lines = body.splitlines()
@@ -408,7 +410,11 @@ def gate_content(content, source_label):
     `findings` entries that make `blocking` True: schema_fetch_failed, schema_malformed,
     unknown_type, unknown_attribute, deprecated_attribute_in_use, type_mismatch,
     unparseable_reference, required_attribute_absent. `warnings` (never blocking):
-    schema_shape_changed_no_signal.
+    schema_shape_changed_no_signal, dynamic_block_unverified.
+
+    The split between the last two of those is the distinction between a defect and a gap. A
+    blocking finding says a specific thing is wrong. `dynamic_block_unverified` says a region
+    was not inspected at all, which is a statement about this linter, not about the module.
 
     `required_attribute_absent` is the symmetric inverse of `unknown_attribute`: a real,
     schema-required top-level attribute the declared block never sets is the same failure mode
@@ -473,8 +479,21 @@ def gate_content(content, source_label):
             attrs = entry["attributes"]
 
             set_attrs, unparseable_set = _scan_body(body)
+            # Every entry here is a `dynamic` block (see _scan_body -- it is the only thing that
+            # populates this list). Reporting it is right; BLOCKING on it is not. The other
+            # blocking findings all assert a defect: this type does not exist, this attribute is
+            # not in the schema, this literal is the wrong shape. A dynamic block asserts the
+            # opposite -- that nothing was checked here. "Not verified" and "verified wrong" are
+            # different claims, and only one of them is a reason to refuse a module.
+            #
+            # Treating them as identical blocked 14 of the catalog's own modules on their first
+            # run, every one of them correct: `dynamic "statement"` is simply how an IAM policy
+            # document with a variable number of statements is written. A gate that refuses the
+            # normal way to write the thing it governs is noise, and noise is what gets gates
+            # switched off. This is a coverage gap, disclosed as one.
             for u in unparseable_set:
-                findings.append({"finding": "unparseable_reference", "type": f"{kind}:{type_name}",
+                warnings.append({"finding": "dynamic_block_unverified",
+                                  "type": f"{kind}:{type_name}",
                                   "block": block_name, "detail": u})
 
             for attr_path in set_attrs:
@@ -507,7 +526,19 @@ def gate_content(content, source_label):
                 family = _schema_type_family(attrs[attr_path]["type"])
                 if family is None:
                     continue
-                mismatch = (
+                # bool and number widen to string automatically in HCL, losslessly and
+                # unconditionally -- `true` in a string attribute is `"true"`, and Terraform
+                # applies it without complaint. Flagging that is a false positive on correct
+                # code. It fired on modules/cube-semantic-layer's
+                # aws_elasticache_replication_group, where at_rest_encryption_enabled is typed
+                # `string` by the AWS provider and its neighbour transit_encryption_enabled is
+                # typed `bool` -- both written `= true`, one flagged, one not. The asymmetry is
+                # AWS modelling a tri-state (unset is not false), not a mistake in the module.
+                #
+                # The reverse direction stays flagged on purpose: string -> bool/number succeeds
+                # only if the content happens to parse, so it is a real risk, not a guarantee.
+                safe_widening = family == "string" and shape in ("bool", "number")
+                mismatch = not safe_widening and (
                     (shape == "list" and family not in ("list", "set")) or
                     (shape == "map" and family not in ("map", "object")) or
                     (shape in ("string", "bool", "number") and family != shape)
