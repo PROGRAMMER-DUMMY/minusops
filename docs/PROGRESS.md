@@ -125,9 +125,9 @@ New file: `core/governance/verification_coverage.py`.
 
 ## 4. Verification status
 
-**Roughly 2,000 passing in the default suite, plus 364 marked `slow`, of which 343 have now
-actually been executed and pass.** 17 files doing live `terraform init` / provider-schema
-fetches are marked `slow` and deselected by default. CI runs them in ci.yml's `slow` job, added
+**2,139 passing in the default suite and 366 marked `slow`, all 2,505 executed and passing as
+of 2026-09-01.** 17 files doing live `terraform init` / provider-schema fetches are marked
+`slow` and deselected by default. CI runs them in ci.yml's `slow` job, added
 2026-08-31. Until then no workflow ran them at all: every `pytest` invocation inherited
 `addopts = -m 'not slow'` from pyproject, while this line, `ci.yml`'s header and `deploy.yml`'s
 all claimed otherwise.
@@ -138,13 +138,12 @@ dying on the disk exhaustion described in section 15. Correcting it is the point
 section: a verification status that overstates itself is the same failure the rest of this
 document is about.
 
-**The 21 not yet executed are all `test_teardown_regression_harness.py`**, and the reason is
-measured, not suspected. Windows refuses symlinks without Developer Mode, so `terraform init`
-COPIES the ~900 MB provider out of `TF_PLUGIN_CACHE_DIR` rather than linking it: a bare
-single-provider init against a warm cache takes **147.7 seconds** here. Each harness test runs
-four Terraform invocations across two paths, so roughly ten minutes per test and about three
-hours for the file. On Linux, where symlinking works, the same init takes seconds. Enabling
-Developer Mode on a Windows dev box fixes it for every terraform test in the repo.
+One caveat on HOW they are run, not whether they pass: the slow suite must be run a few files
+at a time on this machine, not all at once. A single 31-test harness run produced a wall of
+`Unrecognized remote plugin message: Failed to read any lines from plugin's stdout` -- Windows
+failing to start the provider plugin under process pressure, the same family as the
+`STATUS_DLL_INIT_FAILED` noted below. Every one of those modules passes in a chunk of three or
+four. CI runs on a fresh Linux runner and does not hit this.
 
 ```bash
 python -m pytest          # no flags needed; pyproject sets --basetemp and -m 'not slow'
@@ -157,7 +156,8 @@ python -m pytest          # no flags needed; pyproject sets --basetemp and -m 'n
 
 > [!WARNING]
 > `tests/test_query_athena_module.py` exited 1 once during a sequential per-file scan but
-> passes standalone. Suspected contention, not a real failure — worth watching.
+> passes standalone. Suspected contention, not a real failure — worth watching. Re-run
+> 2026-09-01 both standalone and inside a consolidated slow run: passes both ways.
 
 ---
 
@@ -986,6 +986,43 @@ Second, smaller cause, worth knowing on any Windows box: creating a symlink need
 or admin, and without it Terraform **copies** ~900 MB per working directory instead of
 symlinking from `TF_PLUGIN_CACHE_DIR`. Enabling Developer Mode makes every terraform test
 dramatically cheaper. It is off on this machine.
+
+### The plugin cache was set but never used
+
+`TF_PLUGIN_CACHE_DIR` had been configured in `tests/conftest.py` with a comment explaining that
+it stops every terraform test re-downloading the same provider. It stopped nothing. Terraform
+re-downloaded the ~490 MB AWS package on every single init while the populated cache sat
+untouched.
+
+Terraform will not install from the shared cache unless the dependency lock file already
+records that provider's official checksums, because a cache entry alone cannot prove
+authenticity. Every test inits a fresh `tmp_path` with no `.terraform.lock.hcl`, so the
+condition was never met. The tell was in the output the whole time: `Installed hashicorp/aws
+v6.62.0 (signed by HashiCorp)` is the registry download path, where the cache path says `Using
+... from the shared cache directory`.
+
+One pinned-version init, warm cache, everything else identical:
+
+| | elapsed | what it did |
+|---|---|---|
+| before | 97-293s | downloaded ~490 MB |
+| after (`TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE=1`) | **10.3s** | used the cache |
+
+Every intermediate hypothesis was wrong and worth recording so they are not re-run: local I/O
+was never the cost (copying the same 863 MB binary takes 2.1s, hashing it 3.7s, re-reading the
+cache directory 1.7s), registry metadata answers in 0.6s, and it was not a one-off download of
+a newly released version -- it stayed at 167s with that version already cached. The cost was
+490 MB pulled repeatedly at a measured 4.6 MB/s.
+
+That variable's name warns about a real thing that does not apply here: it risks a lock entry
+covering only the current platform instead of every platform's registry checksums. These lock
+files live in a `tmp_path` deleted when the test ends and are never committed. Version
+RESOLUTION still goes to the registry, so a newly released provider is still discovered and
+still downloaded, leaving `schema_lint.py`'s live-schema contract intact. Only the redundant
+re-download of a version already in the cache is skipped.
+
+This is also the real reason three harness modules were failing a 120-second timeout: they were
+not slow, they were each downloading half a gigabyte.
 
 ### G2 refused fourteen of its own modules
 
