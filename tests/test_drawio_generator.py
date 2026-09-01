@@ -26,6 +26,88 @@ import pytest
 
 import drawio_generator
 
+# --- Edge routing: the hop must travel where no icon is -------------------------------------
+#
+# Asserted against diagram_check's own crossing model rather than by eye, because the thing
+# being prevented is defined by that model: a segment is "through" a box when it enters the box
+# inflated by 6px. A lane that merely sits between two icons still fails that test.
+
+_NODE = drawio_generator._NODE_SIZE
+
+
+def _boxes(positions):
+    return {address: (x, y, _NODE, _NODE) for address, (x, y) in positions.items()}
+
+
+def _crosses_anything(positions, source, target, waypoints):
+    """Every node the route passes through, using diagram_check's model verbatim."""
+    import diagram_check
+
+    boxes = _boxes(positions)
+    path = diagram_check._segments(boxes[source], boxes[target], waypoints)
+    return sorted(address for address, box in boxes.items()
+                  if address not in (source, target)
+                  and any(diagram_check._crosses(segment, box) for segment in path))
+
+
+# A slice of the real grid: 95px column pitch, 68px icons, rows unevenly spaced on purpose.
+_GRID = {
+    "top": (270, 160),
+    "middle": (270, 270),
+    "bottom": (270, 970),
+    "right_top": (650, 270),
+    "right_mid": (650, 620),
+    "right_low": (650, 730),
+    "left_bottom": (80, 970),
+    "mid_bottom": (460, 970),
+}
+
+
+def test_a_hop_down_a_column_does_not_pass_through_the_icons_in_it():
+    """The default L-route runs along the source column's centre-line, which is exactly where
+    the other icons in that column sit. `top` -> `bottom` passes straight through `middle`."""
+    _, waypoints = drawio_generator._edge_route(_GRID, "top", "bottom")
+    assert waypoints, "a same-column hop with something in the way needs a lane"
+    assert _crosses_anything(_GRID, "top", "bottom", waypoints) == []
+
+    # Without the lane it really does strike the node between them -- otherwise this test
+    # would pass on a route that never needed fixing.
+    assert _crosses_anything(_GRID, "top", "bottom", []) == ["middle"]
+
+
+def test_a_diagonal_hop_clears_both_the_column_and_the_row_it_crosses():
+    """The earlier attempt moved only the horizontal run and went from sixteen crossings to
+    fifteen. Both runs have to leave the centre-lines."""
+    _, waypoints = drawio_generator._edge_route(_GRID, "right_top", "mid_bottom")
+    assert _crosses_anything(_GRID, "right_top", "mid_bottom", waypoints) == []
+    assert _crosses_anything(_GRID, "right_top", "mid_bottom", []) == ["right_low", "right_mid"]
+
+
+def test_the_lane_clears_the_margin_the_checker_inflates_boxes_by():
+    """diagram_check grows every box by 6px before testing. A lane that merely lands between
+    two icons is still reported, so clearance has to exceed that, not just be positive."""
+    occupied = [column for column, _ in _GRID.values()]
+    lane = drawio_generator._free_lane(270 + _NODE + 1, 1, sorted(set(occupied)))
+    for column in set(occupied):
+        assert not (column - 6 <= lane <= column + _NODE + 6), (
+            f"lane {lane} sits inside the inflated box of the column at {column}")
+
+
+def test_a_hop_between_adjacent_nodes_still_routes_and_still_clears():
+    """Neighbours have no room between them for the usual detour; the lane search has to keep
+    walking outward rather than return a coordinate inside the next icon along."""
+    _, waypoints = drawio_generator._edge_route(_GRID, "right_mid", "right_low")
+    assert _crosses_anything(_GRID, "right_mid", "right_low", waypoints) == []
+
+
+def test_routing_declines_rather_than_guesses_when_a_position_is_missing():
+    """An address with no position cannot be routed. Returning empty leaves draw.io its own
+    default, which is the honest outcome -- inventing a lane from a missing coordinate would
+    draw a line to somewhere nothing is."""
+    assert drawio_generator._edge_route(_GRID, "top", "not-placed") == ("", [])
+    assert drawio_generator._edge_route(_GRID, "not-placed", "top") == ("", [])
+
+
 def test_resolve_stencil():
     """The names are draw.io's, not ours. This once asserted `aws4.iam`, which the library
     has no shape for -- the test held the typo in place while every IAM role in every
