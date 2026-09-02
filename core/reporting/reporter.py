@@ -882,7 +882,8 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
             f'<rect x="{cx}" y="{646 + dy}" width="150" height="28" rx="8" fill="#ffffff" stroke="{stroke}" stroke-width="1"/>'
             f'<text class="n-name" x="{cx + 8}" y="{664 + dy}">{esc(_fit_text(label, 18))}</text></g>')
     if len(grouped) > chip_cap:
-        parts.append(f'<text class="legend" x="1196" y="{664 + dy}">+{len(grouped) - chip_cap}</text>')
+        # After the sixth chip (which ends at 1210), not on top of it.
+        parts.append(f'<text class="legend" x="1218" y="{664 + dy}">+{len(grouped) - chip_cap}</text>')
     parts.append('</g>')
 
     # legend: tiers + flow + control + encryption + finding overlay + status
