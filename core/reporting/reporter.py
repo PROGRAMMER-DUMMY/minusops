@@ -79,10 +79,17 @@ def reports_root_for_dir(dir_):
 
 # --- tier map (mirrors docs/architecture_svg_spec.md §5) -------------------
 TIERS = ["sources", "storage", "compute", "orchestration", "observability", "security"]
-TIER_HUE = {"sources": "#b45309", "storage": "#d95d39", "compute": "#e8825f",
-            "orchestration": "#8da189", "observability": "#cb9a3e", "security": "#64748b"}
+# AWS service-category colours, the same ones drawio_generator.py puts on its icons. The
+# report keeps its own warm ground (#fbf7f4) and chrome; what had to stop differing is the
+# SERVICE colour, because an S3 bucket was green in architecture.drawio and terracotta in
+# architecture.svg, and both ship in the same evidence bundle. A reader comparing them cannot
+# tell whether the colour means something.
+TIER_HUE = {"sources": "#ED7100", "storage": "#7AA116", "compute": "#8C4FFF",
+            "orchestration": "#E7157B", "observability": "#2E73B8", "security": "#DD344C"}
 TIER_X = {"sources": 24, "storage": 272, "compute": 520, "orchestration": 768, "observability": 1016}
-ACTION_TINT = {"create": "#8da189", "update": "#cb9a3e", "delete": "#d95d39", "no-op": "#64748b"}
+# Plan actions stay semantic rather than service-coloured: green adds, amber changes, red
+# removes. Drawn as a tint on the card, not as its hue, so the two never compete.
+ACTION_TINT = {"create": "#7AA116", "update": "#ED7100", "delete": "#DD344C", "no-op": "#475569"}
 
 
 def _tier_for(rtype):
@@ -274,9 +281,9 @@ def _anchored_flow(plan, pos, node_h):
 
 
 _SEV_ORDER = ("HIGH", "MEDIUM", "LOW", "EXTERNAL")
-_SEV_COLOR = {"HIGH": "#d95d39", "MEDIUM": "#cb9a3e", "LOW": "#8da189", "EXTERNAL": "#64748b"}
-_LOCK = ('<rect x="0" y="5" width="13" height="9" rx="2" fill="none" stroke="#b45309" stroke-width="1.3"/>'
-         '<path d="M2.5,5 V3.2 a4,4 0 0 1 8,0 V5" fill="none" stroke="#b45309" stroke-width="1.3"/>')
+_SEV_COLOR = {"HIGH": "#DD344C", "MEDIUM": "#ED7100", "LOW": "#7AA116", "EXTERNAL": "#475569"}
+_LOCK = ('<rect x="0" y="5" width="13" height="9" rx="2" fill="none" stroke="#DD344C" stroke-width="1.3"/>'
+         '<path d="M2.5,5 V3.2 a4,4 0 0 1 8,0 V5" fill="none" stroke="#DD344C" stroke-width="1.3"/>')
 
 # Inline, self-contained service glyphs (generic — not AWS's trademarked icon set), drawn
 # in an ~18x18 local frame. Stroked in the tier hue so they stay on-palette and embed in PDFs.
@@ -377,7 +384,7 @@ def _ortho_edge(b1, b2, kind="data", channel=None):
     """
     x1, y1, w1, h1 = b1
     x2, y2, w2, h2 = b2
-    color = "#8da189" if kind == "ctrl" else "#1e293b"
+    color = "#475569" if kind == "ctrl" else "#1e293b"
     dash = ' stroke-dasharray="6 5"' if kind == "ctrl" else ''
     if channel is not None:
         sx, sy = x1 + w1 // 2, y1
@@ -443,20 +450,22 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
         "iam": (640, 404, 152, 72), "cw": (840, 404, 152, 72), "budget": (1040, 404, 152, 72),
     }
     META = {
-        "source": ("#b45309", "Batch Source", "external files", "inbox"),
-        "bronze": ("#d95d39", "S3 Bronze", "raw landing", "bucket"),
-        "silver": ("#d95d39", "S3 Silver", "cleaned", "bucket"),
-        "gold": ("#d95d39", "S3 Gold", "curated", "bucket"),
-        "results": ("#d95d39", "S3 Results", "query output", "bucket"),
-        "glue1": ("#e8825f", "Glue Job", "bronze to silver", "gears"),
-        "glue2": ("#e8825f", "Glue Job", "silver to gold", "gears"),
-        "athena": ("#8da189", "Athena", "query gold", "search"),
-        "sfn": ("#8da189", "Step Functions", "starts & waits Glue", "workflow"),
-        "catalog": ("#64748b", "Glue Catalog", "table metadata", "book"),
-        "kms": ("#64748b", "KMS", "CMK encryption", "key"),
-        "iam": ("#64748b", "IAM", "scoped roles", "shield"),
-        "cw": ("#cb9a3e", "CloudWatch", "failure alarm", "bell"),
-        "budget": ("#cb9a3e", "Budget", "spend guardrail", "coin"),
+        # Per service, matching drawio_generator._STENCILS exactly, so the same resource is
+        # the same colour whichever artifact the reader opens.
+        "source": ("#ED7100", "Batch Source", "external files", "inbox"),
+        "bronze": ("#7AA116", "S3 Bronze", "raw landing", "bucket"),
+        "silver": ("#7AA116", "S3 Silver", "cleaned", "bucket"),
+        "gold": ("#7AA116", "S3 Gold", "curated", "bucket"),
+        "results": ("#7AA116", "S3 Results", "query output", "bucket"),
+        "glue1": ("#8C4FFF", "Glue Job", "bronze to silver", "gears"),
+        "glue2": ("#8C4FFF", "Glue Job", "silver to gold", "gears"),
+        "athena": ("#8C4FFF", "Athena", "query gold", "search"),
+        "sfn": ("#E7157B", "Step Functions", "starts & waits Glue", "workflow"),
+        "catalog": ("#8C4FFF", "Glue Catalog", "table metadata", "book"),
+        "kms": ("#DD344C", "KMS", "CMK encryption", "key"),
+        "iam": ("#DD344C", "IAM", "scoped roles", "shield"),
+        "cw": ("#E7157B", "CloudWatch", "failure alarm", "bell"),
+        "budget": ("#2E73B8", "Budget", "spend guardrail", "coin"),
     }
     ENCRYPTED = {"bronze", "silver", "gold", "results", "athena", "kms"}
 
@@ -616,14 +625,14 @@ def build_pipeline_flow_svg(rows, template, cloud, short_hash, ts, findings=None
     parts.append('<g id="legend">'
                  '<line x1="24" y1="700" x2="58" y2="700" stroke="#1e293b" stroke-width="1.6" marker-end="url(#arrow)"/>'
                  '<text class="legend" x="64" y="704">data flow</text>'
-                 '<line x1="146" y1="700" x2="180" y2="700" stroke="#8da189" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
+                 '<line x1="146" y1="700" x2="180" y2="700" stroke="#475569" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
                  '<text class="legend" x="186" y="704">control</text>'
                  '<g transform="translate(252,693)">' + _LOCK + '</g>'
                  '<text class="legend" x="274" y="704">encrypted (KMS)</text>'
-                 '<rect x="392" y="693" width="32" height="13" rx="6" fill="#d95d39"/>'
+                 f'<rect x="392" y="693" width="32" height="13" rx="6" fill="{_SEV_COLOR["HIGH"]}"/>'
                  '<text class="badge" x="408" y="703" text-anchor="middle">SEC</text>'
                  '<text class="legend" x="430" y="704">finding overlay</text>'
-                 '<text class="legend" x="548" y="704">create=green · update=gold · delete=red</text>'
+                 '<text class="legend" x="548" y="704">create=green · update=amber · delete=red</text>'
                  '<text class="legend" x="24" y="730">Governance controls apply across deployment and runtime; '
                  'they are intentionally not drawn as data movement.</text>'
                  '</g>')
@@ -715,7 +724,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     edges = ['<g id="edges">']
     for x1, y1, x2, y2, kind in flow:
         mx = (x1 + x2) // 2
-        color = "#8da189" if kind == "ctrl" else "#1e293b"
+        color = "#475569" if kind == "ctrl" else "#1e293b"
         dash = ' stroke-dasharray="6 5"' if kind == "ctrl" else ''
         edges.append(f'<path d="M{x1},{y1} C{mx},{y1} {mx},{y2} {x2},{y2}" stroke="{color}" '
                      f'stroke-width="1.6" fill="none" marker-end="url(#arrow)" opacity="0.6"{dash}/>')
@@ -797,14 +806,14 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     parts.append(
         f'<line x1="24" y1="{736 + dy}" x2="58" y2="{736 + dy}" stroke="#1e293b" stroke-width="1.6" marker-end="url(#arrow)"/>'
         f'<text class="legend" x="64" y="{740 + dy}">data flow</text>'
-        f'<line x1="146" y1="{736 + dy}" x2="180" y2="{736 + dy}" stroke="#8da189" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
+        f'<line x1="146" y1="{736 + dy}" x2="180" y2="{736 + dy}" stroke="#475569" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>'
         f'<text class="legend" x="186" y="{740 + dy}">control</text>'
         f'<g transform="translate(252,{729 + dy})">' + _LOCK + '</g>'
         f'<text class="legend" x="274" y="{740 + dy}">encrypted (KMS)</text>'
-        f'<rect x="392" y="{729 + dy}" width="32" height="13" rx="6" fill="#d95d39"/>'
+        f'<rect x="392" y="{729 + dy}" width="32" height="13" rx="6" fill="{_SEV_COLOR["HIGH"]}"/>'
         f'<text class="badge" x="408" y="{739 + dy}" text-anchor="middle">SEC</text>'
         f'<text class="legend" x="430" y="{740 + dy}">finding overlay</text>'
-        f'<text class="legend" x="548" y="{740 + dy}">create=green · update=gold · delete=red</text>')
+        f'<text class="legend" x="548" y="{740 + dy}">create=green · update=amber · delete=red</text>')
     parts.append('</g>')
 
     parts.append('</svg>')
@@ -815,6 +824,17 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
 BG_C = "#fbf7f4"; PANEL_C = "#ffffff"; PANEL2_C = "#f4ece6"; TEXT_C = "#1e293b"
 MUTED_C = "#64748b"; FAINT_C = "#94a3b8"; TERRA_C = "#d95d39"; SAND_C = "#b45309"
 SAGE_C = "#8da189"; GOLD_C = "#cb9a3e"
+# TERRA_C / SAND_C / SAGE_C / GOLD_C stay as the report's warm CHROME -- section labels,
+# annotations, accents. They are no longer used to colour a resource, because a resource's
+# colour now has to mean the same thing here as it does in architecture.drawio. These are the
+# AWS service-category colours drawio_generator._STENCILS puts on its icons.
+STORAGE_C = "#7AA116"    # S3
+TRANSFORM_C = "#8C4FFF"  # Glue, EMR, Athena, Redshift -- analytics
+ORCH_C = "#E7157B"       # Step Functions, EventBridge, CloudWatch
+SECURITY_C = "#DD344C"   # IAM, KMS, Lake Formation
+OBSERV_C = "#2E73B8"     # budgets, DynamoDB
+NEUTRAL_C = "#475569"    # not a service: control edges, no-op, external
+ADVISORY_C = "#ED7100"   # attention, the same amber an update carries
 
 # Clean display names + semantic role lines (deterministic, per resource type).
 _V3_NICE = {
@@ -1038,7 +1058,11 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
         col = col or "rgba(217,93,57,.5)"
         return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="12" fill="rgba(217,93,57,.045)" '
                 f'stroke="{col}" stroke-width="1.3" stroke-dasharray="7 4"/>'
-                f'<text x="{x + 14}" y="{y + 20}" style="font:600 11px Outfit,sans-serif;fill:{TERRA_C};letter-spacing:.1em">{esc(label.upper())}</text>')
+                # A band label names STRUCTURE ("STORAGE & PROCESS"), not a service. In
+                # terracotta it read as a category colour competing with the AWS hues on the
+                # nodes inside it. The faint band wash above stays -- that is ground, not a
+                # claim about what anything is.
+                f'<text x="{x + 14}" y="{y + 20}" style="font:600 11px Outfit,sans-serif;fill:{MUTED_C};letter-spacing:.1em">{esc(label.upper())}</text>')
 
     P = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {total_h}" width="100%" role="img">',
          f'<title>Data flow — {esc(template)}</title>',
@@ -1058,14 +1082,14 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
         P.append(zone(proc_x + 300, gov_top, 420, 92, "Cataloging & Governance"))
         gx0 = proc_x + 320
         for j, c in enumerate(govern[:3]):
-            P.append(tnode(c, gx0 + 22 + j * 130, gov_top + 18, 40, GOLD_C, sub="schema / catalog"))
+            P.append(tnode(c, gx0 + 22 + j * 130, gov_top + 18, 40, TRANSFORM_C, sub="schema / catalog"))
         if len(govern) > 3:
             P.append(f'<text x="{proc_x + 300 + 420 - 14}" y="{gov_top + 52}" text-anchor="end" '
                      f'style="font:600 10px \'JetBrains Mono\',monospace;fill:{MUTED_C}">+{len(govern) - 3} more</text>')
         if used_xf:
             tx = cx[[k for k, (kind, _) in enumerate(spine) if kind == "xf"][0]]
             P.append(f'<path d="M{gx0 + 22},{gov_top + 92} C{gx0 + 22},{gov_top + 150} {tx},{spine_y - 60} {tx},{spine_y}" '
-                     f'stroke="{SAND_C}" stroke-width="1.3" fill="none" stroke-dasharray="5 4" opacity="0.8"/>')
+                     f'stroke="{NEUTRAL_C}" stroke-width="1.3" fill="none" stroke-dasharray="5 4" opacity="0.8"/>')
 
     for i in range(len(spine) - 1):
         x1, x2 = cx[i] + sz // 2 + 6, cx[i + 1] - sz // 2 - 6
@@ -1076,7 +1100,7 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
             P.append(f'<line x1="{x1}" y1="{ey}" x2="{x2}" y2="{ey}" stroke="{MUTED_C}" '
                      f'stroke-width="1.2" stroke-dasharray="4 5" opacity="0.45" marker-end="url(#dfa)"/>')
             P.append(f'<text x="{(x1 + x2) // 2}" y="{ey - 8}" text-anchor="middle" '
-                     f'style="font:600 9px \'JetBrains Mono\',monospace;fill:{GOLD_C}">no transform in plan</text>')
+                     f'style="font:600 9px \'JetBrains Mono\',monospace;fill:{ADVISORY_C}">no transform in plan</text>')
         else:
             P.append(f'<line x1="{x1}" y1="{ey}" x2="{x2}" y2="{ey}" stroke="{MUTED_C}" '
                      f'stroke-width="1.6" marker-end="url(#dfa)"/>')
@@ -1088,16 +1112,16 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
         prefix = am._strip_provider(c["type"]).split("_")[0]
         return (usage_annotations or {}).get(_ANN_CODE.get(prefix))
 
-    hue = {"stage": TERRA_C, "xf": SAGE_C}
+    hue = {"stage": STORAGE_C, "xf": TRANSFORM_C}
     annotated_codes = set()
     for i, (k, c) in enumerate(spine):
-        P.append(tnode(c, cx[i], spine_y, sz, hue.get(k, TERRA_C)))
+        P.append(tnode(c, cx[i], spine_y, sz, hue.get(k, STORAGE_C)))
         ann = _annotation(c)
         code = _ANN_CODE.get(am._strip_provider(c["type"]).split("_")[0])
         if ann and code not in annotated_codes:      # once per service, above its first node
             annotated_codes.add(code)
             P.append(f'<text x="{cx[i]}" y="{spine_y - 8}" text-anchor="middle" '
-                     f'style="font:600 9px \'JetBrains Mono\',monospace;fill:{GOLD_C}">{esc(ann)}</text>')
+                     f'style="font:600 9px \'JetBrains Mono\',monospace;fill:{OBSERV_C}">{esc(ann)}</text>')
 
     if consume and spine:
         # Consumption reads the curated END OF STORAGE (last stage), not whatever
@@ -1105,7 +1129,7 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
         last_stage = max((i for i, (k, _) in enumerate(spine) if k == "stage"), default=len(spine) - 1)
         ax = cons_x + cons_w // 2
         P.append(f'<line x1="{cx[last_stage] + sz // 2 + 6}" y1="{spine_y + sz // 2}" x2="{ax - 28}" y2="{spine_y + sz // 2}" stroke="{MUTED_C}" stroke-width="1.6" marker-end="url(#dfa)"/>')
-        P.append(tnode(consume[0], ax, spine_y, sz, GOLD_C))
+        P.append(tnode(consume[0], ax, spine_y, sz, TRANSFORM_C))
         if len(consume) > 1:
             P.append(f'<text x="{ax}" y="{spine_y + sz + 45}" text-anchor="middle" '
                      f'style="font:600 10px \'JetBrains Mono\',monospace;fill:{MUTED_C}">+{len(consume) - 1} more consumer(s)</text>')
@@ -1131,7 +1155,7 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
     free_x = [x for x in range(int(proc_x + 70), int(proc_x + proc_w - 60), 130)
               if all(abs(x - u) > 95 for u in side_used)]
     for mc, mx in zip(maintenance[:4], free_x):
-        P.append(tnode(mc, mx, side_y, 34, SAGE_C, sub="maintenance job"))
+        P.append(tnode(mc, mx, side_y, 34, TRANSFORM_C, sub="maintenance job"))
 
     if orch:
         oc = orch[0]
@@ -1143,14 +1167,14 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
         wired = any(xf_mods & deps.get(o["module"].split(".")[-1], set())
                     for o in orch if o["module"].startswith("module."))
         osub = "orchestrator" + (f" +{len(orch) - 1} more" if len(orch) > 1 else "")
-        P.append(tnode(oc, ox, orch_y, 46, SAGE_C, sub=osub))
+        P.append(tnode(oc, ox, orch_y, 46, ORCH_C, sub=osub))
         for k in xf_idx:
             P.append(f'<path d="M{ox},{orch_y} C{ox},{orch_y - 30} {cx[k]},{spine_y + sz + 50} {cx[k]},{spine_y + sz + 8}" '
-                     f'stroke="{SAGE_C}" stroke-width="1.3" fill="none" stroke-dasharray="5 4" opacity="{("0.85" if wired else "0.35")}"/>')
+                     f'stroke="{ORCH_C}" stroke-width="1.3" fill="none" stroke-dasharray="5 4" opacity="{("0.85" if wired else "0.35")}"/>')
         if wired:
-            P.append(f'<text x="{ox}" y="{orch_y + 92}" text-anchor="middle" style="font:600 9px \'JetBrains Mono\',monospace;fill:{SAGE_C}">orchestrates</text>')
+            P.append(f'<text x="{ox}" y="{orch_y + 92}" text-anchor="middle" style="font:600 9px \'JetBrains Mono\',monospace;fill:{ORCH_C}">orchestrates</text>')
         else:
-            P.append(f'<text x="{ox}" y="{orch_y + 92}" text-anchor="middle" style="font:600 9px \'JetBrains Mono\',monospace;fill:{GOLD_C}">not wired — placeholder definition</text>')
+            P.append(f'<text x="{ox}" y="{orch_y + 92}" text-anchor="middle" style="font:600 9px \'JetBrains Mono\',monospace;fill:{ADVISORY_C}">not wired — placeholder definition</text>')
 
     if band:
         P.append(zone(24, band_y, W - 48, 120, "Security & Monitoring", col="rgba(176,156,147,.55)"))
@@ -1180,15 +1204,15 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
     P.append(
         f'<line x1="24" y1="{ly}" x2="56" y2="{ly}" stroke="{MUTED_C}" stroke-width="1.6" marker-end="url(#dfa)"/>'
         f'<text x="62" y="{ly + 4}" style="{lt}">data flow</text>'
-        f'<line x1="150" y1="{ly}" x2="182" y2="{ly}" stroke="{SAGE_C}" stroke-width="1.3" stroke-dasharray="5 4"/>'
+        f'<line x1="150" y1="{ly}" x2="182" y2="{ly}" stroke="{ORCH_C}" stroke-width="1.3" stroke-dasharray="5 4"/>'
         f'<text x="188" y="{ly + 4}" style="{lt}">orchestration / schedule</text>'
         f'<line x1="352" y1="{ly}" x2="384" y2="{ly}" stroke="{MUTED_C}" stroke-width="1.2" stroke-dasharray="3 3"/>'
         f'<text x="390" y="{ly + 4}" style="{lt}">side output</text>'
-        f'<line x1="486" y1="{ly}" x2="518" y2="{ly}" stroke="{SAND_C}" stroke-width="1.3" stroke-dasharray="5 4"/>'
+        f'<line x1="486" y1="{ly}" x2="518" y2="{ly}" stroke="{NEUTRAL_C}" stroke-width="1.3" stroke-dasharray="5 4"/>'
         f'<text x="524" y="{ly + 4}" style="{lt}">catalog reference</text>'
-        f'<rect x="656" y="{ly - 6}" width="12" height="12" rx="3" fill="none" stroke="{SAGE_C}" stroke-width="1.4"/>'
+        f'<rect x="656" y="{ly - 6}" width="12" height="12" rx="3" fill="none" stroke="{TRANSFORM_C}" stroke-width="1.4"/>'
         f'<text x="674" y="{ly + 4}" style="{lt}">maintenance job (off-flow, scheduled)</text>'
-        f'<text x="920" y="{ly + 4}" style="font:600 10px \'JetBrains Mono\',monospace;fill:{GOLD_C}">gold figures = AWS-priced monthly usage</text>')
+        f'<text x="920" y="{ly + 4}" style="font:600 10px \'JetBrains Mono\',monospace;fill:{OBSERV_C}">blue figures = AWS-priced monthly usage</text>')
     P.append('</svg>')
     return "\n".join(P)
 
@@ -1215,7 +1239,7 @@ def build_inspect_html(manifest, plan, report_files=(), drift_status="CURRENT", 
     resources = plan_inspector.resource_rows(plan)
     iam = plan_inspector.iam_roles(plan)
     counts = manifest.get("counts", {})
-    drift_tone = "#8da189" if drift_status == "CURRENT" else "#d95d39"
+    drift_tone = "#7AA116" if drift_status == "CURRENT" else "#DD344C"
 
     def section(title, meta, body, open_=False):
         o = " open" if (for_print or open_) else ""
@@ -2016,7 +2040,7 @@ def _build_variance_html(variance, esc):
         if v is None:
             color, vtxt = "#b8a79e", "n/a"
         elif v > 0:
-            color, vtxt = "#d95d39", f"+${v:,.2f}"
+            color, vtxt = "#DD344C", f"+${v:,.2f}"
         else:
             color, vtxt = "#7fae7f", f"-${abs(v):,.2f}"
         ptxt = f"{p:+.1f}%" if p is not None else "-"
@@ -2026,7 +2050,7 @@ def _build_variance_html(variance, esc):
                  f"<td class=\"money\" style=\"color:{color}\">{vtxt}</td>"
                  f"<td class=\"money\" style=\"color:{color}\">{ptxt}</td></tr>")
     tot_v = at - ft
-    tot_color = "#d95d39" if tot_v > 0 else "#7fae7f"
+    tot_color = "#DD344C" if tot_v > 0 else "#7AA116"
     tot_p = f"{tot_v / ft * 100:+.1f}%" if ft else "-"
     rows += (f"<tr class=\"total\"><td>Total</td>"
              f"<td class=\"money\">${ft:,.2f}</td><td class=\"money\">${at:,.2f}</td>"
