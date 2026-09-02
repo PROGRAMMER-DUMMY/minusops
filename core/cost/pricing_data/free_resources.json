@@ -9,7 +9,13 @@
 
     {"prefix": "aws_security_group_rule", "display_name": "Amazon VPC", "note": "security group rules carry no charge"},
     {"prefix": "aws_security_group", "display_name": "Amazon VPC", "note": "security groups carry no charge"},
-    {"prefix": "aws_vpc", "display_name": "Amazon VPC", "note": "the VPC resource itself is free -- subresources like NAT gateways and interface endpoints are NOT free and must never be added to this file"},
+    {"prefix": "aws_vpc", "exact": true, "display_name": "Amazon VPC", "note": "the VPC resource itself is free -- subresources like NAT gateways and interface endpoints are NOT free and must never be added to this file. `exact` enforces that: without it this prefix also matched aws_vpc_endpoint, which bills per hour per AZ, and the audit reported it as costing nothing"},
+    {"prefix": "aws_vpc_dhcp_options", "display_name": "Amazon VPC", "note": "DHCP option sets and their associations carry no charge"},
+
+    {"prefix": "aws_vpc_peering_connection", "display_name": "Amazon VPC", "note": "the peering connection itself carries no hourly charge; traffic across it is billed as data transfer, mapped separately -- covers the accepter and options resources too"},
+
+    {"prefix": "aws_vpc_security_group_", "display_name": "Amazon VPC", "note": "standalone ingress/egress rule resources, the same no-charge fact as aws_security_group_rule above"},
+
     {"prefix": "aws_subnet", "display_name": "Amazon VPC", "note": "subnets carry no charge"},
     {"prefix": "aws_route_table", "display_name": "Amazon VPC", "note": "route tables and associations carry no charge"},
     {"prefix": "aws_internet_gateway", "display_name": "Amazon VPC", "note": "internet gateways carry no charge (data transfer through them is billed separately, not on this resource)"},
@@ -17,6 +23,8 @@
     {"prefix": "aws_kms_alias", "display_name": "AWS KMS", "note": "aliases are free -- the aws_kms_key resource itself IS billable and is intentionally not in this file"},
 
     {"prefix": "aws_budgets_budget", "display_name": "AWS Budgets", "note": "standard cost/usage budgets with notifications are free; action-enabled budgets beyond the first 2/account/month are billable -- re-review if a module ever configures budget actions"},
+
+    {"prefix": "aws_lakeformation", "display_name": "AWS Lake Formation", "note": "Lake Formation metadata registration, tags, permissions, and data cell filters carry no charge (billed on underlying S3/Glue/Athena API/compute usage)"},
 
     {"prefix": "aws_sns_topic_subscription", "display_name": "Amazon SNS", "note": "the subscription itself carries no separate fee (SNS bills publish/delivery requests on the topic, mapped separately as aws_sns in aws_resource_map.json)"}
   ]

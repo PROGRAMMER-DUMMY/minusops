@@ -173,7 +173,8 @@ def main(argv=None):
     r = sub.add_parser("resolve")
     r.add_argument("team_id")
     k = sub.add_parser("state-key")
-    k.add_argument("team_id")
+    k.add_argument("domain_id")
+    k.add_argument("project_id")
     k.add_argument("workload_id")
     args = ap.parse_args(argv)
 
@@ -189,7 +190,7 @@ def main(argv=None):
     if args.cmd == "resolve":
         print(json.dumps(resolve(args.team_id), indent=2))
         return 0
-    print(state_key(args.team_id, args.workload_id))
+    print(state_key(args.domain_id, args.project_id, args.workload_id))
     return 0
 
 

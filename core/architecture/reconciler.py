@@ -37,6 +37,7 @@ import getpass
 import glob
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(
@@ -61,6 +62,27 @@ def _read(path):
             return handle.read()
     except OSError:
         return ""
+
+
+def _apply_hcl_change(original, target, attribute, old_value, new_value):
+    """Safely replace target HCL attribute value without ambient global string replacement."""
+    if not old_value or old_value not in original:
+        return original
+    if attribute:
+        # \b so the attribute name cannot match as the tail of a longer one. Without it,
+        # attribute "name" matched inside `bucket_name = "target"` and rewrote that line
+        # instead, and Terraform is full of the collision: name/bucket_name, role/iam_role,
+        # id/vpc_id, arn/kms_key_arn.
+        pattern = re.compile(
+            r'\b(' + re.escape(attribute) + r'[\s"=:]+)(["\']?)' + re.escape(old_value) + r'\2'
+        )
+        if pattern.search(original):
+            return pattern.sub(r'\g<1>\g<2>' + new_value.replace('\\', r'\\') + r'\g<2>', original, count=1)
+    quoted_old = f'"{old_value}"'
+    quoted_new = f'"{new_value}"'
+    if quoted_old in original:
+        return original.replace(quoted_old, quoted_new, 1)
+    return original.replace(old_value, new_value, 1)
 
 
 def propose(run_root, change, author=None, audit_path=None):
@@ -106,7 +128,7 @@ def propose(run_root, change, author=None, audit_path=None):
             "diverged, so no edit can be derived safely")
         return proposal
 
-    updated = original.replace(old_value, new_value)
+    updated = _apply_hcl_change(original, target, attribute, old_value, new_value)
     proposal.update(
         applicable=True,
         updated_hcl=updated,

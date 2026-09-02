@@ -455,3 +455,125 @@ def test_a_bucket_named_only_at_apply_time_cannot_be_matched_and_is_reported():
     entry = am.dataset_reachability(model, plan)[0]
 
     assert entry["unmatched_resources"], "an ARN matching no known bucket must be reported"
+
+
+# --- Enterprise Access Model Tests -----------------------------------------
+def test_kms_key_access_parses_admins_and_decryptor_services():
+    policy = _doc(
+        {"Sid": "Admin", "Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::123456789012:root"},
+         "Action": ["kms:*"], "Resource": "*"},
+        {"Sid": "Services", "Effect": "Allow", "Principal": {"Service": ["s3.amazonaws.com", "glue.amazonaws.com"]},
+         "Action": ["kms:Decrypt", "kms:GenerateDataKey*"], "Resource": "*"}
+    )
+    plan = _plan([_rc("aws_kms_key", "aws_kms_key.main",
+                      after={"description": "Main Key", "policy": policy, "enable_key_rotation": True})])
+    keys = am.kms_key_access(plan)
+    assert len(keys) == 1
+    assert keys[0]["rotation_enabled"] is True
+    # Exact sets, not membership: these are lists of principals, so the set says both
+    # who IS there and that nobody else is -- and a membership test on a list reads to a
+    # static analyser as a substring check on a URL, which is what it was reported as.
+    assert keys[0]["admins"] == ["arn:aws:iam::123456789012:root"]
+    assert keys[0]["decryptors"] == ["glue.amazonaws.com", "s3.amazonaws.com"]
+
+
+def test_privilege_escalation_detects_dangerous_iam_actions():
+    passrole_policy = _doc({"Effect": "Allow", "Action": ["iam:PassRole", "s3:GetObject"], "Resource": "*"})
+    plan = _plan([
+        _rc("aws_iam_role", "aws_iam_role.risky", after={"name": "risky_role"}),
+        _rc("aws_iam_role_policy", "aws_iam_role_policy.p", after={"role": "risky_role", "policy": passrole_policy}),
+    ])
+    model = am.access_model(plan)
+    audit = am.privilege_escalation_audit(model)
+    assert len(audit) == 1
+    assert "iam:PassRole" in audit[0]["dangerous_actions"]
+    assert "CRITICAL" in audit[0]["risk_level"]
+
+
+def test_lake_formation_data_cells_filter_resolution():
+    plan = _plan([
+        _rc("aws_lakeformation_data_cells_filter", "aws_lakeformation_data_cells_filter.f",
+            after={"table_data": [{"name": "cf", "database_name": "db1", "table_name": "t1",
+                                   "row_filter": [{"filter_expression": "region = 'US'"}],
+                                   "column_wildcard": [{"excluded_column_names": ["ssn"]}]}]}),
+        _rc("aws_lakeformation_permissions", "aws_lakeformation_permissions.p",
+            after={"permissions": ["SELECT"], "data_cells_filter": [{"name": "cf", "database_name": "db1", "table_name": "t1"}]}),
+    ])
+    grants = am.lake_formation_grants(plan)
+    assert len(grants) == 1
+    assert grants[0]["filter_details"]["filter_expression"] == "region = 'US'"
+    assert "ssn" in grants[0]["filter_details"]["excluded_columns"]
+
+
+# --- A security verdict must not be reached by not looking -----------------------------------
+
+def _audited(actions, role_name="deploy", boundary="arn:aws:iam::1:policy/b", policy_role="deploy"):
+    model = {
+        "roles": [{"name": role_name, "address": "aws_iam_role.deploy",
+                   "permissions_boundary": boundary}],
+        "policies": [{"role": policy_role, "address": "aws_iam_role_policy.p",
+                      "document": {"resolved": True, "reason": None,
+                                   "statements": [{"Effect": "Allow", "Action": actions,
+                                                   "Resource": "*"}]}}],
+    }
+    return am.privilege_escalation_audit(model)[0]
+
+
+def test_a_wildcard_grant_counts_as_the_actions_it_wildcards():
+    """`iam:*` is not in DANGEROUS_IAM_ACTIONS and is not `*`, so exact membership missed it --
+    a policy handing over every IAM action reported CLEAN (Least Privilege). It grants all
+    twelve iam: entries in that set at once."""
+    verdict = _audited(["iam:*"])
+    assert verdict["risk_level"].startswith("CRITICAL")
+    assert verdict["dangerous_actions"] == ["iam:*"]
+
+    assert _audited(["iam:Put*"])["risk_level"].startswith("CRITICAL")
+    assert _audited(["*"])["risk_level"].startswith("CRITICAL")
+
+
+def test_a_harmless_grant_is_still_clean():
+    """The wildcard matching must not fire on everything -- a check that flags every policy
+    tells you nothing about any of them."""
+    verdict = _audited(["s3:GetObject"])
+    assert verdict["risk_level"] == "CLEAN (Least Privilege)"
+    assert verdict["dangerous_actions"] == []
+
+
+def test_a_role_whose_policies_could_not_be_joined_is_not_called_clean():
+    """Policies join to roles by name, and a role declared with name_prefix has no name in the
+    plan. The join then finds nothing and the role reported CLEAN (Least Privilege) -- claiming
+    least privilege on the strength of having read no policies at all."""
+    verdict = _audited(["iam:PassRole"], role_name=None)
+    assert verdict["risk_level"] == "UNKNOWN (Policies Not Resolvable)"
+
+
+def test_an_unattributable_policy_makes_every_verdict_uncertain():
+    """A policy whose `role` is unknown until apply could belong to any role, so no role can be
+    cleared while one is outstanding."""
+    verdict = _audited(["s3:GetObject"], policy_role=None)
+    assert verdict["risk_level"] == "UNKNOWN (Policies Not Resolvable)"
+    assert verdict["policies_unattributed"] == ["aws_iam_role_policy.p"]
+
+
+def test_a_kms_policy_that_could_not_be_read_does_not_report_as_closed():
+    """wildcard_public=False on an unparsed policy says the same thing as False on a policy
+    that was read and found closed. It is not the same thing."""
+    plan = _plan([_rc("aws_kms_key", "aws_kms_key.k", after={"description": "d"})])
+    key = am.kms_key_access(plan)[0]
+
+    assert key["policy_resolved"] is False
+    assert key["wildcard_public"] is None, "unknown must not be reported as not-public"
+    assert key["policy_reason"]
+
+
+def test_a_kms_policy_that_was_read_still_answers_the_question():
+    """The guard above must not turn every key into an unknown."""
+    policy = json.dumps({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Principal": {"AWS": "*"}, "Action": "kms:Decrypt", "Resource": "*"}]})
+    plan = _plan([_rc("aws_kms_key", "aws_kms_key.k",
+                      after={"description": "d", "policy": policy})])
+    key = am.kms_key_access(plan)[0]
+
+    assert key["policy_resolved"] is True
+    assert key["wildcard_public"] is True
+
