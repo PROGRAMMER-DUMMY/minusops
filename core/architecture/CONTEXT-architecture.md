@@ -143,7 +143,7 @@ Generation in MinusOps is **requirements-first** and bound to reviewed records (
   * [`validate_team_id(team_id)`](./team_resolver.py): Enforces `_TEAM_ID_RE` (`^[a-z0-9][a-z0-9-]{0,62}$`), refusing path traversals (`..`), slashes (`/`), and wildcards (`*`) that could escape S3 state prefixes or expand IAM role patterns.
   * [`load_directory(path=None)`](./team_resolver.py): Parses the teams YAML directory. Missing file/PyYAML returns `{}` (optional directory); malformed YAML raises `yaml.YAMLError` or `ValueError` if `teams` is not a dict.
   * [`resolve(team_id, path=None)`](./team_resolver.py): Returns a validated team record dictionary (`team_id`, `configured`, `source`, `lead_email`, `team_dl`, `slack_channel`, `teams_webhook_secret`, `cost_center`, `deploy_role_pattern`).
-  * [`state_key(team_id, workload_id)`](./team_resolver.py): Builds `teams/<team_id>/<workload_id>/terraform.tfstate` with validation on both segments to prevent prefix escape.
+  * [`state_key(domain_id, project_id, workload_id)`](./team_resolver.py): Builds `teams/<domain_id>/<project_id>/<workload_id>/terraform.tfstate` with validation on all three segments to prevent prefix escape. Three tiers, not two (ruling, 2026-08-21): two squads in different domains may legitimately name a project the same thing.
   * [`role_matches(arn, pattern)`](./team_resolver.py): Verifies if an active STS session or IAM role ARN satisfies a team's deploy role pattern (e.g. `arn:aws:iam::*:role/minusops-deploy-<team_id>`), handling assumed-role STS session formats.
 * **Inputs / Outputs:**
   * *Inputs:* Team ID string, workload ID string, optional custom YAML path, role ARN string.
