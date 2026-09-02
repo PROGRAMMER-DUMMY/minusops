@@ -7,7 +7,7 @@ this up cold should be able to read only this file and know where things stand.
 increment, close a decision, or discover a bug, edit here before moving on. Stale entries are
 worse than missing ones.
 
-Last updated: 2026-08-31 · Branch: `fix/drawio-dataflow-edges`
+Last updated: 2026-09-02 · Branches: `fix/review-findings` (#22), `fix/diagram-models-architecture` (#23), `docs/state-key-signature` (#24), `deps/codeql-action-v4-pair` (#25)
 
 ---
 
@@ -1160,3 +1160,107 @@ column with what it passed. Both axes have to move for either to help.
   errored before executing. No terraform process was alive; a scanner touching a freshly written
   executable is enough. Running against a different `--basetemp` steps around it. This is the
   same divergence-from-POSIX family as the audit-chain lock and the G9 concurrency test.
+
+---
+
+## 16. Six claims made without establishing them, and two diagrams that drew the wrong thing -- 2026-09-02
+
+### What shipped
+
+Four branches, all pushed, none merged.
+
+| PR | Branch | What |
+|---|---|---|
+| #22 | `fix/review-findings` | six findings from reading the evidence-producing modules end to end |
+| #23 | `fix/diagram-models-architecture` | stacked on #22; both SVGs rebuilt |
+| #24 | `docs/state-key-signature` | `CONTEXT-architecture.md` caught up to the 3-arg `state_key` |
+| #25 | `deps/codeql-action-v4-pair` | supersedes Dependabot #15 and #19, which each fail alone |
+
+### The six (PR #22)
+
+* **`access_model` reached three verdicts by not looking.** `iam:*` did not match the
+  dangerous-action list, because the list holds concrete actions and the policy holds a
+  wildcard, so a policy granting everything was reported clean. An unresolvable policy set
+  returned the same shape as a resolved safe one. A KMS key policy reported
+  `wildcard_public: false` when the policy had not been read at all.
+* **The console docs viewer would read any file the process could.** `_read_repo_file` joined
+  caller input onto the repo root and opened it; `../../.aws/credentials` escaped, and an
+  absolute path discarded the root entirely, which is what `os.path.join` documents.
+* **`lineage` drew a three-zone medallion data lake** -- with a `[4] Curate` edge -- for a plan
+  whose only resource was a bucket named `company-logos`.
+* **`cost` reported an assumed rate and a measured one as the same number.** A bare fallback of
+  `50` became `0`: an invented figure is worse than a missing one.
+* **`reconciler` rewrote the wrong line.** `_apply_hcl_change` anchored on an attribute name
+  with no word boundary, so `bucket_name` matched a request to edit `name`. Terraform is full of
+  that collision, so the wrong line was the likely outcome, not the edge case.
+* **A resource was one colour in `architecture.drawio` and another in `architecture.svg`,** and
+  both ship in the same bundle.
+
+### The diagrams (PR #23)
+
+Both enumerated Terraform resources instead of modelling architecture. Four causes:
+
+1. **The collapse never collapsed.** It grouped on the Terraform LOCAL NAME, so a bucket folded
+   its versioning only when both were named the same thing -- which real configurations never
+   are (`medallion_buckets` is configured by `medallion_versioning`). Measured on the lakehouse
+   plan the rule folded *nothing*: eighteen S3 rows, eighteen nodes, every one `+0 config`.
+   Folding now follows the reference the plan declares, via `drawio_generator.fold_parents`,
+   reading the two shapes Terraform emits -- a direct `bucket = aws_s3_bucket.b["raw"].id`, and
+   a for_each'd config resource whose only expression is `each.value` with the parent in
+   `for_each_expression`. Eighteen rows collapse to the four real buckets.
+2. **Nodes were titled with their TYPE**, so three medallion buckets all read "S3 Bucket" and two
+   jobs both read "Glue Job": six nodes, four labels.
+3. **Four edges were drawn and none were visible.** The router always left the source's right
+   edge and entered the target's left, which only describes a rightward hop. Most of these are
+   not, so the arrows doubled back underneath the opaque cards.
+4. **A second, private tier classifier** whose fallback was `compute`, so six Lake Formation
+   resources and a security group were COMPUTE in the same bundle where `dataflow.svg` drew them
+   as governance.
+
+### Dependabot: what the green checks do and do not prove
+
+Thirteen open. Verified rather than assumed:
+
+* **`pytest` <9 -> <10, `plotly` <6 -> <8 and `dash` <3 -> <5 are real, not no-ops.** CI runs
+  `pip install ".[dev]"` and all three live in the `dev` extra, so CI installed pytest 9.1.1,
+  plotly 7.0.0 and dash 4.4.1 and stayed green across 26 checks. Locally, pytest 9.1.1 and
+  plotly 6.8.0 were *already installed* -- both outside the declared ceilings, so the pins had
+  stopped describing the environment the tests actually pass in.
+* **#21 (`setup-terraform` 3 -> 4) failed on a network flake**, not a regression:
+  `connection reset by peer` reaching `registry.terraform.io` during `terraform init`. Rerun.
+* **#15 and #19 each fail alone and are fine together.** CodeQL refuses a v3 `init` beside a v4
+  `analyze` -- "CodeQL job status was configuration error". PR #25 moves the pair in one commit.
+
+### Open, deliberately
+
+* **`.github/workflows/minusops-gate.yml` is untracked and NOT committed, because it would fail.**
+  `gate verify --all` -- there is no `--all` flag -- and `cost coverage` both default to the
+  active run, which a fresh CI checkout does not have. Its fifth step (`pytest tests/ -v`)
+  duplicates `ci.yml`, which already runs the suite on three OSes and two Pythons plus a slow
+  job. Making the gate step real needs create -> requirements -> decision -> generate first.
+* **Regenerating a report bundle makes a live AWS BCM call.** `_generate_report_bundle` attempted
+  `CreateWorkloadEstimate` against account `450374452930` under auto-approve; it returned
+  `ConflictException` so nothing was created, but it went out unprompted. The function also
+  ignores the output directory passed to it and writes to `artifacts/reports/<hash>/`.
+* **Five columns leave no room for a catalog of its own**, so Lake Formation and the Glue catalog
+  sit in STORAGE in `architecture.svg`. A sixth column fits this plan at 1280px but overflows one
+  that also has an ingest tier. Documented compromise, not a claim.
+
+### Decisions
+
+* **A legend is a claim.** Four legend keys drifted because a drawing moved without its key, and
+  one named its own colour in prose ("gold figures = ..."), so changing the figures silently
+  would have left the legend asserting something false. The architecture legend advertised
+  "data flow" and "control" over a diagram with no visible arrows in it at all.
+* **A name is not evidence; a declared reference is.** The collapse, the lineage zones and the
+  access verdicts all failed the same way -- inferring a relationship from a string. Where the
+  plan does not state the link, the honest output is an unfolded node, not a guess.
+* **Two classifiers is one too many.** Colour, tier and role were each derived twice from
+  different tables, and the copies disagreed on exactly the resources it mattered for. A reader
+  holding both artifacts cannot tell which one is lying.
+* **An empty labelled column is a false statement.** A SOURCES heading with a coloured rule over
+  blank canvas reads as "the sources are missing", not "there are none". The group id stays,
+  because that is a contract a consumer reads; the visible column does not.
+* **A green check proves only what it ran.** A widened version ceiling is a no-op unless the
+  install actually picks the new major up -- which here depended on the pin living in the `dev`
+  extra that CI installs, not the `dashboard` one it does not.
