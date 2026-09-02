@@ -2040,6 +2040,60 @@ def _build_variance_html(variance, esc):
             f"</tr></thead><tbody>{rows}</tbody></table>")
 
 
+def _format_cost_assumptions(assumptions, esc):
+    if not assumptions:
+        return '<p class="note">No derived assumptions recorded (usage supplied directly).</p>'
+
+    scalar_items = []
+    inventory_table = ""
+    line_map_html = ""
+
+    for k, v in assumptions.items():
+        if k == "terraform_resource_inventory" and isinstance(v, dict):
+            rows = ""
+            for rtype, info in sorted(v.items()):
+                cnt = info.get("count", 1) if isinstance(info, dict) else 1
+                actions = ", ".join(f"{act}: {c}" for act, c in info.get("actions", {}).items()) if (isinstance(info, dict) and "actions" in info) else "create"
+                rows += (f"<tr><td><code>{esc(rtype)}</code></td>"
+                         f'<td class="money">{cnt}</td>'
+                         f"<td>{esc(actions)}</td></tr>")
+            inventory_table = (
+                '<h3 style="margin-top:20px;font-size:13px;color:#334155;font-weight:600">Terraform Resource Inventory</h3>'
+                '<table><thead><tr><th>Resource Type</th><th>Count</th><th>Actions</th></tr></thead>'
+                f'<tbody>{rows}</tbody></table>'
+            )
+        elif k == "usage_line_map" and isinstance(v, dict):
+            json_str = json.dumps(v, indent=2)
+            line_map_html = (
+                '<details style="margin-top:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px">'
+                '<summary style="cursor:pointer;font-weight:600;font-size:12px;color:#475569">View BCM Usage Line Mapping (Audit Trail JSON)</summary>'
+                f'<pre style="font-size:11px;max-height:220px;overflow-y:auto;background:#ffffff;padding:8px;border:1px solid #cbd5e1;border-radius:4px"><code>{esc(json_str)}</code></pre></details>'
+            )
+        elif isinstance(v, (dict, list)):
+            json_str = json.dumps(v, indent=2)
+            label = k.replace("_", " ").title()
+            scalar_items.append((label, f'<pre style="margin:0;font-size:11px"><code>{esc(json_str)}</code></pre>'))
+        else:
+            label = k.replace("_", " ").title()
+            scalar_items.append((label, esc(v)))
+
+    # esc on the label too. Every value here is escaped and the inventory table escapes its
+    # resource types, but the assumption NAME went in raw. Today's keys are all fixed
+    # identifiers out of DEFAULT_ASSUMPTIONS, so nothing injects -- but this report is HTML
+    # somebody opens, and the first assumption keyed by something plan-derived (an address, a
+    # module, a zone) would go straight through. Escaping it now costs nothing.
+    scalar_rows = "".join(
+        f"<tr><td><b>{esc(k)}</b></td><td>{v}</td></tr>"
+        for k, v in scalar_items
+    )
+    scalar_table = (
+        '<table><thead><tr><th>Parameter</th><th>Assumption / Derived Value</th></tr></thead>'
+        f'<tbody>{scalar_rows}</tbody></table>'
+    )
+
+    return f"{scalar_table}{inventory_table}{line_map_html}"
+
+
 def build_cost_html(template, cloud, short_hash, ts, cost):
     def esc(s):
         return html.escape(str(s))
@@ -2123,8 +2177,7 @@ def build_cost_html(template, cloud, short_hash, ts, cost):
                         f'<div style="width:{w}%;height:8px;border-radius:5px;background:#2b59d1"></div></div></div>')
 
         assumptions = cost.get("assumptions") or {}
-        assume_html = (_kv_table(assumptions.items()) if assumptions
-                       else "<p class=\"note\">No derived assumptions recorded (usage supplied directly).</p>")
+        assume_html = _format_cost_assumptions(assumptions, esc)
 
         # Budget check: the plan provisions its own guardrail (aws_budgets_budget) — hold
         # the AWS forecast against it BEFORE deploy, not after the first bill.

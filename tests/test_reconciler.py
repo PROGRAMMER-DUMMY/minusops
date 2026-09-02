@@ -277,3 +277,38 @@ def test_the_module_imports_only_the_standard_library_and_core():
 
     foreign = roots - set(sys.stdlib_module_names) - core_modules
     assert not foreign, f"third-party imports: {sorted(foreign)}"
+
+
+# --- The edit lands on the attribute it names ------------------------------------------------
+
+_HCL = '''resource "aws_s3_bucket" "b" {
+  bucket_name = "target"
+  name        = "target"
+}
+'''
+
+
+def test_an_attribute_is_not_matched_as_the_tail_of_a_longer_one():
+    """Attribute "name" matched inside `bucket_name = "target"` and rewrote that line instead.
+    Terraform is full of the collision -- name/bucket_name, role/iam_role, id/vpc_id,
+    arn/kms_key_arn -- so this picks the wrong line more often than the right one."""
+    out = reconciler._apply_hcl_change(_HCL, "aws_s3_bucket.b", "name", "target", "CHANGED")
+
+    assert 'bucket_name = "target"' in out, "the longer attribute must be left alone"
+    assert 'name        = "CHANGED"' in out
+
+
+def test_only_the_first_match_is_rewritten_not_every_occurrence():
+    """This replaced globally before -- original.replace(old, new) with no count -- so a value
+    appearing anywhere else in the file was rewritten along with the target."""
+    hcl = 'a = "dup"\nb = "dup"\n'
+    out = reconciler._apply_hcl_change(hcl, "x", "a", "dup", "NEW")
+
+    assert out.count('"dup"') == 1, "the untargeted occurrence must survive"
+    assert 'a = "NEW"' in out
+
+
+def test_a_value_that_is_not_there_changes_nothing():
+    """No match must leave the file byte-identical rather than guess at a nearby line."""
+    assert reconciler._apply_hcl_change(_HCL, "x", "name", "absent", "NEW") == _HCL
+
