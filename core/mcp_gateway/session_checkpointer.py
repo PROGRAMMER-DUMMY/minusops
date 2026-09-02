@@ -7,7 +7,7 @@ Provides dual-tier state persistence:
 2. Long-Term Memory Store: Preserves cross-thread domain facts, preferences, and entity context.
 """
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 class SessionCheckpointer:

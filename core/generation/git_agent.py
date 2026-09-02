@@ -17,7 +17,6 @@ import os
 import json
 import re
 import datetime
-import subprocess
 import getpass
 
 _CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

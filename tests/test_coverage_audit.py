@@ -12,6 +12,8 @@ Used by: nothing (pytest entry point)
 """
 import json
 
+import pytest
+
 import coverage_audit as ca
 import providers.base as pb
 
@@ -134,11 +136,8 @@ def test_classify_defaults_to_the_active_provider(monkeypatch):
 
 
 def test_audit_raises_when_plan_json_missing(tmp_path):
-    try:
+    with pytest.raises(FileNotFoundError, match=r"plan\.json"):
         ca.audit(str(tmp_path))
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError as exc:
-        assert "plan.json" in str(exc)
 
 
 def test_cloudwatch_metric_alarm_verified_but_event_rule_is_not():

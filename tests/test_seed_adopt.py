@@ -5,7 +5,6 @@ The seed tests never reach AWS. What matters is the safety contract around it --
 default changes nothing, that approval is asked before anything is sent, and that an empty
 result is reported as a failure rather than a success.
 """
-import json
 import os
 
 import adopt as adopt_engine

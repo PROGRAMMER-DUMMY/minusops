@@ -6,9 +6,7 @@ Deliberately NOT a thread-race test -- that would be flaky. These assert the two
 settings that make concurrent access work, plus the one behaviour WAL actually buys:
 a reader is not blocked by an in-flight writer.
 """
-import sqlite3
 
-import pytest
 
 import knowledge_store
 

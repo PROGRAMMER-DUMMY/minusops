@@ -6,7 +6,6 @@ each produce a distinguishable result. Two of those are "no number exists"; only
 third is a real zero, and a report that renders them identically is a fabricated total.
 """
 import json
-import os
 
 import pytest
 

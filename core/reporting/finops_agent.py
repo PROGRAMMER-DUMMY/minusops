@@ -219,7 +219,6 @@ def cmd_export_excel(output_target):
     # commands must not pay for it.
     from excel_finops_generator import (
         generate_executive_project_summary_excel,
-        generate_pipeline_detailed_ledger_excel,
         generate_both_enterprise_reports
     )
     

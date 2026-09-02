@@ -4,7 +4,6 @@ The approval gate guards every side effect. Two invariants matter most:
   * auto-approve proceeds but is always audited.
 """
 import json
-import os
 
 import pytest
 
@@ -17,6 +16,13 @@ def audit_to_tmp(tmp_path, monkeypatch):
     return tmp_path
 
 
+class _NoTTY:
+    """A stdin that is not a terminal, so gatekeeper mode has nobody to ask."""
+
+    def isatty(self):
+        return False
+
+
 def _audit_lines(tmp_path):
     f = tmp_path / "audit.jsonl"
     if not f.exists():
@@ -25,9 +31,6 @@ def _audit_lines(tmp_path):
 
 
 def test_gatekeeper_fails_closed_without_tty(audit_to_tmp, monkeypatch):
-    class _NoTTY:
-        def isatty(self):
-            return False
     monkeypatch.setattr(approval.sys, "stdin", _NoTTY())
 
     assert approval.request_approval("send-slack", "notify channel", mode="gatekeeper") is False
@@ -43,9 +46,6 @@ def test_auto_approve_proceeds_and_audits(audit_to_tmp):
 
 
 def test_unknown_mode_defaults_to_gatekeeper(audit_to_tmp, monkeypatch):
-    class _NoTTY:
-        def isatty(self):
-            return False
     monkeypatch.setattr(approval.sys, "stdin", _NoTTY())
     # An unrecognised mode must not accidentally behave like auto-approve.
     assert approval.request_approval("danger", "do thing", mode="bogus-mode") is False

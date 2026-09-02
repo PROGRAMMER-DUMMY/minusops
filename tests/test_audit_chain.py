@@ -5,6 +5,7 @@ import json
 import threading
 import time
 
+import pytest
 import audit_chain
 
 
@@ -210,11 +211,8 @@ def test_append_lock_gives_up_when_genuinely_and_persistently_held(tmp_path, mon
     holder.start()
     holder_ready.wait(timeout=5)
     try:
-        try:
+        with pytest.raises(TimeoutError, match="audit-chain lock"):
             audit_chain.append(str(log), {"action": "should-not-hang"})
-            assert False, "expected TimeoutError"
-        except TimeoutError as exc:
-            assert "audit-chain lock" in str(exc)
     finally:
         release_holder.set()
         holder.join(timeout=5)
@@ -233,15 +231,16 @@ def test_append_lock_fails_fast_on_a_genuine_access_error_not_a_10s_hang(tmp_pat
     bad_log = str(blocker / "subdir" / "audit.jsonl")
 
     start = _time.monotonic()
-    try:
+    with pytest.raises(OSError) as caught:
         with audit_chain._AppendLock(bad_log):
             pass
-        assert False, "expected an OSError, not a successful acquire"
-    except TimeoutError:
-        assert False, "a genuine access error must not be retried into a timeout"
-    except OSError:
-        elapsed = _time.monotonic() - start
-        assert elapsed < 1.0, f"took {elapsed}s -- looks like it was retried, not raised immediately"
+    # TimeoutError SUBCLASSES OSError, so this distinction has to be made by hand: a
+    # pytest.raises(OSError) alone would pass on exactly the retried-into-a-timeout
+    # behaviour this test exists to rule out.
+    assert not isinstance(caught.value, TimeoutError), \
+        "a genuine access error must not be retried into a timeout"
+    elapsed = _time.monotonic() - start
+    assert elapsed < 1.0, f"took {elapsed}s -- looks like it was retried, not raised immediately"
 
 
 def test_append_lock_stale_leftover_file_needs_no_manual_cleanup(tmp_path):

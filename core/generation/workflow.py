@@ -25,14 +25,6 @@ import requirements as reqgate  # noqa: E402
 import runs  # noqa: E402
 
 
-def _input_defaults(blueprint):
-    return {
-        item["name"]: item.get("default")
-        for item in blueprint["required_inputs"]
-        if item.get("default") is not None
-    }
-
-
 def parse_input(values):
     parsed = {}
     for item in values or []:

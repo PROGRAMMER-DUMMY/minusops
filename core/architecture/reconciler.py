@@ -241,21 +241,3 @@ def _audit(audit_path, author, proposal, result):
         pass
 
 
-def format_proposal(proposal):
-    """The review modal as text, for the terminal path and for tests to read."""
-    if not proposal.get("applicable"):
-        return f"ARCHITECTURE CHANGE REFUSED\n{proposal.get('reason', '')}"
-    lines = [
-        "ARCHITECTURE CHANGE REVIEW",
-        "=" * 60,
-        f"Author    : {proposal['author']}",
-        f"Timestamp : {proposal['at']}",
-        "",
-        f"Change    : {proposal['summary']}",
-        "",
-        "Warnings:",
-    ]
-    lines.extend(f"  - {w}" for w in proposal["warnings"])
-    lines += ["", "Proposed diff:", proposal["diff"], "",
-              f"Confirm to apply. Nothing has been written yet."]
-    return "\n".join(lines)

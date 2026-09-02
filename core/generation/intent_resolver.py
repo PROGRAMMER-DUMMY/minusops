@@ -105,13 +105,6 @@ def is_creation_request(query):
     return True
 
 
-def _missing_inputs(blueprint):
-    return [
-        item for item in blueprint["required_inputs"]
-        if item.get("default") is None
-    ]
-
-
 def resolve(query, cloud=None):
     """
     Resolve a natural-language request into a safe action.

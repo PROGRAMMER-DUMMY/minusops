@@ -11,8 +11,6 @@ Depends on: core/generation/knowledge_store.py
 Shells out to: nothing
 Used by: nothing (pytest entry point)
 """
-import os
-import sqlite3
 
 import pytest
 

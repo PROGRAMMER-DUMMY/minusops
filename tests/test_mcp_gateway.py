@@ -8,7 +8,6 @@ Tests:
 5. End-to-End MCP Gateway Proxy JSON-RPC Pipeline.
 """
 import pytest
-import time
 
 from core.mcp_gateway.pii_redactor import redact_string, redact_payload, contains_pii
 from core.mcp_gateway.opa_evaluator import evaluate_policy_in_memory

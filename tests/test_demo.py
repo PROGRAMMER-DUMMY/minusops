@@ -9,7 +9,6 @@ Depends on: core/generation/demo.py
 Shells out to: nothing
 Used by: nothing (pytest entry point)
 """
-import os
 
 import demo
 

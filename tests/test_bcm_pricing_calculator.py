@@ -13,6 +13,8 @@ Used by: nothing (pytest entry point)
 import json
 import os
 
+import pytest
+
 import bcm_pricing_calculator as bcm
 
 
@@ -219,11 +221,8 @@ def test_fetch_actuals_raises_when_cost_explorer_unavailable(tmp_path, monkeypat
             return {"ok": False, "error": "AccessDenied", "months": []}
 
     monkeypatch.setattr(pb, "get_provider", lambda *a, **k: _P())
-    try:
+    with pytest.raises(RuntimeError, match="Cost Explorer unavailable"):
         bcm.fetch_actuals(str(tmp_path))
-        assert False, "expected RuntimeError"
-    except RuntimeError as exc:
-        assert "Cost Explorer unavailable" in str(exc)
 
 
 def test_shipped_example_usage_profile_is_valid():

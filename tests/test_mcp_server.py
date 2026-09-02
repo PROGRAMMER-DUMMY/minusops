@@ -9,7 +9,6 @@ import os
 import subprocess
 import sys
 
-import pytest
 
 from core.integrations import mcp_server
 
