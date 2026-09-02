@@ -272,3 +272,77 @@ def test_a_fact_the_plan_never_states_is_dropped_rather_than_shown_as_planned():
 
     assert gold["facts_source"] == "plan"
     assert not gold.get("partitioning")
+
+
+# --- The graph describes THIS stack, never the medallion pattern in general -------------------
+
+def _managed(address, rtype):
+    return {"mode": "managed", "address": address, "type": rtype,
+            "change": {"actions": ["create"], "after": {}}}
+
+
+def test_one_unrelated_bucket_is_not_a_data_lake():
+    """A single S3 bucket for company logos rendered as bronze -> silver -> gold with a
+    "[4] Curate" edge between them. All three zone nodes hang off storage-medallion-s3 in
+    _REQUIRES, and that module was claimed by any aws_s3_bucket at all. An auditor reads a
+    rendered zone as a zone."""
+    graph = lg.build_lineage(plan_json={"resource_changes": [
+        _managed("aws_s3_bucket.company_logos", "aws_s3_bucket")]})
+
+    assert graph["nodes"] == []
+    assert graph["edges"] == []
+
+
+def test_a_zone_is_a_declared_key_not_a_word_in_a_name():
+    """Matching bronze/silver/gold anywhere in the address made
+    `aws_s3_bucket.gold_partner_logos` the Gold zone of a lake that does not exist."""
+    graph = lg.build_lineage(plan_json={"resource_changes": [
+        _managed("aws_s3_bucket.gold_partner_logos", "aws_s3_bucket"),
+        _managed("aws_s3_bucket.silver_badges", "aws_s3_bucket")]})
+
+    assert [n["id"] for n in graph["nodes"]] == []
+
+
+def test_a_real_medallion_stack_still_draws():
+    """The control. Zones declared as for_each keys are what the plan actually states, and
+    they must still produce the graph -- otherwise the fix above just deleted the feature."""
+    graph = lg.build_lineage(plan_json={"resource_changes": [
+        _managed('aws_s3_bucket.zone["raw"]', "aws_s3_bucket"),
+        _managed('aws_s3_bucket.zone["cleaned"]', "aws_s3_bucket"),
+        _managed('aws_s3_bucket.zone["curated"]', "aws_s3_bucket"),
+        _managed("aws_glue_job.etl", "aws_glue_job")]})
+
+    ids = [n["id"] for n in graph["nodes"]]
+    assert "bronze" in ids and "silver" in ids and "gold" in ids
+    assert ("bronze", "transform") in [(e["from"], e["to"]) for e in graph["edges"]]
+
+
+def test_no_curate_hop_is_invented_between_silver_and_gold():
+    """An edge was appended whenever both zones existed and no quality gate did, labelled
+    "[4] Curate". Nothing in the plan declares that transform, and every other edge in this
+    module comes from _EDGES gated on both endpoints being present."""
+    graph = lg.build_lineage(plan_json={"resource_changes": [
+        _managed('aws_s3_bucket.zone["cleaned"]', "aws_s3_bucket"),
+        _managed('aws_s3_bucket.zone["curated"]', "aws_s3_bucket")]})
+
+    assert not any(e["from"] == "silver" and e["to"] == "gold" for e in graph["edges"])
+
+
+def test_a_state_machine_is_not_a_control_table():
+    """aws_sfn_state_machine claimed metadata-control-table, which put an ingress hop on the
+    page for a stack that declares no ingestion at all. Kinesis maps to what it is."""
+    assert lg._modules_from_plan({"resource_changes": [
+        _managed("aws_sfn_state_machine.pipeline", "aws_sfn_state_machine")]}) == set()
+
+    assert "speed-layer-kinesis" in lg._modules_from_plan({"resource_changes": [
+        _managed("aws_kinesis_stream.events", "aws_kinesis_stream")]})
+
+
+def test_masking_is_not_enforced_without_lake_formation():
+    """`enforced` is a compliance claim. The only thing that makes it true is a service
+    enforcing it, so an inferred module must never be able to flip it."""
+    graph = lg.build_lineage(plan_json={"resource_changes": [
+        _managed("aws_s3_bucket.company_logos", "aws_s3_bucket")]})
+
+    assert graph["masking"]["enforced"] is False
+

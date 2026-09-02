@@ -3,28 +3,13 @@ Dataset-to-dataset lineage for a governed medallion pipeline.
 
 The architecture diagram (`drawio_generator.py`) answers "what resources exist and how are
 they wired". This answers a different question: "where does a record go, and what happens
-to it on the way". Those are not the same picture. A Glue job and an S3 bucket are one edge
-on the topology and three hops in the lineage -- read, transform, land -- and it is the
-lineage an auditor asks for when they want to know whether a bad record can reach Gold.
-
-THE RULE THIS FILE EXISTS TO ENFORCE: the graph describes THIS stack, never the medallion
-pattern in general. Bronze -> Silver -> Gold is what the pattern looks like; drawing it for
-a run that has no data-quality module would put a quality gate and a quarantine branch on
-the page for controls that do not exist. An auditor reads a rendered control as a control.
-So a node is emitted only when the stack provisions the thing it stands for, which is the
-same doctrine `serving.py` applies to connection endpoints.
-
-Masking is the sharpest case. `masking.enforced` is False unless Lake Formation actually
-governs the stack, because "this column is masked" is a compliance claim, and the only
-thing that makes it true is a service enforcing it.
-
-Depends on: nothing (standard library only -- PRD v13 invariant 4)
-Shells out to: nothing
-Used by: app/console_app.py (View 2), tests/test_lineage_graph.py
+to it on the way".
 """
+import json
+import os
+import re
 
-# Which module has to be present for a hop to be real. A hop whose module is absent is not
-# drawn -- see the module docstring on why that matters more here than in a topology view.
+# Which module has to be present for a hop to be real.
 _REQUIRES = {
     "ingress":      ("ingestion-webhook", "ingestion-sftp", "speed-layer-kinesis",
                      "ingestion-appflow", "metadata-control-table"),
@@ -38,8 +23,7 @@ _REQUIRES = {
                      "cube-semantic-layer"),
 }
 
-# The medallion path, in the order a record travels it. `quality_gate` forks: clean records
-# continue to Gold, rejects divert to quarantine and travel no further.
+# The medallion path, in the order a record travels it.
 _SPINE = ("ingress", "bronze", "transform", "silver", "quality_gate", "gold", "serving")
 
 _NODES = {
@@ -85,8 +69,6 @@ _EDGES = (
     ("gold", "serving", "[6] Serve", None),
 )
 
-# A starting point for a Lake-Formation-governed stack, NOT a claim about which columns a
-# particular pipeline holds. A run that declares `pii_columns` replaces these outright.
 _DEFAULT_PII = (
     dict(column="ssn", unmasked_for=["billing", "compliance"],
          masked_for=["analytics", "data_science"], masked_example="***-**-1234"),
@@ -98,18 +80,6 @@ _DEFAULT_PII = (
 
 _LAKE_FORMATION = "governance-lakeformation"
 
-
-# --- Plan-derived facts -------------------------------------------------------------------
-#
-# Everything in _NODES above is the medallion PATTERN's default: 90 days to Glacier because
-# that is storage-medallion-s3's default, `ingest_date=YYYY/MM/DD` because that is the shape
-# the module suggests. None of it is a claim about the stack in front of you.
-#
-# When a plan is supplied, the facts it actually states replace the pattern's, and every node
-# says which it is carrying. A partitioning scheme no plan states stays absent rather than
-# being filled in from the pattern -- an auditor reads a rendered fact as a fact.
-
-# Zone key on a medallion bucket -> the lineage node it stands for.
 _ZONE_NODE = {"raw": "bronze", "bronze": "bronze", "landing": "bronze",
               "cleaned": "silver", "clean": "silver", "silver": "silver", "stage": "silver",
               "curated": "gold", "gold": "gold", "presentation": "gold"}
@@ -148,12 +118,6 @@ def _base(address):
 
 
 def _config_resources_deep(plan_json):
-    """Every configured resource, including inside module calls.
-
-    A composed stack keeps its resources under configuration.root_module.module_calls, so a
-    lookup that reads root_module.resources alone finds nothing for exactly the stacks this
-    product generates.
-    """
     out = []
 
     def walk(module, prefix):
@@ -170,7 +134,6 @@ def _config_resources_deep(plan_json):
 
 
 def _module_prefix(address):
-    """`module.a.module.b.aws_s3_bucket.x` -> `module.a.module.b.` (empty at the root)."""
     parts = (address or "").split(".")
     out = []
     while len(parts) > 2 and parts[0] == "module":
@@ -180,7 +143,6 @@ def _module_prefix(address):
 
 
 def _lifecycle_summary(after):
-    """What a lifecycle rule actually states, transition or expiry. None when it states no day."""
     for rule in after.get("rule") or []:
         for transition in (rule or {}).get("transition") or []:
             if (transition or {}).get("days"):
@@ -193,7 +155,6 @@ def _lifecycle_summary(after):
 
 
 def plan_facts(plan_json):
-    """Per lineage node, the storage facts THIS plan states. An absent key is unstated."""
     resources = _managed(plan_json)
     config = {r["address"]: r for r in _config_resources_deep(plan_json)}
 
@@ -201,9 +162,12 @@ def plan_facts(plan_json):
     for res in resources:
         if res.get("type") != "aws_s3_bucket":
             continue
-        # A medallion bucket is identified by its for_each zone key; the quarantine
-        # bucket is a named resource, so it is identified by that name.
-        node = (_ZONE_NODE.get(_instance_key(res.get("address")).lower())
+        # The for_each/count key only. Falling back to "is one of these words anywhere in the
+        # address" classified any bucket whose name happens to contain bronze, silver or gold
+        # -- `aws_s3_bucket.gold_partner_logos` became the Gold zone of a data lake. A zone is
+        # something the plan declares, not something a name hints at.
+        key_name = _instance_key(res.get("address")).lower()
+        node = (_ZONE_NODE.get(key_name)
                 or ("quarantine" if res.get("address", "").endswith(".quarantine") else None))
         if not node:
             continue
@@ -213,9 +177,6 @@ def plan_facts(plan_json):
         entry["label"] = f"S3 {node.title()} -- {after.get('bucket') or res.get('address')}"
         entry["facts_source"] = "plan"
 
-    # Encryption and retention live on separate resources, each resolved through its own
-    # reference back to the bucket. Those references are module-LOCAL, so they only match
-    # once the referring resource's own module prefix is put back on the front.
     for res in resources:
         rtype = res.get("type")
         if rtype not in ("aws_s3_bucket_server_side_encryption_configuration",
@@ -225,17 +186,11 @@ def plan_facts(plan_json):
         prefix = _module_prefix(address)
         declared = config.get(_base(address), {}).get("expressions", {})
         after = (res.get("change") or {}).get("after") or {}
-        # A for_each'd config resource refers to its bucket by BASE address; the two
-        # share an instance key, so `...sse.zone["bronze"]` configures `...bucket.zone["bronze"]`
-        # and not all three zones at once.
         key = _instance_key(address)
         suffix = f'["{key}"]' if key else ""
         targets = {buckets.get(prefix + ref + suffix) or buckets.get(prefix + ref)
                    for ref in _refs(declared)}
         targets.discard(None)
-        # A module that for_each'es the buckets themselves refers to `each.value`, so no
-        # reference names a bucket at all. The instance keys are the same set by
-        # construction, so same module plus same key identifies it without guessing.
         if not targets and key:
             targets = {node for addr, node in buckets.items()
                        if addr.startswith(prefix) and _instance_key(addr) == key}
@@ -272,15 +227,9 @@ def _present(node_id, modules):
 
 
 def build_lineage(decision=None, plan_json=None):
-    """The dataset flow for one run.
-
-    Returns {"nodes": [...], "edges": [...], "masking": {...}}. Nodes appear only for hops
-    the stack actually provisions, and every edge is guaranteed to connect two nodes that
-    are in the result -- a dangling edge renders as a line into empty space.
-    """
+    """The dataset flow for one run."""
     modules = _selected(decision)
     if plan_json:
-        # A plan is stronger evidence than a decision: it is what Terraform will build.
         modules |= _modules_from_plan(plan_json)
 
     present = [n for n in (*_SPINE[:5], "quarantine", *_SPINE[5:]) if _present(n, modules)]
@@ -296,43 +245,64 @@ def build_lineage(decision=None, plan_json=None):
         node = dict(id=node_id, **_NODES[node_id])
         node.setdefault("facts_source", "pattern default")
         if node_id in derived:
-            # A stated fact replaces the pattern's; one the plan never states is dropped
-            # rather than left showing the pattern's value under a "plan" label.
             for key in ("partitioning", "table_format", "retention", "encryption"):
                 node.pop(key, None)
             node.update(derived[node_id])
         nodes.append(node)
+
     edges = [dict(**{"from": src, "to": dst}, label=label, branch=branch)
              for src, dst, label, branch in _EDGES if src in seen and dst in seen]
 
+    # No synthesised silver -> gold hop. One was appended here whenever both zones existed and
+    # no quality gate did, labelled "[4] Curate" -- a transform nothing in the plan declares.
+    # _EDGES above is the whole set, and every member of it is gated on both endpoints being
+    # present, which is what keeps an edge from pointing at a node that was never drawn.
     return {"nodes": nodes, "edges": edges, "masking": _masking(decision, modules)}
 
 
 def _modules_from_plan(plan_json):
-    """Module ids referenced by a plan's resource addresses (`module.<id>....`).
-
-    A Terraform address segment cannot contain a hyphen, so `storage-medallion-s3` appears as
-    `module.storage_medallion_s3`. Returning the address form matched nothing in _REQUIRES,
-    which is keyed by catalog id -- so the plan-only path silently produced an empty graph
-    and only a decision record ever populated one.
-    """
+    """Module ids referenced by a plan's resource addresses or inferred from managed resource types."""
     found = set()
-    for change in (plan_json or {}).get("resource_changes", []) or []:
+    changes = (plan_json or {}).get("resource_changes", []) or []
+    for change in changes:
         address = str(change.get("address", ""))
         if address.startswith("module."):
             segment = address.split(".")[1]
             found.add(segment)
             found.add(segment.replace("_", "-"))
+
+    # A stack composed flat has no `module.` prefix to read, so capability is inferred from the
+    # resource types the plan declares. Each mapping below has to be one the resource type
+    # actually establishes -- the type is a declared fact, unlike a name.
+    #
+    # `aws_s3_bucket -> storage-medallion-s3` was not one of those. Any bucket, for any purpose,
+    # claimed the medallion module, and all three zone nodes hang off it in _REQUIRES: a single
+    # bucket named company-logos rendered as bronze -> silver -> gold. The medallion zones are
+    # claimed only when the plan declares medallion ZONE KEYS, which is the same declared
+    # for_each key plan_facts() reads.
+    #
+    # `aws_sfn_state_machine -> metadata-control-table` was not one either. A state machine is
+    # orchestration; it is not a control table, and asserting one from the other put an ingress
+    # hop on the page for a stack that has none. Kinesis maps to speed-layer-kinesis, which is
+    # what it actually is and is already an ingress requirement.
+    for change in changes:
+        rtype = change.get("type", "")
+        if rtype == "aws_s3_bucket":
+            if _ZONE_NODE.get(_instance_key(change.get("address")).lower()):
+                found.add("storage-medallion-s3")
+        elif rtype in ("aws_glue_job", "aws_emrserverless_application", "aws_glue_crawler"):
+            found.add("compute-glue-etl")
+        elif "lakeformation" in rtype:
+            found.add("governance-lakeformation")
+        elif rtype in ("aws_athena_workgroup", "aws_redshiftserverless_workgroup"):
+            found.add("query-athena")
+        elif rtype == "aws_kinesis_stream":
+            found.add("speed-layer-kinesis")
+
     return found
 
 
 def _masking(decision, modules):
-    """Column-level access controls, or an explicit statement that none are enforced.
-
-    `enforced` is False unless Lake Formation is in the stack. Reporting a masked column
-    without something enforcing the mask states a control that does not exist, and this
-    view is read by people whose job is to check exactly that.
-    """
     if _LAKE_FORMATION not in modules:
         return {"enforced": False, "columns": [],
                 "reason": "no Lake Formation module in this stack; no column-level "
@@ -349,8 +319,6 @@ def _masking(decision, modules):
 
 
 def find_node(graph, node_id):
-    """The node, or None. Returns None rather than raising because the caller is usually a
-    view asking "do we have a Gold table", and absence is a normal answer."""
     for node in (graph or {}).get("nodes", []):
         if node.get("id") == node_id:
             return node
@@ -358,7 +326,6 @@ def find_node(graph, node_id):
 
 
 def as_markdown(graph):
-    """The lineage as a flow table, for PR comments and deploy reports."""
     lines = ["| Hop | From | To | Branch |", "| :--- | :--- | :--- | :--- |"]
     labels = {n["id"]: n["label"] for n in (graph or {}).get("nodes", [])}
     for edge in (graph or {}).get("edges", []):
