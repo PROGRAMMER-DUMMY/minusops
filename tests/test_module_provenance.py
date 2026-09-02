@@ -123,11 +123,8 @@ def test_content_hash_ignores_the_provenance_file_itself(tmp_path, monkeypatch):
 def test_pin_raises_for_unknown_module(tmp_path, monkeypatch):
     _patch_registry(monkeypatch, tmp_path)
 
-    try:
+    with pytest.raises(FileNotFoundError):
         module_provenance.pin("does-not-exist", source="x")
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError:
-        pass
 
 
 def test_cli_pin_and_verify(tmp_path, monkeypatch, capsys):

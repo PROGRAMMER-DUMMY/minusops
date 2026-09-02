@@ -5,6 +5,7 @@ import json
 
 import approval
 import authz
+import providers.base as pb
 
 
 def test_open_mode_when_no_allowlist(monkeypatch):
@@ -79,13 +80,11 @@ class _FakeProvider:
 
 
 def test_verified_operator_none_when_no_session(monkeypatch):
-    import providers.base as pb
     monkeypatch.setattr(pb, "get_provider", lambda: _FakeProvider({"connected": False}))
     assert authz.verified_operator() is None
 
 
 def test_verified_operator_returns_real_identity_when_connected(monkeypatch):
-    import providers.base as pb
     arn = "arn:aws:sts::123456789012:assumed-role/MinusDeploy/carol@corp.com"
     monkeypatch.setattr(pb, "get_provider", lambda: _FakeProvider({"connected": True, "arn": arn}))
     assert authz.verified_operator() == "carol@corp.com"
@@ -94,7 +93,6 @@ def test_verified_operator_returns_real_identity_when_connected(monkeypatch):
 def test_verified_operator_cannot_be_spoofed_by_env_var(monkeypatch):
     """The whole point of this function: setting MINUS_OPERATOR must NOT change what
     verified_operator() reports -- only real, live AWS credentials can."""
-    import providers.base as pb
     arn = "arn:aws:sts::123456789012:assumed-role/MinusDeploy/carol@corp.com"
     monkeypatch.setattr(pb, "get_provider", lambda: _FakeProvider({"connected": True, "arn": arn}))
     monkeypatch.setenv(authz.OPERATOR_ENV, "mallory@evil")
@@ -102,8 +100,6 @@ def test_verified_operator_cannot_be_spoofed_by_env_var(monkeypatch):
 
 
 def test_verified_operator_degrades_to_none_on_provider_error(monkeypatch):
-    import providers.base as pb
-
     def _raise():
         raise RuntimeError("no credentials configured")
     monkeypatch.setattr(pb, "get_provider", _raise)

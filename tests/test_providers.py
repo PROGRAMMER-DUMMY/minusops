@@ -8,6 +8,8 @@ multi-cloud was dropped from scope, so the tests covering their "safe unknown de
 went with them. What remains is the contract that still exists: the factory, and AWS's
 pricing methods actually delegating to the reviewed catalog.
 """
+import pytest
+
 import providers.base as pb
 from providers.aws import AWSProvider
 
@@ -22,11 +24,8 @@ def test_get_provider_rejects_a_non_aws_cloud_instead_of_falling_back():
     # An unknown cloud must be an error, never a silent AWS fallback -- a caller asking for
     # azure and getting AWS credentials back would be the worst possible outcome.
     for cloud in ("oracle", "azure", "gcp"):
-        try:
+        with pytest.raises(ValueError, match=cloud):
             pb.get_provider(cloud)
-            assert False, f"expected ValueError for {cloud}"
-        except ValueError as exc:
-            assert cloud in str(exc)
 
 
 def test_aws_provider_pricing_methods_delegate_to_pricing_catalog():

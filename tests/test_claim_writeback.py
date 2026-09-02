@@ -13,6 +13,8 @@ import subprocess
 import sys
 import os
 
+import pytest
+
 import knowledge_store as ks
 import synthesizer
 
@@ -74,13 +76,10 @@ def test_a_claim_without_a_source_is_refused(tmp_path, monkeypatch):
     and it would be indistinguishable from a verified one at read time."""
     conn = _conn(tmp_path)
     monkeypatch.setattr(synthesizer, "_claims_conn", lambda: conn)
-    try:
+    with pytest.raises(ValueError, match="source_url"):
         synthesizer.remember_claim(
             resource_type="aws_s3_bucket", attribute="acl",
             claim_text="something an agent believes", source_url="", valid_from=_TS)
-        assert False, "expected ValueError for a sourceless claim"
-    except ValueError as exc:
-        assert "source_url" in str(exc)
     conn.close()
 
 
@@ -97,13 +96,14 @@ def test_cost_claims_may_map_but_never_price(tmp_path, monkeypatch):
     assert ok
 
     for bad in ("$0.25 per GB-month", "this resource is free", "costs 0 USD"):
-        try:
+        with pytest.raises(ValueError) as caught:
             synthesizer.remember_claim(
                 scope="pricing_map", resource_type="aws_dynamodb_table", attribute=None,
                 claim_text=bad, source_url="https://x", valid_from=_TS)
-            assert False, f"expected refusal for priced claim: {bad}"
-        except ValueError as exc:
-            assert "price" in str(exc).lower() or "free" in str(exc).lower()
+        # Not `match=`: that is a case-sensitive regex, and the refusal is only required to
+        # name the reason, not to capitalise it a particular way.
+        reason = str(caught.value).lower()
+        assert "price" in reason or "free" in reason, f"unclear refusal for {bad!r}: {reason}"
     conn.close()
 
 
