@@ -6,9 +6,7 @@ actual read-path commands (cost/anomalies/correlate) against a fake CloudProvide
 the actual approval-gated notify actions, rather than just importing the module.
 """
 import json
-import os
 
-import pytest
 
 import base_hook
 import finops_agent

@@ -13,7 +13,6 @@ Depends on: core/reporting/lineage_graph.py
 Shells out to: nothing
 Used by: nothing (pytest entry point)
 """
-import pytest
 
 import lineage_graph as lg
 

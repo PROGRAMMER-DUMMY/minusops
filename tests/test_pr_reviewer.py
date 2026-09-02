@@ -8,7 +8,6 @@ import json
 import os
 import sys
 
-import pytest
 import yaml
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

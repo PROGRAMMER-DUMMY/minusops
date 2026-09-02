@@ -10,7 +10,6 @@ Shells out to: nothing (git and gh are stubbed)
 Used by: nothing (pytest entry point)
 """
 import pytest
-import os
 import json
 import git_agent
 import patterns

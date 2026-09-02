@@ -4,7 +4,6 @@ The approval gate guards every side effect. Two invariants matter most:
   * auto-approve proceeds but is always audited.
 """
 import json
-import os
 
 import pytest
 

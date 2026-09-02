@@ -12,8 +12,6 @@ that silently dropped the outline would degrade the artifact with the suite stil
 This is that test.
 """
 import re
-import pathlib
-import shutil
 
 import pytest
 

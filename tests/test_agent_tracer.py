@@ -18,7 +18,6 @@ Used by: nothing (pytest entry point)
 import json
 import os
 
-import pytest
 
 import agent_tracer as tracer
 

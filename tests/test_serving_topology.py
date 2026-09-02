@@ -15,7 +15,6 @@ Used by: nothing (pytest entry point)
 """
 import io
 import json
-import os
 from contextlib import redirect_stdout
 
 import pytest

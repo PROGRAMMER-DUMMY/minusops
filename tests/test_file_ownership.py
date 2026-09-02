@@ -8,7 +8,6 @@ Fix is a naming convention, not a merge engine. Terraform loads every .tf in a d
 ADDITIONS need no merge at all: MinusOps owns and regenerates its own files; anything else in
 the directory is the team's and is left strictly alone.
 """
-import os
 
 import pytest
 import synthesizer
