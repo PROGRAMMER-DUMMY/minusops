@@ -470,9 +470,11 @@ def test_kms_key_access_parses_admins_and_decryptor_services():
     keys = am.kms_key_access(plan)
     assert len(keys) == 1
     assert keys[0]["rotation_enabled"] is True
-    assert "arn:aws:iam::123456789012:root" in keys[0]["admins"]
-    assert "glue.amazonaws.com" in keys[0]["decryptors"]
-    assert "s3.amazonaws.com" in keys[0]["decryptors"]
+    # Exact sets, not membership: these are lists of principals, so the set says both
+    # who IS there and that nobody else is -- and a membership test on a list reads to a
+    # static analyser as a substring check on a URL, which is what it was reported as.
+    assert keys[0]["admins"] == ["arn:aws:iam::123456789012:root"]
+    assert keys[0]["decryptors"] == ["glue.amazonaws.com", "s3.amazonaws.com"]
 
 
 def test_privilege_escalation_detects_dangerous_iam_actions():
