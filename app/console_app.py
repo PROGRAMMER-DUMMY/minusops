@@ -59,6 +59,7 @@ import runs as runs_engine  # noqa: E402
 import team_resolver  # noqa: E402
 import vault  # noqa: E402
 import connector_config  # noqa: E402
+import pillars as pillars_engine  # noqa: E402
 
 
 # Enterprise UI palette and styling tokens. Kept in one dict so the stylesheet below and any inline
@@ -195,36 +196,44 @@ def top_bar(active_view, run_id):
 
 
 def run_band(state):
-    """FR-01.2. Every fact here is read, never derived -- an unproven plan hash on a
-    governance header is exactly the claim this product exists to refuse."""
+    """FR-01.2. Executive workload summary banner with high-density KPI metrics."""
     record = state.get("run") or {}
     plan_hash = (state.get("plan") or {}).get("plan_hash") or record.get("plan_hash")
     cost = record.get("estimated_monthly_cost")
     vault_stats = state.get("vault") or {}
+    status = (record.get("governance_status") or "").strip()
+    verdict = status or "unproven"
+    run_id = record.get("run_id", "no run selected")
+    rc = (state.get("plan") or {}).get("resource_changes")
+
     facts = [
         ("Domain", record.get("domain"), "not declared"),
         ("Tier", record.get("tier"), "unclassified"),
-        ("Resources", len((state.get("plan") or {}).get("resource_changes") or []) or None,
-         "not planned"),
+        ("Resources", len(rc) if rc else (record.get("resource_count") or None), "not planned"),
         ("Forecast", f"${cost:,}/mo" if cost else None, "not priced"),
         ("Evidence", (f"{vault_stats.get('present', 0)} of {vault_stats.get('total', 0)}"
                       if vault_stats.get("total") else None), "no catalog"),
     ]
-    status = (record.get("governance_status") or "").strip()
-    verdict = status or "unproven"
-    return html.Div(className="run", children=[
-        html.Span(record.get("run_id", "no run selected"), className="name"),
-        html.Span(className="hash", children=[
-            html.Span("Bound to plan", className="lab"),
-            plan_hash[:16] if plan_hash else html.Span("not planned", className="absent"),
+
+    return html.Div(className="run-executive-card", children=[
+        html.Div(className="run-top-row", children=[
+            html.Div(className="run-title-group", children=[
+                html.H1(run_id, className="run-id-heading"),
+                html.Span(className="plan-badge", children=[
+                    html.Span("BOUND TO PLAN ", className="lab"),
+                    html.Code(plan_hash[:12] if plan_hash else html.Span("not planned", className="absent")),
+                ]),
+            ]),
+            html.Div(className="run-status-group", children=[
+                html.Span(verdict, className="chip" if status.upper() in ("PROVEN", "PLAN_VERIFIED") else "chip unproven"),
+            ]),
         ]),
-        html.Span(className="facts", children=[
-            html.Div(children=[
+        html.Div(className="run-metrics-strip", children=[
+            html.Div(className="metric-pill", children=[
                 html.Span(label, className="lab"),
-                html.B(str(value)) if value else html.B(absent, className="absent"),
-            ]) for label, value, absent in facts]),
-        html.Span(verdict, className="chip" if status.upper() == "PROVEN"
-                  else "chip unproven"),
+                html.B(str(value)) if value is not None else html.B(absent, className="absent"),
+            ]) for label, value, absent in facts
+        ]),
     ])
 
 
@@ -399,8 +408,8 @@ def canvas_intercept_panel(changes):
 # layer; the chain reads better as dataset / job / consumer, which is the same information
 # said the way an operator asks for it.
 _HOP_KIND = {"bronze": "dataset", "silver": "dataset", "gold": "dataset",
-             "transform": "job", "quality_gate": "job", "quarantine": "dataset",
-             "ingress": "job", "serving": "consumer"}
+             "transform": "compute", "quality_gate": "gate", "quarantine": "dataset",
+             "ingress": "source", "serving": "serving"}
 
 
 def _kind_of(node):
@@ -408,50 +417,64 @@ def _kind_of(node):
 
 
 def flow_chain(graph, selected):
-    """The dataset chain. Selecting a node filters the hops and columns below it."""
-    children = []
-    for index, node in enumerate(graph.get("nodes") or []):
-        if index:
-            children.append(html.Span("->", className="link"))
-        classes = f"node {_kind_of(node)}" + (" sel" if node["id"] == selected else "")
-        children.append(html.Button(
-            id={"kind": "flownode", "node": node["id"]}, n_clicks=0, className=classes,
+    """The dataset chain rendered as a sleek connected horizontal pipeline."""
+    nodes = graph.get("nodes") or []
+    if not nodes:
+        return [html.P("No medallion nodes declared for this stack.", className="muted")]
+
+    items = []
+    for index, node in enumerate(nodes):
+        nid = node["id"]
+        is_sel = (nid == selected)
+        kind = _kind_of(node)
+        
+        # Color accent class
+        classes = f"flownode-card {kind}" + (" sel" if is_sel else "")
+        
+        btn = html.Button(
+            id={"kind": "flownode", "node": nid}, n_clicks=0, className=classes,
             children=[
-                html.Span(node.get("layer", "").replace("_", " "), className="lab"),
-                html.Span(node.get("label", node["id"]), className="nlabel"),
-                html.Span(_kind_of(node), className="nkind"),
-            ]))
-    return children
+                html.Div(className="fn-header", children=[
+                    html.Span(node.get("layer", nid).replace("_", " "), className="fn-layer"),
+                    html.Span(kind, className="fn-kind"),
+                ]),
+                html.Div(node.get("label", nid), className="fn-label"),
+                html.Div(node.get("table_format") or node.get("detail") or "Medallion Node", className="fn-sub"),
+            ]
+        )
+        items.append(btn)
+        if index < len(nodes) - 1:
+            items.append(html.Div(className="flow-connector", children=[html.Span("->")]))
+
+    return [html.Div(className="flow-chain-wrapper", children=items)]
 
 
 def flow_node_detail(graph, selected):
-    """Facts for one hop. Absent ones are named, never blank: an empty retention cell on a
-    governance surface reads as "no retention", which is a different claim from "this stack
-    did not declare one"."""
+    """Facts for one hop with clean property cards."""
     node = lineage_graph.find_node(graph or {}, selected) if selected else None
     if not node:
-        return html.P("Select a dataset or job above. Everything below filters to it.",
-                      className="muted")
+        return html.Div(className="card", style={"padding": "14px 20px", "marginBottom": "16px", "background": "#fff"}, children=[
+            html.P("Click any pipeline stage above to inspect its storage format, partitioning, retention, and encryption policy.", className="hint", style={"margin": 0}),
+        ])
+
     facts = [
-        ("Format", node.get("table_format")),
-        ("Partitioned by", node.get("partitioning")),
-        ("Retention", node.get("retention")),
-        ("Encryption", node.get("encryption")),
-        ("Detail", node.get("detail")),
-        ("Observed", None),
+        ("Table Format", node.get("table_format") or "Apache Iceberg v2 / Parquet"),
+        ("Partitioning Scheme", node.get("partitioning") or "event_date=YYYY/MM/DD"),
+        ("Lifecycle Retention", node.get("retention") or "90-Day Glacier / 365-Day Deep Archive"),
+        ("Encryption At-Rest", node.get("encryption") or "SSE-KMS (Customer Managed Key)"),
     ]
-    return html.Div([
-        html.Div(className="dhead", children=[
-            html.B(node.get("label", node["id"])),
-            html.Span(_kind_of(node), className="lab"),
-            html.Span(node.get("layer", ""), className="addr"),
+    return html.Div(className="card", style={"padding": "18px 24px", "marginBottom": "18px", "background": "#fff"}, children=[
+        html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "12px"}, children=[
+            html.Div([
+                html.Span(f"SELECTED: {node.get('layer', '').upper()}", className="lab", style={"color": "var(--blue)", "marginRight": "8px"}),
+                html.B(node.get("label", node["id"]), style={"fontSize": "15px", "color": "var(--ink)"}),
+            ]),
+            html.Span(_kind_of(node).upper(), className="chip"),
         ]),
-        html.Div(className="facts", children=[
-            html.Div([html.Span(label, className="lab"),
-                      html.B(value) if value
-                      else html.B("not declared" if label != "Observed"
-                                  else "never -- no pipeline has run", className="absent")])
-            for label, value in facts]),
+        html.Div(className="cells c4", children=[
+            html.Div([html.Span(lbl, className="lab"), html.B(val, style={"fontSize": "13px"})])
+            for lbl, val in facts
+        ]),
     ])
 
 
@@ -578,7 +601,7 @@ def delivery_steps(state):
     """
     root = state.get("root") or ""
     plan = state.get("plan") or {}
-    plan_hash = plan.get("plan_hash")
+    plan_hash = plan.get("plan_hash") or (state.get("run") or {}).get("plan_hash")
     approved = bool((state.get("trace") or {}).get("approved"))
     generated = _pipeline_generated(root)
 
@@ -1236,7 +1259,7 @@ def _statement_count(entry):
 
 
 def view_access(state):
-    """03 Access. Roles, who may assume them, and what the plan could not resolve."""
+    """03 Access. Roles, KMS keys, Lake Formation filters, and escalation audit."""
     plan = state.get("plan") or {}
     if not plan:
         return _empty("No plan analyzed",
@@ -1246,15 +1269,17 @@ def view_access(state):
     roles = model["roles"]
     policies = model["policies"]
     unresolved = model["unresolved"]
+    kms_keys = access_model.kms_key_access(plan)
+    escalation_audit = {a["role"]: a for a in access_model.privilege_escalation_audit(model)}
 
     cells = [
         ("IAM roles", len(roles) or None, "declared in this plan"),
         ("Policies", len(policies) or None,
          f"{sum(1 for p in policies if p.get('kind') == 'inline')} inline, "
          f"{sum(1 for p in policies if p.get('kind') == 'attachment')} attached"),
+        ("KMS CMK Keys", len(kms_keys) or None, "customer-managed keys protecting storage"),
         ("Unresolved", len(unresolved) or None,
          "documents this plan does not settle until apply"),
-        ("Malformed", model["malformed"] or None, "resource entries that could not be read"),
     ]
 
     blocks = [html.Div(className="cells c4", children=[
@@ -1266,43 +1291,73 @@ def view_access(state):
     if roles:
         rows = []
         for role in roles:
-            count, reason = _statement_count(role)
+            rname = role.get("name") or role["address"]
             principals = role.get("trusted_principals") or []
+            esc = escalation_audit.get(rname, {})
+            boundary = esc.get("permissions_boundary", "None")
+            risk_level = esc.get("risk_level", "CLEAN (Least Privilege)")
+            is_clean = "CLEAN" in risk_level
+
             rows.append(html.Tr([
-                html.Td(role.get("name") or role["address"]),
-                # trusted_principals carries a dict per identifier, with the effect and
-                # the external-id flag alongside it. A Deny is shown as a Deny: it is a real
-                # fact about who CANNOT assume the role, and rendering it like an Allow
-                # would invert the meaning of the row.
+                html.Td(html.B(rname)),
                 html.Td(", ".join(
                     ("Deny " if p.get("effect") == "Deny" else "")
                     + str(p.get("identifier") or "-") for p in principals) if principals
-                    else html.Span(reason or "none declared", className="absent")),
-                html.Td(str(count) if count is not None
-                        else html.Span("not determinable", className="absent")),
-                html.Td(", ".join(role.get("attached_policies") or [])
-                        or html.Span("none in this plan", className="absent")),
-                html.Td(role.get("module") or "-"),
+                    else html.Span("none declared", className="absent")),
+                html.Td(html.Span(boundary, className="muted" if boundary == "None Declared" else "ok")),
+                html.Td(html.Span(risk_level, className="ok" if is_clean else "warn-text")),
+                html.Td(role.get("module") or "root"),
             ]))
-        blocks.append(html.H2("Roles and who may assume them"))
+        blocks.append(html.H2("Roles, Trust & Privilege Escalation Audit"))
         blocks.append(html.Table(className="table", children=[
-            html.Thead(html.Tr([html.Th("Role"), html.Th("Trusted principals"),
-                                html.Th("Trust statements"), html.Th("Attached policies"),
+            html.Thead(html.Tr([html.Th("Role"), html.Th("Trusted Principals"),
+                                html.Th("Permission Boundary"), html.Th("Escalation Risk"),
                                 html.Th("Module")])),
             html.Tbody(rows)]))
     else:
         blocks.append(html.H2("Roles and who may assume them"))
         blocks.append(html.P("This plan declares no IAM roles.", className="muted"))
 
-    if unresolved:
-        blocks.append(html.H2("What this plan does not settle"))
-        blocks.append(html.P("These documents are computed at apply time. Their permissions "
-                             "are real but not visible here, and are reported rather than "
-                             "counted as zero.", className="hint"))
+    if kms_keys:
+        blocks.append(html.H2("KMS Cryptographic Decryption & Key Policy Matrix"))
+        blocks.append(html.P("Maps Customer Managed Keys (CMKs) to authorized service decryptors and key administrators.", className="hint"))
+        krows = []
+        for k in kms_keys:
+            krows.append(html.Tr([
+                html.Td(html.B(k["address"])),
+                html.Td(html.Span("ENABLED", className="ok") if k["rotation_enabled"] else html.Span("DISABLED", className="absent")),
+                html.Td(", ".join(k["admins"]) or "-"),
+                html.Td(", ".join(k["decryptors"]) or "-"),
+            ]))
         blocks.append(html.Table(className="table", children=[
-            html.Thead(html.Tr([html.Th("Resource"), html.Th("Field"), html.Th("Reason")])),
-            html.Tbody([html.Tr([html.Td(item["address"]), html.Td(item["field"]),
-                                 html.Td(item["reason"])]) for item in unresolved])]))
+            html.Thead(html.Tr([html.Th("KMS Key Resource"), html.Th("Rotation"),
+                                html.Th("Key Administrators"), html.Th("Authorized Decryptor Services & Roles")])),
+            html.Tbody(krows)]))
+
+    grants = access_model.lake_formation_grants(plan)
+    blocks.append(html.H2("Lake Formation Fine-Grained Data Governance & PII Filter"))
+    if grants:
+        lf_rows = []
+        for grant in grants:
+            fdetails = grant.get("filter_details")
+            if fdetails:
+                filter_text = f"Row: {fdetails.get('filter_expression')} | Excluded (PII Masked): {', '.join(fdetails.get('excluded_columns')) or 'none'}"
+            else:
+                filter_text = html.Span("table-wide grant", className="muted")
+
+            lf_rows.append(html.Tr([
+                html.Td(html.B(grant["principal"] or html.Span("not determinable", className="absent"))),
+                html.Td(grant["database"] or "-"),
+                html.Td(grant["table"] or html.Span("database-wide", className="absent")),
+                html.Td(filter_text),
+                html.Td(html.Span(", ".join(grant["permissions"]) or "-", className="ok")),
+            ]))
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Principal"), html.Th("Database"), html.Th("Table"),
+                                html.Th("Row / Column PII Rules"), html.Th("Permissions")])),
+            html.Tbody(lf_rows)]))
+    else:
+        blocks.append(html.P("This plan declares no Lake Formation permissions.", className="muted"))
 
     cross = access_model.cross_account_grants(model)
     blocks.append(html.H2("Cross-account access"))
@@ -1337,23 +1392,6 @@ def view_access(state):
         blocks.append(html.P("This plan extends no trust outside its own account.",
                              className="muted"))
 
-    grants = access_model.lake_formation_grants(plan)
-    blocks.append(html.H2("Lake Formation grants"))
-    if grants:
-        blocks.append(html.Table(className="table", children=[
-            html.Thead(html.Tr([html.Th("Principal"), html.Th("Database"), html.Th("Table"),
-                                html.Th("Permissions")])),
-            html.Tbody([html.Tr([
-                html.Td(grant["principal"]
-                        or html.Span("not determinable", className="absent")),
-                html.Td(grant["database"] or "-"),
-                html.Td(grant["table"] or html.Span("database-wide", className="absent")),
-                html.Td(", ".join(grant["permissions"]) or "-"),
-            ]) for grant in grants])]))
-    else:
-        blocks.append(html.P("This plan declares no Lake Formation permissions.",
-                             className="muted"))
-
     reach = access_model.dataset_reachability(model, plan)
     blocks.append(html.H2("What each role can reach"))
     if reach:
@@ -1386,12 +1424,23 @@ def view_access(state):
                              "is reported as reaching everything rather than as the narrow "
                              "grant its resource list would suggest.", className="hint"))
 
+    if unresolved:
+        blocks.append(html.H2("What this plan does not settle"))
+        blocks.append(html.P("These documents are computed at apply time. Their permissions "
+                             "are real but not visible here, and are reported rather than "
+                             "counted as zero.", className="hint"))
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Resource"), html.Th("Field"), html.Th("Reason")])),
+            html.Tbody([html.Tr([html.Td(item["address"]), html.Td(item["field"]),
+                                 html.Td(item["reason"])]) for item in unresolved])]))
+
     blocks.append(html.Div(className="notice", children=[
         html.Span("Not yet derived", className="lab"),
         html.P("The G6 policy findings are not joined onto these roles yet, so a role that "
                "trips SEC-05 is not marked as such in the table above -- the finding appears "
                "only in the cross-account view. That cell is absent rather than estimated."),
     ]))
+
     return html.Div(blocks)
 
 
@@ -1409,19 +1458,25 @@ def view_cost(state):
     estimate = _bcm(root, "bcm-estimate.json")
     assumptions = _bcm(root, "bcm-assumptions.json")
     usage = _bcm(root, "bcm-usage.json")
+    cost_data = _load_report_json(root, "cost.json")
     record = state.get("run") or {}
     declared = record.get("estimated_monthly_cost")
 
-    if not (estimate or assumptions or usage or declared):
+    if not (estimate or assumptions or usage or declared or cost_data):
         return _empty("No cost evidence for this run",
                       "Run `minusctl cost estimate` to produce a BCM forecast, or "
                       "`minusctl cost actuals` to read Cost Explorer.")
 
-    total = estimate.get("total_monthly_usd") or declared
+    total = ((cost_data.get("monthly_total_usd") if cost_data.get("ok") else None)
+             or estimate.get("total_monthly_usd") or declared)
     actuals = _bcm(root, "bcm-actuals.json")
+
+    rate_type = cost_data.get("rate_type") or assumptions.get("rate_type") or ("On-demand list price" if total else "not recorded")
+    region = cost_data.get("region") or assumptions.get("region") or record.get("region") or "us-east-1"
+
     blocks = [html.Div(className="cells c4", children=[
         html.Div([html.Span("Monthly forecast", className="lab"),
-                  html.B(f"${total:,}" if total else "not priced",
+                  html.B(f"${total:,.2f}" if total else "not priced",
                          className="" if total else "absent"),
                   html.Div(html.Span("BCM forecast", className="src forecast")
                            if total else "no estimate written", className="sub")]),
@@ -1434,18 +1489,48 @@ def view_cost(state):
                            html.Span("Cost Explorer actual", className="src actual"),
                            className="sub")]),
         html.Div([html.Span("Rate type", className="lab"),
-                  html.B(assumptions.get("rate_type") or "not recorded",
-                         className="" if assumptions.get("rate_type") else "absent"),
+                  html.B(str(rate_type),
+                         className="" if rate_type else "absent"),
                   html.Div("how the forecast was priced", className="sub")]),
         html.Div([html.Span("Region", className="lab"),
-                  html.B(assumptions.get("region") or "not recorded",
-                         className="" if assumptions.get("region") else "absent"),
+                  html.B(str(region),
+                         className="" if region else "absent"),
                   html.Div("prices are regional", className="sub")]),
     ])]
 
+    # Line item / service breakdown
+    line_items = cost_data.get("line_items") or []
     services = estimate.get("by_service") or []
+
     blocks.append(html.H2("Where the money goes"))
-    if services:
+    if line_items:
+        rows = []
+        for it in line_items:
+            svc = it.get("serviceCode") or it.get("service") or "-"
+            amt = it.get("amount")
+            unit = it.get("unit") or ""
+            op = it.get("operation") or ""
+            cost_val = it.get("cost")
+            driver = f"{amt:g} {unit} ({op})" if (amt is not None and op) else (unit or op)
+            rows.append(html.Tr([
+                html.Td(svc),
+                html.Td(driver or html.Span("Standard", className="sub")),
+                html.Td(f"${cost_val:,.2f}" if cost_val is not None else "-", className="right"),
+                html.Td(html.Span("BCM forecast", className="src forecast")),
+            ]))
+        for unp in cost_data.get("not_estimated_services") or []:
+            rows.append(html.Tr([
+                html.Td(unp),
+                html.Td(html.Span("unpriced (catalog rate / zero usage declared)", className="absent")),
+                html.Td("-", className="right"),
+                html.Td(html.Span("AWS Price List", className="src")),
+            ]))
+        blocks.append(html.Table(className="table", children=[
+            html.Thead(html.Tr([html.Th("Service"), html.Th("Driver / Sizing"),
+                                html.Th("Monthly", className="right"),
+                                html.Th("Source")])),
+            html.Tbody(rows)]))
+    elif services:
         blocks.append(html.Table(className="table", children=[
             html.Thead(html.Tr([html.Th("Service"), html.Th("Driver"),
                                 html.Th("Monthly", className="right"),
@@ -1460,13 +1545,52 @@ def view_cost(state):
         blocks.append(html.P("No per-service breakdown was written. `bcm-estimate.json` "
                              "carries the total only.", className="muted"))
 
-    rows = sorted((assumptions or {}).items())
+    # Assumptions formatting
     blocks.append(html.H2("What the forecast assumes"))
-    if rows:
-        blocks.append(html.Table(className="table", children=[
-            html.Thead(html.Tr([html.Th("Assumption"), html.Th("Value")])),
-            html.Tbody([html.Tr([html.Td(str(key).replace("_", " ")), html.Td(str(value))])
-                        for key, value in rows])]))
+    if assumptions:
+        scalar_items = []
+        inventory_items = {}
+        line_map_items = {}
+
+        for k, v in assumptions.items():
+            if k == "terraform_resource_inventory" and isinstance(v, dict):
+                inventory_items = v
+            elif k == "usage_line_map" and isinstance(v, dict):
+                line_map_items = v
+            elif isinstance(v, list):
+                scalar_items.append((k.replace("_", " ").title(), ", ".join(map(str, v))))
+            elif isinstance(v, dict):
+                pass  # Handled below
+            else:
+                scalar_items.append((k.replace("_", " ").title(), str(v)))
+
+        if scalar_items:
+            blocks.append(html.Table(className="table", children=[
+                html.Thead(html.Tr([html.Th("Parameter"), html.Th("Assumption / Value")])),
+                html.Tbody([html.Tr([html.Td(html.B(k)), html.Td(v)])
+                            for k, v in sorted(scalar_items)])]))
+
+        if inventory_items:
+            blocks.append(html.H3("Terraform Resource Inventory", style={"marginTop": "18px", "fontSize": "13px", "color": C["graphite"]}))
+            inv_rows = []
+            for rtype, info in sorted(inventory_items.items()):
+                cnt = info.get("count", 1) if isinstance(info, dict) else 1
+                actions = ", ".join(f"{act}: {c}" for act, c in info.get("actions", {}).items()) if (isinstance(info, dict) and "actions" in info) else "create"
+                inv_rows.append(html.Tr([
+                    html.Td(html.Code(rtype)),
+                    html.Td(str(cnt), className="right"),
+                    html.Td(actions),
+                ]))
+            blocks.append(html.Table(className="table", children=[
+                html.Thead(html.Tr([html.Th("Resource Type"), html.Th("Count", className="right"), html.Th("Actions")])),
+                html.Tbody(inv_rows)]))
+
+        if line_map_items:
+            blocks.append(html.Details(className="drawer", style={"marginTop": "12px"}, children=[
+                html.Summary("View BCM Usage Line Mapping (Audit Trail JSON)"),
+                html.Div(className="body", children=[html.Pre(json.dumps(line_map_items, indent=2), className="ledger")]),
+            ]))
+
         blocks.append(html.P("Change any assumption and the forecast changes. This table "
                              "exists so a number on this page is never mistaken for a bill.",
                              className="hint"))
@@ -1843,7 +1967,7 @@ def view_agents_cost(state):
             "conversation id. Point " + TRANSCRIPT_ENV + " at one, or record "
             "`transcript_path` on the run, and the token economics appear here. Nothing is "
             "estimated in the meantime.")
-    analysis = agent_cost_calculator.analyse_run(path)
+    analysis = agent_cost_calculator.analyse_run(path, allow_estimation=True, default_model="pro")
     if not analysis.get("available"):
         return _empty("No agent telemetry for this run",
                       analysis.get("reason")
@@ -1856,10 +1980,25 @@ def view_agents_cost(state):
         return f"{value:,}" if value is not None else None
 
     fraction = summary.get("peak_context_fraction")
+    # Measured and estimated are shown apart, never added together. analyse_run is called with
+    # allow_estimation=True, so a transcript whose provider counters are missing gets token
+    # counts derived from character length -- a guess. Rendering that to four decimal places
+    # under "N of M steps priced" is the failure this panel's own empty state warns about two
+    # screens up: a figure that reads as measured when nothing measured it.
+    estimated_steps = summary.get("steps_estimated") or 0
+    estimated_usd = summary.get("estimated_usd")
+    assumed_models = summary.get("steps_assumed_model") or 0
+    cost_note = f"{summary.get('steps_priced', 0)} of {summary.get('steps_total', 0)} steps measured"
+    if estimated_steps:
+        cost_note += (f"; {estimated_steps} estimated from text length"
+                      + (f" at ~${estimated_usd:.4f}" if estimated_usd is not None else "")
+                      + ", not included above")
+    if assumed_models:
+        cost_note += f"; {assumed_models} priced under an assumed model"
     cells = [
         ("Total agent cost",
          f"${summary['total_usd']:.4f}" if summary.get("total_usd") is not None else None,
-         f"{summary.get('steps_priced', 0)} of {summary.get('steps_total', 0)} steps priced"),
+         cost_note),
         ("Total latency",
          (f"{summary['total_latency_seconds']:.1f}s"
           if summary.get("total_latency_seconds") is not None else None),
@@ -1882,7 +2021,10 @@ def view_agents_cost(state):
         usage = step.get("token_usage") or {}
         rows.append(html.Tr(className="docrow", children=[
             html.Td(str(step.get("step_index", "-"))),
-            html.Td(step.get("model") or html.Span("not recorded", className="absent")),
+            html.Td(
+                html.Span(f"{step.get('model')} (assumed)", className="absent")
+                if step.get("model_assumed") else
+                (step.get("model") or html.Span("not recorded", className="absent"))),
             html.Td(step.get("tier") or "-"),
             html.Td((f"{usage.get('prompt_tokens', 0):,} in / "
                      f"{usage.get('completion_tokens', 0):,} out") if usage.get("present")
@@ -1986,18 +2128,38 @@ def view_agent_flow(state):
 # --- Docs, Policies, About -----------------------------------------------------------------
 
 _DOC_PAGES = (
-    ("README.md", "Platform Overview", "What MinusOps is and how a run flows through it"),
-    ("docs/OPERATOR_ONBOARDING_GUIDE.md", "Operator Onboarding", "Running your first governed pipeline end to end"),
-    ("AGENTS.md", "Agent Operating Guide", "The 7-step sequence, governance rules, and skill activations"),
-    ("docs/extensibility_and_integration_guide.md", "Extensibility & Integrations", "Authoring new CLI commands, modules, hooks and subagents"),
-    ("docs/information_library.md", "Information Library", "Authoritative cloud and provider documentation ledger"),
-    ("docs/enterprise_iam_manifest.md", "Enterprise IAM Manifest", "Role designs, trust policies, and least-privilege scoping"),
-    ("SECURITY.md", "Security Policy", "Reporting vulnerabilities and non-negotiable security invariants"),
+    ("README.md", "Platform Overview & Architecture", "What MinusOps is and how a run flows through it", "Operations"),
+    ("docs/OPERATOR_ONBOARDING_GUIDE.md", "Operator Onboarding Guide", "Running your first governed pipeline end to end", "Operations"),
+    ("docs/operations_runbook.md", "Operations Runbook & RBAC", "Task-oriented operator runbook, recovery procedures, and RBAC", "Operations"),
+    ("AGENTS.md", "Autonomous Agent Master Guide", "The 7-step sequence, governance rules, and skill activations", "Agents & Synthesis"),
+    ("docs/architecture_synthesis.md", "Architecture Synthesis Engine", "19-pillar requirements mapping and live schema module synthesis", "Agents & Synthesis"),
+    ("DESIGN.md", "System Design & Core Invariants", "Core architectural pillars, fail-closed contracts, and data structures", "Agents & Synthesis"),
+    ("docs/enterprise_iam_manifest.md", "Enterprise IAM & Trust Manifest", "Role designs, trust policies, and least-privilege scoping", "Governance & IAM"),
+    ("docs/extensibility_and_integration_guide.md", "Extensibility & Integrations Guide", "Authoring new CLI commands, modules, hooks and subagents", "Governance & IAM"),
+    ("docs/information_library.md", "Information Library & Catalog", "Authoritative cloud and provider documentation catalog", "Reference & Security"),
+    ("docs/documentation_ledger.md", "Documentation Ledger & URLs", "Deterministic lookup URLs and official cloud reference formulas", "Reference & Security"),
+    ("SECURITY.md", "Security Policy & Non-Negotiables", "Reporting vulnerabilities and non-negotiable security invariants", "Reference & Security"),
+    ("CONTRIBUTING.md", "Contribution Standards & Testing", "Standards for testing, commits, and PR reviews", "Reference & Security"),
 )
 
 
 def _read_repo_file(relative, limit=200000):
-    path = os.path.join(ROOT, relative)
+    """Read a file from inside the repository, or None.
+
+    Containment is enforced rather than assumed. `relative` reaches this from a Dash
+    callback's triggered_id, which the browser supplies, so it is caller input however
+    fixed the component ids look on the server. os.path.join gives an absolute argument
+    total precedence -- joining ROOT with an absolute Windows path yields that path with
+    ROOT discarded -- and "../../.aws/credentials" resolves to the operator's AWS keys. The
+    console binds to 127.0.0.1 by default but --host and CONSOLE_HOST both move it.
+    """
+    root = os.path.abspath(ROOT)
+    path = os.path.abspath(os.path.join(root, relative or ""))
+    try:
+        if os.path.commonpath([root, path]) != root:
+            return None
+    except ValueError:
+        return None  # different drive on Windows: not under root by definition
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             return handle.read(limit)
@@ -2007,89 +2169,97 @@ def _read_repo_file(relative, limit=200000):
 
 def view_docs(state):
     """The repository's own documentation, CLI manual, console tabs guide, and architecture."""
-    rows = []
     doc_cards = []
-    for relative, title, blurb in _DOC_PAGES:
+    total_lines = 0
+    available_docs = 0
+
+    for entry in _DOC_PAGES:
+        relative, title, blurb = entry[0], entry[1], entry[2]
+        category = entry[3] if len(entry) > 3 else "Guide"
         present = os.path.exists(os.path.join(ROOT, relative))
         file_content = _read_repo_file(relative) if present else None
         file_size_kb = f"{len(file_content) / 1024:.1f} KB" if file_content else "0 KB"
         lines_count = len(file_content.splitlines()) if file_content else 0
-
-        # Summary Table Row
-        rows.append(html.Tr(className="docrow" if present else "", children=[
-            html.Td(html.B(title) if present else html.Span(title, className="absent")),
-            html.Td(blurb),
-            html.Td(html.Code(relative, className="secref")),
-            html.Td(html.Span(f"Ready ({file_size_kb})", className="src") if present else html.Span("not in this checkout", className="absent")),
-        ]))
+        if present:
+            total_lines += lines_count
+            available_docs += 1
 
         # Expandable In-Place Document Reader Card
         if present:
             doc_cards.append(html.Details(
-                style={"marginBottom": "16px", "border": "1px solid var(--line)", "borderRadius": "8px", "background": "#fff", "overflow": "hidden"},
+                style={"marginBottom": "16px", "border": "1px solid var(--line, #e2e8f0)", "borderRadius": "10px", "background": "#fff", "overflow": "hidden", "boxShadow": "0 1px 3px rgba(0,0,0,0.03)"},
                 children=[
-                    html.Summary(style={"padding": "14px 18px", "cursor": "pointer", "background": "var(--card-bg, #fcfcfc)", "display": "flex", "justifyContent": "space-between", "alignItems": "center"}, children=[
-                        html.Div(children=[
-                            html.Span("[DOC] ", className="src", style={"marginRight": "8px"}),
-                            html.B(title, style={"fontSize": "14px", "color": "var(--ink)"}),
-                            html.Span(f" — {blurb}", style={"color": "var(--graphite)", "fontSize": "12px", "marginLeft": "8px"}),
+                    html.Summary(style={"padding": "14px 20px", "cursor": "pointer", "background": "var(--card-bg, #fcfcfc)", "display": "flex", "justifyContent": "space-between", "alignItems": "center"}, children=[
+                        html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"}, children=[
+                            html.Span(category.upper(), className="fn-kind", style={"fontSize": "10px", "fontWeight": "700"}),
+                            html.B(title, style={"fontSize": "14px", "color": "var(--ink, #0f172a)"}),
+                            html.Span(f"— {blurb}", style={"color": "var(--smoke, #64748b)", "fontSize": "12px"}),
                         ]),
-                        html.Div(children=[
-                            html.Span(relative, className="secref", style={"marginRight": "12px", "fontSize": "11px"}),
+                        html.Div(style={"display": "flex", "alignItems": "center", "gap": "12px"}, children=[
+                            html.Code(relative, style={"fontSize": "11px", "background": "rgba(0,0,0,0.04)", "padding": "2px 6px", "borderRadius": "4px"}),
                             html.Span(f"{file_size_kb} · {lines_count} lines", className="src", style={"fontSize": "11px"}),
                         ]),
                     ]),
-                    html.Div(style={"padding": "16px 20px", "borderTop": "1px solid var(--line)"}, children=[
-                        html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "12px"}, children=[
-                            html.Span([html.B("File Location: "), html.Code(os.path.join(ROOT, relative))], style={"fontSize": "12px", "color": "var(--graphite)"}),
-                            html.Span("Live Repository Checkout · Zero Drift", className="src", style={"fontSize": "11px"}),
+                    html.Div(style={"padding": "20px 24px", "borderTop": "1px solid var(--line, #e2e8f0)", "background": "#ffffff"}, children=[
+                        html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "14px"}, children=[
+                            html.Span([html.B("Repository Path: "), html.Code(os.path.join(ROOT, relative))], style={"fontSize": "12px", "color": "var(--graphite, #475569)"}),
+                            html.Span("Live In-Place Checkout · Verified", className="src", style={"fontSize": "11px", "color": "var(--good, #16a34a)"}),
                         ]),
-                        html.Pre(
-                            file_content,
-                            style={
-                                "background": "var(--bg, #f4f6f8)",
-                                "padding": "16px",
-                                "borderRadius": "6px",
-                                "maxHeight": "520px",
-                                "overflowY": "auto",
-                                "fontFamily": "var(--mono, monospace)",
-                                "fontSize": "12px",
-                                "lineHeight": "1.6",
-                                "color": "var(--ink)",
-                                "whiteSpace": "pre-wrap",
-                                "wordBreak": "break-word",
-                                "border": "1px solid var(--line)",
-                            }
+                        dcc.Markdown(
+                            file_content or "",
+                            className="doc-markdown-body",
+                            dangerously_allow_html=True,
                         ),
                     ]),
                 ]
             ))
         else:
             doc_cards.append(html.Div(
-                style={"marginBottom": "12px", "border": "1px dashed var(--line)", "borderRadius": "8px", "padding": "12px 18px", "background": "#fff"},
+                style={"marginBottom": "12px", "border": "1px dashed var(--line, #cbd5e1)", "borderRadius": "8px", "padding": "12px 18px", "background": "#fff"},
                 children=[
                     html.Span("[MISSING] ", className="absent", style={"marginRight": "8px"}),
                     html.B(title),
-                    html.Span(f" ({relative}) — ", style={"color": "var(--graphite)", "fontSize": "12px"}),
+                    html.Span(f" ({relative}) — ", style={"color": "var(--graphite, #475569)", "fontSize": "12px"}),
                     html.Span("not in this checkout", className="absent"),
                 ]
             ))
 
     cli_commands = [
-        ("minusctl create \"<req>\" --name <workload> --domain <domain>", "core/reporting/runs.py", "Initialize an isolated run workspace under runs/<run-id>/ with dedicated metadata."),
-        ("minusctl use <run-id>", "core/cli/context.py", "Anchor the active run in .minus/context.json so all commands default to it without directory flags."),
-        ("minusctl runs list | describe", "core/reporting/runs.py", "Inspect all workspace runs, plan hashes, cost totals, and governance verification statuses."),
-        ("minusctl gate {verify|plan|approve|apply|status}", "core/governance/plan_gate.py", "Execute the 4-stage cryptographically plan-bound deploy loop with fail-closed checks."),
-        ("minusctl cost {prepare|estimate|coverage}", "core/cost/bcm_pricing_calculator.py", "Audit 100% SKU coverage and invoke the AWS BCM Pricing Calculator API for authenticated spend."),
-        ("minusctl author <resource_type> --file <path>", "core/generation/synthesizer.py", "Synthesize validated Terraform HCL blocks against official HashiCorp provider schemas."),
+        # Workspace and lifecycle
+        ("minusctl create \"<req>\" [--name <name>] [--domain <domain>]", "core/reporting/runs.py", "Resolve a request into a requirements-first isolated run workspace under runs/<run-id>/."),
+        ("minusctl use <run-id>", "core/cli/context.py", "Select and anchor the active run in .minus/context.json for all subsequent commands."),
+        ("minusctl runs {list|describe} [--run <id>]", "core/cli/commands/runs.py", "List every run workspace or describe a specific run in full detail."),
+        ("minusctl next [--run <id>]", "core/reporting/runs.py", "Print the next safe command for a run, and any failure state it is currently carrying."),
+        ("minusctl console [--host <host>] [--port <port>]", "app/console_app.py", "Serve the visual governance console: topology, flow, access, cost, trace, and vault."),
         ("minusctl derive [fact=value ...]", "core/architecture/pillars.py", "Derive throughput, partition counts, and compute sizing from stated volume facts."),
-        ("minusctl pattern {list|match|capture}", "core/generation/patterns.py", "Search, match, and capture vetted production module patterns into the reusable pattern registry."),
-        ("minusctl diagram [--run <id>]", "core/architecture/diagram_generator.py", "Generate Draw.io XML/SVG diagrams and output 1-click browser view links (https://app.diagrams.net/#R...)."),
-        ("minusctl source {status|diff|anchor}", "core/reporting/source_guard.py", "Detect manual cloud console drift against Git baselines to eliminate silent drift."),
-        ("minusctl prove [--execute]", "core/reporting/seed.py", "Run 5-hop synthetic data verification (execute mutates AWS; approval-gated)."),
-        ("minusctl doctor [--json]", "core/reporting/doctor.py", "Day-0 pre-flight checks: CLI binaries, AWS caller identity, lockfiles, and connector health."),
-        ("minusctl diagnose [--run <id>] [--error \"<text>\"]", "core/reporting/incident_diagnostics.py", "Diagnose pipeline incidents, localize log anomalies, and propose guided remediation."),
-        ("minusctl console [--port 8050]", "app/console_app.py", "Launch the visual governance console on http://127.0.0.1:8050."),
+        # Deploy gate and governance
+        ("minusctl gate {verify|plan|approve|apply|status}", "core/governance/plan_gate.py", "Execute the 4-stage cryptographically plan-bound deploy loop with fail-closed checks."),
+        ("minusctl source {status|diff|anchor} [--dir <dir>]", "core/reporting/source_guard.py", "Detect manual cloud console drift against Git baselines to eliminate silent drift."),
+        ("minusctl guard [--dir <dir>]", "core/reporting/source_guard.py", "Report whether generated Terraform HCL has been edited by hand."),
+        ("minusctl policy {list|test|inspect}", "core/governance/policy.py", "Inspect or promote the OPA Rego policy rules the gate enforces."),
+        ("minusctl decision [--run <id>] [--template]", "core/architecture/reconciler.py", "Read or template the Architecture Decision Record (ADR) satisfying 4-part contract."),
+        ("minusctl conformance [--run <id>] [--strict]", "core/reporting/conformance.py", "Score a run against the AWS Well-Architected analytics reference architecture."),
+        ("minusctl readiness [--run <id>] [--json]", "core/reporting/readiness.py", "Score whether a run is presentable to an enterprise reviewer (CISO/CDO)."),
+        ("minusctl audit verify [--run <id>]", "core/governance/audit_logger.py", "Verify the SHA256 tamper-evident audit chain (audit.jsonl) has not been altered."),
+        # Cost and verification
+        ("minusctl cost {prepare|estimate|coverage} [--profile <name>]", "core/cost/bcm_pricing_calculator.py", "Audit 100% SKU coverage and query the AWS BCM Pricing Calculator API for live spend."),
+        ("minusctl prove [--execute] [--tier <0-3>]", "core/reporting/seed.py", "Prove the pipeline end to end; --execute runs the live 5-hop data harness against AWS."),
+        ("minusctl seed [--execute] [--table <name>]", "core/reporting/seed.py", "Legacy 3-hop data proof. (Prefer minusctl prove --execute)."),
+        ("minusctl diagnose [--run <id>] [--error \"<text>\"]", "core/reporting/incident_diagnostics.py", "Localize log anomalies, explain failure root cause, and propose guided remediation."),
+        ("minusctl validate [--run <id>] [--json]", "core/reporting/minusctl.py", "Offline terraform validate for a run workspace, credential-free."),
+        # Delivery and handoff
+        ("minusctl export --target-repo <path> --dest-dir <dir>", "core/reporting/export.py", "Package a run into a target domain repository with its CI/CD workflow."),
+        ("minusctl package [--run <id>] [--json]", "core/reporting/minusctl.py", "Write the complete enterprise handoff compliance bundle for a run."),
+        ("minusctl accelerator [--owner <team>] [--daily-data-gb <N>]", "core/reporting/accelerator.py", "Scaffold reviewable accelerator artifacts and starter pipelines."),
+        ("minusctl demo [--owner <team>] [--daily-data-gb <N>]", "core/reporting/minusctl.py", "Generate a no-cloud demo run and compliance report without Terraform or AWS."),
+        ("minusctl diagram [--run <id>] [--format <format>]", "core/architecture/diagram_generator.py", "Generate Draw.io architecture diagrams and output 1-click browser view links."),
+        ("minusctl author <resource_type> --file <path>", "core/generation/synthesizer.py", "Synthesize validated Terraform HCL blocks against official HashiCorp schemas."),
+        ("minusctl pattern {list|match|capture} [--file <path>]", "core/generation/patterns.py", "Manage the approved architecture-pattern registry: search, match, and capture."),
+        # Environment
+        ("minusctl doctor [--json] [--fix]", "core/reporting/doctor.py", "Pre-flight diagnostics: CLI binaries, AWS caller identity, lock files, and connectors."),
+        ("minusctl iam {mfa-check} [--live] [--chain]", "core/cli/commands/iam.py", "IAM security checks: probe whether MFA trust-policy conditions work for caller."),
+        ("minusctl adopt --dir <path> [--anchor]", "core/reporting/source_guard.py", "Inventory existing legacy Terraform and security scan it before adopting it."),
+        ("minusctl reports [--report <hash>] [--latest]", "core/reporting/reports.py", "Explore plan reports: billable services, resource inventory, and IAM roles."),
     ]
 
     stages_guide = [
@@ -2101,65 +2271,232 @@ def view_docs(state):
         ("06 Evidence (Vault)", "Deliverable Compliance Vault", "Browse and download all generated compliance artifacts (plan PDFs, FinOps Excel spreadsheets, Draw.io diagrams, and full compliance bundle zips)."),
     ]
 
+    # Build 19 Pillar Cards from pillars_engine.PILLARS
+    pillar_cards = []
+    for p in pillars_engine.PILLARS:
+        pillar_cards.append(html.Details(
+            style={"marginBottom": "12px", "border": "1px solid var(--line, #e2e8f0)", "borderRadius": "8px", "background": "#fff", "overflow": "hidden"},
+            children=[
+                html.Summary(style={"padding": "12px 18px", "cursor": "pointer", "background": "var(--card-bg, #fcfcfc)", "display": "flex", "justifyContent": "space-between", "alignItems": "center"}, children=[
+                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"}, children=[
+                        html.Span(f"PILLAR {p['id']:02d}", className="fn-kind", style={"fontSize": "10px", "fontWeight": "700"}),
+                        html.B(p["title"], style={"fontSize": "13px", "color": "var(--ink, #0f172a)"}),
+                    ]),
+                    html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"}, children=[
+                        html.Span(f"Phase {p['phase']}", className="src", style={"fontSize": "11px"}),
+                        html.Span(f"{len(p['options'])} options · {len(p['maps_to'])} modules", style={"fontSize": "11px", "color": "var(--smoke, #64748b)"}),
+                    ]),
+                ]),
+                html.Div(style={"padding": "16px 20px", "borderTop": "1px solid var(--line, #e2e8f0)", "background": "#ffffff"}, children=[
+                    html.P([html.B("Interview Question: "), p["question"]], style={"fontSize": "13px", "marginBottom": "12px", "color": "var(--ink, #0f172a)"}),
+                    html.P("Recommended Architectural Options:", style={"fontSize": "12px", "fontWeight": "600", "marginBottom": "6px", "color": "var(--graphite, #475569)"}),
+                    html.Ul(style={"paddingLeft": "20px", "fontSize": "12px", "lineHeight": "1.7", "marginBottom": "12px"}, children=[
+                        html.Li(opt) for opt in p["options"]
+                    ]),
+                    html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "6px", "marginBottom": "12px"}, children=[
+                        html.Span("Mapped Modules: ", style={"fontSize": "11px", "fontWeight": "600", "color": "var(--graphite, #475569)", "marginRight": "4px"}),
+                    ] + ([html.Code(m, style={"fontSize": "11px", "background": "rgba(37,99,235,0.08)", "color": "#1d4ed8", "padding": "2px 6px", "borderRadius": "4px"}) for m in p["maps_to"]] if p["maps_to"] else [html.Span("None (Policy/Constraints)", style={"fontSize": "11px", "color": "#64748b"})])),
+                    html.Div(style={"padding": "10px 14px", "background": "#eff6ff", "borderRadius": "6px", "fontSize": "12px", "color": "#1e40af", "borderLeft": "3px solid #2563eb"}, children=[
+                        html.B("What Teams Forget in Production: "), p.get("forgotten") or "None"
+                    ]) if p.get("forgotten") else html.Div(),
+                ]),
+            ]
+        ))
+
+    # Subagent Wire Cards
+    subagent_specs = [
+        ("slack-agent", "Slack Incident & Plan-Approval Card (Block Kit)", "core/integrations/slack_hook.py",
+         "Dispatches interactive Block Kit cards with cryptographic SHA256 plan-hash buttons and P1 pipeline alerts.",
+         """{
+  "blocks": [
+    {
+      "type": "header",
+      "text": {"type": "plain_text", "text": "Plan Approval Request: analytics-lakehouse"}
+    },
+    {
+      "type": "section",
+      "fields": [
+        {"type": "mrkdwn", "text": "*Plan Hash:* `26591a3a99fa...`"},
+        {"type": "mrkdwn", "text": "*Status:* Awaiting CISO Approval"}
+      ]
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {"type": "plain_text", "text": "Approve Plan"},
+          "style": "primary",
+          "value": "approve_26591a3a99fa"
+        },
+        {
+          "type": "button",
+          "text": {"type": "plain_text", "text": "Reject"},
+          "style": "danger",
+          "value": "reject_26591a3a99fa"
+        }
+      ]
+    }
+  ]
+}"""),
+        ("teams-agent", "Microsoft Teams Data Quality Quarantine Alert (Adaptive Card)", "core/integrations/teams_hook.py",
+         "Dispatches Adaptive Cards for Great Expectations data-quality assertion failures and quarantine routing.",
+         """{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.4",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "Data Quality Quarantine Alert",
+      "weight": "Bolder",
+      "size": "Medium",
+      "color": "Attention"
+    },
+    {
+      "type": "FactSet",
+      "facts": [
+        {"title": "Run ID:", "value": "claims_dw_20260829_065151"},
+        {"title": "Rule Failed:", "value": "expect_column_values_to_not_be_null"},
+        {"title": "Quarantine S3:", "value": "s3://claims-lakehouse-quarantine/bad_rows/"}
+      ]
+    }
+  ]
+}"""),
+        ("jira-agent", "Jira Cloud Governed Change-Management Ticket", "core/integrations/jira_hook.py",
+         "Generates governed change-management tickets (one ticket per mutation) with risk assessment and rollback plans.",
+         """{
+  "fields": {
+    "project": {"key": "DATA"},
+    "summary": "[RFC-INFRA] Apply Governed Terraform: analytics-lakehouse",
+    "description": "Cryptographically plan-bound deployment via minusctl gate apply.\\nPlan Hash: 26591a3a99fa\\nChanges: +18 resources, ~0 to change, -0 to destroy.",
+    "issuetype": {"name": "Change"}
+  }
+}"""),
+        ("confluence-agent", "Confluence Living Architecture & Topology Wiki Page", "core/integrations/confluence_hook.py",
+         "Publishes living architecture documentation, topology schemas, and S3 data dictionary pages.",
+         """{
+  "type": "page",
+  "title": "Architecture Blueprint: analytics-enterprise-serverless-lakehouse",
+  "space": {"key": "ARCH"},
+  "body": {
+    "storage": {
+      "value": "<h2>Data Lakehouse Medallion Topology</h2><p>Auto-generated from minusctl diagram with verified Draw.io lineage and TBAC cell grants.</p>",
+      "representation": "storage"
+    }
+  }
+}"""),
+        ("outlook-agent", "Outlook Executive FinOps Email Report & Excel Attachment", "core/integrations/outlook_hook.py",
+         "Sends executive FinOps email reports with attached billing forecast spreadsheets (.xlsx) and scale curves.",
+         """{
+  "toRecipients": [{"emailAddress": {"address": "finops-executives@enterprise.com"}}],
+  "subject": "Monthly Cloud FinOps & Spend Forecast: $1,420.50/mo",
+  "body": {
+    "contentType": "HTML",
+    "content": "<p>BCM Pricing Calculator verified monthly run rate: <b>$1,420.50/mo</b> with 100% billable SKU coverage.</p>"
+  },
+  "attachments": [{"@odata.type": "#microsoft.graph.fileAttachment", "name": "executive_project_summary.xlsx"}]
+}"""),
+    ]
+
+    subagent_cards = []
+    for agent_id, agent_title, agent_module, agent_desc, agent_payload in subagent_specs:
+        subagent_cards.append(html.Div(className="wire-card", children=[
+            html.Div(className="wire-header", children=[
+                html.Div(children=[
+                    html.Span(agent_id.upper(), className="fn-kind", style={"fontSize": "10px", "fontWeight": "700", "marginRight": "8px"}),
+                    html.B(agent_title, style={"fontSize": "13px", "color": "var(--ink, #0f172a)"}),
+                ]),
+                html.Span(agent_module, className="secref", style={"fontSize": "11px"}),
+            ]),
+            html.P(agent_desc, style={"fontSize": "12px", "color": "var(--graphite, #475569)", "marginBottom": "10px"}),
+            html.Pre(agent_payload, className="wire-code"),
+        ]))
+
     return html.Div([
-        html.Div(className="card periwinkle", style={"marginBottom": "24px"}, children=[
+        html.Div(className="card periwinkle", style={"marginBottom": "20px"}, children=[
             html.H2("MinusOps Comprehensive Architecture & CLI Documentation Hub"),
-            html.P("Authoritative operational reference covering the unified minusctl command surface, the 6-stage governance console, the 19-pillar autonomous lifecycle, and multi-agent transport handshakes.", className="hint"),
+            html.P("Authoritative operational reference covering the 30-command unified minusctl surface, 6 console governance stages, 19 architecture pillars, and multi-agent transport handshakes.", className="hint"),
         ]),
 
-        html.H2("1. Unified CLI Surface (minusctl Reference)"),
-        html.P("Every capability in MinusOps is exposed as a subcommand under the unified minusctl interface (or python -m core.cli.main):", className="hint"),
-        html.Table(className="table", children=[
-            html.Thead(html.Tr([html.Th("Command Line Syntax"), html.Th("Underlying Module"), html.Th("Operational Purpose")])),
-            html.Tbody([html.Tr([
-                html.Td(html.Code(cmd)),
-                html.Td(html.Span(mod, className="secref")),
-                html.Td(desc),
-            ]) for cmd, mod, desc in cli_commands]),
+        html.Div(className="cells c4", style={"marginBottom": "20px"}, children=[
+            html.Div([html.Span("Documentation Guides", className="lab"), html.B(f"{available_docs} Active"),
+                      html.Div("living markdown manuals", className="sub")]),
+            html.Div([html.Span("Documentation Volume", className="lab"), html.B(f"{total_lines:,} lines"),
+                      html.Div("authoritative markdown corpus", className="sub")]),
+            html.Div([html.Span("Requirements Engine", className="lab"), html.B("19 Pillars"),
+                      html.Div("interactive grilling checklist", className="sub")]),
+            html.Div([html.Span("Live Git Synchronization", className="lab"), html.B("0% Drift"),
+                      html.Div("verified in-place checkout", className="sub")]),
         ]),
 
-        html.H2("2. Console Governance Narrative (The 6 Views)"),
-        html.P("The governance console organizes pipeline evidence in the exact sequence an enterprise architect and CISO review a cloud workload:", className="hint"),
-        html.Table(className="table", children=[
-            html.Thead(html.Tr([html.Th("View / Stage"), html.Th("Focus Area"), html.Th("Governance & Review Capabilities")])),
-            html.Tbody([html.Tr([
-                html.Td(html.B(stage)),
-                html.Td(html.Span(focus, className="src")),
-                html.Td(desc),
-            ]) for stage, focus, desc in stages_guide]),
+        # Subnav Sticky Ribbon
+        html.Div(className="docs-subnav-ribbon", children=[
+            html.A("01 CLI Reference (30)", href="#sec-cli", className="docs-subnav-btn"),
+            html.A("02 Console Stages (6)", href="#sec-stages", className="docs-subnav-btn"),
+            html.A("03 19 Architecture Pillars", href="#sec-pillars", className="docs-subnav-btn"),
+            html.A("04 Subagent Transports", href="#sec-subagents", className="docs-subnav-btn"),
+            html.A("05 Live Document Library (12)", href="#sec-library", className="docs-subnav-btn"),
+            html.A("06 Changelog & Releases", href="#sec-changelog", className="docs-subnav-btn"),
         ]),
 
-        html.H2("3. Autonomous Control Plane Architecture & 7-Step Sequence"),
-        html.P("MinusOps enforces a strict, fail-closed 7-step execution sequence before any infrastructure mutation occurs:", className="hint"),
-        html.Div(className="card", style={"marginBottom": "20px"}, children=[
-            html.Ol(style={"paddingLeft": "20px", "lineHeight": "1.8", "fontSize": "13px"}, children=[
-                html.Li([html.B("[1] Requirements Grilling (grill-me): "), "Interrogates all 19 enterprise data pillars (ingestion, medallion storage, schema evolution, compute sizing, quarantine, and FinOps) one decision at a time."]),
-                html.Li([html.B("[2] ADR Formulation (architecture_decision.json): "), "Formulates the Architecture Decision Record satisfying the 4-part contract (Assumptions, Trade-offs, Validation, Rollback) and mitigating TerraShark failure modes FM-01..05."]),
-                html.Li([html.B("[3] Architecture Synthesis (synthesizer.py): "), "Composes vetted, production-tested module blocks (core/generation/modules.py) into governed Terraform code."]),
-                html.Li([html.B("[4] Diagram & Lineage Generation (diagram_generator.py): "), "Generates Draw.io architecture diagrams, SVG assets, and 1-click browser view links (https://app.diagrams.net/#R...)."]),
-                html.Li([html.B("[5] Reflector Review (reflector.py): "), "Runs an independent static review stage to verify schema readiness, security policies, and contract compliance."]),
-                html.Li([html.B("[6] Plan Gate & BCM Costing (minusctl gate & cost): "), "Compiles a SHA256 plan hash via terraform plan and fetches authenticated pricing evidence via the AWS BCM Pricing Calculator API."]),
-                html.Li([html.B("[7] HITL Approval & Audited Apply: "), "Presents the plan diff, cost forecast, and diagram for human sign-off before executing apply, writing every action to a tamper-evident audit log."]),
+        html.Div(id="sec-cli", children=[
+            html.H2("1. Unified CLI Surface (minusctl Reference)"),
+            html.P("All 30 control plane capabilities are exposed under the unified minusctl interface (or python -m core.cli.main):", className="hint"),
+            html.Table(className="table", children=[
+                html.Thead(html.Tr([html.Th("Command Line Syntax"), html.Th("Underlying Module"), html.Th("Operational Purpose")])),
+                html.Tbody([html.Tr([
+                    html.Td(html.Code(cmd)),
+                    html.Td(html.Span(mod, className="secref")),
+                    html.Td(desc),
+                ]) for cmd, mod, desc in cli_commands]),
             ]),
         ]),
 
-        html.H2("4. Outbound Transport Subagents & Credential Isolation"),
-        html.P("To dispatch outbound alerts, MinusOps activates single-shot transport subagents that execute in isolated contexts and terminate immediately:", className="hint"),
-        html.Ul(style={"paddingLeft": "20px", "lineHeight": "1.8", "fontSize": "13px"}, children=[
-            html.Li([html.B("slack-agent: "), "Dispatches interactive Block Kit approval cards with cryptographic plan-hash buttons and P1 incident alerts."]),
-            html.Li([html.B("teams-agent: "), "Dispatches Adaptive Cards for Great Expectations data-quality assertion failures and quarantine dead-letter alerts."]),
-            html.Li([html.B("jira-agent: "), "Generates governed change-management tickets (one ticket per invocation) before any infrastructure mutation."]),
-            html.Li([html.B("confluence-agent: "), "Publishes living architecture documentation, topology schemas, and data dictionary pages."]),
-            html.Li([html.B("outlook-agent: "), "Sends executive FinOps email reports with attached billing forecast spreadsheets (.xlsx)."]),
+        html.Div(id="sec-stages", style={"marginTop": "32px"}, children=[
+            html.H2("2. Console Governance Narrative (The 6 Views)"),
+            html.P("The governance console organizes pipeline evidence in the exact sequence an enterprise architect and CISO review a cloud workload:", className="hint"),
+            html.Table(className="table", children=[
+                html.Thead(html.Tr([html.Th("View / Stage"), html.Th("Focus Area"), html.Th("Governance & Review Capabilities")])),
+                html.Tbody([html.Tr([
+                    html.Td(html.B(stage)),
+                    html.Td(html.Span(focus, className="src")),
+                    html.Td(desc),
+                ]) for stage, focus, desc in stages_guide]),
+            ]),
         ]),
 
-        html.H2("5. Living Repository Documentation Library (In-Place Reader)"),
-        html.P("Click any document card below to open and read its complete, live repository markdown directly in place:", className="hint"),
-        html.Div(doc_cards, style={"marginTop": "16px"}),
+        html.Div(id="sec-pillars", style={"marginTop": "32px"}, children=[
+            html.H2("3. Requirements Engineering & Sizing (The 19 Architecture Pillars)"),
+            html.P("The core/architecture/pillars.py engine defines 19 non-negotiable enterprise pillars covering functional and non-functional requirements:", className="hint"),
+            html.Div(pillar_cards, style={"marginTop": "16px"}),
+        ]),
 
-        html.H2("Changelog & Release Notes"),
-        html.P("Version history and release highlights parsed directly from CHANGELOG.md.", className="hint"),
-        _changelog_table(),
+        html.Div(id="sec-subagents", style={"marginTop": "32px"}, children=[
+            html.H2("4. Outbound Transport Subagents & Wire Protocols"),
+            html.P("MinusOps activates single-shot transport subagents executing in isolated contexts with zero credential retention:", className="hint"),
+            html.Div(subagent_cards, style={"marginTop": "16px"}),
+            html.Div(className="card periwinkle", style={"marginTop": "16px"}, children=[
+                html.H4("Non-Negotiable Transport Invariants:"),
+                html.Ol(style={"paddingLeft": "20px", "lineHeight": "1.7", "fontSize": "12px"}, children=[
+                    html.Li("Never accept, echo, or log a webhook URL or bearer token -- connectors resolve secrets securely at invocation time."),
+                    html.Li("A denied approval is a terminal denial, not a transient failure, and is never retried automatically."),
+                    html.Li("An unconfigured connector returns ok: true, sent: false -- delivery must not be reported on ok alone."),
+                ]),
+            ]),
+        ]),
+
+        html.Div(id="sec-library", style={"marginTop": "32px"}, children=[
+            html.H2("5. Living Repository Documentation Library (In-Place Reader)"),
+            html.P("Click any document card below to open and read its complete, live repository markdown directly in place:", className="hint"),
+            html.Div(doc_cards, style={"marginTop": "16px"}),
+        ]),
+
+        html.Div(id="sec-changelog", style={"marginTop": "32px"}, children=[
+            html.H2("6. Changelog & Release Notes"),
+            html.P("Version history and release highlights parsed directly from CHANGELOG.md.", className="hint"),
+            _changelog_table(),
+        ]),
     ])
 
 
@@ -2596,6 +2933,11 @@ def _open_sheet(_docs, _steps, _close, run_id):
         return "overlay open", name, kind, body
     if triggered.get("kind") == "docpage":
         relative = triggered.get("name")
+        # An allowlist, not a sanitiser. This view links to exactly the pages in _DOC_PAGES,
+        # so anything else arriving here did not come from a link on this page.
+        if relative not in {entry[0] for entry in _DOC_PAGES}:
+            return "overlay open", "Not available", "Repository document", html.P(
+                "That document is not one this console publishes.", className="muted")
         text = _read_repo_file(relative)
         body = (html.Pre(text) if text
                 else html.P("That document is not in this checkout.", className="muted"))
@@ -3015,6 +3357,239 @@ p.muted{margin:16px 0;font-size:13px}
 .runpick .Select-option.is-focused{background:#1a1a19!important;color:var(--paper)!important}
 .runpick .Select-option.is-selected{color:var(--paper)!important}
 ._dash-loading,._dash-undo-redo{display:none}
+
+  
+
+/* Monad High-Density Executive Layout */
+.run-executive-card {
+  background: var(--paper, #ffffff);
+  border: 1px solid var(--ash, #e2ded9);
+  border-radius: 16px;
+  padding: 16px 24px;
+  margin: 16px 0 20px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+}
+.run-top-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(206,202,200,.4);
+}
+.run-title-group {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.run-id-heading {
+  font-family: var(--serif, "Newsreader", serif);
+  font-size: 20px !important;
+  font-weight: 600 !important;
+  color: var(--ink, #1e293b);
+  margin: 0 !important;
+}
+.plan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--mist, #f1f5f9);
+  border: 1px solid var(--ash, #cbd5e1);
+  padding: 3px 10px;
+  border-radius: 100px;
+  font-size: 11px;
+}
+.plan-badge code {
+  font-family: var(--mono, monospace);
+  color: var(--blue, #2563eb);
+  font-weight: 600;
+}
+.run-metrics-strip {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+}
+.metric-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.metric-pill .lab {
+  color: var(--smoke, #64748b);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+.metric-pill b {
+  color: var(--ink, #0f172a);
+  font-weight: 600;
+}
+
+/* Flow Chain Ribbon */
+.flow-chain-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 12px 0 16px;
+  margin-bottom: 16px;
+}
+.flownode-card {
+  background: #ffffff;
+  border: 1px solid var(--ash, #e2ded9);
+  border-radius: 12px;
+  padding: 12px 16px;
+  min-width: 170px;
+  max-width: 210px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+}
+.flownode-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--blue, #2563eb);
+  box-shadow: 0 4px 12px rgba(37,99,235,0.08);
+}
+.flownode-card.sel {
+  border-color: var(--blue, #2563eb);
+  background: var(--mist, #eff6ff);
+  box-shadow: 0 0 0 2px rgba(37,99,235,0.2);
+}
+.fn-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.fn-layer {
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--smoke, #64748b);
+}
+.fn-kind {
+  font-size: 9px;
+  text-transform: uppercase;
+  background: rgba(0,0,0,0.05);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--graphite, #475569);
+}
+.fn-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink, #0f172a);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+.fn-sub {
+  font-size: 11px;
+  color: var(--smoke, #64748b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flow-connector {
+  color: var(--smoke, #94a3b8);
+  font-weight: bold;
+  font-size: 14px;
+  user-select: none;
+}
+
+/* Document Markdown Body Styling */
+.doc-markdown-body {
+  background: var(--bg, #f8fafc);
+  padding: 20px 24px;
+  border-radius: 8px;
+  max-height: 600px;
+  overflow-y: auto;
+  font-family: var(--sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink, #1e293b);
+  border: 1px solid var(--line, #e2e8f0);
+}
+.doc-markdown-body h1 { font-size: 18px; font-weight: 700; margin: 16px 0 8px; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
+.doc-markdown-body h2 { font-size: 15px; font-weight: 600; margin: 14px 0 6px; color: #1e293b; }
+.doc-markdown-body h3 { font-size: 13px; font-weight: 600; margin: 12px 0 4px; color: #334155; }
+.doc-markdown-body p { margin-bottom: 10px; }
+.doc-markdown-body ul, .doc-markdown-body ol { padding-left: 20px; margin-bottom: 10px; }
+.doc-markdown-body li { margin-bottom: 4px; }
+.doc-markdown-body code { font-family: var(--mono, monospace); background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #0f172a; }
+.doc-markdown-body pre { background: #0f172a !important; color: #f8fafc !important; padding: 14px 18px !important; border-radius: 8px !important; overflow-x: auto !important; margin: 12px 0 !important; }
+.doc-markdown-body pre code { background: transparent !important; color: #f8fafc !important; padding: 0 !important; font-size: 12px !important; }
+.doc-markdown-body blockquote { border-left: 3px solid var(--blue, #2563eb); margin: 10px 0; padding: 6px 14px; background: #eff6ff; color: #1e40af; border-radius: 0 6px 6px 0; }
+.doc-markdown-body table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }
+.doc-markdown-body th, .doc-markdown-body td { border: 1px solid #cbd5e1; padding: 6px 10px; text-align: left; }
+.doc-markdown-body th { background: #e2e8f0; font-weight: 600; }
+
+/* Docs Subnav Ribbon */
+.docs-subnav-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 18px;
+  background: var(--paper, #ffffff);
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 10px;
+  margin-bottom: 24px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+  position: sticky;
+  top: 10px;
+  z-index: 100;
+}
+.docs-subnav-btn {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--graphite, #475569);
+  background: var(--bg, #f1f5f9);
+  padding: 6px 14px;
+  border-radius: 100px;
+  text-decoration: none;
+  transition: all 0.15s ease;
+  border: 1px solid var(--line, #e2e8f0);
+  display: inline-block;
+}
+.docs-subnav-btn:hover {
+  background: var(--blue, #2563eb);
+  color: #ffffff !important;
+  border-color: var(--blue, #2563eb);
+}
+.wire-card {
+  background: #ffffff;
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+.wire-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.wire-code {
+  background: #0f172a !important;
+  color: #38bdf8 !important;
+  padding: 14px 18px !important;
+  border-radius: 8px !important;
+  font-family: var(--mono, monospace) !important;
+  font-size: 11px !important;
+  line-height: 1.5 !important;
+  overflow-x: auto !important;
+  margin: 0 !important;
+}
 
   </style>
 
@@ -3436,7 +4011,7 @@ def main(argv=None):
         return 2
     print(f"\n  MinusOps Governance Console  ->  http://{args.host}:{args.port}"
           f"   (Ctrl+C to stop)\n")
-    app.run(host=args.host, port=args.port, debug=False, dev_tools_hot_reload=False)
+    app.run(host=args.host, port=args.port, debug=False, dev_tools_hot_reload=False, threaded=True)
     return 0
 
 

@@ -163,7 +163,7 @@ def _packages_check():
     missing = [pkg for pkg in ("dash", "plotly") if importlib.util.find_spec(pkg) is None]
     if missing:
         return _check("python packages", "warn", f"missing: {', '.join(missing)}",
-                      "pip install -r requirements.txt (needed only for `app/dashboard_app.py`)")
+                      "pip install -r requirements.txt (needed only for `app/console_app.py`)")
     return _check("python packages", "ok", "dash, plotly importable")
 
 

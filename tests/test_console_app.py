@@ -788,3 +788,31 @@ def test_the_workspace_pages_carry_no_run_identity():
     for view in ("docs", "policies", "about", "settings"):
         _bar, band, _content = console_app._render(view, None, "data", None)
         assert "chip" not in json.dumps(band, default=str), view
+
+
+# --- The console reads the repository, and only the repository -------------------------------
+
+def test_the_repo_reader_refuses_to_leave_the_repository():
+    """`relative` arrives from a Dash callback's triggered_id, which the browser supplies, so
+    it is caller input however fixed the component ids look on the server. os.path.join gives
+    an absolute argument total precedence, and "../.." walks out of the tree -- one of these
+    resolves to the operator's AWS credentials."""
+
+    assert console_app._read_repo_file("README.md"), "a real repo doc must still be readable"
+
+    for escape in ("../../.aws/credentials",
+                   "../../../../etc/passwd",
+                   os.path.abspath(os.sep),
+                   "..\\..\\.aws\\credentials"):
+        assert console_app._read_repo_file(escape) is None, escape
+
+
+def test_the_doc_callback_serves_only_pages_the_console_publishes():
+    """Containment keeps a read inside the repo; the allowlist keeps it to the pages this view
+    actually links. A repo file is not automatically a page worth serving over HTTP."""
+
+    published = {entry[0] for entry in console_app._DOC_PAGES}
+    assert "README.md" in published
+    # Something inside the repo but never linked from this view.
+    assert "core/governance/plan_gate.py" not in published
+

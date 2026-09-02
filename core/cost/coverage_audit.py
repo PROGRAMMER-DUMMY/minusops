@@ -194,13 +194,13 @@ def _print_human(coverage):
               "AWS Price List catalog — never guess.", file=sys.stderr)
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="Cost-coverage audit (never prices, only classifies)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("audit", help="classify every resource type in a report's plan.json")
     a.add_argument("--report-dir", required=True)
     a.add_argument("--json", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.cmd == "audit":
         coverage = audit(args.report_dir)
