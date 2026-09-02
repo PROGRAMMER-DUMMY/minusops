@@ -165,6 +165,94 @@ def fold_badges(plan_json, addresses):
     return badges
 
 
+# The argument that names what a config resource configures. A fold is only drawn when
+# the plan states this reference, so a folded type with no entry here never folds.
+_FOLD_PARENT_ATTR = {
+    "aws_s3_bucket_server_side_encryption_configuration": "bucket",
+    "aws_s3_bucket_public_access_block": "bucket",
+    "aws_s3_bucket_versioning": "bucket",
+    "aws_s3_bucket_lifecycle_configuration": "bucket",
+    "aws_s3_bucket_replication_configuration": "bucket",
+    "aws_s3_bucket_object_lock_configuration": "bucket",
+    "aws_s3_bucket_policy": "bucket",
+    "aws_kms_alias": "target_key_id",
+    "aws_iam_role_policy": "role",
+    "aws_iam_role_policy_attachment": "role",
+}
+
+
+def _address_key(address):
+    """The for_each/count key in an address: `...buckets["raw"]` -> `raw`."""
+    m = re.search(r'\["([^"]+)"\]', address or "")
+    return m.group(1) if m else ""
+
+
+def _ref_address_forms(ref):
+    """The addresses one Terraform reference string can name.
+
+    Terraform writes `aws_s3_bucket.b`, `aws_s3_bucket.b.id`, `aws_s3_bucket.b["raw"]`
+    and `aws_s3_bucket.b["raw"].id` for the same resource, so the attribute suffix is
+    offered as a second form. Only a form matching a real address is ever used, which is
+    what keeps the stripped-too-far case (`aws_s3_bucket`) harmless.
+    """
+    ref = (ref or "").strip()
+    if not ref:
+        return []
+    return [ref, re.sub(r"\.[A-Za-z_][A-Za-z0-9_]*$", "", ref)]
+
+
+def fold_parents(plan_json, addresses):
+    """Map each config resource to the address of the resource it configures.
+
+    Only a reference the plan declares links the two. Matching on the Terraform local
+    name instead folds nothing on a real plan, because a real configuration names the
+    parts separately: `medallion_buckets` is configured by `medallion_versioning` and
+    the two names never meet.
+
+    Two shapes carry the link. A direct `bucket = aws_s3_bucket.b["raw"].id` names the
+    instance outright. A for_each'd config resource can only say `each.value`, and names
+    its parent in `for_each_expression` -- the same pair intent_assertions reads. In that
+    shape a config instance configures the parent instance sharing its key, so a key
+    mismatch is not a fold; without that check one versioning resource claims every zone.
+
+    A reference that stays ambiguous is left out, and the caller keeps the resource as
+    its own node rather than guessing at a parent.
+    """
+    by_config = {r.get("address") or f"{r.get('type')}.{r.get('name')}": r
+                 for r in _config_resources(plan_json)}
+    known = set(addresses)
+    by_base = {}
+    for address in addresses:
+        by_base.setdefault(_base_address(address), []).append(address)
+
+    parents = {}
+    for change in (plan_json or {}).get("resource_changes", []):
+        address = change.get("address")
+        attr = _FOLD_PARENT_ATTR.get(change.get("type", ""))
+        if not attr or address not in known:
+            continue
+        config = by_config.get(_base_address(address))
+        if not config:
+            continue
+        refs = list(((config.get("expressions") or {}).get(attr) or {}).get("references") or [])
+        refs += list((config.get("for_each_expression") or {}).get("references") or [])
+        key = _address_key(address)
+        for ref in refs:
+            for form in _ref_address_forms(ref):
+                if form in known and form != address:
+                    parents[address] = form
+                    break
+                siblings = [a for a in by_base.get(form, []) if a != address]
+                if key:
+                    siblings = [a for a in siblings if _address_key(a) == key]
+                if len(siblings) == 1:
+                    parents[address] = siblings[0]
+                    break
+            if address in parents:
+                break
+    return parents
+
+
 def _base_address(address):
     return re.sub(r'\[[^\]]*\]$', "", address or "")
 
