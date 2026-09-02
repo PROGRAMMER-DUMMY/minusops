@@ -779,3 +779,113 @@ def test_etag_drift_note_silent_on_genuine_change_but_resource_still_shown(tmp_p
     # the underlying change must still appear normally -- not suppressed or downplayed
     assert "AWS S3 Object" in html_doc
     assert '<span class="badge update">update</span>' in html_doc
+
+
+# --- config resources fold onto the resource they configure -------------------------------
+# A real configuration names the parts separately, which is what the old name-matching
+# collapse could not see. These addresses are the shapes Terraform actually emits.
+CONFIGURED_PLAN = {
+    "format_version": "1.2",
+    "resource_changes": [
+        {"address": 'aws_s3_bucket.medallion["raw"]', "type": "aws_s3_bucket",
+         "name": "medallion", "mode": "managed", "change": {"actions": ["create"]}},
+        {"address": 'aws_s3_bucket.medallion["curated"]', "type": "aws_s3_bucket",
+         "name": "medallion", "mode": "managed", "change": {"actions": ["create"]}},
+        {"address": 'aws_s3_bucket_versioning.medallion_versioning["raw"]',
+         "type": "aws_s3_bucket_versioning", "name": "medallion_versioning",
+         "mode": "managed", "change": {"actions": ["create"]}},
+        {"address": 'aws_s3_bucket_versioning.medallion_versioning["curated"]',
+         "type": "aws_s3_bucket_versioning", "name": "medallion_versioning",
+         "mode": "managed", "change": {"actions": ["create"]}},
+        {"address": "aws_s3_bucket_lifecycle_configuration.raw_expiry",
+         "type": "aws_s3_bucket_lifecycle_configuration", "name": "raw_expiry",
+         "mode": "managed", "change": {"actions": ["create"]}},
+    ],
+    "configuration": {"root_module": {"resources": [
+        {"address": "aws_s3_bucket_versioning.medallion_versioning",
+         "type": "aws_s3_bucket_versioning", "name": "medallion_versioning",
+         # a for_each'd config resource can only say `each.value`; the parent is in for_each
+         "expressions": {"bucket": {"references": ["each.value.id", "each.value"]}},
+         "for_each_expression": {"references": ["aws_s3_bucket.medallion"]}},
+        {"address": "aws_s3_bucket_lifecycle_configuration.raw_expiry",
+         "type": "aws_s3_bucket_lifecycle_configuration", "name": "raw_expiry",
+         # the direct shape, which names the instance outright
+         "expressions": {"bucket": {"references": [
+             'aws_s3_bucket.medallion["raw"].id', 'aws_s3_bucket.medallion["raw"]',
+             "aws_s3_bucket.medallion"]}}},
+    ]}},
+    "output_changes": {},
+}
+
+
+def test_config_resources_fold_into_the_bucket_they_configure():
+    rows, _ = reporter.summarize(CONFIGURED_PLAN)
+    assert len(rows) == 5
+    comps = reporter._collapse_components(rows, CONFIGURED_PLAN)
+    assert [c["address"] for c in comps] == [
+        'aws_s3_bucket.medallion["curated"]', 'aws_s3_bucket.medallion["raw"]']
+    by_address = {c["address"]: c for c in comps}
+    # raw takes its versioning AND the lifecycle rule aimed at it by name
+    assert by_address['aws_s3_bucket.medallion["raw"]']["config_count"] == 2
+    assert by_address['aws_s3_bucket.medallion["curated"]']["config_count"] == 1
+
+
+def test_a_for_each_config_resource_does_not_claim_every_instance():
+    """The `curated` versioning resource configures the `curated` bucket, and only it."""
+    parents = reporter.drawio_generator.fold_parents(
+        CONFIGURED_PLAN, [r["address"] for r in reporter.summarize(CONFIGURED_PLAN)[0]])
+    assert parents['aws_s3_bucket_versioning.medallion_versioning["curated"]'] == \
+        'aws_s3_bucket.medallion["curated"]'
+    assert parents['aws_s3_bucket_versioning.medallion_versioning["raw"]'] == \
+        'aws_s3_bucket.medallion["raw"]'
+
+
+def test_a_config_resource_the_plan_does_not_link_stays_its_own_node():
+    """No declared reference, no fold. A guess here invents a relationship."""
+    plan = json.loads(json.dumps(CONFIGURED_PLAN))
+    plan["configuration"]["root_module"]["resources"] = []
+    comps = reporter._collapse_components(reporter.summarize(plan)[0], plan)
+    assert len(comps) == 5
+
+
+def test_collapse_without_a_plan_folds_nothing_it_cannot_establish():
+    comps = reporter._collapse_components(reporter.summarize(CONFIGURED_PLAN)[0], None)
+    assert len(comps) == 5
+
+
+# --- the tier a node lands in comes from the shared classifier -----------------------------
+def test_tiers_agree_with_the_shared_classifier():
+    """These four were the ones the diagram's private cascade got wrong."""
+    assert reporter._tier_for("aws_lakeformation_permissions") == "storage"
+    assert reporter._tier_for("aws_security_group") == "security"
+    assert reporter._tier_for("aws_athena_workgroup") == "compute"
+    assert reporter._tier_for("aws_redshiftserverless_namespace") == "compute"
+
+
+# --- edges leave on the side that faces the target -----------------------------------------
+def test_a_leftward_hop_leaves_the_source_left_edge():
+    d, _kind = reporter._flow_edge((520, 100), (24, 300), 44, "data")
+    # out of the source's LEFT edge (520), into the target's RIGHT edge (24+232)
+    assert d.startswith("M520,122")
+    assert d.endswith("H256")
+
+
+def test_a_same_column_hop_brackets_out_into_the_gutter():
+    d, _kind = reporter._flow_edge((272, 100), (272, 400), 44, "data")
+    assert d == "M272,122 H264 V422 H272"
+
+
+def test_a_rightward_hop_still_runs_left_to_right():
+    d, _kind = reporter._flow_edge((24, 100), (272, 300), 44, "data")
+    assert d.startswith("M256,122")
+    assert d.endswith("H272")
+
+
+def test_an_empty_tier_keeps_its_group_but_draws_no_heading():
+    """The group id is a contract; a labelled empty column is a false statement."""
+    root = ET.fromstring(reporter.build_svg(
+        reporter.summarize(PLAN)[0], "t", "aws", "abc123", "2026-01-01", plan=PLAN))
+    groups = {el.attrib["id"]: el for el in root.iter(SVG_NS + "g") if "id" in el.attrib}
+    assert "tier-sources" in groups                       # still emitted, in spec order
+    assert list(groups["tier-sources"]) == []             # and drawn as nothing
+    assert list(groups["tier-storage"]), "an occupied tier still draws its column"

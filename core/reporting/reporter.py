@@ -92,21 +92,36 @@ TIER_X = {"sources": 24, "storage": 272, "compute": 520, "orchestration": 768, "
 ACTION_TINT = {"create": "#7AA116", "update": "#ED7100", "delete": "#DD344C", "no-op": "#475569"}
 
 
+# The roles architecture_model assigns, mapped onto this diagram's columns. Five columns
+# leave no room for a catalog of its own, so a catalog sits with the storage it describes;
+# security and network share the SECURITY & IAM band at the foot.
+_ROLE_TIER = {
+    "ingest": "sources",
+    "stage": "storage", "store_other": "storage", "catalog": "storage",
+    "transform": "compute", "consume": "compute",
+    "orchestrate": "orchestration",
+    "observability": "observability",
+    "security": "security", "network": "security",
+}
+
+
 def _tier_for(rtype):
-    t = rtype.lower()
-    if any(k in t for k in ("iam", "kms", "_policy", "_role", "public_access_block", "encryption")):
-        return "security"
-    if any(t.startswith(k) or k in t for k in ("cloudwatch_event", "s3_bucket_notification", "api_gateway", "sns_topic_subscription")):
-        return "sources"
-    if any(k in t for k in ("sfn_state_machine", "scheduler", "mwaa", "datapipeline", "stepfunction")):
-        return "orchestration"
-    if any(k in t for k in ("glue_job", "glue_crawler", "lambda", "emr", "ecs", "batch")):
-        return "compute"
-    if any(k in t for k in ("cloudwatch_metric_alarm", "cloudwatch_log_group", "sns", "budgets", "_ce_", "anomaly")):
-        return "observability"
-    if any(k in t for k in ("s3_bucket", "s3_object", "glue_catalog", "dynamodb", "sqs_queue", "rds", "redshift", "athena")):
-        return "storage"
-    return "compute"  # honest fallback (spec §5)
+    """Which column a resource belongs in, from the classifier the rest of the tool uses.
+
+    This was a second, independent substring cascade, and it disagreed with the shared one
+    on exactly the resources it mattered for. Its fallback was "compute", so any type it
+    had no rule for landed there: six Lake Formation resources and a security group were
+    drawn as COMPUTE in the same evidence bundle where dataflow.svg drew them as
+    governance. Athena and Redshift matched its storage rule and were drawn as STORAGE
+    while dataflow.svg drew them as consumption. A reader holding both cannot tell which
+    one is lying.
+
+    The fallback is still compute, which is spec v2 §5's honest default -- the difference is
+    that it now catches only what neither classifier can place, instead of everything the
+    weaker one had no line for.
+    """
+    import architecture_model as am
+    return _ROLE_TIER.get(am.classify_role(rtype), "compute")
 
 
 def _humanize(rtype):
@@ -169,7 +184,9 @@ def summarize(data):
 # --- baseline SVG (conforms to docs/architecture_svg_spec.md) --------------
 def _fit_text(value, limit=28):
     value = str(value)
-    return value if len(value) <= limit else value[: max(0, limit - 1)] + "."
+    # An ellipsis, not a full stop: "Analytics Workgro." reads as a finished word plus a
+    # typo, where "Analytics Workgro…" reads as what it is.
+    return value if len(value) <= limit else value[: max(0, limit - 1)].rstrip() + "…"
 
 
 def _resource_type_counts(rows):
@@ -226,19 +243,57 @@ def _service_group(rtype):
     return rtype
 
 
-def _collapse_components(rows):
+def _collapse_components(rows, plan=None):
     """
-    Collapse a flat resource list into logical service components — a service plus its
-    config resources (e.g. an S3 bucket with its versioning/lifecycle/encryption/PAB) become
-    one node. Generalizes the clean per-service look to ANY plan, not just one blueprint.
+    Collapse a flat resource list into logical service components — a service plus the
+    resources that configure it (versioning, lifecycle, encryption, public-access block)
+    become one node.
+
+    A config resource joins its parent where the plan DECLARES the reference, which is
+    what drawio_generator.fold_parents reads. Grouping on the Terraform local name, which
+    is all this used to do, folds nothing on a real plan: the parts are named separately,
+    so `medallion_buckets` never meets `medallion_versioning`. That left the lakehouse's
+    eighteen S3 rows as eighteen peer nodes, and the data-flow spine was thirteen
+    near-identical buckets with colliding labels instead of three medallion zones.
+
+    The name grouping stays as a second rule, for the plans that do name a config after
+    the resource it configures.
     """
+    parent = {r["address"]: r["address"] for r in rows}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    declared = drawio_generator.fold_parents(plan, list(parent)) if plan else {}
+    for child, anchor in declared.items():
+        if child in parent and anchor in parent:
+            union(child, anchor)
+
+    by_name = {}
+    for r in rows:
+        by_name.setdefault((_service_group(r["type"]), r["name"], _instance_key(r["address"])),
+                           []).append(r["address"])
+    for members in by_name.values():
+        for address in members[1:]:
+            union(address, members[0])
+
     groups = {}
     for r in rows:
-        key = (_service_group(r["type"]), r["name"], _instance_key(r["address"]))
-        groups.setdefault(key, []).append(r)
+        groups.setdefault(find(r["address"]), []).append(r)
+
     comps = []
     for members in groups.values():
-        primary = min(members, key=lambda m: len(m["type"]))   # base type (shortest) is the node
+        # The resource that stands on its own is the node; a folded one never is, however
+        # short its type name reads.
+        primary = min(members, key=lambda m: (drawio_generator.is_folded(m["type"]), len(m["type"])))
         actions = {m["action"] for m in members}
         comp = dict(primary)
         comp["action"] = next((a for a in ("delete", "update", "create", "no-op") if a in actions), "create")
@@ -248,8 +303,32 @@ def _collapse_components(rows):
     return comps
 
 
+# Column pitch: a 232-wide card, then a 16px gutter. Edges run down the gutters, which
+# is why the edge layer paints UNDER the cards -- a stray crossing is hidden rather than
+# scribbled over a node.
+_CARD_W = 232
+_GUTTER_HALF = 8
+
+
 def _flow_edge(p1, p2, node_h, kind):
-    return (p1[0] + 232, p1[1] + node_h // 2, p2[0], p2[1] + node_h // 2, kind)
+    """Route one hop between two placed cards, leaving on the side that faces the target.
+
+    This used to leave the source's RIGHT edge and enter the target's LEFT one always,
+    which only describes a hop that runs rightward. Most of these do not: Lake Formation
+    describes a bucket one column to its left, and Athena writes a results bucket in its
+    own column. Those arrows doubled back underneath the card stack, so the diagram drew
+    four edges and showed none -- while the legend advertised "data flow" and "control".
+    """
+    sx, sy = p1
+    tx, ty = p2
+    y1, y2 = sy + node_h // 2, ty + node_h // 2
+    if tx > sx:                       # rightward: out the right, in the left
+        x1, x2, lane = sx + _CARD_W, tx, tx - _GUTTER_HALF
+    elif tx < sx:                     # leftward: out the left, in the right
+        x1, x2, lane = sx, tx + _CARD_W, tx + _CARD_W + _GUTTER_HALF
+    else:                             # same column: a bracket in the gutter beside it
+        x1, x2, lane = sx, tx, sx - _GUTTER_HALF
+    return f"M{x1},{y1} H{lane} V{y2} H{x2}", kind
 
 
 def declared_hops(plan):
@@ -661,9 +740,17 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
         return html.escape(str(s), quote=True)
 
     has_kms = any(r["type"].startswith("aws_kms_key") for r in rows)
-    rows = _collapse_components(rows)   # one node per service (+ its config), not a pile
+    rows = _collapse_components(rows, plan)   # one node per service (+ its config), not a pile
     by_tier = {t: [r for r in rows if r["tier"] == t] for t in TIERS}
-    visible_tiers = ["sources", "storage", "compute", "orchestration", "observability"]
+    # Every tier group is emitted, in spec order, because the group ids are a contract a
+    # consumer reads. An EMPTY one is emitted empty: SOURCES was drawn as a heading and a
+    # coloured rule over 232px of blank canvas on every plan whose data already lives in
+    # the account, and a labelled empty column reads as "the sources are missing" rather
+    # than "there are none". Occupied columns reflow so they stay flush left.
+    column_tiers = ["sources", "storage", "compute", "orchestration", "observability"]
+    visible_tiers = [t for t in column_tiers if by_tier.get(t)]
+    tier_x = {t: TIER_X["sources"] + i * (_CARD_W + 2 * _GUTTER_HALF)
+              for i, t in enumerate(visible_tiers)}
     node_h, gap = 44, 8
 
     # The canvas grows with the tallest tier instead of hiding overflow — a busy
@@ -688,7 +775,7 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     for t in visible_tiers:
         y = 108
         for r in by_tier[t]:
-            pos[r["address"]] = (TIER_X[t], y)
+            pos[r["address"]] = (tier_x[t], y)
             y += node_h + gap
 
     parts = [
@@ -722,18 +809,20 @@ def build_svg(rows, template, cloud, short_hash, ts, findings=None, plan=None):
     # edges — real flow anchored to node positions
     flow = _anchored_flow(plan, pos, node_h)
     edges = ['<g id="edges">']
-    for x1, y1, x2, y2, kind in flow:
-        mx = (x1 + x2) // 2
+    for d, kind in flow:
         color = "#475569" if kind == "ctrl" else "#1e293b"
         dash = ' stroke-dasharray="6 5"' if kind == "ctrl" else ''
-        edges.append(f'<path d="M{x1},{y1} C{mx},{y1} {mx},{y2} {x2},{y2}" stroke="{color}" '
-                     f'stroke-width="1.6" fill="none" marker-end="url(#arrow)" opacity="0.6"{dash}/>')
+        edges.append(f'<path d="{d}" stroke="{color}" stroke-width="1.6" fill="none" '
+                     f'stroke-linejoin="round" marker-end="url(#arrow)" opacity="0.6"{dash}/>')
     edges.append('</g>')
     parts += edges
 
     # tier columns + nodes (with encryption markers and the governance finding overlay)
-    for t in visible_tiers:
-        x = TIER_X[t]
+    for t in column_tiers:
+        if not by_tier.get(t):
+            parts.append(f'<g id="tier-{t}"></g>')
+            continue
+        x = tier_x[t]
         parts.append(f'<g id="tier-{t}"><text class="tier-h" x="{x}" y="92">{t.upper()}</text>'
                      f'<rect x="{x}" y="100" width="232" height="2" fill="{TIER_HUE[t]}"/>')
         items = by_tier[t]
@@ -853,13 +942,12 @@ _V3_ROLE = {
     "aws_lambda_function": "function",
 }
 def _v3_role(r):
-    """A short, deterministic role line for a node (falls back to zone key / action)."""
+    """A short, deterministic role line for a node (falls back to config count / action)."""
     role = _V3_ROLE.get(r["type"])
     if role:
         return role
     if r["type"] == "aws_s3_bucket":
-        key = _instance_key(r["address"])
-        return f"{key} zone" if key in ("bronze", "silver", "gold") else "object store"
+        return "object store"
     cfg = r.get("config_count", 0)
     return f"+{cfg} config" if cfg else r["action"]
 
@@ -948,7 +1036,7 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
     def esc(s):
         return html.escape(str(s), quote=True)
 
-    comps = _collapse_components(rows)
+    comps = _collapse_components(rows, plan)
     for c in comps:
         c["role"] = am.classify_role(c["type"], _instance_key(c["address"]), c.get("name", ""))
     R = {}
@@ -1043,6 +1131,10 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
     def nm(rt):
         return _V3_NICE.get(rt, _humanize(rt))
 
+    def title_of(c):
+        label = _instance_key(c["address"]) or c.get("name") or ""
+        return re.sub(r"[_-]+", " ", label).strip().title() or nm(c["type"])
+
     def tnode(c, cxp, y, s, hue, sub=None):
         uid = re.sub(r"\W", "", c["address"])
         if sub is None:
@@ -1051,7 +1143,7 @@ def build_dataflow_svg(rows, template, cloud, short_hash, ts, findings=None, pla
                 sub = "resource"
         return (f'<g class="node" data-address="{esc(c["address"])}" data-action="{esc(c.get("action", ""))}">'
                 + _df_embed_icon(c["type"], uid, cxp - s // 2, y, s, hue, icons_dir)
-                + f'<text x="{cxp}" y="{y + s + 15}" text-anchor="middle" style="font:600 12px Inter,sans-serif;fill:{TEXT_C}">{esc(_fit_text(nm(c["type"]), 18))}</text>'
+                + f'<text x="{cxp}" y="{y + s + 15}" text-anchor="middle" style="font:600 12px Inter,sans-serif;fill:{TEXT_C}">{esc(_fit_text(title_of(c), 18))}</text>'
                 f'<text x="{cxp}" y="{y + s + 30}" text-anchor="middle" style="font:400 10px \'JetBrains Mono\',monospace;fill:{MUTED_C}">{esc(_fit_text(sub, 20))}</text></g>')
 
     def zone(x, y, w, h, label, col=None):
