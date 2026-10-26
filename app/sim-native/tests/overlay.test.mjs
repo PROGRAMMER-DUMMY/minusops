@@ -164,6 +164,19 @@ test('preview compiler preserves failure status and reports interrupted children
     await writeFile(cli, 'process.exit(process.cwd().endsWith(require("node:path").join("apps", "sim")) && process.argv.includes("--webpack") ? 17 : 9)')
     const result = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
     assert.equal(result.status, 17)
+    const workerPath = path.join(directory, 'page-worker.cjs')
+    await writeFile(workerPath, 'exports.limits = () => ({heap: require("node:v8").getHeapStatistics().heap_size_limit / 1024**2, secret: process.env.BETTER_AUTH_SECRET})')
+    await writeFile(cli, `const assert = require('node:assert/strict');
+      const { Worker } = require(${JSON.stringify(require.resolve('next/dist/lib/worker'))});
+      const worker = new Worker(${JSON.stringify(workerPath)}, {numWorkers: 1, isolatedMemory: true,
+        debuggerPortOffset: -1, exposedMethods: ['limits']});
+      (async () => { try { const {heap, secret} = await worker.limits();
+        assert.ok(heap >= 8192 && heap < 8300, String(heap));
+        assert.match(secret, /^[a-f0-9]{64}$/); assert.notEqual(secret, 'existing-build-secret');
+      } finally { await worker.end() } })().catch(error => { console.error(error); process.exitCode = 1 });`)
+    const worker = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000,
+      env: { ...process.env, BETTER_AUTH_SECRET: 'existing-build-secret', NODE_OPTIONS: '--max-old-space-size=12288' } })
+    assert.equal(worker.status, 0, worker.stderr)
     if (process.platform !== 'win32') {
       await writeFile(cli, 'process.kill(process.pid, "SIGTERM")')
       const killed = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
