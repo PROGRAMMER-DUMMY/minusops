@@ -19,10 +19,11 @@ fs.writeFileSync(configPath, JSON.stringify({ extends: path.join(root, 'tsconfig
 // Invoke the pinned binary directly so a timeout cannot leave its Windows child running.
 const compiler = require(path.join(nativeRoot, 'node_modules/typescript/lib/getExePath.js')).default()
 const result = spawnSync(compiler, ['--project', configPath, '--pretty', 'false'], { cwd: root, encoding: 'utf8', timeout: 600000,
-  killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GOMEMLIMIT: '8GiB' } })
+  killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GOMEMLIMIT: '10GiB' } })
 if (result.error || result.signal) {
   console.error('Native compiler did not finish:', result.error?.code ?? result.signal)
   if (result.stderr) console.error(result.stderr.slice(-4000))
+  if (fs.existsSync('/sys/fs/cgroup/memory.events')) console.error(fs.readFileSync('/sys/fs/cgroup/memory.events', 'utf8'))
   process.exit(1)
 }
 const diagnostics = result.stdout.split('\n').filter((line) => line.includes('error TS'))
