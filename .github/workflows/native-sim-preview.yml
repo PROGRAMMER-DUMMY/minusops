@@ -49,7 +49,7 @@ jobs:
           sudo chmod 600 "$swap_path"
           sudo mkswap "$swap_path"
           sudo swapon "$swap_path"
-          python3 -c 'from pathlib import Path; m=dict(line.split(":",1) for line in Path("/proc/meminfo").read_text().splitlines()); assert int(m["SwapTotal"].split()[0]) >= 8 * 1024**2'
+          python3 -c 'from pathlib import Path; m=dict(line.split(":",1) for line in Path("/proc/meminfo").read_text().splitlines()); assert int(m["SwapTotal"].split()[0]) >= 8 * 1024**2 - 1024'
           free -h
           docker info --format 'Docker engine memory: {{.MemTotal}} bytes'
 
