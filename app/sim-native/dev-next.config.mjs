@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import native from './next.config.native.mjs'
 
 const require = createRequire(import.meta.url)
@@ -19,10 +19,14 @@ export default {
   },
   webpack(config, { isServer, webpack }) {
     if (!isServer) {
+      const password = fileURLToPath(new URL('./browser-password.mjs', import.meta.url))
       config.resolve.alias = { ...config.resolve.alias,
         '@sim/platform-authz/workspace$': '@sim/platform-authz/predicates',
-        '@/lib/core/security/encryption$': fileURLToPath(new URL('./browser-password.mjs', import.meta.url)) }
+        '@sim/audit$': fileURLToPath(new URL('./types.ts', pathToFileURL(require.resolve('@sim/audit')))),
+        '@/lib/core/security/encryption$': password }
       config.plugins.push(new webpack.DefinePlugin({ 'typeof globalThis.process': JSON.stringify('undefined') }))
+      config.plugins.push(new webpack.NormalModuleReplacementPlugin(
+        /[\\/]lib[\\/]core[\\/]security[\\/]encryption(?:\.ts)?$/, password))
     }
     config.resolve.alias = { ...config.resolve.alias,
       'monaco-editor$': 'monaco-editor/esm/vs/editor/editor.main.js' }

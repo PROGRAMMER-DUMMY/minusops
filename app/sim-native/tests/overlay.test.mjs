@@ -37,28 +37,34 @@ test('browser bundles keep native permission/password helpers and logger fallbac
     await writeFile(path.join(directory, 'package.json'), '{"dependencies":{}}')
     const config = (await import(pathToFileURL(path.join(directory, 'next.config.mjs')).href)).default
     const packages = path.join(directory, 'node_modules/@sim')
-    for (const name of ['utils', 'platform-authz']) await mkdir(path.join(packages, name), { recursive: true })
+    for (const name of ['utils', 'platform-authz', 'audit']) await mkdir(path.join(packages, name), { recursive: true })
     await writeFile(path.join(packages, 'utils/package.json'), JSON.stringify({ exports: {
       './random': './random.js', './client-info': './client-info.js' } }))
     await writeFile(path.join(packages, 'utils/client-info.js'), 'exports.attributeUndeclaredClient = client => client')
     await writeFile(path.join(packages, 'platform-authz/package.json'), JSON.stringify({ exports: {
       './workspace': './workspace.js', './predicates': './predicates.js' } }))
     await writeFile(path.join(packages, 'platform-authz/workspace.js'), 'require("node:net"); throw new Error("Server authz imported by browser")')
+    await writeFile(path.join(packages, 'audit/package.json'), '{"exports":{".":"./index.js"}}')
+    await writeFile(path.join(packages, 'audit/index.js'), 'require("node:net"); throw new Error("Server audit imported by browser")')
     for (const [source, output] of [
       ['packages/utils/src/random.ts', path.join(packages, 'utils/random.js')],
       ['packages/platform-authz/src/predicates.ts', path.join(packages, 'platform-authz/predicates.js')],
       ['packages/logger/src/request-context.ts', path.join(directory, 'context.js')],
+      ['packages/audit/src/types.ts', path.join(packages, 'audit/types.ts')],
     ]) {
       const result = await transform(await readFile(path.join(nativeSource, source), 'utf8'), { loader: 'ts', format: 'esm' })
       await writeFile(output, result.code)
     }
-    const encryption = path.join(directory, 'server-encryption.js')
+    const encryption = path.join(directory, 'lib/core/security/encryption.ts')
+    await mkdir(path.dirname(encryption), { recursive: true })
     await writeFile(encryption, 'export const serverEncryption = true; export { randomBytes } from "node:crypto"')
     await writeFile(path.join(directory, 'browser.js'), `
       const ctx = require('./context.js');
       exports.context = ctx.runWithRequestContext({requestId:'browser'}, () => ctx.getRequestContext());
       exports.allowed = require('@sim/platform-authz/workspace').permissionSatisfies('admin', 'write');
-      exports.password = require('@/lib/core/security/encryption').generatePassword();`)
+      exports.password = require('@/lib/core/security/encryption').generatePassword();
+      exports.resolvedPassword = require('./lib/core/security/encryption.ts').generatePassword();
+      exports.auditResources = require('@sim/audit').AuditResourceType;`)
     await writeFile(path.join(directory, 'server.js'), `
       const ctx = require('./context.js'); const encryption = require('@/lib/core/security/encryption');
       exports.context = ctx.runWithRequestContext({requestId:'server'}, () => ctx.getRequestContext().requestId);
@@ -85,6 +91,8 @@ test('browser bundles keep native permission/password helpers and logger fallbac
           assert.equal(result.context, undefined)
           assert.equal(result.allowed, true)
           assert.equal(result.password.length, 24)
+          assert.equal(result.resolvedPassword.length, 24)
+          assert.equal(Object.keys(result.auditResources).length > 10, true)
           assert.equal(/^[A-Za-z0-9!@#$%^&*()_\-+=]+$/.test(result.password), true)
           assert.doesNotMatch(JSON.stringify(stats.toJson({ all: false, modules: true })), /node:(crypto|net|async_hooks)/)
         }
