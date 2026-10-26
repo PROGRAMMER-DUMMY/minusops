@@ -10,8 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  packages: write
+  contents: write
 
 concurrency:
   group: native-sim-preview-${{ github.ref }}
@@ -29,6 +28,33 @@ jobs:
             app/sim-native
             core/reporting/operations_models.py
           sparse-checkout-cone-mode: false
+
+      - name: Prove private draft transport before building
+        id: export
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="native-sim-private-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trap 'gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes || true' ERR
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title 'Private native Sim build export' --notes 'Internal evaluation image. Keep this release a draft; do not publish.'
+          release_id=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+          test "$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id" --jq .draft)" = true
+          status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id")
+          test "$status" = 404
+          printf 'Non-sensitive private transport check.\n' > "$RUNNER_TEMP/transport-probe.txt"
+          gh release upload "$tag" "$RUNNER_TEMP/transport-probe.txt" --repo "$GITHUB_REPOSITORY"
+          asset_id=$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq '.[0].id')
+          asset_url=$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq '.[0].browser_download_url')
+          status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/$asset_id")
+          test "$status" = 404
+          status=$(curl --silent --show-error --head --location --max-time 20 --output /dev/null --write-out '%{http_code}' "$asset_url")
+          test "$status" = 404
+          printf 'tag=%s\nrelease_id=%s\n' "$tag" "$release_id" >> "$GITHUB_OUTPUT"
 
       - name: Reclaim unused SDKs on this disposable runner
         shell: bash
@@ -90,31 +116,63 @@ jobs:
       - name: Compile internal preview with enforced resource bounds
         run: python3 app/sim-native/docker_build.py compile
 
-      - name: Store image in a new private package for this build
+      - name: Export image only to the proven private draft
+        timeout-minutes: 15
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPORT_TAG: ${{ steps.export.outputs.tag }}
+          EXPORT_ID: ${{ steps.export.outputs.release_id }}
         run: |
           set -euo pipefail
-          owner=${GITHUB_REPOSITORY_OWNER,,}
-          package="minusops-sim-preview-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          image="ghcr.io/$owner/$package:df3db64"
-          # New GHCR packages default to private; never reuse a package with mutable visibility.
-          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-            --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json' \
-            "https://api.github.com/users/$owner/packages/container/$package")
-          test "$status" = 404
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker tag minusops-native-sim-openrouter:df3db64 "$image"
-          docker push "$image"
-          visibility=$(gh api "/users/$owner/packages/container/$package" --jq .visibility)
-          test "$visibility" = private
-          digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
-          printf 'Internal preview: `%s`\n\nImage: `%s`\n\nBrowser and live-provider checks remain pending.\n' "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          private_draft() {
+            test "$(gh api "/repos/$GITHUB_REPOSITORY/releases/$EXPORT_ID" --jq .draft)" = true
+            status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/$EXPORT_ID")
+            test "$status" = 404
+          }
+          private_draft
+          export_dir="$RUNNER_TEMP/native-image-export"
+          mkdir "$export_dir"
+          docker save minusops-native-sim-openrouter:df3db64 | gzip -1 | \
+            split --bytes=1024M --numeric-suffixes=0 --suffix-length=3 - "$export_dir/native-sim-image.tar.gz.part-"
+          export IMAGE_EXPORT_DIR="$export_dir"
+          image_id=$(docker image inspect minusops-native-sim-openrouter:df3db64 --format '{{.Id}}')
+          export IMAGE_ID="$image_id"
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          directory=Path(os.environ['IMAGE_EXPORT_DIR'])
+          parts=[]
+          for p in sorted(directory.glob('native-sim-image.tar.gz.part-*')):
+              with p.open('rb') as handle: digest=hashlib.file_digest(handle,'sha256').hexdigest()
+              parts.append({'name':p.name,'bytes':p.stat().st_size,'sha256':digest})
+          metadata={'version':1,'source_revision':os.environ['GITHUB_SHA'],
+              'image_id':os.environ['IMAGE_ID'],'parts':parts}
+          (directory/'image-metadata.json').write_text(json.dumps(metadata,indent=2))
+          PY
+          for file in "$export_dir"/*; do
+            private_draft
+            gh release upload "$EXPORT_TAG" "$file" --repo "$GITHUB_REPOSITORY"
+          done
+          private_draft
+          for asset_id in $(gh api "/repos/$GITHUB_REPOSITORY/releases/$EXPORT_ID/assets" --jq '.[].id'); do
+            status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/$asset_id")
+            test "$status" = 404
+          done
+          printf 'Private draft export: `%s`\n\nSource: `%s`\n\nImage: `%s`\n\nBrowser and live-provider checks remain pending.\n' \
+            "$EXPORT_TAG" "$GITHUB_SHA" "$IMAGE_ID" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Remove runner registry login
-        if: always()
-        run: docker logout ghcr.io
+      - name: Remove incomplete draft export
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPORT_TAG: ${{ steps.export.outputs.tag }}
+        run: |
+          if test -n "$EXPORT_TAG"; then
+            gh release delete "$EXPORT_TAG" --repo "$GITHUB_REPOSITORY" --yes
+          fi
 
       - name: Release disposable runner swap
         if: always()
