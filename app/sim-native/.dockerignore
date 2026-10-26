@@ -6,6 +6,7 @@
 !patch-manifest.json
 !typecheck.cjs
 !build.mjs
+!build-traces.cjs
 !browser-password.mjs
 !patches
 !patches/**

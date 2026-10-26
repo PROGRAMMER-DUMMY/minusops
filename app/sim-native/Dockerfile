@@ -5,6 +5,7 @@ COPY patches/ /app/
 COPY dev-next.config.mjs /app/apps/sim/next.config.mjs
 COPY browser-password.mjs /app/apps/sim/browser-password.mjs
 COPY patch-manifest.json typecheck.cjs build.mjs /overlay/
+COPY build-traces.cjs /overlay/
 RUN bun build apps/sim/next.config.ts --target=node --format=esm --packages=bundle --outfile=apps/sim/next.config.native.mjs \
     && mv apps/sim/next.config.ts apps/sim/next.config.source.ts \
     && bun build packages/sim-cli/src/runtime.ts --target=node --format=esm --packages=bundle --outfile=packages/sim-cli/dist/runtime.js \

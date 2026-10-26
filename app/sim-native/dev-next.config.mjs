@@ -50,7 +50,7 @@ export default {
   serverExternalPackages: [...new Set([...native.serverExternalPackages, ...sdk])],
   experimental: { ...native.experimental, cpus: 1, webpackMemoryOptimizations: true,
     serverSourceMaps: false, serverMinification: false, webpackBuildWorker: true,
-    parallelServerCompiles: false, turbopackFileSystemCacheForBuild: false,
+    parallelServerCompiles: false, parallelServerBuildTraces: false, turbopackFileSystemCacheForBuild: false,
     turbopackSourceMaps: false, turbopackInputSourceMaps: false,
     turbopackMinify: true, turbopackScopeHoisting: false },
 }

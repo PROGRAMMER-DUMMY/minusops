@@ -138,6 +138,7 @@
     "completion_errors": "With MINUS_OPENROUTER_CHAT=true and complete/status:error, fixed runtime reason messages enter context.errors; unknown reasons use a fixed generic message. Success/accounting/receipts unchanged."
   },
   "build_adapters": {
-    "browser-password.mjs": "3e1ed21273cf9c5986138439eff75659edecd569c75cd2bf92ba9dedf447c811"
+    "browser-password.mjs": "3e1ed21273cf9c5986138439eff75659edecd569c75cd2bf92ba9dedf447c811",
+    "build-traces.cjs": "b0c87c31739336361a68f82e94747ddec95535a2762e7799eb37b30b06c87ef3"
   }
 }
