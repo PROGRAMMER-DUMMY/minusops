@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "upstream_revision": "df3db64ed17a5eb73fef8ccc95da180b0a1cf4b5",
+  "mode": "source-overlay",
+  "preview_build_paths": ["app/workspace/**", "app/api/**", "app/api/**/.*/**", "app/.well-known/**", "app/(landing)/models/**"],
+  "chat_send_path": "unchanged; external local worker owns dispatch",
+  "files": [
+    {
+      "path": "apps/sim/app/api/workspaces/[id]/assistant/key/route.ts",
+      "sha256": "6762a5a64067e4f69f1f54042ee690015698aeff489c05a5393492b3b1673c17",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/api/workspaces/[id]/assistant/models/route.ts",
+      "sha256": "0a27f104cd4ad3272291452d085a29c5b4b5ff781e1f00ba5d6e3234eb6bc8f3",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/api/workspaces/[id]/assistant/preferences/route.ts",
+      "sha256": "72c439b7778385097c2eab3e34876ba38eb47d4807d5b3f6d1dc15216e645481",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/api/workspaces/[id]/assistant/status/route.ts",
+      "sha256": "13e2b932730b03830729bc586fcc1ae0da65cd5a8e66d1362879265852b58059",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-selector.tsx",
+      "sha256": "9a88e82b5e520065cf4fc24660f0615037fedb7fb6a058941e0da402d12a2595",
+      "upstream_sha256": "fb7033b1ebac14bfd8eaafb027fdbb528acccbfdd157673fe7db7c4e73343c41"
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/openrouter-model-selector.tsx",
+      "sha256": "4a1d3b8115dbd12b8f564816a09b12f63f20afeb5ba9ad1cbe480e5240e2e010",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/layout.tsx",
+      "sha256": "28bd0b546ac9242a4f912970824dc1de9cfebd6fe7da83520588a2f1ef08b9c0",
+      "upstream_sha256": "fe03f3413961a1b1221eaff7f6618084a77c5366884b5196da67c8ce11ad58aa"
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/providers/feature-flags-provider.tsx",
+      "sha256": "886f74ae9b561e4db7aecc499c47c9205113d1624e5e6bd4164e8d266273f7b6",
+      "upstream_sha256": "b6ee55a3f4128c30ef2514239ff3dd156b3a56b4d4a570d896641209fb9f418c"
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/settings/components/byok/byok.tsx",
+      "sha256": "a058c3c9c2e01756d9781368a6cd54e309b45c1a8c0147c3e155dbb8551ad75a",
+      "upstream_sha256": "bb55cdd4f0a543a6c471b8985f64ff67b01aea7a887a788b4155c8280bb8c277"
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/settings/components/byok/openrouter-chat-settings.tsx",
+      "sha256": "27ec1d276037270a62ab6e43f28a605a83f14f0360eb5d847698a0b0436200a4",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/w/components/sidebar/components/settings-sidebar/settings-sidebar.tsx",
+      "sha256": "effbb9ad7e6ae4f048fc7682c1b2517c2fb8172a01be9f97a326674bb5857faa",
+      "upstream_sha256": "fc4da09ee30ad7efe75db258157c63ceead9ddc996735e75cf4092f1810cadd4"
+    },
+    {
+      "path": "apps/sim/components/settings/navigation.ts",
+      "sha256": "c708c39ca08a7108b3b35f7ab1c7f6ae7bd17b761c4063ff9b7891b93078f8d4",
+      "upstream_sha256": "0cda4fa911dc8b86361db47b66673238727a1973fec61c2ae964ecd29ee2ec49"
+    },
+    {
+      "path": "apps/sim/hooks/queries/openrouter-chat.ts",
+      "sha256": "ea2278ca065ac93c8dd1250f85e592b159a218e37dbd7402453370277e6364c5",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/lib/api/contracts/openrouter-chat.ts",
+      "sha256": "971d9b0025ea67861777a0a38e2d078800716d715f705c3aa147ddc9a6c517b6",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/lib/mothership/request/handlers/complete.ts",
+      "sha256": "551e4846e9e8f65717e58ff99ef05ad4101b4ffcb9840b326e1d4a79f06e2109",
+      "upstream_sha256": "7eddb65b3cc8e17cb7e56a4c9d1248649950222659f35ce82cc456a9ae5362f6"
+    },
+    {
+      "path": "apps/sim/lib/openrouter-chat/server.ts",
+      "sha256": "f6b1ae1cff1fcba1dffa4a6561cfad70f61700c6c4ce82d8801a9e0c29ecac0d",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/lib/settings/application/workspace-section-access.ts",
+      "sha256": "e92de530bbaaa307c7fcb60e515b31ebfbd74fcc87aa4961c196788c91838a75",
+      "upstream_sha256": "56cd503b03675ed46725fdda04b9459b43a3535de2276b5953570c9ae1f02bc5"
+    },
+    {
+      "path": "apps/sim/stores/openrouter-chat/store.ts",
+      "sha256": "7a596ec2e690900268657739754798abf0d1c8bd005466079d12c548d701b688",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/realtime/src/index.ts",
+      "sha256": "52ec2c3bbf2afb19791271947bcd75fa8aa65364e733ba34329bef48751ee237",
+      "upstream_sha256": "ebf6a67006a2e7875928b3ab1904b19059c2ea095793d48a71ff394e920c48bd"
+    }
+  ],
+  "interface": {
+    "feature_flag": "MINUS_OPENROUTER_CHAT=true",
+    "gateway_origin": "http://host.docker.internal:5180",
+    "gateway_token_env": "MINUS_ASSISTANT_GATEWAY_TOKEN",
+    "gateway_token_header": "X-Minus-Bridge-Token",
+    "gateway_paths": "/workspaces/{UUID}/{status|key|models|preferences}",
+    "preferences": {
+      "model": "string|null",
+      "effort": "string|null",
+      "max_tokens": "integer 1..32768"
+    },
+    "credential_methods": [
+      "POST {key}",
+      "DELETE without body"
+    ],
+    "send_path_modified": false,
+    "status": {
+      "provider": "openrouter",
+      "providers": {
+        "openrouter": "sanitized vault-only AIStatus"
+      },
+      "preferences": "{model,effort,max_tokens}",
+      "workflow_tools": false,
+      "recorded_spend": "optional ledger status"
+    },
+    "credential_fallback": "none; host OS vault only",
+    "native_settings_path": "/workspace/{UUID}/settings/byok",
+    "write_origin": "validated NEXT_PUBLIC_APP_URL origin; request origin only when unset",
+    "completion_errors": "With MINUS_OPENROUTER_CHAT=true and complete/status:error, fixed runtime reason messages enter context.errors; unknown reasons use a fixed generic message. Success/accounting/receipts unchanged."
+  }
+}

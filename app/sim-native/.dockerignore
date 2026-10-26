@@ -1,0 +1,10 @@
+*
+!source.tar
+!Dockerfile.deps
+!Dockerfile
+!dev-next.config.mjs
+!patch-manifest.json
+!typecheck.cjs
+!build.mjs
+!patches
+!patches/**

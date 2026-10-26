@@ -1,0 +1,14 @@
+FROM ghcr.io/simstudioai/simstudio@sha256:6ab0f0246107f2b57b086fc091f64ecff176cf688031a5f4a216e0bcee741042
+USER root
+WORKDIR /app
+ENV NODE_ENV=development NEXT_TELEMETRY_DISABLED=1 HUSKY=0
+RUN mkdir -p /tmp/native-isolated-vm && cp -a node_modules/isolated-vm/build /tmp/native-isolated-vm/
+ADD source.tar /app/
+# The standalone image contains partial packages; force restores their full contents.
+RUN bun install --force --ignore-scripts --linker=hoisted && rm -rf /root/.bun/install/cache
+RUN cp -a /tmp/native-isolated-vm/build/. /app/node_modules/isolated-vm/build/ && \
+    node apps/sim/scripts/verify-oracledb-patch.cjs && \
+    test -f node_modules/next/dist/bin/next
+ENV NODE_OPTIONS=--max-old-space-size=4096
+EXPOSE 3000
+CMD ["node", "node_modules/next/dist/bin/next", "dev", "apps/sim", "--hostname", "0.0.0.0", "--port", "3000"]

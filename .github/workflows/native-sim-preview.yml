@@ -1,0 +1,101 @@
+name: Native Sim internal preview
+
+on:
+  push:
+    branches: [build/native-sim-openrouter]
+    paths:
+      - app/sim-native/**
+      - core/reporting/operations_models.py
+      - .github/workflows/native-sim-preview.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: native-sim-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            app/sim-native
+            core/reporting/operations_models.py
+          sparse-checkout-cone-mode: false
+
+      - name: Reclaim unused SDKs on this disposable runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          python3 -c 'import shutil; assert shutil.disk_usage(".").free >= 30 * 1024**3, "Native build requires 30 GiB free on its runner"'
+
+      - name: Prepare pinned public inputs only
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(python3 -c 'import json,re; r=json.load(open("app/sim-native/patch-manifest.json"))["upstream_revision"]; assert re.fullmatch("[a-f0-9]{40}",r); print(r)')
+          git init "$RUNNER_TEMP/sim-source"
+          git -C "$RUNNER_TEMP/sim-source" fetch --depth=1 https://github.com/simstudioai/sim.git "$revision"
+          git -C "$RUNNER_TEMP/sim-source" checkout --detach FETCH_HEAD
+          python3 app/sim-native/prepare.py --build-only --source "$RUNNER_TEMP/sim-source"
+          test ! -e .minus
+
+      - name: Restore complete native dependencies
+        run: python3 app/sim-native/docker_build.py deps
+
+      - name: Native overlay contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --memory=5g --memory-swap=5g --cpus=2 --ulimit core=0:0 \
+            --mount "type=bind,src=$PWD/app/sim-native,dst=/native-overlay,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/sim-source,dst=/native-source,readonly" \
+            -e SIM_NATIVE_SOURCE_ROOT=/native-source -e SIM_NATIVE_DEPENDENCIES_ROOT=/app \
+            minusops-native-sim-openrouter-deps:df3db64 \
+            node --test /native-overlay/tests/overlay.test.mjs /native-overlay/tests/completion.test.mjs
+
+      - name: Apply owned overlays and build native bundles
+        run: python3 app/sim-native/docker_build.py source
+
+      - name: Check owned TypeScript separately from compilation
+        run: >-
+          docker run --rm --memory=6g --memory-swap=6g --cpus=2 --ulimit core=0:0
+          minusops-native-sim-openrouter-source:df3db64 node /overlay/typecheck.cjs
+
+      - name: Compile internal preview with enforced resource bounds
+        run: python3 app/sim-native/docker_build.py compile
+
+      - name: Store image in a new private package for this build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          package="minusops-sim-preview-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          image="ghcr.io/$owner/$package:df3db64"
+          # New GHCR packages default to private; never reuse a package with mutable visibility.
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json' \
+            "https://api.github.com/users/$owner/packages/container/$package")
+          test "$status" = 404
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag minusops-native-sim-openrouter:df3db64 "$image"
+          docker push "$image"
+          visibility=$(gh api "/users/$owner/packages/container/$package" --jq .visibility)
+          test "$visibility" = private
+          digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
+          printf 'Internal preview: `%s`\n\nImage: `%s`\n\nBrowser and live-provider checks remain pending.\n' "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove runner registry login
+        if: always()
+        run: docker logout ghcr.io
