@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFile, readdir, mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { readFile, readdir, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -26,6 +27,27 @@ const envNames = ['MINUS_OPENROUTER_CHAT', 'MINUS_ASSISTANT_GATEWAY_URL', 'MINUS
 const previousEnv = Object.fromEntries(envNames.map((name) => [name, process.env[name]]))
 const previousFetch = globalThis.fetch
 let fixture
+
+test('preview compiler preserves failure status and reports interrupted children', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'minusops-sim-compiler-'))
+  try {
+    await writeFile(path.join(directory, 'build.mjs'), await readFile(path.join(buildRoot, 'build.mjs')))
+    await writeFile(path.join(directory, 'patch-manifest.json'), JSON.stringify({ preview_build_paths: ['app/workspace/**'] }))
+    const cli = path.join(directory, 'node_modules/next/dist/bin/next')
+    await mkdir(path.dirname(cli), { recursive: true })
+    await writeFile(cli, 'process.exit(process.argv.includes("--webpack") ? 17 : 9)')
+    const result = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
+    assert.equal(result.status, 17)
+    if (process.platform !== 'win32') {
+      await writeFile(cli, 'process.kill(process.pid, "SIGTERM")')
+      const killed = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
+      assert.equal(killed.status, 1)
+      assert.match(killed.stderr, /stopped by signal: SIGTERM/)
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('preview build disables maps and persistent build cache while retaining native settings', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'minusops-sim-config-'))

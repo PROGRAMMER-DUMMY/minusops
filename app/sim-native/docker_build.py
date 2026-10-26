@@ -46,7 +46,7 @@ def checked(command, label):
                 process.terminate()
                 process.wait(timeout=15)
     if process.returncode:
-        print(log.read_text(encoding='utf-8', errors='replace')[-5000:].encode('ascii', 'backslashreplace').decode())
+        print(log.read_text(encoding='utf-8', errors='replace')[-64000:].encode('ascii', 'backslashreplace').decode())
         raise SystemExit(process.returncode)
     print(label, 'completed.', flush=True)
 
@@ -66,12 +66,12 @@ if __name__ == '__main__':
     elif mode == 'compile':
         memory = compile_memory()
         docker('create', '--name', NAME, '--label', OWNER + '=true', f'--memory={memory}',
-               f'--memory-swap={memory + 2 * GIB}', '--cpus=2', '--pids-limit=1024', '--ulimit', 'core=0:0',
+               f'--memory-swap={memory + 2 * GIB}', '--cpus=4', '--pids-limit=1024', '--ulimit', 'core=0:0',
                'minusops-native-sim-openrouter-source:df3db64', 'sh', '-c',
                'node /overlay/build.mjs && chown -R nextjs:nodejs apps/sim/.next')
         config = json.loads(docker('inspect', '--format', '{{json .HostConfig}}', NAME))
         assert config['Memory'] == memory and config['MemorySwap'] == memory + 2 * GIB
-        assert config['NanoCpus'] == 2_000_000_000 and config['PidsLimit'] == 1024
+        assert config['NanoCpus'] == 4_000_000_000 and config['PidsLimit'] == 1024
         (OUT / 'docker-build-limits.json').write_text(json.dumps({
             key: config[key] for key in ('Memory', 'MemorySwap', 'NanoCpus', 'PidsLimit')}, indent=2))
         checked(['docker', 'start', '--attach', NAME], mode)
