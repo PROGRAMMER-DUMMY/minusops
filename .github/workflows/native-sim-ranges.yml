@@ -1,0 +1,58 @@
+name: Prepare bounded native image transfer
+on:
+  push:
+    branches: [build/native-sim-openrouter]
+    paths: [.github/workflows/native-sim-ranges.yml]
+permissions:
+  contents: write
+jobs:
+  ranges:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Verify private source and calculate bounded transfer checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=native-sim-private-40374089795-1
+          release_id=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+          private_draft() {
+            test "$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id" --jq .draft)" = true
+            status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id")
+            test "$status" = 404
+          }
+          private_draft
+          mkdir "$RUNNER_TEMP/native-range-source"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/native-range-source" \
+            --pattern 'native-sim-image*' --pattern image-metadata.json 2>/dev/null
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os,re
+          directory=Path(os.environ['RUNNER_TEMP'])/'native-range-source'
+          raw=(directory/'image-metadata.json').read_bytes()
+          source=json.loads(raw)
+          assert source['version']==1 and source['source_revision']=='6f6b38c19d9c145385be48d09e5ed866df18e0b6'
+          assert re.fullmatch('sha256:[a-f0-9]{64}',source['image_id'])
+          rows=[]
+          for index,part in enumerate(source['parts']):
+              assert part['name']==f'native-sim-image.tar.gz.part-{index:03}'
+              path=directory/part['name']
+              assert path.stat().st_size==part['bytes']
+              with path.open('rb') as handle: assert hashlib.file_digest(handle,'sha256').hexdigest()==part['sha256']
+              offset=0
+              with path.open('rb') as handle:
+                  while data:=handle.read(128*1024**2):
+                      rows.append({'part':part['name'],'offset':offset,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+                      offset+=len(data)
+              assert offset==part['bytes']
+          result={'version':1,'source_revision':source['source_revision'],'image_id':source['image_id'],
+              'parent_metadata_sha256':hashlib.sha256(raw).hexdigest(),'prepared_by':os.environ['GITHUB_SHA'],'ranges':rows}
+          (directory/'image-range-metadata.json').write_text(json.dumps(result,indent=2))
+          print(f'Verified all original parts; prepared {len(rows)} bounded range hashes.')
+          PY
+          private_draft
+          gh release upload "$tag" "$RUNNER_TEMP/native-range-source/image-range-metadata.json" --repo "$GITHUB_REPOSITORY" --clobber
+          private_draft
