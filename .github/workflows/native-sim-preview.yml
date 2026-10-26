@@ -67,8 +67,9 @@ jobs:
         run: python3 app/sim-native/docker_build.py source
 
       - name: Check owned TypeScript separately from compilation
+        timeout-minutes: 5
         run: >-
-          docker run --rm --memory=6g --memory-swap=6g --cpus=2 --ulimit core=0:0
+          docker run --rm --memory=10g --memory-swap=10g --cpus=2 --ulimit core=0:0
           minusops-native-sim-openrouter-source:df3db64 node /overlay/typecheck.cjs
 
       - name: Compile internal preview with enforced resource bounds

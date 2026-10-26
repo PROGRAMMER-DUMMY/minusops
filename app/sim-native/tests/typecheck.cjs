@@ -19,7 +19,7 @@ fs.writeFileSync(configPath, JSON.stringify({ extends: path.join(root, 'tsconfig
 // Invoke the pinned binary directly so a timeout cannot leave its Windows child running.
 const compiler = require(path.join(nativeRoot, 'node_modules/typescript/lib/getExePath.js')).default()
 const result = spawnSync(compiler, ['--project', configPath, '--pretty', 'false'], { cwd: root, encoding: 'utf8', timeout: 180000,
-  maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GOMEMLIMIT: '3GiB' } })
+  killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GOMEMLIMIT: '8GiB' } })
 if (result.error || result.signal) {
   console.error('Native compiler did not finish:', result.error?.code ?? result.signal)
   process.exit(1)
