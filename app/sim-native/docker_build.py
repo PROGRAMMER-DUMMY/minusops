@@ -2,6 +2,7 @@
 from pathlib import Path
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -24,6 +25,11 @@ def compile_memory():
     if memory < 9 * GIB:
         raise RuntimeError('Native compilation needs at least 11 GiB assigned to Docker, including host headroom; use a larger build host.')
     return memory
+
+
+def compile_memory_swap(memory):
+    hosted = os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+    return memory + (8 if hosted else 2) * GIB
 
 
 def checked(command, label):
@@ -65,12 +71,13 @@ if __name__ == '__main__':
                  '-f', str(CONTEXT / 'Dockerfile'), str(CONTEXT)], mode)
     elif mode == 'compile':
         memory = compile_memory()
+        memory_swap = compile_memory_swap(memory)
         docker('create', '--name', NAME, '--label', OWNER + '=true', f'--memory={memory}',
-               f'--memory-swap={memory + 2 * GIB}', '--cpus=4', '--pids-limit=1024', '--ulimit', 'core=0:0',
+               f'--memory-swap={memory_swap}', '--cpus=4', '--pids-limit=1024', '--ulimit', 'core=0:0',
                'minusops-native-sim-openrouter-source:df3db64', 'sh', '-c',
                'node /overlay/build.mjs && chown -R nextjs:nodejs apps/sim/.next')
         config = json.loads(docker('inspect', '--format', '{{json .HostConfig}}', NAME))
-        assert config['Memory'] == memory and config['MemorySwap'] == memory + 2 * GIB
+        assert config['Memory'] == memory and config['MemorySwap'] == memory_swap
         assert config['NanoCpus'] == 4_000_000_000 and config['PidsLimit'] == 1024
         (OUT / 'docker-build-limits.json').write_text(json.dumps({
             key: config[key] for key in ('Memory', 'MemorySwap', 'NanoCpus', 'PidsLimit')}, indent=2))

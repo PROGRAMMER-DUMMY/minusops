@@ -6,7 +6,8 @@ const require = createRequire(import.meta.url)
 const dependencies = Object.keys(require('./package.json').dependencies)
 // Keep server SDKs external during local evaluation to bound compiler memory.
 const sdk = dependencies.filter((name) => /^@(aws-sdk|azure|google-cloud|google|opentelemetry|smithy|trigger\.dev|browserbasehq|linear|modelcontextprotocol|cerebras|a2a-js)\//.test(name)
-  || ['googleapis', 'google-auth-library', 'openai', '@anthropic-ai/sdk', 'groq-sdk', 'ssh2'].includes(name))
+  || ['googleapis', 'google-auth-library', 'openai', '@anthropic-ai/sdk', 'groq-sdk', 'ssh2',
+    'heic-decode', '@typescript/typescript6'].includes(name))
 if (native.output === 'standalone') throw new Error('The preview requires the full source and dependencies.')
 export default {
   ...native,
