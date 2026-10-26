@@ -42,6 +42,7 @@ def checked(command, label):
         try:
             while process.poll() is None:
                 if shutil.disk_usage(ROOT).free < MIN_FREE or time.monotonic() > deadline:
+                    print(log.read_text(encoding='utf-8', errors='replace')[-64000:].encode('ascii', 'backslashreplace').decode(), flush=True)
                     raise RuntimeError('Build stopped at its storage or time bound; see the recorded log.')
                 time.sleep(2)
         finally:

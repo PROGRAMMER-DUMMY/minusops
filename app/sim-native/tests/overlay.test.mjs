@@ -167,6 +167,7 @@ test('preview compiler preserves failure status and reports interrupted children
     const workerPath = path.join(directory, 'page-worker.cjs')
     await writeFile(workerPath, 'exports.limits = () => ({heap: require("node:v8").getHeapStatistics().heap_size_limit / 1024**2, secret: process.env.BETTER_AUTH_SECRET})')
     await writeFile(cli, `const assert = require('node:assert/strict');
+      require('node:fs').appendFileSync(${JSON.stringify(path.join(directory, 'modes.txt'))}, process.argv[process.argv.indexOf('--experimental-build-mode') + 1] + '\\n');
       const { Worker } = require(${JSON.stringify(require.resolve('next/dist/lib/worker'))});
       const worker = new Worker(${JSON.stringify(workerPath)}, {numWorkers: 1, isolatedMemory: true,
         debuggerPortOffset: -1, exposedMethods: ['limits']});
@@ -177,6 +178,10 @@ test('preview compiler preserves failure status and reports interrupted children
     const worker = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000,
       env: { ...process.env, BETTER_AUTH_SECRET: 'existing-build-secret', NODE_OPTIONS: '--max-old-space-size=12288' } })
     assert.equal(worker.status, 0, worker.stderr)
+    assert.equal(await readFile(path.join(directory, 'modes.txt'), 'utf8'), 'compile\ngenerate-env\n')
+    await writeFile(cli, 'process.exit(process.argv.includes("generate-env") ? 39 : 0)')
+    const finalize = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
+    assert.equal(finalize.status, 39)
     if (process.platform !== 'win32') {
       await writeFile(cli, 'process.kill(process.pid, "SIGTERM")')
       const killed = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
