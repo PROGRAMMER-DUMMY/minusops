@@ -28,6 +28,75 @@ const previousEnv = Object.fromEntries(envNames.map((name) => [name, process.env
 const previousFetch = globalThis.fetch
 let fixture
 
+test('browser bundles keep native permission/password helpers and logger fallback without Node modules', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'minusops-sim-browser-'))
+  try {
+    await writeFile(path.join(directory, 'next.config.mjs'), await readFile(path.join(buildRoot, 'dev-next.config.mjs')))
+    await writeFile(path.join(directory, 'browser-password.mjs'), await readFile(path.join(buildRoot, 'browser-password.mjs')))
+    await writeFile(path.join(directory, 'next.config.native.mjs'), 'export default { experimental:{}, serverExternalPackages:[] }')
+    await writeFile(path.join(directory, 'package.json'), '{"dependencies":{}}')
+    const config = (await import(pathToFileURL(path.join(directory, 'next.config.mjs')).href)).default
+    const packages = path.join(directory, 'node_modules/@sim')
+    for (const name of ['utils', 'platform-authz']) await mkdir(path.join(packages, name), { recursive: true })
+    await writeFile(path.join(packages, 'utils/package.json'), JSON.stringify({ exports: {
+      './random': './random.js', './client-info': './client-info.js' } }))
+    await writeFile(path.join(packages, 'utils/client-info.js'), 'exports.attributeUndeclaredClient = client => client')
+    await writeFile(path.join(packages, 'platform-authz/package.json'), JSON.stringify({ exports: {
+      './workspace': './workspace.js', './predicates': './predicates.js' } }))
+    await writeFile(path.join(packages, 'platform-authz/workspace.js'), 'require("node:net"); throw new Error("Server authz imported by browser")')
+    for (const [source, output] of [
+      ['packages/utils/src/random.ts', path.join(packages, 'utils/random.js')],
+      ['packages/platform-authz/src/predicates.ts', path.join(packages, 'platform-authz/predicates.js')],
+      ['packages/logger/src/request-context.ts', path.join(directory, 'context.js')],
+    ]) {
+      const result = await transform(await readFile(path.join(nativeSource, source), 'utf8'), { loader: 'ts', format: 'esm' })
+      await writeFile(output, result.code)
+    }
+    const encryption = path.join(directory, 'server-encryption.js')
+    await writeFile(encryption, 'export const serverEncryption = true; export { randomBytes } from "node:crypto"')
+    await writeFile(path.join(directory, 'browser.js'), `
+      const ctx = require('./context.js');
+      exports.context = ctx.runWithRequestContext({requestId:'browser'}, () => ctx.getRequestContext());
+      exports.allowed = require('@sim/platform-authz/workspace').permissionSatisfies('admin', 'write');
+      exports.password = require('@/lib/core/security/encryption').generatePassword();`)
+    await writeFile(path.join(directory, 'server.js'), `
+      const ctx = require('./context.js'); const encryption = require('@/lib/core/security/encryption');
+      exports.context = ctx.runWithRequestContext({requestId:'server'}, () => ctx.getRequestContext().requestId);
+      exports.encryption = encryption.serverEncryption; exports.bytes = encryption.randomBytes(2).length;`)
+    const { webpack } = require('next/dist/compiled/webpack/webpack')
+    for (const isServer of [false, true]) {
+      const target = isServer ? 'server' : 'browser'
+      const compiled = config.webpack({ mode: 'development', context: directory, target: isServer ? 'node' : 'web',
+        entry: `./${target}.js`, output: { path: path.join(directory, target), filename: 'bundle.cjs',
+          globalObject: 'globalThis', library: { type: 'commonjs2' } }, plugins: [], optimization: {}, externals: [],
+        resolve: { alias: { '@/lib/core/security/encryption$': encryption } },
+      }, { isServer, webpack })
+      if (isServer) assert.equal(compiled.resolve.alias['@/lib/core/security/encryption$'], encryption)
+      const compiler = webpack(compiled)
+      try {
+        const stats = await new Promise((resolve, reject) => compiler.run((error, stats) => error ? reject(error) : resolve(stats)))
+        assert.equal(stats.hasErrors(), false, stats.toString({ all: false, errors: true }))
+        const result = require(path.join(directory, target, 'bundle.cjs'))
+        if (isServer) {
+          assert.equal(result.context, 'server')
+          assert.equal(result.encryption, true)
+          assert.equal(result.bytes, 2)
+        } else {
+          assert.equal(result.context, undefined)
+          assert.equal(result.allowed, true)
+          assert.equal(result.password.length, 24)
+          assert.equal(/^[A-Za-z0-9!@#$%^&*()_\-+=]+$/.test(result.password), true)
+          assert.doesNotMatch(JSON.stringify(stats.toJson({ all: false, modules: true })), /node:(crypto|net|async_hooks)/)
+        }
+      } finally {
+        await new Promise((resolve) => compiler.close(resolve))
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('Webpack emits PDF worker assets and resolves Monaco through its ESM entry', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'minusops-sim-assets-'))
   try {
@@ -60,7 +129,7 @@ test('Webpack emits PDF worker assets and resolves Monaco through its ESM entry'
       resolve: { alias: {} }, plugins: [], optimization: {},
       externals: [({ request }, callback) => request?.startsWith('pdfjs-dist/')
         ? callback(new Error('PDF URL reached module externals')) : callback()],
-    }))
+    }, { isServer: true, webpack }))
     try {
       const stats = await new Promise((resolve, reject) => compiler.run((error, stats) => error ? reject(error) : resolve(stats)))
       assert.equal(stats.hasErrors(), false, stats.toString({ all: false, errors: true }))
@@ -123,7 +192,7 @@ test('preview build disables maps and persistent build cache while retaining nat
     const trace = new TraceEntryPointsPlugin({ rootDir: original, appDir: path.join(original, 'app'), appDirEnabled: true })
     const retained = {}
     const webpack = config.webpack({ cache: {}, devtool: 'source-map', optimization: { minimize: true },
-      resolve: { alias: {} }, externals: [], plugins: [trace, retained] })
+      resolve: { alias: {} }, externals: [], plugins: [trace, retained] }, { isServer: true })
     assert.equal(webpack.cache, false)
     assert.equal(webpack.devtool, false)
     assert.equal(webpack.parallelism, 2)
@@ -464,6 +533,9 @@ test('all overlay TypeScript/TSX parses and manifest exactly binds non-EE files'
       assert.equal(createHash('sha256').update(upstream).digest('hex'), file.upstream_sha256, file.path)
     }
     await transform(content.toString(), { loader: file.path.endsWith('.tsx') ? 'tsx' : 'ts' })
+  }
+  for (const [name, expected] of Object.entries(manifest.build_adapters)) {
+    assert.equal(createHash('sha256').update(await readFile(path.join(buildRoot, name))).digest('hex'), expected, name)
   }
   assert.equal(manifest.interface.send_path_modified, false)
 })

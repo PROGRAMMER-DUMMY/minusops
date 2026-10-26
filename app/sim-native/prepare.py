@@ -37,6 +37,11 @@ def prepare(source, *, build_only=False):
         shutil.copyfile(path, target)
     for name in ('Dockerfile', 'Dockerfile.deps', '.dockerignore', 'dev-next.config.mjs', 'build.mjs'):
         shutil.copyfile(HERE / name, local_path(ROOT, build / name))
+    for name, expected in manifest['build_adapters'].items():
+        path = local_path(HERE, HERE / name)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise ValueError('Native build adapter hash mismatch.')
+        shutil.copyfile(path, local_path(ROOT, build / name))
     shutil.copyfile(HERE / 'patch-manifest.json', local_path(ROOT, build / 'patch-manifest.json'))
     shutil.copyfile(HERE / 'tests/typecheck.cjs', local_path(ROOT, build / 'typecheck.cjs'))
     archive = local_path(ROOT, build / 'source.tar')

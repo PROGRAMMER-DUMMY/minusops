@@ -1,11 +1,12 @@
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import native from './next.config.native.mjs'
 
 const require = createRequire(import.meta.url)
 const dependencies = Object.keys(require('./package.json').dependencies)
 // Keep server SDKs external during local evaluation to bound compiler memory.
 const sdk = dependencies.filter((name) => /^@(aws-sdk|azure|google-cloud|google|opentelemetry|smithy|trigger\.dev|browserbasehq|linear|modelcontextprotocol|cerebras|a2a-js)\//.test(name)
-  || ['googleapis', 'google-auth-library', 'openai', '@anthropic-ai/sdk', 'groq-sdk'].includes(name))
+  || ['googleapis', 'google-auth-library', 'openai', '@anthropic-ai/sdk', 'groq-sdk', 'ssh2'].includes(name))
 if (native.output === 'standalone') throw new Error('The preview requires the full source and dependencies.')
 export default {
   ...native,
@@ -16,7 +17,13 @@ export default {
   async redirects() {
     return [{ source: '/', destination: '/workspace', permanent: false }, ...(await native.redirects?.() ?? [])]
   },
-  webpack(config) {
+  webpack(config, { isServer, webpack }) {
+    if (!isServer) {
+      config.resolve.alias = { ...config.resolve.alias,
+        '@sim/platform-authz/workspace$': '@sim/platform-authz/predicates',
+        '@/lib/core/security/encryption$': fileURLToPath(new URL('./browser-password.mjs', import.meta.url)) }
+      config.plugins.push(new webpack.DefinePlugin({ 'typeof globalThis.process': JSON.stringify('undefined') }))
+    }
     config.resolve.alias = { ...config.resolve.alias,
       'monaco-editor$': 'monaco-editor/esm/vs/editor/editor.main.js' }
     config.externals = config.externals.map((external) => typeof external !== 'function' ? external
