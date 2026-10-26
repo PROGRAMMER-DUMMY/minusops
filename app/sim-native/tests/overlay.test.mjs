@@ -160,7 +160,8 @@ test('preview compiler preserves failure status and reports interrupted children
     await writeFile(path.join(directory, 'patch-manifest.json'), JSON.stringify({ preview_build_paths: ['app/workspace/**'] }))
     const cli = path.join(directory, 'node_modules/next/dist/bin/next')
     await mkdir(path.dirname(cli), { recursive: true })
-    await writeFile(cli, 'process.exit(process.argv.includes("--webpack") ? 17 : 9)')
+    await mkdir(path.join(directory, 'apps/sim'), { recursive: true })
+    await writeFile(cli, 'process.exit(process.cwd().endsWith(require("node:path").join("apps", "sim")) && process.argv.includes("--webpack") ? 17 : 9)')
     const result = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
     assert.equal(result.status, 17)
     if (process.platform !== 'win32') {

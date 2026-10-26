@@ -85,8 +85,9 @@ if __name__ == '__main__':
         state = json.loads(docker('inspect', '--format', '{{json .State}}', NAME))
         assert not state['OOMKilled'] and state['ExitCode'] == 0
         docker('commit', '--change', 'USER nextjs', '--change', 'ENV NODE_OPTIONS=--max-old-space-size=4096',
+               '--change', 'WORKDIR /app/apps/sim',
                '--change', 'LABEL org.opencontainers.image.source=https://github.com/PROGRAMMER-DUMMY/minusops',
-               '--change', 'CMD ["node","node_modules/next/dist/bin/next","start","apps/sim","--hostname","0.0.0.0","--port","3000"]',
+               '--change', 'CMD ["node","/app/node_modules/next/dist/bin/next","start","--hostname","0.0.0.0","--port","3000"]',
                NAME, 'minusops-native-sim-openrouter:df3db64')
         docker('rm', NAME)
         print('Compiled preview image saved. Type-check acceptance remains separate.', flush=True)

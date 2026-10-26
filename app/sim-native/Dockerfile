@@ -22,5 +22,6 @@ RUN node /overlay/build.mjs && \
 
 FROM compiled AS runtime
 USER nextjs
+WORKDIR /app/apps/sim
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS=--max-old-space-size=4096
-CMD ["node", "node_modules/next/dist/bin/next", "start", "apps/sim", "--hostname", "0.0.0.0", "--port", "3000"]
+CMD ["node", "/app/node_modules/next/dist/bin/next", "start", "--hostname", "0.0.0.0", "--port", "3000"]
