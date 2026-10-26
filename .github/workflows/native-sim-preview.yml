@@ -116,6 +116,21 @@ jobs:
       - name: Compile internal preview with enforced resource bounds
         run: python3 app/sim-native/docker_build.py compile
 
+      - name: Check generated server JavaScript before export
+        timeout-minutes: 6
+        run: |
+          docker run --rm --network none --memory=1g --memory-swap=1g --cpus=2 --ulimit core=0:0 \
+            minusops-native-sim-openrouter:df3db64 node -e '
+            const fs=require("node:fs"),path=require("node:path"),{spawnSync}=require("node:child_process");
+            const root="/app/apps/sim/.next/server";
+            const files=fs.readdirSync(root,{recursive:true}).filter(file=>file.endsWith(".js"));
+            if(!files.length) throw Error("No generated server JavaScript found");
+            for(const file of files){
+              const result=spawnSync(process.execPath,["--max-old-space-size=512","--check",path.join(root,file)],{stdio:"inherit",timeout:30000});
+              if(result.status!==0)process.exit(1);
+            }
+            console.log("Generated server files checked: "+files.length);'
+
       - name: Export image only to the proven private draft
         timeout-minutes: 15
         shell: bash
@@ -144,12 +159,24 @@ jobs:
           from pathlib import Path
           directory=Path(os.environ['IMAGE_EXPORT_DIR'])
           parts=[]
+          ranges=[]
           for p in sorted(directory.glob('native-sim-image.tar.gz.part-*')):
-              with p.open('rb') as handle: digest=hashlib.file_digest(handle,'sha256').hexdigest()
-              parts.append({'name':p.name,'bytes':p.stat().st_size,'sha256':digest})
+              digest=hashlib.sha256()
+              offset=0
+              with p.open('rb') as handle:
+                  while data:=handle.read(128*1024**2):
+                      digest.update(data)
+                      ranges.append({'part':p.name,'offset':offset,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+                      offset+=len(data)
+              assert offset==p.stat().st_size
+              parts.append({'name':p.name,'bytes':offset,'sha256':digest.hexdigest()})
           metadata={'version':1,'source_revision':os.environ['GITHUB_SHA'],
               'image_id':os.environ['IMAGE_ID'],'parts':parts}
-          (directory/'image-metadata.json').write_text(json.dumps(metadata,indent=2))
+          raw=json.dumps(metadata,indent=2).encode()
+          (directory/'image-metadata.json').write_bytes(raw)
+          range_metadata={'version':1,'source_revision':metadata['source_revision'],'image_id':metadata['image_id'],
+              'parent_metadata_sha256':hashlib.sha256(raw).hexdigest(),'prepared_by':os.environ['GITHUB_SHA'],'ranges':ranges}
+          (directory/'image-range-metadata.json').write_text(json.dumps(range_metadata,indent=2))
           PY
           for file in "$export_dir"/*; do
             private_draft

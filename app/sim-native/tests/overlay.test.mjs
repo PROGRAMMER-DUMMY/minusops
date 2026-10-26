@@ -170,19 +170,23 @@ test('preview compiler preserves failure status and reports interrupted children
     await writeFile(cli, 'process.exit(process.cwd().endsWith(require("node:path").join("apps", "sim")) && process.argv.includes("--webpack") ? 17 : 9)')
     const result = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
     assert.equal(result.status, 17)
+    await mkdir(path.join(directory, '.next/server'), { recursive: true })
+    const envChunk = path.join(directory, '.next/server/native-env.js')
+    await writeFile(envChunk, 'const imported={env:{NEXT_PUBLIC_APP_URL:"native-env-preserved"}}; module.exports=imported/* .env */ .env.NEXT_PUBLIC_APP_URL')
     await writeFile(cli, `const assert = require('node:assert/strict');
       require('node:fs').appendFileSync(${JSON.stringify(path.join(directory, 'modes.txt'))}, process.argv[process.argv.indexOf('--experimental-build-mode') + 1] + '\\n');
       assert.equal(process.env.NODE_OPTIONS, '--max-old-space-size=12288');
       assert.match(process.env.BETTER_AUTH_SECRET, /^[a-f0-9]{64}$/);
       assert.notEqual(process.env.BETTER_AUTH_SECRET, 'existing-build-secret');
-      require(${JSON.stringify(tracePath)}).collectBuildTraces();`)
+      require(${JSON.stringify(tracePath)}).collectBuildTraces();
+      if (process.argv.includes('generate-env')) require(${JSON.stringify(require.resolve('next/dist/lib/inline-static-env'))}).inlineStaticEnv({distDir:${JSON.stringify(path.join(directory, '.next'))},config:{env:{},deploymentId:''}});`)
     const worker = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000,
-      env: { ...process.env, BETTER_AUTH_SECRET: 'existing-build-secret', NODE_OPTIONS: '--max-old-space-size=12288' } })
+      env: { ...process.env, BETTER_AUTH_SECRET: 'existing-build-secret', NODE_OPTIONS: '--max-old-space-size=12288', NEXT_PUBLIC_APP_URL:origin } })
     assert.equal(worker.status, 0, worker.stderr)
-    assert.equal(await readFile(path.join(directory, 'modes.txt'), 'utf8'), 'compile\ngenerate-env\n')
-    await writeFile(cli, 'process.exit(process.argv.includes("generate-env") ? 39 : 0)')
-    const finalize = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
-    assert.equal(finalize.status, 39)
+    assert.equal(await readFile(path.join(directory, 'modes.txt'), 'utf8'), 'compile\n')
+    const loaded = { exports:{} }
+    new Function('module', await readFile(envChunk, 'utf8'))(loaded)
+    assert.equal(loaded.exports, 'native-env-preserved')
     await writeFile(compilerPackage, JSON.stringify({ version: '0.0.0' }))
     const unsupported = spawnSync(process.execPath, ['build.mjs'], { cwd: directory, encoding: 'utf8', timeout: 10000 })
     assert.equal(unsupported.status, 1)
