@@ -1,0 +1,24 @@
+name: Remove unintended native preview publication
+on:
+  push:
+    branches: [build/native-sim-openrouter]
+    paths: [.github/workflows/native-sim-quarantine.yml]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  remove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Delete only the unintended preview package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          package=/users/programmer-dummy/packages/container/minusops-sim-preview-40368101066-1
+          gh api "$package" --jq '{name,visibility,repository:.repository.full_name}'
+          gh api --method DELETE "$package"
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" "https://api.github.com$package")
+          test "$status" = 404
