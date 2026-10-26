@@ -28,6 +28,54 @@ const previousEnv = Object.fromEntries(envNames.map((name) => [name, process.env
 const previousFetch = globalThis.fetch
 let fixture
 
+test('Webpack emits PDF worker assets and resolves Monaco through its ESM entry', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'minusops-sim-assets-'))
+  try {
+    await writeFile(path.join(directory, 'next.config.mjs'), await readFile(path.join(buildRoot, 'dev-next.config.mjs')))
+    await writeFile(path.join(directory, 'next.config.native.mjs'), 'export default { experimental:{}, serverExternalPackages:[] }')
+    await writeFile(path.join(directory, 'package.json'), '{"dependencies":{}}')
+    const config = (await import(pathToFileURL(path.join(directory, 'next.config.mjs')).href)).default
+    const modules = path.join(directory, 'node_modules')
+    const editor = path.join(modules, 'monaco-editor')
+    await mkdir(path.join(editor, 'esm/vs/editor'), { recursive: true })
+    await writeFile(path.join(editor, 'package.json'), JSON.stringify({ type: 'module',
+      exports: { '.': { import: './esm/vs/editor/editor.main.js', require: './amd.cjs' }, './*': './*' } }))
+    await writeFile(path.join(editor, 'esm/vs/editor/editor.main.js'), 'export const entry = "esm-editor"')
+    await writeFile(path.join(editor, 'amd.cjs'), 'throw new Error("AMD entry used")')
+    const pdf = path.join(modules, 'pdfjs-dist')
+    await mkdir(path.join(pdf, 'legacy/build'), { recursive: true })
+    await mkdir(path.join(pdf, 'build'), { recursive: true })
+    await writeFile(path.join(pdf, 'package.json'), '{"type":"module","exports":{"./*":"./*"}}')
+    const worker = 'export const sentinel = "raw-pdf-worker"'
+    const renderer = 'export const sentinel = "raw-pdf-renderer"'
+    await writeFile(path.join(pdf, 'legacy/build/pdf.worker.min.mjs'), worker)
+    await writeFile(path.join(pdf, 'build/pdf.min.mjs'), renderer)
+    await writeFile(path.join(directory, 'entry.js'), `
+      exports.editor = require('monaco-editor').entry;
+      exports.worker = new URL('pdfjs-dist/legacy/build/pdf.worker.min.mjs', import.meta.url);
+      exports.renderer = new URL('pdfjs-dist/build/pdf.min.mjs', import.meta.url);`)
+    const { webpack } = require('next/dist/compiled/webpack/webpack')
+    const compiler = webpack(config.webpack({ mode: 'development', context: directory, target: 'node',
+      entry: './entry.js', output: { path: path.join(directory, 'out'), filename: 'bundle.cjs', library: { type: 'commonjs2' } },
+      resolve: { alias: {} }, plugins: [], optimization: {},
+      externals: [({ request }, callback) => request?.startsWith('pdfjs-dist/')
+        ? callback(new Error('PDF URL reached module externals')) : callback()],
+    }))
+    try {
+      const stats = await new Promise((resolve, reject) => compiler.run((error, stats) => error ? reject(error) : resolve(stats)))
+      assert.equal(stats.hasErrors(), false, stats.toString({ all: false, errors: true }))
+      const result = require(path.join(directory, 'out/bundle.cjs'))
+      assert.equal(result.editor, 'esm-editor')
+      assert.equal(await readFile(result.worker, 'utf8'), worker)
+      assert.equal(await readFile(result.renderer, 'utf8'), renderer)
+    } finally {
+      await new Promise((resolve) => compiler.close(resolve))
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('preview compiler preserves failure status and reports interrupted children', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'minusops-sim-compiler-'))
   try {
@@ -74,7 +122,8 @@ test('preview build disables maps and persistent build cache while retaining nat
     const { TraceEntryPointsPlugin } = require('next/dist/build/webpack/plugins/next-trace-entrypoints-plugin')
     const trace = new TraceEntryPointsPlugin({ rootDir: original, appDir: path.join(original, 'app'), appDirEnabled: true })
     const retained = {}
-    const webpack = config.webpack({ cache: {}, devtool: 'source-map', optimization: { minimize: true }, plugins: [trace, retained] })
+    const webpack = config.webpack({ cache: {}, devtool: 'source-map', optimization: { minimize: true },
+      resolve: { alias: {} }, externals: [], plugins: [trace, retained] })
     assert.equal(webpack.cache, false)
     assert.equal(webpack.devtool, false)
     assert.equal(webpack.parallelism, 2)

@@ -17,6 +17,13 @@ export default {
     return [{ source: '/', destination: '/workspace', permanent: false }, ...(await native.redirects?.() ?? [])]
   },
   webpack(config) {
+    config.resolve.alias = { ...config.resolve.alias,
+      'monaco-editor$': 'monaco-editor/esm/vs/editor/editor.main.js' }
+    config.externals = config.externals.map((external) => typeof external !== 'function' ? external
+      : (data, callback) => {
+        if (data.dependencyType === 'url' && data.request?.startsWith('pdfjs-dist/')) return callback()
+        return external(data, callback)
+      })
     config.cache = false
     config.devtool = false
     config.parallelism = 2
