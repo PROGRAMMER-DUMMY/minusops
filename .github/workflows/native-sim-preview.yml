@@ -57,11 +57,11 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --memory=5g --memory-swap=5g --cpus=2 --ulimit core=0:0 \
-            --mount "type=bind,src=$PWD/app/sim-native,dst=/native-overlay,readonly" \
+            --mount "type=bind,src=$PWD/app/sim-native,dst=/sim-native,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/sim-source,dst=/native-source,readonly" \
             -e SIM_NATIVE_SOURCE_ROOT=/native-source -e SIM_NATIVE_DEPENDENCIES_ROOT=/app \
             minusops-native-sim-openrouter-deps:df3db64 \
-            node --test /native-overlay/tests/overlay.test.mjs /native-overlay/tests/completion.test.mjs
+            node --test /sim-native/tests/overlay.test.mjs /sim-native/tests/completion.test.mjs
 
       - name: Apply owned overlays and build native bundles
         run: python3 app/sim-native/docker_build.py source
