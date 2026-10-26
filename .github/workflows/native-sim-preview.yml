@@ -38,6 +38,21 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
           python3 -c 'import shutil; assert shutil.disk_usage(".").free >= 30 * 1024**3, "Native build requires 30 GiB free on its runner"'
 
+      - name: Bound transient compiler pressure with disposable runner swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          swap_path="$RUNNER_TEMP/native-sim.swap"
+          test ! -e "$swap_path"
+          sudo fallocate -l 8G "$swap_path"
+          sudo chmod 600 "$swap_path"
+          sudo mkswap "$swap_path"
+          sudo swapon "$swap_path"
+          python3 -c 'from pathlib import Path; m=dict(line.split(":",1) for line in Path("/proc/meminfo").read_text().splitlines()); assert int(m["SwapTotal"].split()[0]) >= 8 * 1024**2'
+          free -h
+          docker info --format 'Docker engine memory: {{.MemTotal}} bytes'
+
       - name: Prepare pinned public inputs only
         shell: bash
         run: |
@@ -69,7 +84,7 @@ jobs:
       - name: Check owned TypeScript separately from compilation
         timeout-minutes: 12
         run: >-
-          docker run --rm --memory=12g --memory-swap=12g --cpus=4 --ulimit core=0:0 -e GODEBUG=gctrace=1
+          docker run --rm --memory=12g --memory-swap=20g --cpus=4 --ulimit core=0:0 -e GODEBUG=gctrace=1
           minusops-native-sim-openrouter-source:df3db64 node /overlay/typecheck.cjs
 
       - name: Compile internal preview with enforced resource bounds
@@ -100,3 +115,15 @@ jobs:
       - name: Remove runner registry login
         if: always()
         run: docker logout ghcr.io
+
+      - name: Release disposable runner swap
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          swap_path="$RUNNER_TEMP/native-sim.swap"
+          if test -f "$swap_path"; then
+            sudo swapoff "$swap_path"
+            sudo rm -- "$swap_path"
+          fi
