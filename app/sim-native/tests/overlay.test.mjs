@@ -690,6 +690,57 @@ test('hosted selector implementation is preserved behind isolated opt-in compone
   assert.match(independent, /OpenRouter model/)
 })
 
+test('architecture navigation shares validated workspace state and preserves it on selection failure', async () => {
+  const filename = path.join(overlays, 'hooks/queries/minusops-architecture.ts')
+  const compiled = await build({ entryPoints: [filename], bundle: true, write: false, platform: 'node', format: 'cjs',
+    packages: 'external', tsconfigRaw: {}, plugins: [{ name: 'architecture-query-boundaries', setup(builder) {
+      builder.onResolve({ filter: /^@tanstack\/react-query$/ }, () => ({ path: 'queries', namespace: 'fixture' }))
+      builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `
+        export const useQuery=options=>options;
+        export const useMutation=options=>options;
+        export const useQueryClient=()=>fixture.client;`, loader: 'js' }))
+      builder.onResolve({ filter: /^@\/hooks\/queries\/openrouter-chat$/ }, () => ({ path: 'status', namespace: 'status' }))
+      builder.onLoad({ filter: /.*/, namespace: 'status' }, () => ({ contents: 'export const openRouterChatKeys={status:id=>["status",id]};', loader: 'js' }))
+      builder.onResolve({ filter: /^@\/lib\/api\/contracts\/minusops-architecture$/ }, () => ({ path: path.join(overlays, 'lib/api/contracts/minusops-architecture.ts') }))
+    } }],
+  })
+  const saved = []
+  const cancelled = []
+  const invalidated = []
+  const state = { client: { setQueryData: (...args) => saved.push(args),
+    cancelQueries: async (args) => cancelled.push(args), invalidateQueries: async (args) => invalidated.push(args) } }
+  const pending = []
+  const calls = []
+  const fetch = async (...args) => { calls.push(args); return pending.shift() }
+  const loaded = { exports: {} }
+  new Function('require', 'module', 'exports', 'fixture', 'fetch', compiled.outputFiles[0].text)(require, loaded, loaded.exports, state, fetch)
+  const query = loaded.exports.useArchitectureWorkspace(uuid)
+  const selection = loaded.exports.useSelectArchitecture(uuid)
+  const workspace = { schema_version: 1, run_id: 'source-test', source_status: 'UNAVAILABLE', runs: [{ run_id: 'source-test', name: 'Source test' }],
+    architecture: null, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+  const signal = new AbortController().signal
+  pending.push(Response.json(workspace))
+  assert.deepEqual(await query.queryFn({ signal }), workspace)
+  assert.equal(calls[0][1].signal, signal)
+  assert.deepEqual(query.queryKey, ['minusops-architecture', uuid])
+  assert.equal(loaded.exports.useArchitectureWorkspace('').enabled, false)
+  await selection.onMutate()
+  assert.deepEqual(cancelled, [{ queryKey: query.queryKey }])
+  pending.push(new Response('', { status: 403 }))
+  await assert.rejects(selection.mutationFn('other-run'), /could not be opened/)
+  assert.deepEqual(saved, [])
+  pending.push(Response.json({ ...workspace, execution_authority: 'APPLY' }))
+  await assert.rejects(selection.mutationFn('source-test'))
+  assert.deepEqual(saved, [])
+  pending.push(Response.json(workspace))
+  const accepted = await selection.mutationFn('source-test')
+  await selection.onSuccess(accepted)
+  assert.deepEqual(saved, [[query.queryKey, workspace]])
+  assert.deepEqual(invalidated, [{ queryKey: ['status', uuid] }])
+  assert.deepEqual(JSON.parse(calls.at(-1)[1].body), { operation: 'select', run_id: 'source-test' })
+  assert.match(calls.at(-1)[0], new RegExp(`/workspaces/${uuid}/assistant/architecture$`))
+})
+
 test('native self-hosted BYOK navigation needs only the local flag, never enterprise', async () => {
   const navigationPath = path.join(overlays, 'components/settings/navigation.ts')
   const navigation = await readFile(navigationPath, 'utf8')

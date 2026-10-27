@@ -5,7 +5,7 @@ import {
   Chip, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuItemLabel,
   DropdownMenuRadioGroup, DropdownMenuSearchInput,
 } from '@sim/emcn'
-import { Brain, Check, Sparkles } from '@sim/emcn/icons'
+import { Brain, Check, Sparkles, Workflow } from '@sim/emcn/icons'
 import { useParams, usePathname, useRouter } from 'next/navigation'
 import { ModelSettingTrigger } from '@/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger'
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
@@ -31,18 +31,20 @@ export function OpenRouterModelSelector() {
   const save = (value: OpenRouterPreferences) => chat.savePreferences.mutate(value)
   const label = selected?.name ?? (preferences?.model ? 'Model unavailable' : 'Select OpenRouter model')
   return (
-    <div className='flex items-center gap-[inherit]'>
+    <div className='flex min-w-0 items-center gap-[inherit]'>
       {chat.status.data?.architecture_context && <Chip shape='round' aria-label='Selected architecture context'
         title={chat.status.data.architecture_context.run_id}
+        aria-description={chat.status.data.architecture_context.label}
+        leftAdornment={<Workflow className='size-[14px] shrink-0 text-[var(--text-icon)]' />}
         onClick={() => {
           if (pathname === `/workspace/${workspaceId}/architecture`) document.getElementById('architecture-editor-tab')?.click()
           else router.push(`/workspace/${workspaceId}/architecture`)
         }}>
-        <span className='max-w-[180px] truncate'>Context: {chat.status.data.architecture_context.label}</span>
+        <span className='@max-[560px]/input-toolbar:hidden text-[var(--text-icon)] text-sm'>Context</span>
       </Chip>}
       <DropdownMenu modal={false}>
         <ModelSettingTrigger label='OpenRouter model' valueLabel={label} icon={Sparkles} showChevron />
-        <DropdownMenuContent side='top' align='end'>
+        <DropdownMenuContent side='top' align='end' className='max-w-[min(420px,calc(100vw-32px))]'>
           <DropdownMenuSearchInput aria-label='Search OpenRouter models' placeholder='Search models...'
             value={search} onChange={(event) => setSearch(event.target.value)} />
           {!chat.configured && <DropdownMenuItem disabled>Add an OpenRouter key in workspace BYOK settings</DropdownMenuItem>}

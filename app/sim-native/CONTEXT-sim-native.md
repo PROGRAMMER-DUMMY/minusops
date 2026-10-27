@@ -4,7 +4,7 @@
 vault credential path, transport configuration and internal nonproduction limits.
 [ACCEPTANCE.md](./ACCEPTANCE.md) separates passing contract/transport checks from
 the native browser and real-provider acceptance.
-[patch-manifest.json](./patch-manifest.json) lists exactly 24 overlay files with
+[patch-manifest.json](./patch-manifest.json) lists exactly 28 overlay files with
 SHA256 hashes, original upstream hashes where applicable, and the gateway API.
 Paths are relative to the pinned source root; no upstream or EE tree is vendored.
 
@@ -21,7 +21,8 @@ the active artifact overlay; changes require updating the manifest explicitly.
 | [byok.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/settings/components/byok/byok.tsx) | Includes a separate OpenRouter Chat section only for the flagged workspace scope. |
 | [openrouter-chat-settings.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/settings/components/byok/openrouter-chat-settings.tsx) | `OpenRouterChatSettings({workspaceId, canManage})` reuses native single-key BYOK callbacks and sanitized fixed errors. |
 | [model-selector.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-selector.tsx) | `ModelSelector({plan})` selects the isolated local control under the flag; the hosted implementation remains intact. |
-| [openrouter-model-selector.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/openrouter-model-selector.tsx) | `OpenRouterModelSelector()` searches raw catalog IDs/names and saves independent model/advertised effort preferences. Missing models have no silent fallback. |
+| [openrouter-model-selector.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/openrouter-model-selector.tsx) | `OpenRouterModelSelector()` searches raw catalog IDs/names and saves independent model/advertised effort preferences. Context uses a compact native chip, retaining the full run in its accessible description and title. Missing models have no silent fallback. |
+| [model-setting-trigger.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger.tsx) | `ModelSettingTrigger` bounds model/effort labels and collapses to native icons in narrow composers. Tooltips and accessible descriptions retain complete values. |
 | [openrouter-chat.ts contracts](./overlay/apps/sim/lib/api/contracts/openrouter-chat.ts) | Zod schemas and six native route contracts validate UUID scope, vault-only status, bounded account catalogs, key input and replacement preferences. |
 | [server.ts](./overlay/apps/sim/lib/openrouter-chat/server.ts) | `assistantRoute(action, method)` wraps native session/workspace permissions, admin/same-origin writes, duplicate/size refusal, fixed gateway origin, no redirects and bounded replies. Errors never forward gateway diagnostics. |
 | [status/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/status/route.ts) | Exports GET for sanitized OpenRouter status. |
@@ -31,8 +32,11 @@ the active artifact overlay; changes require updating the manifest explicitly.
 | [openrouter-chat.ts queries](./overlay/apps/sim/hooks/queries/openrouter-chat.ts) | `useOpenRouterChat(workspaceId)` manages remote public state; direct key helpers keep credentials out of React Query mutation variables. |
 | [store.ts](./overlay/apps/sim/stores/openrouter-chat/store.ts) | `useOpenRouterChatStore` holds workspace-scoped public preferences/catalogs only, without persistence or hosted selection state. |
 | [complete.ts](./overlay/apps/sim/lib/mothership/request/handlers/complete.ts) | Preserves native completion accounting and maps flagged local error codes to fixed safe sentences. |
-| [architecture/page.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/page.tsx) and [workspace.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx) | Native workspace route using the original renderer, controls and shell for run selection, configuration/source inspection, staged diffs, layout, selected AI context and plan/delivery evidence. Compiled-image/browser acceptance passed; see ACCEPTANCE.md. |
-| [sidebar.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/w/components/sidebar/sidebar.tsx) | Adds a flag-controlled Architecture entry through native navigation. |
+| [architecture/page.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/page.tsx) and [workspace.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx) | Native workspace route with compact renderer cards, initial fit, persistent resizable Chat/Toolbar/Editor and bottom diff/evidence. Reuses native panel/terminal stores/hooks; source edits remain proposals. Whole-window browser acceptance passed; see ACCEPTANCE.md. |
+| [architecture/chat.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/chat.tsx) | `ArchitectureChat` binds a native conversation to an explicit workspace/run and validated chat id. `Conversation` reuses native `useChat`, `MothershipChat`, composer/model/history and draft state. An explicit native chat is created before sending, preserving the architecture route. Malformed or differently scoped URL selections never attach. Two controlled turns verified source context, reload/history and unchanged route in the actual browser. |
+| [sidebar.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/w/components/sidebar/sidebar.tsx) | Mounts the flag-controlled Architectures group alongside Workflows. |
+| [architecture-list.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/w/components/sidebar/components/architecture-list.tsx) | `ArchitectureList({workspaceId, collapsed})` reuses native sidebar disclosure, run chips and a collapsed rail menu. Admin selection opens registered runs; loading, unavailable, empty and failed selection states remain explicit. |
+| [minusops-architecture.ts queries](./overlay/apps/sim/hooks/queries/minusops-architecture.ts) | `useArchitectureWorkspace` and `useSelectArchitecture` share validated workspace/run state between sidebar and canvas. Selection cancels stale reads, updates the scoped cache only after success and refreshes the Chat context status. No source writes or implicit run selection. |
 | [minusops-architecture.ts](./overlay/apps/sim/lib/api/contracts/minusops-architecture.ts) | Validates bounded source/workspace projections and finite inspection/proposal operations. No publication/apply operation exists. |
 | [architecture/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/architecture/route.ts) | GET/POST reuse native session/workspace admission, admin/same-origin writes and the private local gateway. |
 
@@ -45,6 +49,10 @@ Docker public-origin matching, exact manifest hashes, source parsing, preserved
 hosted selection and self-hosted BYOK visibility. It reads a separately obtained
 pinned source tree and installed dependencies, and replaces auth/DB and HTTP
 boundaries. Missing prerequisites fail rather than skip; no live provider calls.
+The architecture conversation rendering check exercises actual React rendering
+with native transport/query boundaries replaced. It refuses malformed chat ids,
+wrong run/workspace scopes and implicit chat creation during render; a valid
+selection reaches the native hook with its existing id.
 [completion.test.mjs](./tests/completion.test.mjs) checks known/unknown local error
 reasons, disabled-flag behavior and preserved success/accounting behavior.
 [typecheck.cjs](./tests/typecheck.cjs) runs native TypeScript against owned files
@@ -193,5 +201,16 @@ compiled files,24 source overlays and the runtime/dependency fingerprint. Browse
 acceptance checked real278-declaration source inspection, separate offline edit/
 diff/download, drag/save/reload, missing/failed plan evidence and selected Chat
 context/recovery. No live inference or actual source publication occurred.
-The native implementation plan retains NAT-03..06 as pending; original workflow
-rows and basic initial-fit/layout remain until resource-card adaptation.
+That first image's full workflow-window adaptation was still pending. The next
+build below accepts that interaction; agent tools and composition remain separate.
+
+Current working-panel source `c161dfc8a63dad9d1a75f3d7d3a3e24fdee8208e` passed
+CI40483168262 attempt2:38 contracts,24 owned TypeScript files with zero diagnostics,
+full compilation and3,813 server syntax checks. The installed image matched all
+7,254 compiled files,25 overlays and runtime/dependency fingerprints. Actual browser
+acceptance checked two source-bound synthetic Chat turns without leaving the canvas,
+history reload, editor/diff/download, tab/draft persistence, panel/evidence keyboard
+resize, layout reload, initial fit, narrow-window controls and context recovery.
+No real provider inference or source publication occurred. The normal gateway was
+restored and the isolated synthetic key removed. Native agent tools, component
+creation, requirements, CLI cutover and production qualification remain pending.

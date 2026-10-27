@@ -53,7 +53,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx",
-      "sha256": "ab63fe08cb43d9f4a746c8caa390ce5b866b4cc63d38d5751d925094d117ab91",
+      "sha256": "737f5c863a073f8c54c006f9f18023616a82ced39e90c93964a3d5cf9300a869",
       "upstream_sha256": null
     },
     {
@@ -62,8 +62,13 @@
       "upstream_sha256": "fb7033b1ebac14bfd8eaafb027fdbb528acccbfdd157673fe7db7c4e73343c41"
     },
     {
+      "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger.tsx",
+      "sha256": "d818ead2d42f4d7ac8d384300d9fd2316e16cfbf8136c62d7dffbb826ee38928",
+      "upstream_sha256": "7abebad446094bc31f5b22695a418352d36756ded5127e42371de2469878733c"
+    },
+    {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/openrouter-model-selector.tsx",
-      "sha256": "0c8e6594c9cd65b2637637d36c84c8d04910ac189e2f07d9513ad4c6d0280de1",
+      "sha256": "7c2f0b43c6a2a3b1a3166a216ac592a4d72bc4c3f92d6577450f5269f1363e17",
       "upstream_sha256": null
     },
     {
@@ -87,19 +92,29 @@
       "upstream_sha256": null
     },
     {
+      "path": "apps/sim/app/workspace/[workspaceId]/w/components/sidebar/components/architecture-list.tsx",
+      "sha256": "de48476e908fe153559119846b414cfe05c3dac0248be8f7831b09cbad6a9df7",
+      "upstream_sha256": null
+    },
+    {
       "path": "apps/sim/app/workspace/[workspaceId]/w/components/sidebar/components/settings-sidebar/settings-sidebar.tsx",
       "sha256": "effbb9ad7e6ae4f048fc7682c1b2517c2fb8172a01be9f97a326674bb5857faa",
       "upstream_sha256": "fc4da09ee30ad7efe75db258157c63ceead9ddc996735e75cf4092f1810cadd4"
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/w/components/sidebar/sidebar.tsx",
-      "sha256": "dbb53ec1b5cabbb03adcab3f6f661bcd4b1889c5e6ae4f581f84b5d6b97ef0f7",
+      "sha256": "91c340877c1788261c8cc52bcede3536b64b3f920623bb4e222690d72b7f179a",
       "upstream_sha256": "8839a851ab24e1971b251b5fe22679b9b0187aee58d35ccf579600c188ca613e"
     },
     {
       "path": "apps/sim/components/settings/navigation.ts",
       "sha256": "c708c39ca08a7108b3b35f7ab1c7f6ae7bd17b761c4063ff9b7891b93078f8d4",
       "upstream_sha256": "0cda4fa911dc8b86361db47b66673238727a1973fec61c2ae964ecd29ee2ec49"
+    },
+    {
+      "path": "apps/sim/hooks/queries/minusops-architecture.ts",
+      "sha256": "e9eed3d5a241605aea6570fc0a0f9099af2122c6110bd5a61cb2bca9abf31be2",
+      "upstream_sha256": null
     },
     {
       "path": "apps/sim/hooks/queries/openrouter-chat.ts",

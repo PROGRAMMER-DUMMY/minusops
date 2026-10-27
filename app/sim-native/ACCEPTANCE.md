@@ -5,6 +5,75 @@ The user confirmed ordinary live OpenRouter Chat works. The architecture checks
 below made no provider inference calls and do not establish live model behavior
 with selected architecture context.
 
+## Native workflow window adaptation
+
+The default-context correction on2026-10-27 fixed a gap exposed by a real user:
+without a focused node, the gateway previously supplied only workspace/chat metadata.
+Explicit run selection now supplies a bounded source overview by default; optional
+focus adds exact selected configuration. The existing native context badge also
+identifies the run without requiring node selection. Clearing context still revokes
+attachment until a new run selection or explicit focus. Prior metadata-only assistant
+answers are excluded from provider history once the source binding is present.
+
+For the actual analytics source, all8 module configurations,96 resource/data addresses
+and9 aggregated module references fit the bounded packet, with incomplete configuration
+and static-source limits stated.189 focused Python checks passed, including real
+request formatting, source secrecy, context revocation and bounded large inventories.
+Actual native browser verification sent the user's architecture question without
+selecting a node, then a second turn after reload. Both reached the real provider
+formatter with the source overview and preserved source digest. The provider reply
+was controlled; no paid/live inference or semantic model-quality claim follows.
+Evidence is under `artifacts/reviews/sim-native-context-20261027/`. This is a host
+gateway correction; the accepted native image below remains unchanged.
+
+The Architecture route now keeps its canvas beside native **Chat / Toolbar /
+Editor**, with bottom **Changes / Plan / Delivery** evidence. It reuses the
+existing `MothershipChat`, native Chat hook, panel/terminal resizing and stores.
+Toolbar searches components already in the run; adding components is pending.
+Editor drafts survive tab switches. Cards use compact native headers and initial
+fit happens automatically. Chat's context badge returns to Editor in the same
+window. Run selection and source revision remain explicit.
+
+[CI40483168262](https://github.com/PROGRAMMER-DUMMY/minusops/actions/runs/40483168262)
+attempt2 at `c161dfc8a63dad9d1a75f3d7d3a3e24fdee8208e` passed38 native contracts,
+24 owned TypeScript files with zero owned/config or unrelated diagnostics,
+full compilation and syntax checks for3,813 generated server files. Attempt1
+passed its build checks but could not export because the baseline asset had a
+display label instead of the required filename. Its corrected private asset and
+fresh anonymous404 checks preceded the successful rerun.
+
+The current local image is
+`sha256:9e6795706f27d8bdf44f650e81b6df681cad9d72fc38a272587b68834dc771f7`.
+Its complete7,254-file compiled inventory, all25 overlays and runtime/dependency
+fingerprints matched CI after private import. Metadata SHA256 matched the exact
+successful attempt's log:
+`9c728e8292eb8bd62fca04ac5490170afa0091ac4acfd0052f347e08a0517a75`.
+The prior image remains tagged `architecture-before-pairing-20261027` locally.
+
+Whole-window browser acceptance passed in the separate validation workspace:
+
+- The real278-declaration/235-reference source rendered with automatic fit and
+  compact cards, without the unrelated workflow error-output rows.
+- Toolbar selection opened Editor. A bucket edit survived Chat/Editor switching;
+  its exact reviewed diff/download appeared below the canvas without source writes.
+- Panel width persisted across reload; evidence keyboard resizing, node drag and
+  saved layout passed. Missing/failed plan evidence stayed separate from delivery.
+- Two controlled provider turns received the explicit selected run/revision and
+  bucket subject. Provider history counts were one and three. Native model selection,
+  streaming and history reload passed while the URL and visible canvas remained
+  on Architecture. No live or paid provider request was sent.
+- Context cleared after invalid fixture source; narrow-window panel close/open
+  passed. No uncaught page errors occurred. The actual source digest was preserved.
+- The synthetic key was limited to the previously keyless validation workspace,
+  removed afterward, and its public preferences restored. The normal gateway was
+  restored; the real user's workspace/key was preserved.
+
+Local evidence is under
+`artifacts/reviews/sim-native-workflow-comparison-20261027/`, including image,
+browser, controlled-transport and screenshot receipts. This accepts the native
+working-panel portion of NAT-03. AI proposal tools, new component composition,
+requirements/ADR, CLI cutover and production qualification remain pending.
+
 ## Native architecture and selected Chat context
 
 [CI40460705637](https://github.com/PROGRAMMER-DUMMY/minusops/actions/runs/40460705637)
@@ -13,7 +82,7 @@ at source `eb3d85a23b9644ba394ae2d5e427b90f2c48afb1` passed 37 native contracts,
 compilation, and syntax checks for all 3,810 generated server JavaScript files.
 The local adapter/source suite passed 238 checks.
 
-The current local image is
+The preceding local image was
 `sha256:92994e5f09ce67420d0a69b63058cf52dd1f50f61f3970971678175a0d5cd6ae`.
 An optional private compiled export matched the original runtime/dependency
 fingerprints. Its metadata hash was verified against immutable CI output:
@@ -47,9 +116,10 @@ NAT-01/02 are accepted for this preview. NAT-03..06 in
 [the implementation plan](../../docs/native-sim-implementation-plan.md) remain:
 agent proposals/host handoff, requirements/ADR, typed composition and resource-card
 adaptation/layout, CLI cutover and production qualification. CLI canvas/console
-still use the component application. Initial fit may require the native **Fit**
-control; native cards still include disabled generic workflow rows. This is a
-basic source-review integration, not the finished architecture editor.
+still use the component application. The first integration required manual Fit
+and retained generic workflow rows; the working-panel follow-up above fixes
+those two limits. This remains a source-review integration with agent editing
+and composition still pending.
 
 ## Earlier Chat acceptance
 

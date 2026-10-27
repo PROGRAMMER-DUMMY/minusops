@@ -15,16 +15,31 @@ The picker preserves catalog IDs including a leading `~` alias marker. The
 current local preview includes the catalog-validation fix described in
 [acceptance](./ACCEPTANCE.md); a browser hard refresh may be needed after updating.
 
-Open **Architecture** in the native sidebar and select a registered run. Inspect
+Open a registered run under **Architectures** in the native sidebar. This group
+collapses like **Workflows** and opens a run menu when the rail is collapsed.
+The canvas header and sidebar share the same selected run. Inspect
 source/configuration, review and download proposed changes, save node positions,
 and inspect plan/delivery evidence. **Ask AI about selection** carries the chosen
-source into Chat with a visible context badge. Browser checks passed on the actual
+source into Chat with a visible context badge. Chat now stays beside the canvas
+in the native **Chat / Toolbar / Editor** panel, with persistent resizing, native
+composer/model/history and bottom Changes/Plan/Delivery evidence. Toolbar searches
+existing run components; adding components remains pending. The Editor retains
+drafts across tab switches. Cards use the compact native header, with automatic
+initial fit. Two controlled Chat turns with actual selected-source context and
+history reload passed in the same window. Browser checks passed on the actual
 278-declaration source architecture and a separate offline edit fixture. Source
 files remained unchanged. Missing qualified plans stay UNKNOWN.
 
+Selecting a run also supplies its source-derived overview to workspace Chat by
+default. You can ask about the architecture without choosing a node first. The
+context badge identifies the run; **Ask AI about selection** adds focused configuration.
+The bounded overview contains module inputs, declared connections and resource/data
+addresses, with explicit omissions. It describes source rather than proving deployed
+state. Clearing AI context disables it until you reselect the run or focus a subject.
+
 This is an internal nonproduction integration pinned to the
 [Sim source at df3db64](https://github.com/simstudioai/sim/tree/df3db64ed17a5eb73fef8ccc95da180b0a1cf4b5).
-The [manifest](./patch-manifest.json) binds 24 Apache overlay files and the original
+The [manifest](./patch-manifest.json) binds 28 Apache overlay files and the original
 hashes of changed upstream files. The maintained directory does not vendor the
 upstream/EE tree. The private runtime image retains unchanged upstream files;
 keep it internal. [NOTICE.md](./NOTICE.md) records attribution.

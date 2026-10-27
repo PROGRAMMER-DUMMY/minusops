@@ -1,17 +1,18 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 import { Button, Chip, ChipInput, ChipSelect, ChipTextarea, cn } from '@sim/emcn'
 import { Box, ChevronDown, Plus, Minus, Expand, X } from '@sim/emcn/icons'
 import { WorkflowBlockView, WorkflowEdgeView, useCanvasColorMode } from '@sim/workflow-renderer'
 import { ReactFlow, ReactFlowProvider, useNodesInitialized, useNodesState, useReactFlow,
   type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import { useParams } from 'next/navigation'
-import { architectureWorkspaceSchema, sourceChangeSchema, type ArchitectureSubject,
+import { sourceChangeSchema, type ArchitectureSubject,
   type ArchitectureWorkspace as Workspace, type SourceChange, type SourceNode } from '@/lib/api/contracts/minusops-architecture'
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
 import { openRouterChatKeys } from '@/hooks/queries/openrouter-chat'
+import { architectureKeys, useArchitectureWorkspace, useSelectArchitecture } from '@/hooks/queries/minusops-architecture'
 import { usePanelStore } from '@/stores/panel'
 import { useTerminalStore } from '@/stores/terminal'
 import { PANEL_WIDTH, TERMINAL_HEIGHT } from '@/stores/constants'
@@ -64,7 +65,12 @@ function WorkspaceView() {
   const permissions = useUserPermissionsContext()
   const queryClient = useQueryClient()
   const colorMode = useCanvasColorMode()
-  const [data, setData] = useState<Workspace | null>(null)
+  const workspace = useArchitectureWorkspace(workspaceId)
+  const selection = useSelectArchitecture(workspaceId)
+  const selecting = useIsMutating({ mutationKey: architectureKeys.workspace(workspaceId) }) > 0
+  const data = workspace.data
+  const setData = (update: (previous: Workspace | undefined) => Workspace | undefined) =>
+    queryClient.setQueryData<Workspace>(architectureKeys.workspace(workspaceId), update)
   const [nodes, setNodes, onNodesChange] = useNodesState<Resource>([])
   const [collapsed, setCollapsed] = useState<string[]>([])
   const [subject, setSubject] = useState<ArchitectureSubject | null>(null)
@@ -88,14 +94,14 @@ function WorkspaceView() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const sequence = useRef(0)
   const fitted = useRef('')
   const flow = useReactFlow<Resource>()
   const initialized = useNodesInitialized()
   const graph = data?.architecture
   const selected = graph?.nodes.find((node) => subject?.kind === 'source_node' && node.id === subject.id)
   const edge = graph?.edges.find((item) => subject?.kind === 'source_edge' && item.id === subject.id)
-  const editable = permissions.canAdmin && !busy && !chatBusy
+  const editable = permissions.canAdmin && !busy && !chatBusy && !selecting
+  const loadError = workspace.isError ? 'Architecture unavailable. Check the local gateway and refresh.' : ''
 
   async function request(operation?: Record<string, unknown>, signal?: AbortSignal) {
     const response = await fetch(`/api/workspaces/${workspaceId}/assistant/architecture`, {
@@ -105,16 +111,6 @@ function WorkspaceView() {
     if (!response.ok) throw new Error('Architecture unavailable or changed. Refresh and try again.')
     return response.json()
   }
-  useEffect(() => {
-    const controller = new AbortController()
-    const current = ++sequence.current
-    setData(null)
-    request(undefined, controller.signal).then((value) => {
-      if (sequence.current === current) setData(architectureWorkspaceSchema.parse(value))
-    }).catch(() => { if (!controller.signal.aborted) setError('Architecture unavailable. Check the local gateway and refresh.') })
-    return () => controller.abort()
-  }, [workspaceId])
-
   useEffect(() => {
     if (!graph) { setNodes([]); return }
     const positions = new Map(data?.layout?.revision === graph.revision ? data.layout.positions.map((item) => [item.id, item]) : [])
@@ -210,12 +206,12 @@ function WorkspaceView() {
       <h1 className='font-medium text-sm'>Architecture</h1>
       <ChipSelect aria-label='Architecture run' searchable placeholder='Select a run' value={data?.run_id ?? ''}
         options={(data?.runs ?? []).map((run) => ({ label: run.name, value: run.run_id }))} disabled={!editable}
-        onChange={(run_id) => perform(async () => {
-          setData(architectureWorkspaceSchema.parse(await request({ operation: 'select', run_id })))
-          await queryClient.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId) })
-        })} />
+        onChange={(run_id) => perform(async () => { await selection.mutateAsync(run_id) })} />
       <span className='text-xs text-[var(--text-tertiary)]'>{graph ? `${graph.nodes.length} declarations · Source${graph.gaps.length ? ` · ${graph.gaps.length} gaps` : ''}` : ''}</span>
-      <Chip disabled={busy || chatBusy} onClick={() => perform(async () => setData(architectureWorkspaceSchema.parse(await request())))}>Refresh</Chip>
+      <Chip disabled={busy || chatBusy || selecting} onClick={() => perform(async () => {
+        const result = await workspace.refetch()
+        if (result.error) throw result.error
+      })}>Refresh</Chip>
       <Chip disabled={!graph || busy} onClick={() => flow.fitView({ padding: 0.15, duration: 200 })}>Fit</Chip>
       <Chip disabled={!graph || !editable} onClick={() => perform(async () => {
         await request({ operation: 'layout', ...binding(), positions: flow.getNodes().map(({ id, position }) => ({ id, ...position })) })
@@ -228,7 +224,7 @@ function WorkspaceView() {
         setNotice('AI context cleared.')
       })}>Clear AI context</Chip>}
     </header>
-    {(error || notice) && <div className='border-[var(--border)] border-b px-4 py-2 text-sm' role={error ? 'alert' : 'status'}>{error || notice}</div>}
+    {(error || loadError || notice) && <div className='border-[var(--border)] border-b px-4 py-2 text-sm' role={error || loadError ? 'alert' : 'status'}>{error || loadError || notice}</div>}
       <main className='relative min-h-0 min-w-0 flex-1' aria-label='Infrastructure architecture canvas'>
         {graph?.nodes.length ? <ReactFlow nodes={displayed} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
           onNodesChange={onNodesChange} onNodeClick={(_, node) => select({ kind: 'source_node', id: node.id })}

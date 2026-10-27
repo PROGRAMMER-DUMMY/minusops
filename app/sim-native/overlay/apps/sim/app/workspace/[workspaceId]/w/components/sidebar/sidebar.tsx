@@ -56,6 +56,7 @@ import { SIM_RESOURCES_DRAG_TYPE } from '@/lib/mothership/resource-types'
 import { captureEvent } from '@/lib/posthog/client'
 import { LOGO_ACCEPT_ATTRIBUTE } from '@/lib/uploads/client/logo-file'
 import { useSidebarChrome } from '@/app/workspace/[workspaceId]/components/workspace-chrome'
+import { ArchitectureList } from '@/app/workspace/[workspaceId]/w/components/sidebar/components/architecture-list'
 import { CONNECT_MODE } from '@/app/workspace/[workspaceId]/integrations/connect-route'
 import { useFeatureFlag } from '@/app/workspace/[workspaceId]/providers/feature-flags-provider'
 import { useRegisterGlobalCommands } from '@/app/workspace/[workspaceId]/providers/global-commands-provider'
@@ -770,14 +771,6 @@ export const Sidebar = memo(function Sidebar({ organizationHref, desktopExecutor
             (!chatEnabled && !permissionsLoading && !canEdit) ||
             (chatEnabled && permissionConfig.hideCopilot && !accessRequestsEnabled),
           restricted: chatEnabled && permissionConfig.hideCopilot,
-        },
-        {
-          id: 'architecture',
-          label: 'Architecture',
-          icon: Workflow,
-          href: `/workspace/${workspaceId}/architecture`,
-          hidden: !architectureEnabled,
-          restricted: false,
         },
         {
           id: 'dashboards',
@@ -1696,6 +1689,8 @@ export const Sidebar = memo(function Sidebar({ organizationHref, desktopExecutor
                         })}
                       </div>
                     </SidebarSection>
+
+                    {architectureEnabled && <ArchitectureList workspaceId={workspaceId} collapsed={isCollapsed} />}
 
                     <SidebarSection
                       title='Workflows'
