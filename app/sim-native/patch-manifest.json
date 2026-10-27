@@ -53,7 +53,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx",
-      "sha256": "478d809676621c5851e9e920ae63fe1e94320fc7545ac897d5ffbfc6cb714319",
+      "sha256": "ab63fe08cb43d9f4a746c8caa390ce5b866b4cc63d38d5751d925094d117ab91",
       "upstream_sha256": null
     },
     {
