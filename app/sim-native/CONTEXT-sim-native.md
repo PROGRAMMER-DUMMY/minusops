@@ -4,7 +4,7 @@
 vault credential path, transport configuration and internal nonproduction limits.
 [ACCEPTANCE.md](./ACCEPTANCE.md) separates passing contract/transport checks from
 the native browser and real-provider acceptance.
-[patch-manifest.json](./patch-manifest.json) lists exactly 19 overlay files with
+[patch-manifest.json](./patch-manifest.json) lists exactly 24 overlay files with
 SHA256 hashes, original upstream hashes where applicable, and the gateway API.
 Paths are relative to the pinned source root; no upstream or EE tree is vendored.
 
@@ -31,6 +31,10 @@ the active artifact overlay; changes require updating the manifest explicitly.
 | [openrouter-chat.ts queries](./overlay/apps/sim/hooks/queries/openrouter-chat.ts) | `useOpenRouterChat(workspaceId)` manages remote public state; direct key helpers keep credentials out of React Query mutation variables. |
 | [store.ts](./overlay/apps/sim/stores/openrouter-chat/store.ts) | `useOpenRouterChatStore` holds workspace-scoped public preferences/catalogs only, without persistence or hosted selection state. |
 | [complete.ts](./overlay/apps/sim/lib/mothership/request/handlers/complete.ts) | Preserves native completion accounting and maps flagged local error codes to fixed safe sentences. |
+| [architecture/page.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/page.tsx) and [workspace.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx) | Native workspace route using the original renderer, controls and shell for run selection, configuration/source inspection, staged diffs, layout, selected AI context and plan/delivery evidence. The new route awaits compiled-image/browser acceptance. |
+| [sidebar.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/w/components/sidebar/sidebar.tsx) | Adds a flag-controlled Architecture entry through native navigation. |
+| [minusops-architecture.ts](./overlay/apps/sim/lib/api/contracts/minusops-architecture.ts) | Validates bounded source/workspace projections and finite inspection/proposal operations. No publication/apply operation exists. |
+| [architecture/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/architecture/route.ts) | GET/POST reuse native session/workspace admission, admin/same-origin writes and the private local gateway. |
 
 [Realtime index.ts](./overlay/apps/realtime/src/index.ts) preserves the pinned
 server and changes its listener to loopback for the Docker-free preview.
@@ -59,6 +63,8 @@ history/replay and cancellation. Native HTTP proxies use a server-only local
 transport secret, never a provider key as `COPILOT_API_KEY`. The native worker
 connection is text-only, even if provider catalog metadata advertises tools.
 No overlay modifies Chat sending, generated schemas or EE files.
+The model contract accepts OpenRouter's optional leading `~` alias marker without
+rewriting IDs; its length, traversal and account-membership checks remain enforced.
 [NOTICE.md](./NOTICE.md) retains upstream attribution and identifies the modified
 Apache files. The private build archive preserves upstream root license notices.
 [browser-password.mjs](./browser-password.mjs) preserves the pinned generator's
@@ -79,7 +85,8 @@ installs pinned workspace dependencies on the official image; [Dockerfile](./Doc
 applies owned source overlays and compiles the application once before starting
 Next in production mode for this internal preview. Type checking is separate. Database
 migrations must complete before the app starts; its generated cache is writable
-by the existing non-root runtime user.
+by the existing non-root runtime user. The app health probe requests `/api/health`
+so a root redirect cannot hide a failed Next instrumentation hook.
 [dev-next.config.mjs](./dev-next.config.mjs) keeps native server SDKs external,
 disables source maps and persistent Turbopack caching, enables Turbopack minification
 and disables scope hoisting. The retained Webpack fallback disables its own
@@ -150,21 +157,20 @@ workflow token; they need repository contents write permission. There are no
 provider keys or private workspace inputs. A prior successful native image was
 unexpectedly public in GHCR; its exact package was deleted and fresh anonymous
 access denied. Registry publishing is removed. The maintained mount uses `/sim-native` so both contract
-harnesses select the source overlay tree. All 30 checks pass in that Docker setup,
-including failed/interrupted compiler children and raw PDF/Monaco asset handling.
+harnesses select the source overlay tree. Contracts include failed/interrupted
+compiler children and raw PDF/Monaco asset handling.
 The additional browser/server fixture compiles actual native logger, random and
 permission helpers, verifies browser Node imports are absent and server crypto
 and request context remain available. All 32 checks pass in the bounded Docker
-test setup; this is still separate from a full native image/browser result.
+test setup; native browser checks complement that contract coverage.
 
-The native build, owned type check and private draft export completed successfully
-in CI run `40374089795`, source `6f6b38c19d9c145385be48d09e5ed866df18e0b6`.
-After scoped cache cleanup the complete local import passed all range and original
-part hashes. Its local manifest binds the exact CI configuration and matching
-filesystem layer identities; the temporary private draft was deleted. Browser
-testing then found malformed server JavaScript from the environment postprocessor.
-That app is stopped; the corrected compile-only source passed 32 contracts and
-a small runtime fixture, with replacement CI/browser checks pending. CI checks
-generated server syntax in isolated child processes and exports range checksums
-alongside the original part metadata. Live model inference remains unverified.
-[ACCEPTANCE.md](./ACCEPTANCE.md) records exact image identities and remaining checks.
+Corrected source `a4449d8a825a782d6b4f2683ba526abf3244b1bb` passed CI40393077051,
+including owned types18, compilation and all3,805 generated server syntax checks.
+Verified private parts were cached on D: before importing. The local manifest
+binds the exact CI configuration and matching filesystem identities; all19 overlays,
+both adapters, compiler launcher and config matched inside the image. The private
+release was deleted after acceptance. Controlled native browser checks verified
+vault save/delete, model/effort selection, two Chat turns/reload, database-backed
+canvas drag/reload and model search. A clean user workspace and the normal gateway
+are ready. The checks made no live inference calls. [ACCEPTANCE.md](./ACCEPTANCE.md)
+records image identities, source scope and production/real-provider limitations.

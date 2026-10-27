@@ -487,6 +487,56 @@ test('current account catalog accepts exact raw model and advertised effort befo
   assert.deepEqual(JSON.parse(fixture.calls[1].options.body), selected)
 })
 
+test('tilde aliases survive catalog validation and exact preference selection', async () => {
+  const alias = '~openai/gpt-astra-latest'
+  const rows = [{ ...model, id: alias }]
+  queue(json(catalog(rows)))
+  const listed = await call('models')
+  assert.equal(listed.status, 200)
+  assert.equal((await listed.json()).models[0].id, alias)
+  const selected = { ...preferences, model: alias }
+  queue(json(catalog(rows)), json(selected))
+  const saved = await call('preferences', 'POST', selected)
+  assert.equal(saved.status, 200)
+  assert.deepEqual(await saved.json(), selected)
+  assert.equal(JSON.parse(fixture.calls[2].options.body).model, alias)
+  const calls = fixture.calls.length
+  for (const id of ['~', '~~vendor/chat', 'vendor/~chat', '~vendor/../chat', '~' + 'a'.repeat(200)]) {
+    await refused(await call('preferences', 'POST', { ...preferences, model: id }), 400)
+  }
+  assert.equal(fixture.calls.length, calls)
+})
+
+test('native architecture reads are scoped and writes require workspace admin', async () => {
+  const workspace = { schema_version: 1, run_id: null, runs: [], architecture: null,
+    icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+  fixture.permission = 'read'
+  queue(json(workspace))
+  const response = await call('architecture')
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), workspace)
+  assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/architecture`)
+  await refused(await call('architecture', 'POST', { operation: 'select', run_id: 'source-test' }), 403)
+  assert.equal(fixture.calls.length, 1)
+})
+
+test('native architecture admits only bounded inspection and proposal operations', async () => {
+  const workspace = { schema_version: 1, run_id: null, runs: [], architecture: null,
+    icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+  queue(json(workspace))
+  assert.equal((await call('architecture', 'POST', { operation: 'select', run_id: 'source-test' })).status, 200)
+  assert.deepEqual(JSON.parse(fixture.calls[0].options.body), { operation: 'select', run_id: 'source-test' })
+  for (const body of [{ operation: 'publish', run_id: 'source-test' },
+    { operation: 'apply', run_id: 'source-test' }, { operation: 'shell', command: 'arbitrary' },
+    { operation: 'select', run_id: '../source-test' }, { operation: 'select', run_id: null },
+    { operation: 'select', run_id: 'source-test', path: '/operator' }]) {
+    await refused(await call('architecture', 'POST', body), 400)
+  }
+  assert.equal(fixture.calls.length, 1)
+  queue(json({ ...workspace, unexpected: token }))
+  await refused(await call('architecture'), 502)
+})
+
 test('cross-provider model, missing model, unsupported effort and output bound refuse saving', async () => {
   for (const value of [{ ...preferences, model: 'openai:gpt-4' },
     { ...preferences, model: 'vendor/not-in-account' }, { ...preferences, effort: 'max' },

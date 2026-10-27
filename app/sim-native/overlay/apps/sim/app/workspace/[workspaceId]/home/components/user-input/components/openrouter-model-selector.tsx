@@ -2,11 +2,11 @@
 
 import { useMemo, useState } from 'react'
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuItemLabel,
+  Chip, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuItemLabel,
   DropdownMenuRadioGroup, DropdownMenuSearchInput,
 } from '@sim/emcn'
 import { Brain, Check, Sparkles } from '@sim/emcn/icons'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { ModelSettingTrigger } from '@/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger'
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
 import { useOpenRouterChat } from '@/hooks/queries/openrouter-chat'
@@ -14,6 +14,7 @@ import type { OpenRouterPreferences } from '@/lib/api/contracts/openrouter-chat'
 
 export function OpenRouterModelSelector() {
   const params = useParams()
+  const router = useRouter()
   const workspaceId = typeof params?.workspaceId === 'string' ? params.workspaceId : ''
   const permissions = useUserPermissionsContext()
   const chat = useOpenRouterChat(workspaceId)
@@ -30,6 +31,11 @@ export function OpenRouterModelSelector() {
   const label = selected?.name ?? (preferences?.model ? 'Model unavailable' : 'Select OpenRouter model')
   return (
     <div className='flex items-center gap-[inherit]'>
+      {chat.status.data?.architecture_context && <Chip shape='round' aria-label='Selected architecture context'
+        title={chat.status.data.architecture_context.run_id}
+        onClick={() => router.push(`/workspace/${workspaceId}/architecture`)}>
+        <span className='max-w-[180px] truncate'>Context: {chat.status.data.architecture_context.label}</span>
+      </Chip>}
       <DropdownMenu modal={false}>
         <ModelSettingTrigger label='OpenRouter model' valueLabel={label} icon={Sparkles} showChevron />
         <DropdownMenuContent side='top' align='end'>

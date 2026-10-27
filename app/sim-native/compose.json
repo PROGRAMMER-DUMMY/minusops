@@ -1,0 +1,171 @@
+{
+  "services": {
+    "simstudio": {
+      "image": "ghcr.io/simstudioai/simstudio@sha256:6ab0f0246107f2b57b086fc091f64ecff176cf688031a5f4a216e0bcee741042",
+      "restart": "no",
+      "ports": [
+        "127.0.0.1:3000:3000"
+      ],
+      "deploy": {
+        "resources": {
+          "limits": {
+            "memory": "8G"
+          }
+        }
+      },
+      "environment": {
+        "NODE_ENV": "production",
+        "DATABASE_URL": "postgresql://postgres:${SIM_NATIVE_DB_PASSWORD:?required}@db:5432/simstudio",
+        "NEXT_PUBLIC_APP_URL": "http://localhost:3000",
+        "BETTER_AUTH_URL": "http://localhost:3000",
+        "BETTER_AUTH_SECRET": "${SIM_NATIVE_AUTH_SECRET:?required}",
+        "INTERNAL_API_SECRET": "${SIM_NATIVE_INTERNAL_SECRET:?required}",
+        "REDIS_URL": "redis://redis:6379",
+        "DISABLE_AUTH": "true",
+        "ENCRYPTION_KEY": "${SIM_NATIVE_ENCRYPTION_KEY:?required}",
+        "API_ENCRYPTION_KEY": "${SIM_NATIVE_API_ENCRYPTION_KEY:?required}",
+        "SOCKET_SERVER_URL": "http://realtime:3002",
+        "NEXT_PUBLIC_SOCKET_URL": "http://localhost:3002",
+        "NEXT_PUBLIC_CHAT_DISABLED": "false",
+        "COPILOT_API_KEY": "",
+        "ENTERPRISE_ENABLED": "false",
+        "NEXT_PUBLIC_ENTERPRISE_ENABLED": "false",
+        "NEXT_TELEMETRY_DISABLED": "1",
+        "NEXT_PUBLIC_TELEMETRY_DISABLED": "true"
+      },
+      "extra_hosts": [
+        "host.docker.internal:host-gateway"
+      ],
+      "depends_on": {
+        "db": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        },
+        "migrations": {
+          "condition": "service_completed_successfully"
+        },
+        "realtime": {
+          "condition": "service_healthy"
+        }
+      },
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "curl",
+          "-fsS",
+          "http://127.0.0.1:3000"
+        ],
+        "interval": "90s",
+        "timeout": "5s",
+        "retries": 3,
+        "start_period": "10s"
+      },
+      "volumes": [
+        "native_uploads:/app/apps/sim/uploads"
+      ]
+    },
+    "realtime": {
+      "image": "ghcr.io/simstudioai/realtime@sha256:ed5e1c7191c0b416766877160ef60a9437aa0baa06900095939fb6d7b18368f4",
+      "restart": "no",
+      "ports": [
+        "127.0.0.1:3002:3002"
+      ],
+      "deploy": {
+        "resources": {
+          "limits": {
+            "memory": "1G"
+          }
+        }
+      },
+      "environment": {
+        "NODE_ENV": "production",
+        "DATABASE_URL": "postgresql://postgres:${SIM_NATIVE_DB_PASSWORD:?required}@db:5432/simstudio",
+        "NEXT_PUBLIC_APP_URL": "http://localhost:3000",
+        "BETTER_AUTH_URL": "http://localhost:3000",
+        "BETTER_AUTH_SECRET": "${SIM_NATIVE_AUTH_SECRET:?required}",
+        "INTERNAL_API_SECRET": "${SIM_NATIVE_INTERNAL_SECRET:?required}",
+        "REDIS_URL": "redis://redis:6379",
+        "DISABLE_AUTH": "true"
+      },
+      "depends_on": {
+        "db": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        }
+      },
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "curl",
+          "-fsS",
+          "http://127.0.0.1:3002/health"
+        ],
+        "interval": "90s",
+        "timeout": "5s",
+        "retries": 3,
+        "start_period": "10s"
+      }
+    },
+    "migrations": {
+      "image": "ghcr.io/simstudioai/migrations@sha256:2b0d88caab891c0cb0431182c8dcec46690cfc759944ff8affc3ee3bdf81f14e",
+      "working_dir": "/app/packages/db",
+      "environment": {
+        "DATABASE_URL": "postgresql://postgres:${SIM_NATIVE_DB_PASSWORD:?required}@db:5432/simstudio"
+      },
+      "depends_on": {
+        "db": {
+          "condition": "service_healthy"
+        }
+      },
+      "command": [
+        "bun",
+        "run",
+        "db:migrate"
+      ],
+      "restart": "no"
+    },
+    "db": {
+      "image": "pgvector/pgvector@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
+      "restart": "no",
+      "environment": {
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_DB": "simstudio",
+        "POSTGRES_PASSWORD": "${SIM_NATIVE_DB_PASSWORD:?required}"
+      },
+      "volumes": [
+        "postgres_data:/var/lib/postgresql/data"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD-SHELL",
+          "pg_isready -U postgres"
+        ],
+        "interval": "5s",
+        "timeout": "5s",
+        "retries": 5
+      }
+    },
+    "redis": {
+      "image": "redis@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541",
+      "restart": "no",
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ],
+        "interval": "5s",
+        "timeout": "5s",
+        "retries": 5
+      }
+    }
+  },
+  "volumes": {
+    "postgres_data": {},
+    "native_uploads": {}
+  }
+}

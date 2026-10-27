@@ -1,0 +1,127 @@
+{
+  "services": {
+    "simstudio_openrouter": {
+      "image": "minusops-native-sim-openrouter:df3db64",
+      "restart": "no",
+      "ports": [
+        "127.0.0.1:3010:3000"
+      ],
+      "deploy": {
+        "resources": {
+          "limits": {
+            "memory": "3g"
+          }
+        }
+      },
+      "environment": {
+        "NODE_ENV": "production",
+        "DATABASE_URL": "postgresql://postgres:${SIM_NATIVE_DB_PASSWORD:?required}@db:5432/simstudio",
+        "NEXT_PUBLIC_APP_URL": "http://localhost:3010",
+        "BETTER_AUTH_URL": "http://localhost:3010",
+        "BETTER_AUTH_SECRET": "${SIM_NATIVE_AUTH_SECRET:?required}",
+        "INTERNAL_API_SECRET": "${SIM_NATIVE_INTERNAL_SECRET:?required}",
+        "REDIS_URL": "redis://redis:6379",
+        "DISABLE_AUTH": "true",
+        "ENCRYPTION_KEY": "${SIM_NATIVE_ENCRYPTION_KEY:?required}",
+        "API_ENCRYPTION_KEY": "${SIM_NATIVE_API_ENCRYPTION_KEY:?required}",
+        "SOCKET_SERVER_URL": "http://realtime_openrouter:3002",
+        "NEXT_PUBLIC_SOCKET_URL": "http://localhost:3012",
+        "NEXT_PUBLIC_CHAT_DISABLED": "false",
+        "COPILOT_API_KEY": "${SIM_NATIVE_GATEWAY_TOKEN:?required}",
+        "ENTERPRISE_ENABLED": "false",
+        "NEXT_PUBLIC_ENTERPRISE_ENABLED": "false",
+        "NEXT_TELEMETRY_DISABLED": "1",
+        "NEXT_PUBLIC_TELEMETRY_DISABLED": "true",
+        "MINUS_OPENROUTER_CHAT": "true",
+        "MINUS_ASSISTANT_GATEWAY_URL": "http://host.docker.internal:5180",
+        "MINUS_ASSISTANT_GATEWAY_TOKEN": "${SIM_NATIVE_GATEWAY_TOKEN:?required}",
+        "SIM_AGENT_API_URL": "http://host.docker.internal:5180",
+        "NODE_OPTIONS": "--max-old-space-size=4096"
+      },
+      "extra_hosts": [
+        "host.docker.internal:host-gateway"
+      ],
+      "depends_on": {
+        "db": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        },
+        "realtime_openrouter": {
+          "condition": "service_healthy"
+        },
+        "migrations": {
+          "condition": "service_completed_successfully"
+        }
+      },
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "curl",
+          "-fsS",
+          "http://127.0.0.1:3000/api/health"
+        ],
+        "interval": "90s",
+        "timeout": "5s",
+        "retries": 3,
+        "start_period": "10s"
+      },
+      "volumes": [
+        "native_uploads:/app/apps/sim/uploads"
+      ],
+      "mem_limit": "3g",
+      "memswap_limit": "3g",
+      "ulimits": {
+        "core": {
+          "soft": 0,
+          "hard": 0
+        }
+      }
+    },
+    "realtime_openrouter": {
+      "image": "ghcr.io/simstudioai/realtime@sha256:ed5e1c7191c0b416766877160ef60a9437aa0baa06900095939fb6d7b18368f4",
+      "restart": "no",
+      "ports": [
+        "127.0.0.1:3012:3002"
+      ],
+      "deploy": {
+        "resources": {
+          "limits": {
+            "memory": "1G"
+          }
+        }
+      },
+      "environment": {
+        "NODE_ENV": "production",
+        "DATABASE_URL": "postgresql://postgres:${SIM_NATIVE_DB_PASSWORD:?required}@db:5432/simstudio",
+        "NEXT_PUBLIC_APP_URL": "http://localhost:3010",
+        "BETTER_AUTH_URL": "http://localhost:3010",
+        "BETTER_AUTH_SECRET": "${SIM_NATIVE_AUTH_SECRET:?required}",
+        "INTERNAL_API_SECRET": "${SIM_NATIVE_INTERNAL_SECRET:?required}",
+        "REDIS_URL": "redis://redis:6379",
+        "DISABLE_AUTH": "true"
+      },
+      "depends_on": {
+        "db": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        }
+      },
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "curl",
+          "-fsS",
+          "http://127.0.0.1:3002/health"
+        ],
+        "interval": "90s",
+        "timeout": "5s",
+        "retries": 3,
+        "start_period": "10s"
+      }
+    }
+  }
+}

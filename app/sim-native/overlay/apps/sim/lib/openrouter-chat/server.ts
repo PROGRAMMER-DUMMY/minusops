@@ -8,13 +8,14 @@ import {
 import { getSession } from '@/lib/auth'
 import { withRouteHandler } from '@/lib/core/utils/with-route-handler'
 import { getUserEntityPermissions } from '@/lib/workspaces/permissions/utils'
+import { architectureActionSchema, architectureReplySchema } from '@/lib/api/contracts/minusops-architecture'
 
 const GATEWAY = 'http://host.docker.internal:5180'
 const LOCAL_GATEWAY = 'http://127.0.0.1:5180'
 const MAX_BODY = 16384
 const MAX_RESPONSE = 4194304
 const HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
-type Action = 'status' | 'key' | 'models' | 'preferences'
+type Action = 'status' | 'key' | 'models' | 'preferences' | 'architecture'
 type Method = 'GET' | 'POST' | 'DELETE'
 interface RouteContext { params: Promise<{ id: string }> }
 class BodyLimit extends Error {}
@@ -110,7 +111,8 @@ async function gateway(workspaceId: string, action: Action, method: Method, body
   const raw = await boundedBody(response.body, MAX_RESPONSE)
   if (raw.includes(token)) throw new Error('Assistant response refused')
   const schema = action === 'status' ? openRouterStatusSchema
-    : action === 'models' ? openRouterModelsSchema : openRouterPreferencesSchema
+    : action === 'models' ? openRouterModelsSchema
+      : action === 'architecture' ? architectureReplySchema : openRouterPreferencesSchema
   const value = schema.parse(strictJson(raw))
   if (JSON.stringify(value).includes(token)) throw new Error('Assistant response refused')
   return { ok: true as const, value }
@@ -138,14 +140,15 @@ export function assistantRoute(action: Action, method: Method) {
       let body: unknown
       if (method !== 'GET') {
         try {
-          const raw = await boundedBody(request.body, MAX_BODY)
+          const raw = await boundedBody(request.body, action === 'architecture' ? 1048576 : MAX_BODY)
           if (method === 'DELETE') {
             if (raw.trim()) return refused(400, 'invalid_request')
           } else {
             if (request.headers.get('content-type')?.split(';')[0].trim() !== 'application/json') {
               return refused(415, 'invalid_request')
             }
-            const input = action === 'key' ? openRouterKeySchema : openRouterPreferencesSchema
+            const input = action === 'key' ? openRouterKeySchema
+              : action === 'architecture' ? architectureActionSchema : openRouterPreferencesSchema
             const parsed = input.safeParse(strictJson(raw))
             if (!parsed.success) return refused(400, 'invalid_request')
             body = parsed.data

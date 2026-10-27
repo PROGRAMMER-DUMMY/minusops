@@ -3,7 +3,7 @@ import { defineRouteContract } from '@/lib/api/contracts/types'
 
 const scope = z.object({ id: z.uuid() }).strict()
 const noInput = z.object({}).strict()
-const modelId = z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/)
+const modelId = z.string().min(1).max(200).regex(/^~?[A-Za-z0-9][A-Za-z0-9._:/-]*$/)
   .refine((value) => !value.includes('..'))
 const effort = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const money = z.number().finite().nonnegative().max(1e15)
@@ -32,6 +32,8 @@ export const openRouterStatusSchema = z.object({
   providers: z.object({ openrouter: providerStatus }),
   preferences: openRouterPreferencesSchema,
   workflow_tools: z.literal(false), recorded_spend: recordedSpend.nullable().optional(),
+  architecture_context: z.object({ run_id: z.string().max(200), revision: z.string().regex(/^[a-f0-9]{64}$/),
+    label: z.string().min(1).max(200) }).nullable().optional(),
 })
 export type OpenRouterStatus = z.infer<typeof openRouterStatusSchema>
 
