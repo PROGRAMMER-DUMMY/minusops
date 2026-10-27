@@ -97,6 +97,8 @@ export function exportCode(root, output, baselinePath, revision, expectedBaselin
     archive_sha256: fileHash(archive), changed_bytes: delta.changed.reduce((sum, file) => sum + file.bytes, 0) }
   assert.ok(metadata.archive_bytes <= 1024 ** 3)
   fs.writeFileSync(metadataPath, JSON.stringify(metadata), { flag: 'wx' })
+  console.log(`NATIVE_CODE_METADATA_SHA256=${fileHash(metadataPath)}`)
+  console.log(`NATIVE_CODE_ARCHIVE_SHA256=${metadata.archive_sha256}`)
   console.log(JSON.stringify({ files: current.files.length, changed_files: delta.changed.length,
     changed_bytes: metadata.changed_bytes, archive_bytes: metadata.archive_bytes }))
 }
