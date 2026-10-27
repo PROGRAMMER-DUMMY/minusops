@@ -278,6 +278,24 @@ const result = await build({
   bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external',
   plugins: [{ name: 'native-boundaries', setup(builder) {
     builder.onResolve({ filter: /^server-only$/ }, () => ({ path: 'marker', namespace: 'boundary' }))
+    builder.onResolve({ filter: /^(?:@sim\/db(?:\/schema)?|drizzle-orm)$/ },
+      ({ path: name }) => ({ path: name, namespace: 'database' }))
+    builder.onLoad({ filter: /.*/, namespace: 'database' }, ({ path: name }) => ({ contents:
+      name === '@sim/db/schema' ? `export const copilotChats = {
+        id: 'id', workspaceId: 'workspaceId', userId: 'userId', deletedAt: 'deletedAt' };`
+        : name === 'drizzle-orm' ? `
+          export const eq = (column, value) => row => row[column] === value;
+          export const isNull = column => row => row[column] === null;
+          export const and = (...conditions) => row => conditions.every(condition => condition(row));`
+          : `export const db = { select: fields => ({ from: table => ({ where: predicate => ({
+              limit: async limit => {
+                const fixture = globalThis.__openRouterTest;
+                fixture.databaseCalls.push({ fields, table, limit });
+                if (fixture.databaseError) throw fixture.databaseError;
+                return fixture.chatRows.filter(predicate).slice(0, limit)
+                  .map(row => Object.fromEntries(Object.entries(fields).map(([key, column]) => [key, row[column]])));
+              }
+            }) }) }) };`, loader: 'js' }))
     builder.onResolve({ filter: /^@\/lib\/(auth|core\/utils\/with-route-handler|workspaces\/permissions\/utils)$/ },
       ({ path: name }) => ({ path: name, namespace: 'boundary' }))
     builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path: name }) => ({ contents:
@@ -328,7 +346,8 @@ async function refused(response, expected) {
   assert.equal(response.headers.get('cache-control'), 'no-store')
 }
 beforeEach(() => {
-  fixture = { session: { user: { id: 'native-user' } }, permission: 'admin', permissionCalls: [], calls: [], responses: [] }
+  fixture = { session: { user: { id: 'native-user' } }, permission: 'admin', permissionCalls: [], calls: [], responses: [],
+    chatRows: [], databaseCalls: [], databaseError: null }
   globalThis.__openRouterTest = fixture
   process.env.MINUS_OPENROUTER_CHAT = 'true'
   process.env.MINUS_ASSISTANT_GATEWAY_URL = 'http://host.docker.internal:5180'
@@ -509,7 +528,7 @@ test('tilde aliases survive catalog validation and exact preference selection', 
 
 test('native architecture reads are scoped and writes require workspace admin', async () => {
   const workspace = { schema_version: 1, run_id: null, source_status: 'UNSELECTED', runs: [], architecture: null,
-    icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+    metadata: null, context_enabled: true, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
   fixture.permission = 'read'
   queue(json(workspace))
   const response = await call('architecture')
@@ -518,7 +537,7 @@ test('native architecture reads are scoped and writes require workspace admin', 
   assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/architecture`)
   await refused(await call('architecture', 'POST', { operation: 'select', run_id: 'source-test' }), 403)
   assert.equal(fixture.calls.length, 1)
-  for (const operation of ['plan', 'delivery']) {
+  for (const operation of ['plan', 'delivery', 'export']) {
     queue(json({ status: 'UNKNOWN', execution_authority: 'NONE' }))
     assert.equal((await call('architecture', 'POST', { operation, run_id: 'source-test', revision: 'a'.repeat(64) })).status, 200)
   }
@@ -526,7 +545,7 @@ test('native architecture reads are scoped and writes require workspace admin', 
 
 test('native architecture admits only bounded inspection and proposal operations', async () => {
   const workspace = { schema_version: 1, run_id: null, source_status: 'UNSELECTED', runs: [], architecture: null,
-    icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+    metadata: null, context_enabled: true, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
   queue(json(workspace))
   assert.equal((await call('architecture', 'POST', { operation: 'select', run_id: 'source-test' })).status, 200)
   assert.deepEqual(JSON.parse(fixture.calls[0].options.body), { operation: 'select', run_id: 'source-test' })
@@ -539,6 +558,74 @@ test('native architecture admits only bounded inspection and proposal operations
   assert.equal(fixture.calls.length, 1)
   queue(json({ ...workspace, unexpected: token }))
   await refused(await call('architecture'), 502)
+})
+
+test('architecture queries forward only one explicit validated run and never accept write queries', async () => {
+  const workspace = { schema_version: 1, run_id: null, source_status: 'UNSELECTED', runs: [], architecture: null,
+    metadata: null, context_enabled: true, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+  fixture.permission = 'read'
+  queue(json(workspace))
+  assert.equal((await call('architecture', 'GET', undefined, { query: '?run_id=source-test' })).status, 200)
+  assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/architecture?run_id=source-test`)
+  for (const query of ['?run_id=source-test&run_id=other-run', '?run_id=source-test&run%5Fid=other-run',
+    '?run_id=..%2Fprivate', '?run_id=', '?run_id=source-test&path=private', '?chat_id=source-test']) {
+    await refused(await call('architecture', 'GET', undefined, { query }), 400)
+  }
+  fixture.permission = 'admin'
+  await refused(await call('architecture', 'POST', { operation: 'select', run_id: 'source-test' },
+    { query: '?run_id=other-run' }), 400)
+  await refused(await call('models', 'GET', undefined, { query: '?run_id=source-test' }), 400)
+  assert.equal(fixture.calls.length, 1)
+  assert.equal(fixture.databaseCalls.length, 0)
+})
+
+test('chat status and context binding require a live chat owned by the current user and workspace', async () => {
+  const chatId = 'b076d0ab-2d86-4ddc-9268-0aee617c4dc4'
+  const owner = { id: chatId, workspaceId: uuid, userId: 'native-user', deletedAt: null }
+  const binding = { operation: 'bind_chat', run_id: 'source-test', revision: 'a'.repeat(64),
+    chat_id: chatId, subject: null, enabled: true }
+  for (const row of [null, { ...owner, id: uuid }, { ...owner, workspaceId: chatId },
+    { ...owner, userId: 'other-user' }, { ...owner, deletedAt: new Date().toISOString() }]) {
+    fixture.chatRows = row ? [row] : []
+    await refused(await call('status', 'GET', undefined, { query: `?chat_id=${chatId}` }), 403)
+    await refused(await call('architecture', 'POST', binding), 403)
+  }
+  assert.equal(fixture.calls.length, 0)
+  fixture.chatRows = [owner]
+  fixture.permission = 'read'
+  queue(json(status))
+  assert.equal((await call('status', 'GET', undefined, { query: `?chat_id=${chatId}` })).status, 200)
+  assert.equal(fixture.calls[0].url,
+    `http://host.docker.internal:5180/workspaces/${uuid}/status?chat_id=${chatId}&user_id=native-user`)
+  await refused(await call('architecture', 'POST', binding), 403)
+  fixture.permission = 'admin'
+  queue(json({ status: 'CONTEXT_BOUND', execution_authority: 'NONE' }))
+  assert.equal((await call('architecture', 'POST', binding)).status, 200)
+  assert.deepEqual(JSON.parse(fixture.calls[1].options.body), { ...binding, user_id: 'native-user' })
+  assert.equal(fixture.calls[1].url, `http://host.docker.internal:5180/workspaces/${uuid}/architecture`)
+  assert.ok(fixture.databaseCalls.every(({ limit }) => limit === 1))
+  fixture.databaseError = new Error('private diagnostic')
+  await refused(await call('status', 'GET', undefined, { query: `?chat_id=${chatId}` }), 502)
+  await refused(await call('architecture', 'POST', binding), 502)
+  assert.equal(fixture.calls.length, 2)
+})
+
+test('chat queries and bindings reject spoofed ownership and malformed scope before database access', async () => {
+  const chatId = 'b076d0ab-2d86-4ddc-9268-0aee617c4dc4'
+  const binding = { operation: 'bind_chat', run_id: 'source-test', revision: 'a'.repeat(64),
+    chat_id: chatId, subject: null, enabled: true }
+  for (const query of ['?chat_id=../bad', '?chat_id=', `?chat_id=${chatId}&chat_id=${uuid}`,
+    `?chat_id=${chatId}&chat%5Fid=${uuid}`, `?chat_id=${chatId}&user_id=other-user`,
+    `?chat_id=${chatId}&run_id=other-run`]) {
+    await refused(await call('status', 'GET', undefined, { query }), 400)
+  }
+  for (const body of [{ ...binding, user_id: 'other-user' }, { ...binding, chat_id: '../bad' },
+    { ...binding, revision: 'stale' }, { ...binding, subject: { kind: 'source_node', id: 'unknown' } },
+    { ...binding, enabled: 'true' }, { ...binding, path: '/private' }]) {
+    await refused(await call('architecture', 'POST', body), 400)
+  }
+  assert.equal(fixture.calls.length, 0)
+  assert.equal(fixture.databaseCalls.length, 0)
 })
 
 test('cross-provider model, missing model, unsupported effort and output bound refuse saving', async () => {
@@ -636,6 +723,9 @@ test('architecture conversations require an explicit matching workspace/run and 
   const compiled = await build({ entryPoints: [filename], bundle: true, write: false, platform: 'node', format: 'cjs',
     jsx: 'automatic', external: ['react', 'react/jsx-runtime', 'zod'], tsconfigRaw: {},
     plugins: [{ name: 'native-chat-boundaries', setup(builder) {
+      builder.onResolve({ filter: /^@\/lib\/api\/contracts\/minusops-architecture$/ }, () => ({
+        path: path.join(overlays, 'lib/api/contracts/minusops-architecture.ts'),
+      }))
       builder.onResolve({ filter: /^(?:@|nuqs)/ }, ({ path: name }) => ({ path: name, namespace: 'boundary' }))
       builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path: name }) => {
         const values = {
@@ -646,10 +736,11 @@ test('architecture conversations require an explicit matching workspace/run and 
           '@/lib/api/client/request': 'export const requestJson=()=>{throw Error("Rendering must not create a chat")};',
           '@/lib/api/contracts/mothership-chats': 'export const createMothershipChatContract={};',
           '@/lib/auth/client': 'export const useSession=()=>({data:{user:{id:"viewer"}}});',
-          '@/app/workspace/[workspaceId]/home/components/mothership-chat': `import React from 'react'; export const MothershipChat=props=>React.createElement('div',{'data-chat':props.chatId});`,
-          '@/app/workspace/[workspaceId]/home/hooks': 'export const getWorkflowCopilotUseChatOptions=()=>({apiPath:"/api/mothership/chat"}); export const useChat=(...args)=>{fixture.calls.push(args);return {messages:[],isSending:false,isReconnecting:false}};',
+          '@/app/workspace/[workspaceId]/home/components/mothership-chat': `import React from 'react'; export const MothershipChat=props=>{fixture.conversation=props;return React.createElement('div',{'data-chat':props.chatId})};`,
+          '@/app/workspace/[workspaceId]/home/hooks': 'export const getWorkflowCopilotUseChatOptions=()=>({apiPath:"/api/mothership/chat"}); export const useChat=(...args)=>{fixture.calls.push(args);return {messages:[],isSending:false,isReconnecting:false,sendMessage:(...args)=>fixture.sent.push(args)}};',
           '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider': 'export const useUserPermissionsContext=()=>({canAdmin:true});',
           '@/hooks/queries/mothership-chats': 'export const mothershipChatKeys={list:()=>[]}; export const useMothershipChats=()=>({data:[]});',
+          '@/hooks/queries/openrouter-chat': 'export const openRouterChatKeys={status:(id,chatId)=>["status",id,chatId]};',
         }
         assert.ok(name in values, name)
         return { contents: values[name], loader: 'js' }
@@ -662,14 +753,19 @@ test('architecture conversations require an explicit matching workspace/run and 
   const valid = { architectureChat: chatId, architectureChatRun: 'source-test', architectureChatWorkspace: uuid }
   for (const selection of [{}, { ...valid, architectureChatRun: 'other-run' },
     { ...valid, architectureChatWorkspace: 'other-workspace' }, { ...valid, architectureChat: '../bad' }, valid]) {
-    const state = { selection, calls: [] }
+    const state = { selection, calls: [], sent: [] }
     const loaded = { exports: {} }
     new Function('require', 'module', 'exports', 'fixture', compiled.outputFiles[0].text)(require, loaded, loaded.exports, state)
     const html = renderToStaticMarkup(React.createElement(loaded.exports.ArchitectureChat,
-      { workspaceId: uuid, runId: 'source-test', onBusyChange: () => {} }))
+      { workspaceId: uuid, runId: 'source-test', binding: { revision: 'a'.repeat(64), subject: null, enabled: true },
+        onBusyChange: () => {} }))
     if (selection === valid) {
       assert.match(html, new RegExp(`data-chat="${chatId}"`))
       assert.deepEqual(state.calls, [[uuid, chatId, { apiPath: '/api/mothership/chat' }]])
+      assert.match(html, /inert=""/)
+      assert.equal(state.conversation.draftScopeKey, `${uuid}:architecture:source-test:${chatId}`)
+      await state.conversation.onSubmit('must wait for context binding')
+      assert.deepEqual(state.sent, [])
     } else {
       assert.match(html, /Start a chat for this run/)
       assert.equal(state.calls.length, 0)
@@ -690,7 +786,7 @@ test('hosted selector implementation is preserved behind isolated opt-in compone
   assert.match(independent, /OpenRouter model/)
 })
 
-test('architecture navigation shares validated workspace state and preserves it on selection failure', async () => {
+test('architecture navigation isolates per-run queries and preserves cached views on action failure', async () => {
   const filename = path.join(overlays, 'hooks/queries/minusops-architecture.ts')
   const compiled = await build({ entryPoints: [filename], bundle: true, write: false, platform: 'node', format: 'cjs',
     packages: 'external', tsconfigRaw: {}, plugins: [{ name: 'architecture-query-boundaries', setup(builder) {
@@ -715,30 +811,90 @@ test('architecture navigation shares validated workspace state and preserves it 
   const loaded = { exports: {} }
   new Function('require', 'module', 'exports', 'fixture', 'fetch', compiled.outputFiles[0].text)(require, loaded, loaded.exports, state, fetch)
   const query = loaded.exports.useArchitectureWorkspace(uuid)
-  const selection = loaded.exports.useSelectArchitecture(uuid)
-  const workspace = { schema_version: 1, run_id: 'source-test', source_status: 'UNAVAILABLE', runs: [{ run_id: 'source-test', name: 'Source test' }],
-    architecture: null, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+  const view = loaded.exports.useArchitectureWorkspace(uuid, 'source-test')
+  const otherView = loaded.exports.useArchitectureWorkspace(uuid, 'other-run')
+  const selection = loaded.exports.useArchitectureAction(uuid)
+  const metadata = { run_id: 'source-test', name: 'Source test', locked: false, metadata_revision: 0, design_status: 'SOURCE' }
+  const workspace = { schema_version: 1, run_id: 'source-test', source_status: 'UNAVAILABLE', runs: [metadata], metadata,
+    context_enabled: true, architecture: null, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
   const signal = new AbortController().signal
   pending.push(Response.json(workspace))
   assert.deepEqual(await query.queryFn({ signal }), workspace)
   assert.equal(calls[0][1].signal, signal)
-  assert.deepEqual(query.queryKey, ['minusops-architecture', uuid])
+  assert.deepEqual(query.queryKey, ['minusops-architecture', uuid, 'view', null])
+  assert.deepEqual(view.queryKey, ['minusops-architecture', uuid, 'view', 'source-test'])
+  assert.deepEqual(otherView.queryKey, ['minusops-architecture', uuid, 'view', 'other-run'])
+  assert.notDeepEqual(view.queryKey, otherView.queryKey)
+  assert.equal(calls[0][0], `/api/workspaces/${uuid}/assistant/architecture`)
+  for (const [run, scoped] of [['source-test', view], ['other-run', otherView]]) {
+    const scopedMetadata = { ...metadata, run_id: run }
+    const scopedWorkspace = { ...workspace, run_id: run, metadata: scopedMetadata, runs: [metadata, { ...metadata, run_id: 'other-run' }] }
+    pending.push(Response.json(scopedWorkspace))
+    assert.deepEqual(await scoped.queryFn({ signal }), scopedWorkspace)
+    assert.equal(calls.at(-1)[0], `/api/workspaces/${uuid}/assistant/architecture?run_id=${run}`)
+    assert.equal(calls.at(-1)[1].cache, 'no-store')
+    assert.equal(calls.at(-1)[1].credentials, 'same-origin')
+  }
   assert.equal(loaded.exports.useArchitectureWorkspace('').enabled, false)
   await selection.onMutate()
-  assert.deepEqual(cancelled, [{ queryKey: query.queryKey }])
+  assert.deepEqual(cancelled, [{ queryKey: ['minusops-architecture', uuid] }])
+  const beforeInvalid = calls.length
+  await assert.rejects(selection.mutationFn({ operation: 'select', run_id: '../private' }))
+  assert.equal(calls.length, beforeInvalid)
   pending.push(new Response('', { status: 403 }))
-  await assert.rejects(selection.mutationFn('other-run'), /could not be opened/)
+  await assert.rejects(selection.mutationFn({ operation: 'select', run_id: 'other-run' }), /could not be opened/)
   assert.deepEqual(saved, [])
   pending.push(Response.json({ ...workspace, execution_authority: 'APPLY' }))
-  await assert.rejects(selection.mutationFn('source-test'))
+  await assert.rejects(selection.mutationFn({ operation: 'select', run_id: 'source-test' }))
   assert.deepEqual(saved, [])
   pending.push(Response.json(workspace))
-  const accepted = await selection.mutationFn('source-test')
+  const accepted = await selection.mutationFn({ operation: 'select', run_id: 'source-test' })
   await selection.onSuccess(accepted)
-  assert.deepEqual(saved, [[query.queryKey, workspace]])
-  assert.deepEqual(invalidated, [{ queryKey: ['status', uuid] }])
+  assert.deepEqual(saved, [[view.queryKey, workspace]])
+  assert.deepEqual(invalidated, [{ queryKey: ['minusops-architecture', uuid] }, { queryKey: ['status', uuid] }])
   assert.deepEqual(JSON.parse(calls.at(-1)[1].body), { operation: 'select', run_id: 'source-test' })
   assert.match(calls.at(-1)[0], new RegExp(`/workspaces/${uuid}/assistant/architecture$`))
+})
+
+test('chat status hooks isolate chat query keys and send only the requested chat scope', async () => {
+  const compiled = await build({ entryPoints: [path.join(overlays, 'hooks/queries/openrouter-chat.ts')],
+    bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external', tsconfigRaw: {},
+    plugins: [{ name: 'chat-status-query-boundaries', setup(builder) {
+      builder.onResolve({ filter: /^(?:react$|@)/ }, ({ path: name }) => ({ path: name, namespace: 'boundary' }))
+      builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path: name }) => {
+        const values = {
+          react: 'export const useEffect=()=>{};',
+          '@tanstack/react-query': 'export const useQuery=options=>options; export const useMutation=options=>options; export const useQueryClient=()=>({});',
+          '@/lib/api/client/request': 'export const requestJson=(...args)=>{fixture.calls.push(args);return Promise.resolve({})};',
+          '@/lib/api/contracts/openrouter-chat': `export const openRouterStatusContract='status', openRouterPreferencesContract='preferences',
+            openRouterModelsContract='models', saveOpenRouterPreferencesContract='save', saveOpenRouterKeyContract='key', deleteOpenRouterKeyContract='delete';`,
+          '@/stores/openrouter-chat/store': 'export const useOpenRouterChatStore=selector=>selector({setPreferences:()=>{},setModels:()=>{}});',
+        }
+        assert.ok(name in values, name)
+        return { contents: values[name], loader: 'js' }
+      })
+    } }],
+  })
+  const state = { calls: [] }
+  const loaded = { exports: {} }
+  new Function('require', 'module', 'exports', 'fixture', compiled.outputFiles[0].text)(require, loaded, loaded.exports, state)
+  const chatId = 'b076d0ab-2d86-4ddc-9268-0aee617c4dc4'
+  const api = loaded.exports
+  const workspace = api.useOpenRouterChat(uuid)
+  const first = api.useOpenRouterChat(uuid, chatId)
+  const second = api.useOpenRouterChat(uuid, uuid)
+  assert.deepEqual(workspace.status.queryKey, ['openrouter-chat', uuid, 'status'])
+  assert.deepEqual(first.status.queryKey, ['openrouter-chat', uuid, 'status', chatId])
+  assert.notDeepEqual(first.status.queryKey, second.status.queryKey)
+  assert.deepEqual(first.preferences.queryKey, second.preferences.queryKey)
+  assert.equal(api.useOpenRouterChat('').status.enabled, false)
+  const signal = new AbortController().signal
+  for (const hook of [workspace, first, second]) await hook.status.queryFn({ signal })
+  assert.deepEqual(state.calls, [
+    ['status', { params: { id: uuid }, query: {}, signal }],
+    ['status', { params: { id: uuid }, query: { chat_id: chatId }, signal }],
+    ['status', { params: { id: uuid }, query: { chat_id: uuid }, signal }],
+  ])
 })
 
 test('native self-hosted BYOK navigation needs only the local flag, never enterprise', async () => {

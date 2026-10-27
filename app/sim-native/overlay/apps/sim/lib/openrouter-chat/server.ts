@@ -1,14 +1,17 @@
 import 'server-only'
 import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
+import { db } from '@sim/db'
+import { copilotChats } from '@sim/db/schema'
+import { and, eq, isNull } from 'drizzle-orm'
 import {
   openRouterKeySchema, openRouterModelsSchema, openRouterPreferencesSchema,
-  openRouterScopeSchema, openRouterStatusSchema,
+  openRouterScopeSchema, openRouterStatusSchema, openRouterStatusQuerySchema,
 } from '@/lib/api/contracts/openrouter-chat'
 import { getSession } from '@/lib/auth'
 import { withRouteHandler } from '@/lib/core/utils/with-route-handler'
 import { getUserEntityPermissions } from '@/lib/workspaces/permissions/utils'
-import { architectureActionSchema, architectureReplySchema } from '@/lib/api/contracts/minusops-architecture'
+import { architectureActionSchema, architectureReplySchema, architectureQuerySchema } from '@/lib/api/contracts/minusops-architecture'
 
 const GATEWAY = 'http://host.docker.internal:5180'
 const LOCAL_GATEWAY = 'http://127.0.0.1:5180'
@@ -86,11 +89,18 @@ function strictJson(raw: string): unknown {
   return JSON.parse(raw)
 }
 
-async function gateway(workspaceId: string, action: Action, method: Method, body?: unknown) {
+async function ownsChat(workspaceId: string, userId: string, chatId: string) {
+  const rows = await db.select({ id: copilotChats.id }).from(copilotChats).where(and(
+    eq(copilotChats.id, chatId), eq(copilotChats.workspaceId, workspaceId), eq(copilotChats.userId, userId),
+    isNull(copilotChats.deletedAt))).limit(1)
+  return rows.length === 1
+}
+
+async function gateway(workspaceId: string, action: Action, method: Method, body?: unknown, query = '') {
   const origin = process.env.MINUS_ASSISTANT_GATEWAY_URL ?? GATEWAY
   const token = process.env.MINUS_ASSISTANT_GATEWAY_TOKEN ?? ''
   if (![GATEWAY, LOCAL_GATEWAY].includes(origin) || !/^[!-~]{16,512}$/.test(token)) throw new Error('Assistant gateway unavailable')
-  const response = await fetch(`${origin}/workspaces/${workspaceId}/${action}`, {
+  const response = await fetch(`${origin}/workspaces/${workspaceId}/${action}${query}`, {
     method, redirect: 'error', cache: 'no-store', credentials: 'omit',
     signal: AbortSignal.timeout(30000),
     headers: { 'X-Minus-Bridge-Token': token, 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -125,10 +135,25 @@ export function assistantRoute(action: Action, method: Method) {
       const session = await getSession()
       if (!session?.user?.id) return refused(401, 'unauthorized')
       const parsedScope = openRouterScopeSchema.safeParse(await context.params)
-      if (!parsedScope.success || new URL(request.url).search) return refused(400, 'invalid_request')
+      const url = new URL(request.url)
+      const entries = [...url.searchParams.entries()]
+      if (!parsedScope.success || new Set(entries.map(([key]) => key)).size !== entries.length) return refused(400, 'invalid_request')
       const workspaceId = parsedScope.data.id
       const permission = await getUserEntityPermissions(session.user.id, 'workspace', workspaceId)
       if (!permission) return refused(403, 'forbidden')
+      let query = ''
+      if (method === 'GET' && action === 'architecture') {
+        const parsed = architectureQuerySchema.safeParse(Object.fromEntries(entries))
+        if (!parsed.success) return refused(400, 'invalid_request')
+        if (parsed.data.run_id) query = '?' + new URLSearchParams({ run_id: parsed.data.run_id })
+      } else if (method === 'GET' && action === 'status') {
+        const parsed = openRouterStatusQuerySchema.safeParse(Object.fromEntries(entries))
+        if (!parsed.success) return refused(400, 'invalid_request')
+        if (parsed.data.chat_id) {
+          if (!await ownsChat(workspaceId, session.user.id, parsed.data.chat_id)) return refused(403, 'forbidden')
+          query = '?' + new URLSearchParams({ chat_id: parsed.data.chat_id, user_id: session.user.id })
+        }
+      } else if (entries.length) return refused(400, 'invalid_request')
       if (request.method !== method) return refused(405, 'invalid_method')
       if (method !== 'GET') {
         if (permission !== 'admin' && action !== 'architecture') return refused(403, 'forbidden')
@@ -159,8 +184,15 @@ export function assistantRoute(action: Action, method: Method) {
       }
       if (method !== 'GET' && permission !== 'admin') {
         const inspection = action === 'architecture' && architectureActionSchema.safeParse(body)
-        if (!inspection || !inspection.success || !['plan', 'delivery'].includes(inspection.data.operation)) {
+        if (!inspection || !inspection.success || !['plan', 'delivery', 'export'].includes(inspection.data.operation)) {
           return refused(403, 'forbidden')
+        }
+      }
+      if (action === 'architecture' && method === 'POST') {
+        const parsed = architectureActionSchema.parse(body)
+        if (parsed.operation === 'bind_chat') {
+          if (!await ownsChat(workspaceId, session.user.id, parsed.chat_id)) return refused(403, 'forbidden')
+          body = { ...parsed, user_id: session.user.id }
         }
       }
       if (action === 'preferences' && method === 'POST') {
@@ -176,7 +208,7 @@ export function assistantRoute(action: Action, method: Method) {
           }
         }
       }
-      const reply = await gateway(workspaceId, action, method, body)
+      const reply = await gateway(workspaceId, action, method, body, query)
       if (!reply.ok) return refused(reply.status, 'assistant_refused')
       return NextResponse.json(reply.value, { headers: HEADERS })
     } catch {

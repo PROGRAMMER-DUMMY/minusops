@@ -29,14 +29,14 @@ the active artifact overlay; changes require updating the manifest explicitly.
 | [key/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/key/route.ts) | Exports POST `{key}` and empty-body DELETE; successful replies normalize to `{success:true}`. |
 | [models/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/models/route.ts) | Exports GET for the current account-filtered catalog; missing credentials refuse. |
 | [preferences/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/preferences/route.ts) | Exports GET/POST `{model,effort,max_tokens}` with catalog/option revalidation before save. |
-| [openrouter-chat.ts queries](./overlay/apps/sim/hooks/queries/openrouter-chat.ts) | `useOpenRouterChat(workspaceId)` manages remote public state; direct key helpers keep credentials out of React Query mutation variables. |
+| [openrouter-chat.ts queries](./overlay/apps/sim/hooks/queries/openrouter-chat.ts) | `useOpenRouterChat(workspaceId, chatId?)` manages remote public state; direct key helpers keep credentials out of React Query mutation variables. |
 | [store.ts](./overlay/apps/sim/stores/openrouter-chat/store.ts) | `useOpenRouterChatStore` holds workspace-scoped public preferences/catalogs only, without persistence or hosted selection state. |
 | [complete.ts](./overlay/apps/sim/lib/mothership/request/handlers/complete.ts) | Preserves native completion accounting and maps flagged local error codes to fixed safe sentences. |
 | [architecture/page.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/page.tsx) and [workspace.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx) | Native workspace route with compact renderer cards, initial fit, persistent resizable Chat/Toolbar/Editor and bottom diff/evidence. Reuses native panel/terminal stores/hooks; source edits remain proposals. Whole-window browser acceptance passed; see ACCEPTANCE.md. |
 | [architecture/chat.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/chat.tsx) | `ArchitectureChat` binds a native conversation to an explicit workspace/run and validated chat id. `Conversation` reuses native `useChat`, `MothershipChat`, composer/model/history and draft state. An explicit native chat is created before sending, preserving the architecture route. Malformed or differently scoped URL selections never attach. Two controlled turns verified source context, reload/history and unchanged route in the actual browser. |
 | [sidebar.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/w/components/sidebar/sidebar.tsx) | Mounts the flag-controlled Architectures group alongside Workflows. |
 | [architecture-list.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/w/components/sidebar/components/architecture-list.tsx) | `ArchitectureList({workspaceId, collapsed})` reuses native sidebar disclosure, run chips and a collapsed rail menu. Admin selection opens registered runs; loading, unavailable, empty and failed selection states remain explicit. |
-| [minusops-architecture.ts queries](./overlay/apps/sim/hooks/queries/minusops-architecture.ts) | `useArchitectureWorkspace` and `useSelectArchitecture` share validated workspace/run state between sidebar and canvas. Selection cancels stale reads, updates the scoped cache only after success and refreshes the Chat context status. No source writes or implicit run selection. |
+| [minusops-architecture.ts queries](./overlay/apps/sim/hooks/queries/minusops-architecture.ts) | `useArchitectureWorkspace(workspaceId, runId?)` and `useArchitectureAction` share validated per-run views between sidebar and canvas. Selection cancels stale reads, updates the scoped cache only after success and refreshes the Chat context status. Finite library actions, source proposals and sticky chat bindings; no publication or apply. |
 | [minusops-architecture.ts](./overlay/apps/sim/lib/api/contracts/minusops-architecture.ts) | Validates bounded source/workspace projections and finite inspection/proposal operations. No publication/apply operation exists. |
 | [architecture/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/architecture/route.ts) | GET/POST reuse native session/workspace admission, admin/same-origin writes and the private local gateway. |
 
@@ -53,6 +53,10 @@ The architecture conversation rendering check exercises actual React rendering
 with native transport/query boundaries replaced. It refuses malformed chat ids,
 wrong run/workspace scopes and implicit chat creation during render; a valid
 selection reaches the native hook with its existing id.
+The architecture query check exercises the real schemas and request options,
+workspace-scoped cache keys, cancellation of stale reads, failed selection and
+status refresh. Browser geometry, menus and sidebar navigation are recorded in
+[ACCEPTANCE.md](./ACCEPTANCE.md).
 [completion.test.mjs](./tests/completion.test.mjs) checks known/unknown local error
 reasons, disabled-flag behavior and preserved success/accounting behavior.
 [typecheck.cjs](./tests/typecheck.cjs) runs native TypeScript against owned files
@@ -214,3 +218,8 @@ resize, layout reload, initial fit, narrow-window controls and context recovery.
 No real provider inference or source publication occurred. The normal gateway was
 restored and the isolated synthetic key removed. Native agent tools, component
 creation, requirements, CLI cutover and production qualification remain pending.
+
+The workspace follow-up adds native library menus and per-run routes/cache keys. Server-side
+chat ownership and immutable run binding prevent cross-tab substitution. Source retrieval
+is bounded and question-specific; provider failures preserve only finite safe categories.
+Fresh CI/browser acceptance is required for this follow-up.

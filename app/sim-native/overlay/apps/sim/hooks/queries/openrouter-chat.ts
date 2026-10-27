@@ -12,16 +12,16 @@ export const OPENROUTER_CHAT_STALE_TIME = 30000
 export const openRouterChatKeys = {
   all: ['openrouter-chat'] as const,
   workspace: (id: string) => [...openRouterChatKeys.all, id] as const,
-  status: (id: string) => [...openRouterChatKeys.workspace(id), 'status'] as const,
+  status: (id: string, chatId?: string) => [...openRouterChatKeys.workspace(id), 'status', ...(chatId ? [chatId] : [])] as const,
   models: (id: string) => [...openRouterChatKeys.workspace(id), 'models'] as const,
   preferences: (id: string) => [...openRouterChatKeys.workspace(id), 'preferences'] as const,
 }
 
-export function useOpenRouterChat(workspaceId: string) {
+export function useOpenRouterChat(workspaceId: string, chatId?: string) {
   const queryClient = useQueryClient()
   const status = useQuery({
-    queryKey: openRouterChatKeys.status(workspaceId),
-    queryFn: ({ signal }) => requestJson(openRouterStatusContract, { params: { id: workspaceId }, query: {}, signal }),
+    queryKey: openRouterChatKeys.status(workspaceId, chatId),
+    queryFn: ({ signal }) => requestJson(openRouterStatusContract, { params: { id: workspaceId }, query: chatId ? { chat_id: chatId } : {}, signal }),
     enabled: !!workspaceId, staleTime: OPENROUTER_CHAT_STALE_TIME, retry: false,
   })
   const preferences = useQuery({

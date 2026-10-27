@@ -1,16 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { architectureWorkspaceSchema } from '@/lib/api/contracts/minusops-architecture'
+import { architectureActionSchema, architectureReplySchema, architectureWorkspaceSchema,
+  type ArchitectureAction } from '@/lib/api/contracts/minusops-architecture'
 import { openRouterChatKeys } from '@/hooks/queries/openrouter-chat'
 
 export const architectureKeys = {
   workspace: (workspaceId: string) => ['minusops-architecture', workspaceId] as const,
+  view: (workspaceId: string, runId?: string) => [...architectureKeys.workspace(workspaceId), 'view', runId ?? null] as const,
 }
 
-export function useArchitectureWorkspace(workspaceId: string) {
+export function useArchitectureWorkspace(workspaceId: string, runId?: string) {
   return useQuery({
-    queryKey: architectureKeys.workspace(workspaceId),
+    queryKey: architectureKeys.view(workspaceId, runId),
     queryFn: async ({ signal }) => {
-      const response = await fetch(`/api/workspaces/${workspaceId}/assistant/architecture`, {
+      const response = await fetch(`/api/workspaces/${workspaceId}/assistant/architecture${runId !== undefined ? `?run_id=${encodeURIComponent(runId)}` : ''}`, {
         credentials: 'same-origin', cache: 'no-store', signal,
       })
       if (!response.ok) throw new Error('Architecture unavailable. Check the local gateway and refresh.')
@@ -20,21 +22,22 @@ export function useArchitectureWorkspace(workspaceId: string) {
   })
 }
 
-export function useSelectArchitecture(workspaceId: string) {
+export function useArchitectureAction(workspaceId: string) {
   const client = useQueryClient()
   return useMutation({
     mutationKey: architectureKeys.workspace(workspaceId),
     onMutate: () => client.cancelQueries({ queryKey: architectureKeys.workspace(workspaceId) }),
-    mutationFn: async (runId: string) => {
+    mutationFn: async (action: ArchitectureAction) => {
       const response = await fetch(`/api/workspaces/${workspaceId}/assistant/architecture`, {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ operation: 'select', run_id: runId }),
+        body: JSON.stringify(architectureActionSchema.parse(action)),
       })
       if (!response.ok) throw new Error('Architecture could not be opened. Refresh and try again.')
-      return architectureWorkspaceSchema.parse(await response.json())
+      return architectureReplySchema.parse(await response.json())
     },
     onSuccess: async (data) => {
-      client.setQueryData(architectureKeys.workspace(workspaceId), data)
+      if ('architecture' in data) client.setQueryData(architectureKeys.view(workspaceId, data.run_id ?? undefined), data)
+      await client.invalidateQueries({ queryKey: architectureKeys.workspace(workspaceId) })
       await client.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId) })
     },
   })

@@ -8,6 +8,7 @@ import {
 import { Brain, Check, Sparkles, Workflow } from '@sim/emcn/icons'
 import { useParams, usePathname, useRouter } from 'next/navigation'
 import { ModelSettingTrigger } from '@/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger'
+import { useChatSurface } from '@/app/workspace/[workspaceId]/home/components/chat-surface-context'
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
 import { useOpenRouterChat } from '@/hooks/queries/openrouter-chat'
 import type { OpenRouterPreferences } from '@/lib/api/contracts/openrouter-chat'
@@ -18,7 +19,8 @@ export function OpenRouterModelSelector() {
   const pathname = usePathname()
   const workspaceId = typeof params?.workspaceId === 'string' ? params.workspaceId : ''
   const permissions = useUserPermissionsContext()
-  const chat = useOpenRouterChat(workspaceId)
+  const { chatId } = useChatSurface()
+  const chat = useOpenRouterChat(workspaceId, chatId)
   const [search, setSearch] = useState('')
   const choices = chat.models.isError || !chat.configured ? [] : (chat.models.data?.models ?? [])
   const preferences = chat.preferences.data
@@ -30,15 +32,16 @@ export function OpenRouterModelSelector() {
   const canSave = permissions.canAdmin && !chat.savePreferences.isPending && !!preferences && !chat.preferences.isError
   const save = (value: OpenRouterPreferences) => chat.savePreferences.mutate(value)
   const label = selected?.name ?? (preferences?.model ? 'Model unavailable' : 'Select OpenRouter model')
+  const context = chat.status.data?.architecture_context
   return (
     <div className='flex min-w-0 items-center gap-[inherit]'>
-      {chat.status.data?.architecture_context && <Chip shape='round' aria-label='Selected architecture context'
-        title={chat.status.data.architecture_context.run_id}
-        aria-description={chat.status.data.architecture_context.label}
+      {context && <Chip shape='round' aria-label='Selected architecture context'
+        title={context.run_id}
+        aria-description={context.label}
         leftAdornment={<Workflow className='size-[14px] shrink-0 text-[var(--text-icon)]' />}
         onClick={() => {
           if (pathname === `/workspace/${workspaceId}/architecture`) document.getElementById('architecture-editor-tab')?.click()
-          else router.push(`/workspace/${workspaceId}/architecture`)
+          else router.push(`/workspace/${workspaceId}/architecture?run=${encodeURIComponent(context.run_id)}`)
         }}>
         <span className='@max-[560px]/input-toolbar:hidden text-[var(--text-icon)] text-sm'>Context</span>
       </Chip>}

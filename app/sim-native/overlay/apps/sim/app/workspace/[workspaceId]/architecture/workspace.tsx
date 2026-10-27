@@ -7,12 +7,12 @@ import { Box, ChevronDown, Plus, Minus, Expand, X } from '@sim/emcn/icons'
 import { WorkflowBlockView, WorkflowEdgeView, useCanvasColorMode } from '@sim/workflow-renderer'
 import { ReactFlow, ReactFlowProvider, useNodesInitialized, useNodesState, useReactFlow,
   type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { sourceChangeSchema, type ArchitectureSubject,
   type ArchitectureWorkspace as Workspace, type SourceChange, type SourceNode } from '@/lib/api/contracts/minusops-architecture'
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
 import { openRouterChatKeys } from '@/hooks/queries/openrouter-chat'
-import { architectureKeys, useArchitectureWorkspace, useSelectArchitecture } from '@/hooks/queries/minusops-architecture'
+import { architectureKeys, useArchitectureWorkspace, useArchitectureAction } from '@/hooks/queries/minusops-architecture'
 import { usePanelStore } from '@/stores/panel'
 import { useTerminalStore } from '@/stores/terminal'
 import { PANEL_WIDTH, TERMINAL_HEIGHT } from '@/stores/constants'
@@ -62,15 +62,17 @@ export function ArchitectureWorkspace() {
 
 function WorkspaceView() {
   const { workspaceId } = useParams<{ workspaceId: string }>()
+  const router = useRouter()
+  const runId = useSearchParams().get('run') ?? undefined
   const permissions = useUserPermissionsContext()
   const queryClient = useQueryClient()
   const colorMode = useCanvasColorMode()
-  const workspace = useArchitectureWorkspace(workspaceId)
-  const selection = useSelectArchitecture(workspaceId)
+  const workspace = useArchitectureWorkspace(workspaceId, runId)
+  const action = useArchitectureAction(workspaceId)
   const selecting = useIsMutating({ mutationKey: architectureKeys.workspace(workspaceId) }) > 0
   const data = workspace.data
   const setData = (update: (previous: Workspace | undefined) => Workspace | undefined) =>
-    queryClient.setQueryData<Workspace>(architectureKeys.workspace(workspaceId), update)
+    queryClient.setQueryData<Workspace>(architectureKeys.view(workspaceId, runId), update)
   const [nodes, setNodes, onNodesChange] = useNodesState<Resource>([])
   const [collapsed, setCollapsed] = useState<string[]>([])
   const [subject, setSubject] = useState<ArchitectureSubject | null>(null)
@@ -100,7 +102,10 @@ function WorkspaceView() {
   const graph = data?.architecture
   const selected = graph?.nodes.find((node) => subject?.kind === 'source_node' && node.id === subject.id)
   const edge = graph?.edges.find((item) => subject?.kind === 'source_edge' && item.id === subject.id)
-  const editable = permissions.canAdmin && !busy && !chatBusy && !selecting
+  const canNavigate = permissions.canAdmin && !busy && !chatBusy && !selecting
+  const canLayout = canNavigate && data?.metadata?.locked !== true
+  const isDraft = data?.metadata?.design_status === 'DRAFT'
+  const editable = canLayout && !isDraft
   const loadError = workspace.isError ? 'Architecture unavailable. Check the local gateway and refresh.' : ''
 
   async function request(operation?: Record<string, unknown>, signal?: AbortSignal) {
@@ -205,31 +210,38 @@ function WorkspaceView() {
     <header className='flex flex-wrap items-center gap-3 border-[var(--border)] border-b px-4 py-3'>
       <h1 className='font-medium text-sm'>Architecture</h1>
       <ChipSelect aria-label='Architecture run' searchable placeholder='Select a run' value={data?.run_id ?? ''}
-        options={(data?.runs ?? []).map((run) => ({ label: run.name, value: run.run_id }))} disabled={!editable}
-        onChange={(run_id) => perform(async () => { await selection.mutateAsync(run_id) })} />
-      <span className='text-xs text-[var(--text-tertiary)]'>{graph ? `${graph.nodes.length} declarations · Source${graph.gaps.length ? ` · ${graph.gaps.length} gaps` : ''}` : ''}</span>
+        options={(data?.runs ?? []).map((run) => ({ label: run.name, value: run.run_id }))} disabled={!canNavigate}
+        onChange={(run_id) => perform(async () => {
+          await action.mutateAsync({ operation: 'select', run_id })
+          router.push(`/workspace/${workspaceId}/architecture?run=${encodeURIComponent(run_id)}`)
+        })} />
+      <span className='text-xs text-[var(--text-tertiary)]'>{graph ? `${graph.nodes.length} declarations · ${isDraft ? 'Unpublished design' : 'Source'}${graph.gaps.length ? ` · ${graph.gaps.length} gaps` : ''}` : ''}</span>
+      {data?.metadata?.locked && <span className='text-xs text-[var(--text-muted)]'>Locked</span>}
       <Chip disabled={busy || chatBusy || selecting} onClick={() => perform(async () => {
         const result = await workspace.refetch()
         if (result.error) throw result.error
       })}>Refresh</Chip>
       <Chip disabled={!graph || busy} onClick={() => flow.fitView({ padding: 0.15, duration: 200 })}>Fit</Chip>
-      <Chip disabled={!graph || !editable} onClick={() => perform(async () => {
+      <Chip disabled={!graph || !canLayout} onClick={() => perform(async () => {
         await request({ operation: 'layout', ...binding(), positions: flow.getNodes().map(({ id, position }) => ({ id, ...position })) })
         setNotice('Layout saved.')
       })}>Save layout</Chip>
-      {data?.focus && <Chip disabled={!editable} onClick={() => perform(async () => {
+      {data?.focus && <Chip disabled={!canNavigate} onClick={() => perform(async () => {
         await request({ operation: 'clear_focus', run_id: data.run_id })
         await queryClient.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId) })
-        setData((value) => value ? { ...value, focus: null } : value)
+        setData((value) => value ? { ...value, focus: null, context_enabled: false } : value)
         setNotice('AI context cleared.')
       })}>Clear AI context</Chip>}
+      {data?.run_id && !data.context_enabled && <Chip disabled={!canNavigate} onClick={() => perform(async () => {
+        if (data.run_id) await action.mutateAsync({ operation: 'select', run_id: data.run_id })
+      })}>Use architecture context</Chip>}
     </header>
     {(error || loadError || notice) && <div className='border-[var(--border)] border-b px-4 py-2 text-sm' role={error || loadError ? 'alert' : 'status'}>{error || loadError || notice}</div>}
       <main className='relative min-h-0 min-w-0 flex-1' aria-label='Infrastructure architecture canvas'>
         {graph?.nodes.length ? <ReactFlow nodes={displayed} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
           onNodesChange={onNodesChange} onNodeClick={(_, node) => select({ kind: 'source_node', id: node.id })}
           onEdgeClick={(_, item) => select({ kind: 'source_edge', id: item.id })} colorMode={colorMode}
-          nodesConnectable={false} nodesDraggable={permissions.canAdmin} edgesReconnectable={false}
+          nodesConnectable={false} nodesDraggable={canLayout} edgesReconnectable={false}
           deleteKeyCode={null} minZoom={0.08} maxZoom={2} onlyRenderVisibleElements
           className='h-full bg-[var(--bg)] [--xy-background-color:var(--bg)]' />
           : <div className='flex h-full items-center justify-center text-sm text-[var(--text-tertiary)]'>
@@ -294,7 +306,8 @@ function WorkspaceView() {
         <Button variant='ghost' className='ml-auto md:hidden' aria-label='Close architecture panel' onClick={() => setMobileOpen(false)}><X className='size-4' /></Button>
       </div>
       <div data-tab-content='copilot' className={activeTab === 'copilot' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-        {data?.run_id ? <ArchitectureChat key={`${workspaceId}:${data.run_id}`} workspaceId={workspaceId} runId={data.run_id} onBusyChange={setChatBusy} />
+        {data?.run_id && graph ? <ArchitectureChat key={`${workspaceId}:${data.run_id}`} workspaceId={workspaceId} runId={data.run_id}
+          binding={{ revision: graph.revision, subject: data.focus?.subject ?? null, enabled: data.context_enabled }} onBusyChange={setChatBusy} />
           : <p className='p-4 text-sm'>Select a run to start.</p>}
       </div>
       <div data-tab-content='toolbar' className={activeTab === 'toolbar' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
@@ -338,11 +351,11 @@ function WorkspaceView() {
               </div>)}
               <Chip disabled={!editable || !Object.keys(drafts).length} onClick={() => perform(stage)}>Review changes</Chip>
             </>}
-            {subject && <Chip disabled={!editable} onClick={() => perform(async () => {
+            {subject && <Chip disabled={!canNavigate} onClick={() => perform(async () => {
               await request({ operation: 'focus', ...binding(), subject })
               await queryClient.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId) })
               setData((value) => value && graph ? { ...value, focus: { revision: graph.revision, subject,
-                label: selected?.address ?? 'Selected connection' } } : value)
+                label: selected?.address ?? 'Selected connection' }, context_enabled: true } : value)
               setActiveTab('copilot')
             })}>Ask AI about selection</Chip>}
           </>}

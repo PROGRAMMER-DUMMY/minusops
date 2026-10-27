@@ -5,6 +5,34 @@ The user confirmed ordinary live OpenRouter Chat works. The architecture checks
 below made no provider inference calls and do not establish live model behavior
 with selected architecture context.
 
+## Composer bounds and architecture navigation
+
+The native composer and sidebar correction is installed from
+[CI40518622292](https://github.com/PROGRAMMER-DUMMY/minusops/actions/runs/40518622292),
+source `3fa34a5c9690beb47263fe0baeace69c6ca9c8a4`. All 39 native contracts,
+27 owned TypeScript files with zero diagnostics, full compilation and 3,813 server
+syntax checks passed. The current local image is
+`sha256:1683ff910b698fa44319f81113f6e8da347f7bc7d2aec646745629d3c79c7951`.
+Its 7,253 compiled files, 28 overlays and runtime fingerprints match the admitted
+CI inventory. The previous image remains tagged `architecture-before-navigation-20261027`.
+
+Actual browser checks reproduced the original overflow, then verified the fix
+with a long model name at 290, 420 and 768 pixel panel widths and 720/390 pixel
+windows. Context, model, effort and Send remain inside the footer. Menus, keyboard
+access, effort selection and the context shortcut work. Full values remain in
+accessible descriptions and tooltips; narrow composers use native icons.
+
+The collapsible **Architectures** sidebar section lists registered runs alongside
+**Workflows**, with a run menu when the rail is collapsed. Sidebar and canvas use
+one workspace query. Run switching, reload, opening from Home and selection refusal
+passed; failed selection retains the current run. No source was published.
+
+Evidence is under `artifacts/reviews/sim-native-navigation-20261027/`. The browser
+used a separate validation workspace, controlled model metadata and an offline run;
+it made no model calls or key changes. The fixture was archived outside the run
+catalog, validation selection restored, and the user's key/run/source preserved.
+These UI checks do not establish live model answer quality or production readiness.
+
 ## Native workflow window adaptation
 
 The default-context correction on2026-10-27 fixed a gap exposed by a real user:
@@ -42,7 +70,7 @@ passed its build checks but could not export because the baseline asset had a
 display label instead of the required filename. Its corrected private asset and
 fresh anonymous404 checks preceded the successful rerun.
 
-The current local image is
+The working-panel image at that acceptance was
 `sha256:9e6795706f27d8bdf44f650e81b6df681cad9d72fc38a272587b68834dc771f7`.
 Its complete7,254-file compiled inventory, all25 overlays and runtime/dependency
 fingerprints matched CI after private import. Metadata SHA256 matched the exact

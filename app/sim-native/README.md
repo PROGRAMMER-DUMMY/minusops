@@ -30,12 +30,26 @@ history reload passed in the same window. Browser checks passed on the actual
 278-declaration source architecture and a separate offline edit fixture. Source
 files remained unchanged. Missing qualified plans stay UNKNOWN.
 
-Selecting a run also supplies its source-derived overview to workspace Chat by
-default. You can ask about the architecture without choosing a node first. The
-context badge identifies the run; **Ask AI about selection** adds focused configuration.
-The bounded overview contains module inputs, declared connections and resource/data
-addresses, with explicit omissions. It describes source rather than proving deployed
-state. Clearing AI context disables it until you reselect the run or focus a subject.
+The composer keeps Context, model, effort and Send within its width. Long values
+use bounded labels and full tooltips; narrow panels use native icon controls.
+The sidebar and composer correction passed native compilation and actual browser
+checks, including collapsed navigation, run switching and narrow windows. See
+[the acceptance record](./ACCEPTANCE.md).
+
+Architecture routes identify the open run with `?run=<id>`. The sidebar **+** creates
+an empty run; row **...** offers open in new tab, display rename, local editing lock,
+duplicate as an unpublished design, sanitized design export and removal from this
+workspace's list. Removal retains infrastructure and run history. Duplication copies
+inert design only; a host must author and review source before planning.
+
+Chat binds its run on the server before sending. It retrieves a bounded set of relevant
+source, requirements, decisions and workflow excerpts for each question, with file/hash/
+line references and explicit omissions. The16KiB context and32KiB history limits are byte
+budgets, not measured tokenizer savings. References/defaults do not prove resolved
+instances or deployment; missing runtime, qualified plan and cost evidence stay UNKNOWN.
+Provider authentication, credit, access, rate-limit and timeout failures use fixed safe
+messages. Raw diagnostics are withheld. This follow-up requires fresh CI and browser
+acceptance before being described as installed.
 
 This is an internal nonproduction integration pinned to the
 [Sim source at df3db64](https://github.com/simstudioai/sim/tree/df3db64ed17a5eb73fef8ccc95da180b0a1cf4b5).

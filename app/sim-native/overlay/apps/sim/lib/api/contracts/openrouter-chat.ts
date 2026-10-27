@@ -3,6 +3,7 @@ import { defineRouteContract } from '@/lib/api/contracts/types'
 
 const scope = z.object({ id: z.uuid() }).strict()
 const noInput = z.object({}).strict()
+export const openRouterStatusQuerySchema = z.object({ chat_id: z.uuid().optional() }).strict()
 const modelId = z.string().min(1).max(200).regex(/^~?[A-Za-z0-9][A-Za-z0-9._:/-]*$/)
   .refine((value) => !value.includes('..'))
 const effort = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
@@ -61,7 +62,7 @@ export const openRouterKeySchema = z.object({
 
 const path = '/api/workspaces/[id]/assistant'
 export const openRouterStatusContract = defineRouteContract({
-  method: 'GET', path: `${path}/status`, params: scope, query: noInput,
+  method: 'GET', path: `${path}/status`, params: scope, query: openRouterStatusQuerySchema,
   response: { mode: 'json', schema: openRouterStatusSchema },
 })
 export const openRouterModelsContract = defineRouteContract({

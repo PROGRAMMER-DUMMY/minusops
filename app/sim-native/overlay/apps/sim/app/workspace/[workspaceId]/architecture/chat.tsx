@@ -13,9 +13,13 @@ import { MothershipChat } from '@/app/workspace/[workspaceId]/home/components/mo
 import { getWorkflowCopilotUseChatOptions, useChat } from '@/app/workspace/[workspaceId]/home/hooks'
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
 import { mothershipChatKeys, useMothershipChats } from '@/hooks/queries/mothership-chats'
+import { openRouterChatKeys } from '@/hooks/queries/openrouter-chat'
+import { architectureReplySchema, type ArchitectureSubject } from '@/lib/api/contracts/minusops-architecture'
 
-export function ArchitectureChat({ workspaceId, runId, onBusyChange }: {
-  workspaceId: string; runId: string; onBusyChange: (busy: boolean) => void
+type Binding = { revision: string; subject: ArchitectureSubject | null; enabled: boolean }
+
+export function ArchitectureChat({ workspaceId, runId, binding, onBusyChange }: {
+  workspaceId: string; runId: string; binding: Binding; onBusyChange: (busy: boolean) => void
 }) {
   const permissions = useUserPermissionsContext()
   const queryClient = useQueryClient()
@@ -51,7 +55,7 @@ export function ArchitectureChat({ workspaceId, runId, onBusyChange }: {
       </Button>
     </div>
     {error && <p className='px-3 py-2 text-sm' role='alert'>{error}</p>}
-    {chatId ? <Conversation key={`${workspaceId}:${runId}:${chatId}`} workspaceId={workspaceId} chatId={chatId} runId={runId} onBusyChange={setSending} />
+    {chatId ? <Conversation key={`${workspaceId}:${runId}:${chatId}`} workspaceId={workspaceId} chatId={chatId} runId={runId} binding={binding} onBusyChange={setSending} />
       : <div className='flex flex-1 items-center justify-center p-4'>
         <Button variant='ghost' disabled={!permissions.canAdmin || busy} onClick={() => void newChat()}>
           {creating ? 'Opening chat…' : 'Start a chat for this run'}
@@ -60,21 +64,59 @@ export function ArchitectureChat({ workspaceId, runId, onBusyChange }: {
   </div>
 }
 
-function Conversation({ workspaceId, chatId, runId, onBusyChange }: {
-  workspaceId: string; chatId: string; runId: string; onBusyChange: (busy: boolean) => void
+function Conversation({ workspaceId, chatId, runId, binding, onBusyChange }: {
+  workspaceId: string; chatId: string; runId: string; binding: Binding; onBusyChange: (busy: boolean) => void
 }) {
   const session = useSession()
+  const permissions = useUserPermissionsContext()
+  const client = useQueryClient()
   const chat = useChat(workspaceId, chatId, getWorkflowCopilotUseChatOptions())
+  const signature = JSON.stringify({ runId, ...binding })
+  const [attached, setAttached] = useState('')
+  const [attaching, setAttaching] = useState(false)
+  const [attachmentError, setAttachmentError] = useState('')
+  const [attempt, setAttempt] = useState(0)
+  const ready = !permissions.canAdmin || attached === signature
   useEffect(() => {
-    onBusyChange(chat.isSending || chat.isReconnecting)
+    if (!permissions.canAdmin) return
+    const controller = new AbortController()
+    setAttaching(true); setAttachmentError('')
+    void fetch(`/api/workspaces/${workspaceId}/assistant/architecture`, {
+      method: 'POST', credentials: 'same-origin', signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operation: 'bind_chat', run_id: runId, chat_id: chatId, ...binding }),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error('Context unavailable')
+      const value = architectureReplySchema.parse(await response.json())
+      if (!('status' in value) || value.status !== 'CONTEXT_BOUND') throw new Error('Context unavailable')
+      setAttached(signature)
+      await client.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId, chatId) })
+    }).catch(() => {
+      if (!controller.signal.aborted) setAttachmentError('Context unavailable. Refresh or start a new chat.')
+    }).finally(() => { if (!controller.signal.aborted) setAttaching(false) })
+    return () => controller.abort()
+  }, [workspaceId, chatId, runId, signature, attempt, permissions.canAdmin, client])
+  useEffect(() => {
+    onBusyChange(chat.isSending || chat.isReconnecting || attaching)
     return () => onBusyChange(false)
-  }, [chat.isSending, chat.isReconnecting, onBusyChange])
-  return <MothershipChat className='min-h-0 flex-1' workspaceId={workspaceId}
+  }, [chat.isSending, chat.isReconnecting, attaching, onBusyChange])
+  const submit: typeof chat.sendMessage = async (...args) => {
+    if (!ready) { setAttachmentError('Context unavailable. Refresh or start a new chat.'); return }
+    await chat.sendMessage(...args)
+  }
+  return <>
+    {attachmentError && <div className='px-3 py-2 text-sm' role='alert'>{attachmentError}
+      <Button variant='ghost' disabled={attaching} onClick={() => setAttempt((value) => value + 1)}>Reconnect context</Button></div>}
+    {attaching && <p className='px-3 py-1 text-xs text-[var(--text-muted)]' role='status'>Connecting context…</p>}
+    <div className='flex min-h-0 flex-1 flex-col' inert={!ready}>
+  <MothershipChat className='min-h-0 flex-1' workspaceId={workspaceId}
     messages={chat.messages} isSending={chat.isSending} isReconnecting={chat.isReconnecting}
-    isLoading={chat.isChatHistoryPending} onSubmit={chat.sendMessage} onStopGeneration={chat.stopGeneration}
+    isLoading={chat.isChatHistoryPending} onSubmit={submit} onStopGeneration={chat.stopGeneration}
     messageQueue={chat.messageQueue} editingQueuedId={chat.editingQueuedId} dispatchingHeadId={chat.dispatchingHeadId}
     onRemoveQueuedMessage={chat.removeFromQueue} onSendQueuedMessage={chat.sendNow}
     onEditQueuedMessage={chat.editQueuedMessage} onCancelQueueEdit={chat.cancelQueueEdit}
     userId={session.data?.user?.id} chatId={chatId} draftScopeKey={`${workspaceId}:architecture:${runId}:${chatId}`}
     layout='copilot-view' />
+    </div>
+  </>
 }
