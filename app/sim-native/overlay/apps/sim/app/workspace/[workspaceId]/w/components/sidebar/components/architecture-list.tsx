@@ -30,7 +30,8 @@ type Dialog =
   | { kind: 'delete'; run: ArchitectureRow }
 type Intent =
   | Extract<ArchitectureAction, { operation: 'create' | 'rename' | 'lock' | 'delete' }>
-  | { operation: 'duplicate' | 'export'; run: ArchitectureRow }
+  | { operation: 'duplicate'; run: ArchitectureRow }
+  | { operation: 'export'; run: ArchitectureRow }
 
 export function ArchitectureList({ workspaceId, collapsed }: { workspaceId: string; collapsed: boolean }) {
   const searchParams = useSearchParams()

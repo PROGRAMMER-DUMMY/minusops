@@ -93,7 +93,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/w/components/sidebar/components/architecture-list.tsx",
-      "sha256": "8255ae08310dcff13a7bdae1ddbf91ce89db6c42926a471e05e9d6de8db189b2",
+      "sha256": "390d51f19a222ac638a9e6e5263e47d0a4a910ce61a62248dbedbb53c5778f8f",
       "upstream_sha256": null
     },
     {
@@ -113,7 +113,7 @@
     },
     {
       "path": "apps/sim/hooks/queries/minusops-architecture.ts",
-      "sha256": "efbe9159dc6c0a4a267a9024d2d89c641a1bf1120f4ab6fb484b09a0119bc680",
+      "sha256": "0d7eaf61eb98b73b5d12587c6cf0cc5f9cf72709defdba99f0603b1ae907b758",
       "upstream_sha256": null
     },
     {

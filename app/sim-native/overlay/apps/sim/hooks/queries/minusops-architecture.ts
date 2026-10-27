@@ -36,7 +36,8 @@ export function useArchitectureAction(workspaceId: string) {
       return architectureReplySchema.parse(await response.json())
     },
     onSuccess: async (data) => {
-      if ('architecture' in data) client.setQueryData(architectureKeys.view(workspaceId, data.run_id ?? undefined), data)
+      const workspace = architectureWorkspaceSchema.safeParse(data)
+      if (workspace.success) client.setQueryData(architectureKeys.view(workspaceId, workspace.data.run_id ?? undefined), workspace.data)
       await client.invalidateQueries({ queryKey: architectureKeys.workspace(workspaceId) })
       await client.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId) })
     },
