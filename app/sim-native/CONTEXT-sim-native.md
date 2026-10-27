@@ -31,7 +31,7 @@ the active artifact overlay; changes require updating the manifest explicitly.
 | [openrouter-chat.ts queries](./overlay/apps/sim/hooks/queries/openrouter-chat.ts) | `useOpenRouterChat(workspaceId)` manages remote public state; direct key helpers keep credentials out of React Query mutation variables. |
 | [store.ts](./overlay/apps/sim/stores/openrouter-chat/store.ts) | `useOpenRouterChatStore` holds workspace-scoped public preferences/catalogs only, without persistence or hosted selection state. |
 | [complete.ts](./overlay/apps/sim/lib/mothership/request/handlers/complete.ts) | Preserves native completion accounting and maps flagged local error codes to fixed safe sentences. |
-| [architecture/page.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/page.tsx) and [workspace.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx) | Native workspace route using the original renderer, controls and shell for run selection, configuration/source inspection, staged diffs, layout, selected AI context and plan/delivery evidence. The new route awaits compiled-image/browser acceptance. |
+| [architecture/page.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/page.tsx) and [workspace.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx) | Native workspace route using the original renderer, controls and shell for run selection, configuration/source inspection, staged diffs, layout, selected AI context and plan/delivery evidence. Compiled-image/browser acceptance passed; see ACCEPTANCE.md. |
 | [sidebar.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/w/components/sidebar/sidebar.tsx) | Adds a flag-controlled Architecture entry through native navigation. |
 | [minusops-architecture.ts](./overlay/apps/sim/lib/api/contracts/minusops-architecture.ts) | Validates bounded source/workspace projections and finite inspection/proposal operations. No publication/apply operation exists. |
 | [architecture/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/architecture/route.ts) | GET/POST reuse native session/workspace admission, admin/same-origin writes and the private local gateway. |
@@ -185,3 +185,13 @@ repository variables select the private baseline; absent selection keeps the nor
 full image export. [export-code.test.mjs](./tests/export-code.test.mjs) checks exact
 retention/change/removal and refusal of drift or malformed inventory. This is an
 internal preview delivery path, not portable approval or production qualification.
+
+Current architecture build `eb3d85a23b9644ba394ae2d5e427b90f2c48afb1` passed
+CI40460705637:37 native contracts,23 owned TypeScript files with zero diagnostics,
+and3,810 server syntax checks. The installed non-root image matched all7,250
+compiled files,24 source overlays and the runtime/dependency fingerprint. Browser
+acceptance checked real278-declaration source inspection, separate offline edit/
+diff/download, drag/save/reload, missing/failed plan evidence and selected Chat
+context/recovery. No live inference or actual source publication occurred.
+The native implementation plan retains NAT-03..06 as pending; original workflow
+rows and basic initial-fit/layout remain until resource-card adaptation.

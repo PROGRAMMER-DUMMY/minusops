@@ -631,6 +631,52 @@ test('all overlay TypeScript/TSX parses and manifest exactly binds non-EE files'
   assert.equal(manifest.interface.send_path_modified, false)
 })
 
+test('architecture conversations require an explicit matching workspace/run and valid native chat id', async () => {
+  const filename = path.join(overlays, 'app/workspace/[workspaceId]/architecture/chat.tsx')
+  const compiled = await build({ entryPoints: [filename], bundle: true, write: false, platform: 'node', format: 'cjs',
+    jsx: 'automatic', external: ['react', 'react/jsx-runtime', 'zod'], tsconfigRaw: {},
+    plugins: [{ name: 'native-chat-boundaries', setup(builder) {
+      builder.onResolve({ filter: /^(?:@|nuqs)/ }, ({ path: name }) => ({ path: name, namespace: 'boundary' }))
+      builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path: name }) => {
+        const values = {
+          '@sim/emcn': `import React from 'react'; export const Button=({children,onClick,disabled,...props})=>React.createElement('button',{'aria-label':props['aria-label'],disabled},children); export const ChipSelect=()=>null;`,
+          '@sim/emcn/icons': 'export const Plus=()=>null;',
+          '@tanstack/react-query': 'export const useQueryClient=()=>({invalidateQueries:()=>Promise.resolve()});',
+          nuqs: 'export const parseAsString={}; export const useQueryStates=()=>[fixture.selection,()=>Promise.resolve()];',
+          '@/lib/api/client/request': 'export const requestJson=()=>{throw Error("Rendering must not create a chat")};',
+          '@/lib/api/contracts/mothership-chats': 'export const createMothershipChatContract={};',
+          '@/lib/auth/client': 'export const useSession=()=>({data:{user:{id:"viewer"}}});',
+          '@/app/workspace/[workspaceId]/home/components/mothership-chat': `import React from 'react'; export const MothershipChat=props=>React.createElement('div',{'data-chat':props.chatId});`,
+          '@/app/workspace/[workspaceId]/home/hooks': 'export const getWorkflowCopilotUseChatOptions=()=>({apiPath:"/api/mothership/chat"}); export const useChat=(...args)=>{fixture.calls.push(args);return {messages:[],isSending:false,isReconnecting:false}};',
+          '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider': 'export const useUserPermissionsContext=()=>({canAdmin:true});',
+          '@/hooks/queries/mothership-chats': 'export const mothershipChatKeys={list:()=>[]}; export const useMothershipChats=()=>({data:[]});',
+        }
+        assert.ok(name in values, name)
+        return { contents: values[name], loader: 'js' }
+      })
+    } }],
+  })
+  const React = require('react')
+  const { renderToStaticMarkup } = require('react-dom/server')
+  const chatId = 'b076d0ab-2d86-4ddc-9268-0aee617c4dc4'
+  const valid = { architectureChat: chatId, architectureChatRun: 'source-test', architectureChatWorkspace: uuid }
+  for (const selection of [{}, { ...valid, architectureChatRun: 'other-run' },
+    { ...valid, architectureChatWorkspace: 'other-workspace' }, { ...valid, architectureChat: '../bad' }, valid]) {
+    const state = { selection, calls: [] }
+    const loaded = { exports: {} }
+    new Function('require', 'module', 'exports', 'fixture', compiled.outputFiles[0].text)(require, loaded, loaded.exports, state)
+    const html = renderToStaticMarkup(React.createElement(loaded.exports.ArchitectureChat,
+      { workspaceId: uuid, runId: 'source-test', onBusyChange: () => {} }))
+    if (selection === valid) {
+      assert.match(html, new RegExp(`data-chat="${chatId}"`))
+      assert.deepEqual(state.calls, [[uuid, chatId, { apiPath: '/api/mothership/chat' }]])
+    } else {
+      assert.match(html, /Start a chat for this run/)
+      assert.equal(state.calls.length, 0)
+    }
+  }
+})
+
 test('hosted selector implementation is preserved behind isolated opt-in component', async () => {
   const relative = 'app/workspace/[workspaceId]/home/components/user-input/components/model-selector.tsx'
   const before = await readFile(path.join(original, relative), 'utf8')

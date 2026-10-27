@@ -15,6 +15,13 @@ The picker preserves catalog IDs including a leading `~` alias marker. The
 current local preview includes the catalog-validation fix described in
 [acceptance](./ACCEPTANCE.md); a browser hard refresh may be needed after updating.
 
+Open **Architecture** in the native sidebar and select a registered run. Inspect
+source/configuration, review and download proposed changes, save node positions,
+and inspect plan/delivery evidence. **Ask AI about selection** carries the chosen
+source into Chat with a visible context badge. Browser checks passed on the actual
+278-declaration source architecture and a separate offline edit fixture. Source
+files remained unchanged. Missing qualified plans stay UNKNOWN.
+
 This is an internal nonproduction integration pinned to the
 [Sim source at df3db64](https://github.com/simstudioai/sim/tree/df3db64ed17a5eb73fef8ccc95da180b0a1cf4b5).
 The [manifest](./patch-manifest.json) binds 24 Apache overlay files and the original
@@ -24,13 +31,14 @@ keep it internal. [NOTICE.md](./NOTICE.md) records attribution.
 
 The `MINUS_OPENROUTER_CHAT=true` flag exposes this native BYOK section and replaces
 the hosted Chat model control with the local selector. It does not enable
-enterprise features. This connection supports text conversation; architecture
-editing, workflow actions, source publication and infrastructure deployment are
-not implemented by this worker. Native manual workflow editing is separate.
+enterprise features. This connection supports text conversation with explicitly
+selected source context. Configuration edits stage reviewed proposals. Automatic
+agent proposals, workflow actions, source publication and infrastructure deployment
+are not implemented by this worker. Native manual workflow editing is separate.
 CLI architecture canvas/console routing still uses the component application.
-The native architecture route, source proposal review and selected Chat context are
-being integrated under [the implementation plan](../../docs/native-sim-implementation-plan.md).
-Their source/adapter tests are separate from compiled-image and browser acceptance.
+The native architecture route, source proposal review and selected Chat context
+passed software/browser acceptance under [the implementation plan](../../docs/native-sim-implementation-plan.md).
+Requirements, typed composition and CLI cutover remain pending.
 
 Keys pass transiently through the authenticated Next proxy to the host OS vault.
 They do not enter Sim's database, browser persistence, public preferences or

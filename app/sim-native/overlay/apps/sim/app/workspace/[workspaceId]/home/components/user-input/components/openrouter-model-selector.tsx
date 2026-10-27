@@ -6,7 +6,7 @@ import {
   DropdownMenuRadioGroup, DropdownMenuSearchInput,
 } from '@sim/emcn'
 import { Brain, Check, Sparkles } from '@sim/emcn/icons'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams, usePathname, useRouter } from 'next/navigation'
 import { ModelSettingTrigger } from '@/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger'
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
 import { useOpenRouterChat } from '@/hooks/queries/openrouter-chat'
@@ -15,6 +15,7 @@ import type { OpenRouterPreferences } from '@/lib/api/contracts/openrouter-chat'
 export function OpenRouterModelSelector() {
   const params = useParams()
   const router = useRouter()
+  const pathname = usePathname()
   const workspaceId = typeof params?.workspaceId === 'string' ? params.workspaceId : ''
   const permissions = useUserPermissionsContext()
   const chat = useOpenRouterChat(workspaceId)
@@ -33,7 +34,10 @@ export function OpenRouterModelSelector() {
     <div className='flex items-center gap-[inherit]'>
       {chat.status.data?.architecture_context && <Chip shape='round' aria-label='Selected architecture context'
         title={chat.status.data.architecture_context.run_id}
-        onClick={() => router.push(`/workspace/${workspaceId}/architecture`)}>
+        onClick={() => {
+          if (pathname === `/workspace/${workspaceId}/architecture`) document.getElementById('architecture-editor-tab')?.click()
+          else router.push(`/workspace/${workspaceId}/architecture`)
+        }}>
         <span className='max-w-[180px] truncate'>Context: {chat.status.data.architecture_context.label}</span>
       </Chip>}
       <DropdownMenu modal={false}>

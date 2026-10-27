@@ -42,13 +42,18 @@
       "upstream_sha256": null
     },
     {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/chat.tsx",
+      "sha256": "7e853d429dc7ee2b73ed1addbbb0ee68d105c215a2ade463af224c02c1a43c53",
+      "upstream_sha256": null
+    },
+    {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/page.tsx",
-      "sha256": "2cee993384c650b7890b3eef5f4cd1cc461dc5d7c465c0d58746f63519f6f333",
+      "sha256": "c54dda3d52908f16b3bcadeb6eac3cfb49ea3dbf449e2a5f3c7e314580952f4a",
       "upstream_sha256": null
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx",
-      "sha256": "ef863fcc1bda1f16e1ccdccd56b3176513dd5babc9e502a382ced0fbcc111810",
+      "sha256": "478d809676621c5851e9e920ae63fe1e94320fc7545ac897d5ffbfc6cb714319",
       "upstream_sha256": null
     },
     {
@@ -58,7 +63,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/openrouter-model-selector.tsx",
-      "sha256": "eec2fc2186e0b8c2b6ccf73f66951a24826d346ad17fdc4b5b546f576926f337",
+      "sha256": "0c8e6594c9cd65b2637637d36c84c8d04910ac189e2f07d9513ad4c6d0280de1",
       "upstream_sha256": null
     },
     {

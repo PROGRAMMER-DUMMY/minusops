@@ -1,8 +1,57 @@
 # Native Sim OpenRouter acceptance, 2026-10-27
 
 The native Sim application is running at `http://localhost:3010/workspace`.
-Controlled browser acceptance passed. Live OpenRouter inference requires the
-user's key and remains unverified by these checks.
+The user confirmed ordinary live OpenRouter Chat works. The architecture checks
+below made no provider inference calls and do not establish live model behavior
+with selected architecture context.
+
+## Native architecture and selected Chat context
+
+[CI40460705637](https://github.com/PROGRAMMER-DUMMY/minusops/actions/runs/40460705637)
+at source `eb3d85a23b9644ba394ae2d5e427b90f2c48afb1` passed 37 native contracts,
+23 owned TypeScript files with zero owned/config or unrelated diagnostics,
+compilation, and syntax checks for all 3,810 generated server JavaScript files.
+The local adapter/source suite passed 238 checks.
+
+The current local image is
+`sha256:92994e5f09ce67420d0a69b63058cf52dd1f50f61f3970971678175a0d5cd6ae`.
+An optional private compiled export matched the original runtime/dependency
+fingerprints. Its metadata hash was verified against immutable CI output:
+`591a90411c4cf5f462d6dd7c134b058ca9978cc4ed8ec1ec545881488dab8d22`.
+After import, every one of 7,250 compiled files and 24 source overlays matched
+the complete CI inventory. The runtime remains non-root. The preceding Chat image
+is retained locally as `chat-before-architecture-20261027`.
+
+The native `/workspace/<workspace-id>/architecture` route passed actual browser
+checks in a separate validation workspace:
+
+- Selected the real analytics run and rendered its 278 source declarations and
+  235 references in the original Sim shell/renderer, with admitted icons.
+- Edited a bucket in an explicitly marked offline fixture, reviewed its exact
+  source diff and downloaded a freshly revalidated proposal. Source stayed unchanged.
+- Dragged a node, saved layout and checked its restored canvas position after reload.
+- Reported an absent qualified saved plan as UNKNOWN, loaded delivery evidence,
+  and refused an injected failed plan without reusing delivery results.
+- Selected a declaration for Chat and immediately displayed its context badge;
+  context could still be cleared after the fixture's source became invalid.
+- Preserved the actual run's source digest, existing user workspace/key and
+  database/uploads. No uncaught page errors or inference calls occurred.
+
+Evidence and screenshots are local ignored outputs under
+`artifacts/reviews/sim-native-architecture-20261027/`. Adapter tests separately
+cover context freezing, stale-source refusal, scoped history and the real assistant
+contract through a synthetic provider transport. No actual qualified production
+plan or deployment was accepted by this software exercise.
+
+NAT-01/02 are accepted for this preview. NAT-03..06 in
+[the implementation plan](../../docs/native-sim-implementation-plan.md) remain:
+agent proposals/host handoff, requirements/ADR, typed composition and resource-card
+adaptation/layout, CLI cutover and production qualification. CLI canvas/console
+still use the component application. Initial fit may require the native **Fit**
+control; native cards still include disabled generic workflow rows. This is a
+basic source-review integration, not the finished architecture editor.
+
+## Earlier Chat acceptance
 
 Follow-up on 2026-10-27: the real credential-scoped catalog and native picker now
 pass with 449 models, including 19 aliases beginning with `~`. The former identifier
@@ -11,13 +60,13 @@ the native Zod contract and the Chat runtime now preserve the optional prefix;
 length, traversal and account-membership checks remain enforced. All 174 focused
 Python checks and 33 native contracts passed. No inference request was sent.
 
-The running local image includes a bounded follow-up patch over the CI image below:
+The preceding local image included a bounded follow-up patch over the CI image below:
 `sha256:da916ab9c6ec8aed1c65679edaeb589b1c94f7d9d9e9b9c400d5ba09900481ba`.
 Five exact compiled schema chunks were hash-checked before changing the regex,
 then syntax-checked; the maintained native source/manifest were updated as well.
 This avoids another full build on the storage-constrained preview host. The prior
-image is retained as `df3db64-before-model-alias-fix`; a full native rebuild of
-this follow-up remains outstanding. Existing browser caches may need a hard refresh.
+image is retained as `df3db64-before-model-alias-fix`. The newer full CI build
+above includes the maintained catalog fix. Existing browser caches may need a hard refresh.
 The live-catalog receipt is `model-alias-live-catalog-verification.json` in the
 local evidence directory below. This is separate from live inference acceptance.
 
@@ -81,7 +130,8 @@ and subsequent anonymous access was denied. No user keys or run data were
 included; external download history remains UNKNOWN. Registry publishing was
 removed from the build workflow.
 
-This connection supports text Chat. Architecture editing, agent workflow actions
-and infrastructure operator integration remain separate work. Authentication is
+The earlier connection supported text Chat. Native source review and selected
+Chat context are now covered above; agent workflow actions and infrastructure
+operator integration remain separate work. Authentication is
 bypassed only for this loopback preview; production authentication, hosting,
 licensing and live-provider acceptance are not established. See [setup](./README.md).
