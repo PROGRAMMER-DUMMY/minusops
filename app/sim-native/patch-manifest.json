@@ -23,22 +23,22 @@
     },
     {
       "path": "apps/sim/app/api/workspaces/[id]/assistant/key/route.ts",
-      "sha256": "6762a5a64067e4f69f1f54042ee690015698aeff489c05a5393492b3b1673c17",
+      "sha256": "0c6d143037b68a317ac8ef5ba87a49392cb333b4c6bf49d26de067a5e558b67c",
       "upstream_sha256": null
     },
     {
       "path": "apps/sim/app/api/workspaces/[id]/assistant/models/route.ts",
-      "sha256": "0a27f104cd4ad3272291452d085a29c5b4b5ff781e1f00ba5d6e3234eb6bc8f3",
+      "sha256": "210d2b7bf1e13045f5eb7b92bb4c8ac1f90c46bba1bd788ba14dd8ef2b885659",
       "upstream_sha256": null
     },
     {
       "path": "apps/sim/app/api/workspaces/[id]/assistant/preferences/route.ts",
-      "sha256": "72c439b7778385097c2eab3e34876ba38eb47d4807d5b3f6d1dc15216e645481",
+      "sha256": "2320af4c265125e7321b8aadb7b833546d14829a1ffb0bdba1356933f848fc9f",
       "upstream_sha256": null
     },
     {
       "path": "apps/sim/app/api/workspaces/[id]/assistant/status/route.ts",
-      "sha256": "13e2b932730b03830729bc586fcc1ae0da65cd5a8e66d1362879265852b58059",
+      "sha256": "ee8b1c12b11628f6c262c7516dcfbd7835bb613ea5b2943936866e0c8e11e5d6",
       "upstream_sha256": null
     },
     {
@@ -53,7 +53,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-selector.tsx",
-      "sha256": "9a88e82b5e520065cf4fc24660f0615037fedb7fb6a058941e0da402d12a2595",
+      "sha256": "0752cd6293df19278452fa678d86242b760a2f314ec8fa5feb905116da1d3f74",
       "upstream_sha256": "fb7033b1ebac14bfd8eaafb027fdbb528acccbfdd157673fe7db7c4e73343c41"
     },
     {
@@ -63,17 +63,17 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/layout.tsx",
-      "sha256": "28bd0b546ac9242a4f912970824dc1de9cfebd6fe7da83520588a2f1ef08b9c0",
+      "sha256": "cd64831e468078c37220aedc237f57fad9d8c7e32a884d2ed35e6a67a3f90167",
       "upstream_sha256": "fe03f3413961a1b1221eaff7f6618084a77c5366884b5196da67c8ce11ad58aa"
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/providers/feature-flags-provider.tsx",
-      "sha256": "886f74ae9b561e4db7aecc499c47c9205113d1624e5e6bd4164e8d266273f7b6",
+      "sha256": "b83920e3dfc66a02762735758e4e624cfa16fb9bd6f6cb0e3808a8e8087f4616",
       "upstream_sha256": "b6ee55a3f4128c30ef2514239ff3dd156b3a56b4d4a570d896641209fb9f418c"
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/settings/components/byok/byok.tsx",
-      "sha256": "a058c3c9c2e01756d9781368a6cd54e309b45c1a8c0147c3e155dbb8551ad75a",
+      "sha256": "dac600247c2de22d0919791f793bc979739225045d3de8253a4339f48bae0d33",
       "upstream_sha256": "bb55cdd4f0a543a6c471b8985f64ff67b01aea7a887a788b4155c8280bb8c277"
     },
     {
@@ -88,7 +88,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/w/components/sidebar/sidebar.tsx",
-      "sha256": "274656389b543786d0e043b2eae93b4306b44f4c94348efe456d6613330005a3",
+      "sha256": "dbb53ec1b5cabbb03adcab3f6f661bcd4b1889c5e6ae4f581f84b5d6b97ef0f7",
       "upstream_sha256": "8839a851ab24e1971b251b5fe22679b9b0187aee58d35ccf579600c188ca613e"
     },
     {
