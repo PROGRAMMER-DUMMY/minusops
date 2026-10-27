@@ -131,7 +131,7 @@ export function assistantRoute(action: Action, method: Method) {
       if (!permission) return refused(403, 'forbidden')
       if (request.method !== method) return refused(405, 'invalid_method')
       if (method !== 'GET') {
-        if (permission !== 'admin') return refused(403, 'forbidden')
+        if (permission !== 'admin' && action !== 'architecture') return refused(403, 'forbidden')
         if (request.headers.get('origin') !== browserOrigin(request)
             || ['cross-site', 'same-site'].includes(request.headers.get('sec-fetch-site') ?? '')) {
           return refused(403, 'origin_refused')
@@ -155,6 +155,12 @@ export function assistantRoute(action: Action, method: Method) {
           }
         } catch (error) {
           return refused(error instanceof BodyLimit ? 413 : 400, 'invalid_request')
+        }
+      }
+      if (method !== 'GET' && permission !== 'admin') {
+        const inspection = action === 'architecture' && architectureActionSchema.safeParse(body)
+        if (!inspection || !inspection.success || !['plan', 'delivery'].includes(inspection.data.operation)) {
+          return refused(403, 'forbidden')
         }
       }
       if (action === 'preferences' && method === 'POST') {

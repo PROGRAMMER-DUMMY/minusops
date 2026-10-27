@@ -48,7 +48,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx",
-      "sha256": "4b595e57b4f33535648980f695b57867e9a1c7f846697526c33f6efa5cfc0b3e",
+      "sha256": "ef863fcc1bda1f16e1ccdccd56b3176513dd5babc9e502a382ced0fbcc111810",
       "upstream_sha256": null
     },
     {
@@ -103,7 +103,7 @@
     },
     {
       "path": "apps/sim/lib/api/contracts/minusops-architecture.ts",
-      "sha256": "027467191702af8b6996e970f03f51fb09ffff5454fd210a3f5b67f191059b0f",
+      "sha256": "8c9c6e035ef06d55b99e44da440ee76422eb3c15911e00d10bfb7d424ef754ab",
       "upstream_sha256": null
     },
     {
@@ -118,7 +118,7 @@
     },
     {
       "path": "apps/sim/lib/openrouter-chat/server.ts",
-      "sha256": "1f3eebdbdbafdaf16ca8faf88548e928ed774ba82dcfcc4cb268fb96e1e1e846",
+      "sha256": "f096f013ab4a715241ee2330c29625bd7ddd7b73a3bb6494105f5155277c9f84",
       "upstream_sha256": null
     },
     {

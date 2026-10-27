@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Chip, ChipInput, ChipSelect, ChipTextarea } from '@sim/emcn'
 import { Box } from '@sim/emcn/icons'
 import { WorkflowBlockView, WorkflowEdgeView, useCanvasColorMode } from '@sim/workflow-renderer'
@@ -10,6 +11,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { architectureWorkspaceSchema, sourceChangeSchema, type ArchitectureSubject,
   type ArchitectureWorkspace as Workspace, type SourceChange, type SourceNode } from '@/lib/api/contracts/minusops-architecture'
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
+import { openRouterChatKeys } from '@/hooks/queries/openrouter-chat'
 import '@xyflow/react/dist/style.css'
 
 type Resource = Node<SourceNode & { icon?: string; collapsed: boolean; toggle: () => void }, 'resource'>
@@ -35,6 +37,7 @@ function Evidence({ value, kind }: { value: unknown; kind: string }) {
   const record = value && typeof value === 'object' ? value as Record<string, unknown> : null
   if (!record) return <p>No evidence loaded.</p>
   if (record.status === 'UNKNOWN') return <p>{String(record.reason)}</p>
+  if (record.kind !== (kind === 'Plan' ? 'minusops-review-graph' : 'minusops-canvas-delivery')) return <p>No matching evidence loaded.</p>
   const views = record.views as { workflow?: { execution_observed?: string }; delivery?: { route?: string; stage_mapping?: string } } | undefined
   return <>
     {kind === 'Plan' ? <p>{Array.isArray(record.nodes) ? record.nodes.length : 0} resources in the qualified saved plan.</p>
@@ -54,6 +57,7 @@ function WorkspaceView() {
   const { workspaceId } = useParams<{ workspaceId: string }>()
   const router = useRouter()
   const permissions = useUserPermissionsContext()
+  const queryClient = useQueryClient()
   const colorMode = useCanvasColorMode()
   const [data, setData] = useState<Workspace | null>(null)
   const [nodes, setNodes, onNodesChange] = useNodesState<Resource>([])
@@ -62,7 +66,7 @@ function WorkspaceView() {
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [change, setChange] = useState<SourceChange | null>(null)
   const [tab, setTab] = useState('Configuration')
-  const [evidence, setEvidence] = useState<unknown>(null)
+  const [evidence, setEvidence] = useState<{ tab: string; run_id: string; revision: string; value: unknown } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -114,7 +118,7 @@ function WorkspaceView() {
 
   async function perform(action: () => Promise<void>) {
     setBusy(true); setError(''); setNotice('')
-    try { await action() } catch (caught) { setError(caught instanceof Error ? caught.message : 'Request unavailable.') }
+    try { await action() } catch { setError('Request unavailable. Refresh the source and check your configuration.') }
     finally { setBusy(false) }
   }
   const binding = () => ({ run_id: data?.run_id, revision: graph?.revision })
@@ -174,7 +178,10 @@ function WorkspaceView() {
       <h1 className='font-medium text-sm'>Architecture</h1>
       <ChipSelect aria-label='Architecture run' searchable placeholder='Select a run' value={data?.run_id ?? ''}
         options={(data?.runs ?? []).map((run) => ({ label: run.name, value: run.run_id }))} disabled={!editable}
-        onChange={(run_id) => perform(async () => setData(architectureWorkspaceSchema.parse(await request({ operation: 'select', run_id }))))} />
+        onChange={(run_id) => perform(async () => {
+          setData(architectureWorkspaceSchema.parse(await request({ operation: 'select', run_id })))
+          await queryClient.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId) })
+        })} />
       <span className='text-xs text-[var(--text-tertiary)]'>{graph ? `${graph.nodes.length} declarations · Source${graph.gaps.length ? ` · ${graph.gaps.length} gaps` : ''}` : ''}</span>
       <Chip disabled={busy} onClick={() => perform(async () => setData(architectureWorkspaceSchema.parse(await request())))}>Refresh</Chip>
       <Chip disabled={!graph || busy} onClick={() => flow.fitView({ padding: 0.15, duration: 200 })}>Fit</Chip>
@@ -183,7 +190,8 @@ function WorkspaceView() {
         setNotice('Layout saved.')
       })}>Save layout</Chip>
       {data?.focus && <Chip disabled={!editable} onClick={() => perform(async () => {
-        await request({ operation: 'clear_focus', ...binding() })
+        await request({ operation: 'clear_focus', run_id: data.run_id })
+        await queryClient.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId) })
         setData((value) => value ? { ...value, focus: null } : value)
         setNotice('AI context cleared.')
       })}>Clear AI context</Chip>}
@@ -198,7 +206,8 @@ function WorkspaceView() {
           deleteKeyCode={null} fitView minZoom={0.08} maxZoom={2} onlyRenderVisibleElements>
           <Background gap={22} size={1} /><Controls showInteractive={false} />
         </ReactFlow> : <div className='flex h-full items-center justify-center text-sm text-[var(--text-tertiary)]'>
-          {data?.run_id ? 'No authored Terraform in this run.' : 'Select a run to view its architecture.'}</div>}
+          {data?.source_status === 'UNAVAILABLE' ? 'Source unavailable. Clear AI context or select another run.'
+            : data?.run_id ? 'No authored Terraform in this run.' : 'Select a run to view its architecture.'}</div>}
       </main>
       <aside className='flex w-[360px] shrink-0 flex-col overflow-hidden border-[var(--border)] border-l' aria-label='Architecture inspector'>
         <div className='p-3'><ChipSelect aria-label='Find declaration' searchable placeholder='Find declaration'
@@ -206,8 +215,12 @@ function WorkspaceView() {
           value={selected?.id ?? ''} onChange={(id) => select({ kind: 'source_node', id }, true)} /></div>
         <div className='flex flex-wrap gap-1 border-[var(--border)] border-b px-3 pb-3'>
           {['Configuration', 'Source', 'Changes', 'Plan', 'Delivery'].map((value) => <Chip key={value} active={tab === value}
-            disabled={busy || !graph} onClick={() => { setTab(value); if (value === 'Plan' || value === 'Delivery') perform(async () => {
-              setEvidence(await request({ operation: value.toLowerCase(), ...binding() }))
+            disabled={busy || !graph} onClick={() => {
+              setTab(value); setEvidence(null)
+              const target = graph && data?.run_id ? { tab: value, run_id: data.run_id, revision: graph.revision } : null
+              if ((value === 'Plan' || value === 'Delivery') && target) perform(async () => {
+              const result = await request({ operation: value.toLowerCase(), run_id: target.run_id, revision: target.revision })
+              setEvidence({ ...target, value: result })
             }) }}>{value}</Chip>)}
         </div>
         <div className='flex-1 overflow-auto p-4 text-sm'>
@@ -231,6 +244,7 @@ function WorkspaceView() {
             </>}
             {subject && <Chip disabled={!editable} onClick={() => perform(async () => {
               await request({ operation: 'focus', ...binding(), subject })
+              await queryClient.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId) })
               router.push(`/workspace/${workspaceId}/home`)
             })}>Ask AI about selection</Chip>}
           </>}
@@ -240,7 +254,8 @@ function WorkspaceView() {
             <p className='mb-2 font-medium'>{item.path}</p><pre className='whitespace-pre-wrap break-words text-xs'>{item.diff}</pre></section>)}
             <Chip disabled={!editable} onClick={() => perform(download)}>Download reviewed proposal</Chip>
             <p className='mt-3 text-xs'>Proposed source only. A new plan and host review are required.</p></> : <p>No proposed changes.</p>)}
-          {(tab === 'Plan' || tab === 'Delivery') && (busy ? <p>Loading…</p> : <Evidence value={evidence} kind={tab} />)}
+          {(tab === 'Plan' || tab === 'Delivery') && (busy ? <p>Loading…</p> : <Evidence value={evidence?.tab === tab
+            && evidence.run_id === data?.run_id && evidence.revision === graph?.revision ? evidence.value : null} kind={tab} />)}
         </div>
       </aside>
     </div>

@@ -8,6 +8,15 @@ on:
       - core/reporting/operations_models.py
       - .github/workflows/native-sim-preview.yml
   workflow_dispatch:
+    inputs:
+      baseline_tag:
+        description: Optional private compiled-baseline draft tag
+        required: false
+        type: string
+      baseline_sha256:
+        description: SHA256 of the admitted baseline inventory
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -102,7 +111,7 @@ jobs:
             --mount "type=bind,src=$RUNNER_TEMP/sim-source,dst=/native-source,readonly" \
             -e SIM_NATIVE_SOURCE_ROOT=/native-source -e SIM_NATIVE_DEPENDENCIES_ROOT=/app \
             minusops-native-sim-openrouter-deps:df3db64 \
-            node --test /sim-native/tests/overlay.test.mjs /sim-native/tests/completion.test.mjs
+            node --test /sim-native/tests/overlay.test.mjs /sim-native/tests/completion.test.mjs /sim-native/tests/export-code.test.mjs
 
       - name: Apply owned overlays and build native bundles
         run: python3 app/sim-native/docker_build.py source
@@ -138,6 +147,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPORT_TAG: ${{ steps.export.outputs.tag }}
           EXPORT_ID: ${{ steps.export.outputs.release_id }}
+          BASELINE_TAG: ${{ inputs.baseline_tag || vars.SIM_NATIVE_BASELINE_TAG }}
+          BASELINE_SHA256: ${{ inputs.baseline_sha256 || vars.SIM_NATIVE_BASELINE_SHA256 }}
         run: |
           set -euo pipefail
           private_draft() {
@@ -149,6 +160,23 @@ jobs:
           private_draft
           export_dir="$RUNNER_TEMP/native-image-export"
           mkdir "$export_dir"
+          if test -n "$BASELINE_TAG"; then
+            [[ "$BASELINE_TAG" =~ ^native-code-base-[a-zA-Z0-9-]+$ ]]
+            [[ "$BASELINE_SHA256" =~ ^[a-f0-9]{64}$ ]]
+            baseline_id=$(gh release view "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+            test "$(gh api "/repos/$GITHUB_REPOSITORY/releases/$baseline_id" --jq .draft)" = true
+            status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/$baseline_id")
+            test "$status" = 404
+            gh release download "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" --pattern native-code-base.json --output "$RUNNER_TEMP/native-code-base.json"
+            docker run --rm --network none --memory=512m --memory-swap=512m --cpus=2 --ulimit core=0:0 \
+              --user "$(id -u):$(id -g)" \
+              --mount "type=bind,src=$PWD/app/sim-native/export-code.mjs,dst=/export-code.mjs,readonly" \
+              --mount "type=bind,src=$RUNNER_TEMP/native-code-base.json,dst=/native-code-base.json,readonly" \
+              --mount "type=bind,src=$export_dir,dst=/export" \
+              -e SOURCE_REVISION="$GITHUB_SHA" -e BASELINE_SHA256 \
+              minusops-native-sim-openrouter:df3db64 node --max-old-space-size=128 /export-code.mjs /export /native-code-base.json
+          fi
           docker save minusops-native-sim-openrouter:df3db64 | gzip -1 | \
             split --bytes=1024M --numeric-suffixes=0 --suffix-length=3 - "$export_dir/native-sim-image.tar.gz.part-"
           export IMAGE_EXPORT_DIR="$export_dir"

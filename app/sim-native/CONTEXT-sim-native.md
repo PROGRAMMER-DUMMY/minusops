@@ -174,3 +174,14 @@ vault save/delete, model/effort selection, two Chat turns/reload, database-backe
 canvas drag/reload and model search. A clean user workspace and the normal gateway
 are ready. The checks made no live inference calls. [ACCEPTANCE.md](./ACCEPTANCE.md)
 records image identities, source scope and production/real-provider limitations.
+
+[export-code.mjs](./export-code.mjs) optionally exports changed compiled files
+against a SHA256-bound private baseline inventory. `compare(current, baseline)`
+requires identical Node/platform/dependency fingerprints, bounded canonical paths
+and unique hashes/sizes. `exportCode` checks maintained overlay bytes and writes a
+private delta archive plus the complete expected inventory. CI still performs its
+full build and server syntax checks. Workflow inputs or temporary nonsecret
+repository variables select the private baseline; absent selection keeps the normal
+full image export. [export-code.test.mjs](./tests/export-code.test.mjs) checks exact
+retention/change/removal and refusal of drift or malformed inventory. This is an
+internal preview delivery path, not portable approval or production qualification.

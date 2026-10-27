@@ -21,6 +21,7 @@ const graph = z.object({ schema_version: z.literal(1), kind: z.literal('minusops
     preview: z.string().nullable() }).passthrough()).max(128), gaps: z.array(z.unknown()),
   evidence_basis: z.string(), execution_authority: z.literal('NONE'), validation: z.string() })
 export const architectureWorkspaceSchema = z.object({ schema_version: z.literal(1), run_id: runId.nullable(),
+  source_status: z.enum(['UNSELECTED', 'AVAILABLE', 'UNAVAILABLE']),
   runs: z.array(z.object({ run_id: runId, name: z.string().max(200) })).max(100), architecture: graph.nullable(),
   icons: z.record(z.string(), z.string().startsWith('data:image/svg+xml;base64,').max(100000)),
   focus: z.object({ revision: hash, subject, label: z.string().min(1).max(200) }).nullable(),
@@ -44,14 +45,19 @@ export type SourceChange = z.infer<typeof sourceChangeSchema>
 const common = { run_id: runId, revision: hash }
 export const architectureActionSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('select'), run_id: runId }).strict(),
+  z.object({ operation: z.literal('clear_focus'), run_id: runId }).strict(),
   z.object({ operation: z.literal('focus'), ...common, subject }).strict(),
   z.object({ operation: z.literal('layout'), ...common, positions: z.array(position).max(1000) }).strict(),
   z.object({ operation: z.literal('stage'), ...common, subject, edits: z.array(edit).min(1).max(32) }).strict(),
   z.object({ operation: z.literal('review'), ...common, change: sourceChangeSchema }).strict(),
-  z.object({ operation: z.enum(['delivery', 'plan', 'clear_focus']), ...common }).strict(),
+  z.object({ operation: z.enum(['delivery', 'plan']), ...common }).strict(),
 ])
 export const architectureReplySchema = z.union([architectureWorkspaceSchema, sourceChangeSchema,
   z.object({ status: z.enum(['CONTEXT_SELECTED', 'CONTEXT_CLEARED', 'LAYOUT_SAVED', 'UNKNOWN']),
     execution_authority: z.literal('NONE'), reason: z.string().optional() }),
-  z.object({ kind: z.enum(['minusops-canvas-delivery', 'minusops-review-graph']) }).passthrough(),
+  z.object({ kind: z.literal('minusops-canvas-delivery'), inspection_only: z.literal(true),
+    execution_authority: z.literal('NONE'), authenticity: z.literal('UNVERIFIED'),
+    views: z.record(z.string(), z.unknown()), sources: z.array(z.unknown()), gaps: z.array(z.unknown()) }).passthrough(),
+  z.object({ kind: z.literal('minusops-review-graph'), nodes: z.array(z.unknown()).max(10000),
+    provenance: z.object({ binding_state: z.literal('CURRENT_PLAN_INSPECTION') }).passthrough() }).passthrough(),
 ])

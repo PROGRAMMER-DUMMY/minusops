@@ -508,7 +508,7 @@ test('tilde aliases survive catalog validation and exact preference selection', 
 })
 
 test('native architecture reads are scoped and writes require workspace admin', async () => {
-  const workspace = { schema_version: 1, run_id: null, runs: [], architecture: null,
+  const workspace = { schema_version: 1, run_id: null, source_status: 'UNSELECTED', runs: [], architecture: null,
     icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
   fixture.permission = 'read'
   queue(json(workspace))
@@ -518,10 +518,14 @@ test('native architecture reads are scoped and writes require workspace admin', 
   assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/architecture`)
   await refused(await call('architecture', 'POST', { operation: 'select', run_id: 'source-test' }), 403)
   assert.equal(fixture.calls.length, 1)
+  for (const operation of ['plan', 'delivery']) {
+    queue(json({ status: 'UNKNOWN', execution_authority: 'NONE' }))
+    assert.equal((await call('architecture', 'POST', { operation, run_id: 'source-test', revision: 'a'.repeat(64) })).status, 200)
+  }
 })
 
 test('native architecture admits only bounded inspection and proposal operations', async () => {
-  const workspace = { schema_version: 1, run_id: null, runs: [], architecture: null,
+  const workspace = { schema_version: 1, run_id: null, source_status: 'UNSELECTED', runs: [], architecture: null,
     icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
   queue(json(workspace))
   assert.equal((await call('architecture', 'POST', { operation: 'select', run_id: 'source-test' })).status, 200)
