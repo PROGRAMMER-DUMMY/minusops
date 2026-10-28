@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type RefObject } from 'react'
+import { useReactFlow } from '@xyflow/react'
 import { Chip, ChipModal, ChipModalBody, ChipModalError, ChipModalField, ChipModalFooter, ChipModalHeader, ChipSelect } from '@sim/emcn'
 import type { CompositionCatalog, SourceGraph } from '@/lib/api/contracts/minusops-architecture'
 import { editorError, parseField } from './canvas-model'
@@ -8,24 +9,32 @@ import { ConfigurationField } from './fields'
 
 type Command = (value: Record<string, unknown>) => Promise<void>
 export const MODULE_DRAG_TYPE = 'application/x-minusops-module'
+export type ModuleDrop = { id: string; x: number; y: number;
+  connection?: { target_id: string; field: string; port: string; key: string | null } }
 
-export function CompositionPalette({ catalog, disabled, onCommand, drop, onPlacement, onDropConsumed }: {
+export function CompositionPalette({ catalog, disabled, onCommand, drop, onPlacement, onDropConsumed, canvasRoot }: {
   catalog: CompositionCatalog; disabled: boolean; onCommand: Command
-  drop: { id: string; x: number; y: number } | null
+  drop: ModuleDrop | null; canvasRoot: RefObject<HTMLElement | null>
   onPlacement: (address: string, position: { x: number; y: number }) => void
   onDropConsumed: () => void
 }) {
-  const [dialog, setDialog] = useState<{ operationId: string; name: string; inputs: Record<string, string>; position?: { x: number; y: number } } | null>(null)
+  const flow = useReactFlow()
+  const [dialog, setDialog] = useState<{ operationId: string; name: string; inputs: Record<string, string>;
+    position?: { x: number; y: number }; connection?: ModuleDrop['connection'] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const module = catalog.modules[0]
-  function open(position?: { x: number; y: number }) {
+  function open(position?: { x: number; y: number }, connection?: ModuleDrop['connection']) {
     if (!module) return
-    setError(''); setDialog({ operationId: crypto.randomUUID(), name: '', position, inputs: Object.fromEntries(
+    const box = canvasRoot.current?.getBoundingClientRect()
+    const point = position ?? (box && flow.screenToFlowPosition({ x: box.left + box.width / 2, y: box.top + box.height / 2 }))
+    setError(''); setDialog({ operationId: crypto.randomUUID(), name: '', connection,
+      position: point && { x: Math.max(-100000, Math.min(100000, Math.round(point.x / 16) * 16)),
+        y: Math.max(-100000, Math.min(100000, Math.round(point.y / 16) * 16)) }, inputs: Object.fromEntries(
       Object.entries(module.fields).map(([name, field]) => [name, typeof field.default === 'string' ? field.default
         : field.default === undefined ? '' : JSON.stringify(field.default, null, 2)])) })
   }
-  useEffect(() => { if (drop && !disabled) { open(drop); onDropConsumed() } }, [drop?.id])
+  useEffect(() => { if (drop && !disabled) { open(drop, drop.connection); onDropConsumed() } }, [drop?.id])
   if (!module) return null
   function close() { if (!busy) setDialog(null) }
   async function submit() {
@@ -36,7 +45,8 @@ export function CompositionPalette({ catalog, disabled, onCommand, drop, onPlace
         parseField({ kind: 'literal', editable: true, value: field.default ?? '' }, dialog.inputs[name] ?? '')]))
       if (dialog.position) onPlacement(`module.${dialog.name}`, dialog.position)
       await onCommand({ type: 'insert_module', operation_id: dialog.operationId, module_id: module.module_id,
-        module_content_hash: module.module_content_hash, descriptor_digest: module.digest, name: dialog.name, inputs })
+        module_content_hash: module.module_content_hash, descriptor_digest: module.digest, name: dialog.name, inputs,
+        ...(dialog.connection ? { connection: dialog.connection } : {}) })
       setDialog(null)
     } catch (error) { setError(editorError(error)) }
     finally { setBusy(false) }
@@ -51,6 +61,16 @@ export function CompositionPalette({ catalog, disabled, onCommand, drop, onPlace
     {dialog && <ChipModal open dismissDisabled={busy} srTitle='Add S3 storage' onOpenChange={open => { if (!open) close() }}>
       <ChipModalHeader onClose={close}>Add S3 storage</ChipModalHeader>
       <ChipModalBody>
+        {dialog.connection && <ChipSelect aria-label='Connected input' value={dialog.connection.field}
+          options={(catalog.ports.find(item => item.node_id === dialog.connection?.target_id)?.ports ?? [])
+            .filter(port => port.direction === 'input' && port.source_module === module.module_id && !!port.source_port)
+            .map(port => ({ value: port.id, label: `${port.id} · ${port.value_type}` }))}
+          onChange={field => {
+            const port = catalog.ports.find(item => item.node_id === dialog.connection?.target_id)?.ports.find(port => port.id === field)
+            const output = port?.source_port
+            if (output) setDialog(value => value?.connection ? { ...value, connection: {
+              target_id: value.connection.target_id, field, port: output, key: port?.source_key ?? null } } : value)
+          }} disabled={busy || disabled} />}
         <ChipModalField type='input' title='Terraform label' value={dialog.name} required maxLength={80} disabled={busy}
           onChange={name => setDialog(value => value && ({ ...value, name }))} />
         {Object.entries(module.fields).map(([name, field]) => <ConfigurationField key={name} name={name}

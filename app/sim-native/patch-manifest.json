@@ -58,7 +58,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/composition-tools.tsx",
-      "sha256": "818ba31db2767ef4f8935334217a520fddc15c1190e608ac6c35ae5c518f08fb",
+      "sha256": "5a95a80b871e3c2fc65d40a99ac2521ea0c66ed74e1f43eea980b0eea2273e45",
       "upstream_sha256": null
     },
     {
@@ -88,7 +88,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/node-actions.tsx",
-      "sha256": "456b8d559974b1b1755b7a5c45ce717390b8d05545e2cc9ca59013e7c519da7c",
+      "sha256": "eba66dd6fe6696d3c02239e1792696b629a303ca2062059820ba78a35f86827b",
       "upstream_sha256": null
     },
     {
@@ -113,7 +113,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx",
-      "sha256": "e493ced034dc0906e0d5b4bb186c2c65b28fb1214f521f1e954ea84b3a4ccf1b",
+      "sha256": "e0660ef574b4f840d2f2f4eea60051b040437927660137bf59c3ee0e6000d73d",
       "upstream_sha256": null
     },
     {
@@ -183,7 +183,7 @@
     },
     {
       "path": "apps/sim/lib/api/contracts/minusops-architecture.ts",
-      "sha256": "81fcfff8f447dfd9f9d8c6b16150d3b51c8b5d5ec49e0d1955a9760ade3a47ad",
+      "sha256": "4ad7f133be513c3df9830f962d9d3d76c83b8ce644e3cb034f65b3d01730ddac",
       "upstream_sha256": null
     },
     {
@@ -213,7 +213,7 @@
     },
     {
       "path": "packages/workflow-renderer/src/workflow-block/block-view.tsx",
-      "sha256": "251270629a8bee0172f6b9ef9f2a92c3cb95aaf61a9a725ffff847d458e5a1f8",
+      "sha256": "344aa7038089f747289e466fe9a54113ca50e494dd7db511eda7633f16755e3c",
       "upstream_sha256": "32149a0e1fea62fbef2d36154d86d85b485cff8f6f48e2d2050f651e7dd2cc0d"
     }
   ],

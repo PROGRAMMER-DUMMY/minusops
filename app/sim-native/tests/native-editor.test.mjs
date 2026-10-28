@@ -15,6 +15,36 @@ const loaded = { exports: {} }
 new Function('module', 'exports', compiled.code)(loaded, loaded.exports)
 const { capturePositions, applyPositions, recordLayout, undoLayout, redoLayout, cardSummary, parseField, editorError, replacementEdits } = loaded.exports
 
+test('native contracts retain public export metadata and scope clipboard geometry', async () => {
+  const contract = await readFile(new URL('../overlay/apps/sim/lib/api/contracts/minusops-architecture.ts', import.meta.url), 'utf8')
+  const compiled = await transform(contract, { loader: 'ts', format: 'cjs' })
+  const module = { exports: {} }
+  new Function('module', 'exports', 'require', compiled.code)(module, module.exports, require)
+  const { architectureExportSchema, architectureClipboardSchema, architectureActionSchema } = module.exports
+  const hash = 'a'.repeat(64), id = 'b'.repeat(32), workspace = '79bce08e-8906-44d5-a30c-e69787e2f9dc'
+  const presentation = { notes: [{ id: workspace, kind: 'note', label: 'Design', text: 'Retained note', x: 16, y: 32 }],
+    layout: { revision: hash, positions: [{ id, x: 48, y: 64 }] } }
+  const exported = architectureExportSchema.parse({ kind: 'minusops-architecture-design-export', schema_version: 1,
+    origin: { run_id: 'fixture-run', revision: hash }, execution_authority: 'NONE', omission_limits: [], presentation,
+    graph: { schema_version: 1, kind: 'minusops-architecture-design-draft', revision: hash, baseline: { run_id: 'fixture-run' },
+      nodes: [], edges: [], evidence_basis: 'inert fixture', execution_authority: 'NONE', validation: 'DRAFT_UNPUBLISHED' } })
+  assert.deepEqual(exported.presentation, presentation)
+  const clipboard = { kind: 'minusops-architecture-clipboard', workspace_id: workspace, run_id: 'fixture-run',
+    revision: hash, snapshot_revision: 0, snapshot_digest: hash, nodes: [{ node_id: id, address: 'module.fixture' }],
+    positions: [{ id, x: 48, y: 64 }] }
+  assert.deepEqual(architectureClipboardSchema.parse(clipboard).positions, clipboard.positions)
+  for (const positions of [[], [{ id: 'c'.repeat(32), x: 0, y: 0 }], [{ id, x: Infinity, y: 0 }]]) {
+    assert.equal(architectureClipboardSchema.safeParse({ ...clipboard, positions }).success, false)
+  }
+  const command = { operation: 'command', run_id: 'fixture-run', revision: hash, expected_draft_revision: 0,
+    command_id: workspace, command: { type: 'insert_module', operation_id: workspace,
+      module_id: 'storage-medallion-s3', module_content_hash: hash, descriptor_digest: hash, name: 'inserted', inputs: {},
+      connection: { target_id: id, field: 'source_bucket', port: 'bucket_names', key: 'bronze' } } }
+  assert.deepEqual(architectureActionSchema.parse(command).command.connection, command.command.connection)
+  assert.equal(architectureActionSchema.safeParse({ ...command, command: { ...command.command,
+    connection: { ...command.command.connection, source_id: 'c'.repeat(32) } } }).success, false)
+})
+
 const nodes = () => [
   { id: 'one', position: { x: 0, y: 0 }, selected: true, data: { source: 'untouched.tf', bucket: 'unchanged' } },
   { id: 'two', position: { x: 100, y: 50 }, selected: true, data: { source: 'other.tf' } },

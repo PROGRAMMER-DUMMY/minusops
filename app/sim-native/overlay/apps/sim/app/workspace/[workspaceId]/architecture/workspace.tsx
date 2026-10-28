@@ -5,7 +5,7 @@ import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Chip, ChipSelect, cn } from '@sim/emcn'
 import { Box, ChevronDown, X } from '@sim/emcn/icons'
 import { WorkflowBlockView, WorkflowEdgeView, SubBlockRowView, useCanvasColorMode, CONNECTION_PICKER_Z } from '@sim/workflow-renderer'
-import { ReactFlow, ReactFlowProvider, SelectionMode, useNodesInitialized, useNodesState, useReactFlow,
+import { ReactFlow, ReactFlowProvider, SelectionMode, useNodesInitialized, useNodesState, useReactFlow, useStoreApi,
   type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { architectureDraftSchema, compositionCatalogSchema, hostReviewSchema, sourceChangeSchema, sourceEditsSchema, type ArchitectureDraft, type ArchitectureSubject,
@@ -24,7 +24,7 @@ import { NativeCanvasControls, useNativeInteractions } from './native-interactio
 import { ConfigurationField } from './fields'
 import { HostReviewStatus } from './host-review'
 import { NodeActions } from './node-actions'
-import { CompositionPalette, ConnectionDialog, MODULE_DRAG_TYPE, type ConnectionIntent } from './composition-tools'
+import { CompositionPalette, ConnectionDialog, MODULE_DRAG_TYPE, type ConnectionIntent, type ModuleDrop } from './composition-tools'
 import { ArchitectureSearch } from './search'
 import { ArchitecturePresence } from './presence'
 import { ArchitectureAnnotations } from './annotations'
@@ -45,6 +45,7 @@ function ResourceBlock({ id, data, selected }: NodeProps<Resource>) {
     showErrorOutput={false}
     connectionsEnabled={data.canConnect === true}
     sourceReconnectEnabled={data.canConnect === true}
+    inputDragEnabled={data.canConnect === true}
     rows={rows.map(row => <SubBlockRowView key={row.label} title={row.label} displayValue={row.value} />)}
     actionBar={data.kind === 'module' ? <Chip onClick={data.toggle}>{data.collapsed ? 'Expand' : 'Collapse'}</Chip> : undefined} /></div>
 }
@@ -92,7 +93,7 @@ function WorkspaceView() {
   const [searchFocus, setSearchFocus] = useState(0)
   const [connection, setConnection] = useState<ConnectionIntent | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; edgeId?: string } | null>(null)
-  const [drop, setDrop] = useState<{ id: string; x: number; y: number } | null>(null)
+  const [drop, setDrop] = useState<ModuleDrop | null>(null)
   const pendingPlacement = useRef(new Map<string, { x: number; y: number }>())
   const [chatBusy, setChatBusy] = useState(false)
   const activeTab = usePanelStore((state) => state.activeTab)
@@ -112,7 +113,17 @@ function WorkspaceView() {
   const fitted = useRef('')
   const canvasRoot = useRef<HTMLElement>(null)
   const flow = useReactFlow<Resource>()
+  const flowStore = useStoreApi()
+  const cancelledConnection = useRef(false)
   const initialized = useNodesInitialized()
+  useEffect(() => {
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !flowStore.getState().connection.inProgress) return
+      event.preventDefault(); cancelledConnection.current = true; flowStore.getState().cancelConnection()
+    }
+    document.addEventListener('keydown', cancel)
+    return () => document.removeEventListener('keydown', cancel)
+  }, [flowStore])
   const sourceGraph = data?.architecture
   const graph = proposal?.revision === sourceGraph?.revision && proposal?.change?.schema_version === 2
     ? proposal.change.proposal_graph : sourceGraph
@@ -189,7 +200,7 @@ function WorkspaceView() {
       const existing = sameRun ? previous.find(item => item.id === node.id) : undefined
       let position = existing?.position ?? pendingPlacement.current.get(node.address) ?? positions.get(node.id) ?? {
         x: (row % 3) * 360, y: (offsets.get(node.parent_id ?? '') ?? 0) + Math.floor(row / 3) * 220 }
-      if (!sourceChanged && !existing && !pendingPlacement.current.has(node.address) && primary(node)) {
+      if (!sourceChanged && !existing && !positions.has(node.id) && !pendingPlacement.current.has(node.address) && primary(node)) {
         const peers = occupied.get(node.parent_id) ?? []
         while (peers.some(point => Math.abs(point.x - position.x) < 336 && Math.abs(point.y - position.y) < 180)) {
           position = { ...position, y: position.y + 220 }
@@ -297,6 +308,7 @@ function WorkspaceView() {
     if (result.change?.schema_version === 2) {
       const added = result.change.proposal_graph.nodes.filter(node => !node.parent_id && !graph?.nodes.some(before => before.id === node.id))
       if (added.length) {
+        setNodes(previous => previous.map(node => ({ ...node, selected: false })))
         setSubject({ kind: 'source_node', id: added[0].id }); setFocusTarget({ id: added[0].id, children: false })
         setActiveTab('editor')
       }
@@ -349,10 +361,12 @@ function WorkspaceView() {
       <Chip disabled={!graph || busy || !initialized} onClick={() => {
         setFocusTarget(null); void flow.fitView({ padding: 0.15, maxZoom: 1, duration: 200 })
       }}>Fit</Chip>
-      {graph && <NodeActions graph={graph} selected={nodes.filter(node => node.selected).map(node => node.data)}
+      {graph && <NodeActions key={`${data?.run_id}:${sourceGraph?.revision}:${proposal?.draft_revision ?? 0}`}
+        graph={graph} selected={nodes.filter(node => node.selected).map(node => node.data)}
         disabled={!editable || dirty} onCommand={command} context={contextMenu} onCloseContext={() => setContextMenu(null)}
         workspaceId={workspaceId} runId={data?.run_id ?? ''} sourceRevision={sourceGraph?.revision ?? ''}
         draftRevision={proposal?.draft_revision ?? 0} canvasRoot={canvasRoot}
+        onPlacement={(address, position) => pendingPlacement.current.set(address, position)}
         onEdgeInspect={id => select({ kind: 'source_edge', id })}
         canDisconnect={id => { const item = graph.edges.find(edge => edge.id === id); return !!item?.field && !!catalog?.ports.some(
           node => node.node_id === item.target && node.ports.some(port => port.id === item.field && port.direction === 'input')) }}
@@ -381,7 +395,13 @@ function WorkspaceView() {
       <Chip onClick={() => { setDraftsByNode({}); setDraftRevision(null); setChange(null) }}>Discard stale fields</Chip>
     </div>}
       <main ref={canvasRoot} tabIndex={0} className='relative min-h-0 min-w-0 flex-1 outline-none' aria-label='Infrastructure architecture canvas'
-        onDragOver={event => { if (editable && !dirty && event.dataTransfer.types.includes(MODULE_DRAG_TYPE)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }}
+        onDragOver={event => { if (editable && !dirty && event.dataTransfer.types.includes(MODULE_DRAG_TYPE)) {
+          event.preventDefault(); event.dataTransfer.dropEffect = 'copy'
+          const box = event.currentTarget.getBoundingClientRect(), view = flow.getViewport()
+          const x = event.clientX < box.left + 40 ? 12 : event.clientX > box.right - 40 ? -12 : 0
+          const y = event.clientY < box.top + 40 ? 12 : event.clientY > box.bottom - 40 ? -12 : 0
+          if (x || y) void flow.setViewport({ ...view, x: view.x + x, y: view.y + y })
+        } }}
         onDrop={event => {
           if (!editable || dirty || !catalog || !event.dataTransfer.types.includes(MODULE_DRAG_TYPE)) return
           event.preventDefault()
@@ -392,6 +412,9 @@ function WorkspaceView() {
             const module = catalog.modules.find(module => module.module_id === value.module_id)
             if (!module || value.run_id !== data?.run_id || value.revision !== sourceGraph?.revision
               || module.digest !== value.descriptor_digest || module.module_content_hash !== value.module_content_hash) throw new Error('Drag source changed')
+            if ((event.target as Element).closest('.react-flow__edge')) {
+              setNotice('This module has no admitted input for insertion into a reference. Add it beside the connection.'); return
+            }
             const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
             setDrop({ id: crypto.randomUUID(), ...point }); setActiveTab('toolbar')
           } catch (error) { setError(editorError(error)) }
@@ -419,8 +442,22 @@ function WorkspaceView() {
           onEdgeContextMenu={(event, edge) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, edgeId: edge.id }) }}
           onEdgeClick={(_, item) => select({ kind: 'source_edge', id: item.id })} colorMode={colorMode}
           nodesConnectable={editable && !!catalog} nodesDraggable={canLayout} edgesReconnectable={editable}
-          onConnect={value => { if (value.source && value.target) setConnection({ source: value.source, target: value.target }) }}
-          onReconnect={(edge, value) => { if (value.source && value.target === edge.target) setConnection({ source: value.source,
+          onConnectStart={() => { cancelledConnection.current = false }}
+          onConnect={value => { if (!cancelledConnection.current && value.source && value.target) setConnection({ source: value.source, target: value.target }) }}
+          onConnectEnd={(event, state) => {
+            if (cancelledConnection.current || state.isValid || state.toNode || !editable || dirty || !catalog
+              || state.fromHandle?.type !== 'target' || (event.target as Element)?.closest?.('.react-flow__node')) return
+            const target = state.fromNode?.id
+            const port = catalog.ports.find(node => node.node_id === target)?.ports.find(port =>
+              port.direction === 'input' && port.source_module === catalog.modules[0]?.module_id && !!port.source_port)
+            if (!target || !port?.source_port) { setNotice('No compatible insertion adapter for this input.'); return }
+            const pointer = 'changedTouches' in event ? event.changedTouches[0] : event
+            if (!pointer) return
+            const point = flow.screenToFlowPosition({ x: pointer.clientX, y: pointer.clientY })
+            setDrop({ id: crypto.randomUUID(), ...point, connection: { target_id: target, field: port.id,
+              port: port.source_port, key: port.source_key ?? null } }); setActiveTab('toolbar')
+          }}
+          onReconnect={(edge, value) => { if (!cancelledConnection.current && value.source && value.target === edge.target) setConnection({ source: value.source,
             target: value.target, field: graph?.edges.find(item => item.id === edge.id)?.field }) }}
           onPaneClick={clearSelection} panOnScroll selectionMode={SelectionMode.Partial}
           selectionOnDrag={interactions.mode === 'cursor'} panOnDrag={interactions.mode === 'hand'}
@@ -535,6 +572,7 @@ function WorkspaceView() {
       <div data-tab-content='toolbar' className={activeTab === 'toolbar' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
         {catalog && <CompositionPalette key={`${sourceGraph?.revision}:${catalog.draft_revision}`} catalog={catalog}
           disabled={!editable || dirty} onCommand={command} drop={drop}
+          canvasRoot={canvasRoot}
           onPlacement={(address, point) => pendingPlacement.current.set(address, point)} onDropConsumed={() => setDrop(null)} />}
         {catalogQuery.isError && <p role='status' className='p-3 text-xs text-[var(--text-tertiary)]'>Composition tools unavailable. Refresh to check source.</p>}
         <div className='border-[var(--border)] border-y bg-[var(--surface-4)] px-3 py-1.5 text-sm'>In this run</div>

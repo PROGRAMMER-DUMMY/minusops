@@ -28,7 +28,8 @@ test('compiled delta refuses dependency drift and unsafe or duplicate file ident
   assert.throws(() => compare(inventory([file('same.js'), file('SAME.js')]), old))
 })
 
-test('actual compiled export admits the maintained renderer and retains exact overlay hashes', () => {
+test('actual compiled export admits the maintained renderer and retains exact overlay hashes', (context) => {
+  context.mock.method(console, 'log', () => {})
   const directory = fs.mkdtempSync(path.join(tmpdir(), 'native-code-export-'))
   const root = path.join(directory, 'app')
   function write(name, value) {

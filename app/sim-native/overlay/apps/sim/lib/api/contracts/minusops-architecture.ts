@@ -87,7 +87,10 @@ export const architecturePresentationSchema = z.object({ kind: z.literal('minuso
 export type ArchitecturePresentation = z.infer<typeof architecturePresentationSchema>
 export const architectureClipboardSchema = z.object({ kind: z.literal('minusops-architecture-clipboard'), workspace_id: z.string().uuid(),
   run_id: runId, revision: hash, snapshot_revision: z.number().int().min(0).max(128), snapshot_digest: hash,
-  nodes: z.array(z.object({ node_id: id, address: z.string().min(1).max(2000) }).strict()).min(1).max(16) }).strict()
+  nodes: z.array(z.object({ node_id: id, address: z.string().min(1).max(2000) }).strict()).min(1).max(16),
+  positions: z.array(position).max(16).optional() }).strict().refine(value => !value.positions ||
+    value.positions.length === value.nodes.length && new Set(value.positions.map(item => item.id)).size === value.nodes.length
+    && value.positions.every(item => value.nodes.some(node => node.node_id === item.id)), 'Clipboard geometry scope changed')
 export const hostReviewSchema = z.object({ kind: z.literal('minusops-host-review'),
   request_id: z.string().uuid(), request_digest: hash, entry_digest: hash, run_id: runId, revision: hash,
   status: z.enum(['QUEUED', 'CLAIMED', 'ANSWERED', 'CHANGE_PROPOSED', 'NEEDS_INPUT', 'CANCELLED', 'AUTHORED']),
@@ -146,7 +149,8 @@ export const architectureActionSchema = z.discriminatedUnion('operation', [
       z.object({ type: z.literal('remove_nodes'), operation_id: z.string().uuid(), node_ids: z.array(id).min(1).max(16) }).strict(),
       z.object({ type: z.literal('insert_module'), operation_id: z.string().uuid(), module_id: z.literal('storage-medallion-s3'),
         module_content_hash: hash, descriptor_digest: hash, name: z.string().regex(/^[A-Za-z_][A-Za-z_0-9-]{0,79}$/),
-        inputs: z.record(z.string(), z.unknown()) }).strict(),
+        inputs: z.record(z.string(), z.unknown()), connection: z.object({ target_id: id, field: z.string().max(80),
+          port: z.string().max(80), key: z.string().max(80).nullable() }).strict().optional() }).strict(),
       z.object({ type: z.literal('connect'), operation_id: z.string().uuid(), target_id: id, field: z.string().max(80),
         source_id: id, port: z.string().max(80), key: z.string().max(80).nullable() }).strict(),
       z.object({ type: z.literal('disconnect'), operation_id: z.string().uuid(), target_id: id, field: z.string().max(80),
@@ -165,6 +169,8 @@ export type ArchitectureAction = z.infer<typeof architectureActionSchema>
 export const architectureExportSchema = z.object({ kind: z.literal('minusops-architecture-design-export'), schema_version: z.literal(1),
   origin: z.object({ run_id: runId, revision: hash }), graph: z.record(z.string(), z.unknown()).refine((value) =>
     value.kind === 'minusops-architecture-design-draft' && value.validation === 'DRAFT_UNPUBLISHED' && graph.safeParse(value).success),
+  presentation: z.object({ notes: z.array(annotation).max(64),
+    layout: z.object({ revision: hash, positions: z.array(position).max(1000) }).nullable() }).strict().optional(),
   execution_authority: z.literal('NONE'), omission_limits: z.array(z.string()).max(20) })
 export const architectureReplySchema = z.union([architectureWorkspaceSchema, sourceChangeSchema, architectureDraftSchema, hostReviewSchema,
   architectureExportSchema, compositionCatalogSchema, architecturePresenceSchema, architecturePresentationSchema, architectureClipboardSchema,
