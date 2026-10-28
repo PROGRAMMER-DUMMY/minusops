@@ -111,7 +111,7 @@ jobs:
             --mount "type=bind,src=$RUNNER_TEMP/sim-source,dst=/native-source,readonly" \
             -e SIM_NATIVE_SOURCE_ROOT=/native-source -e SIM_NATIVE_DEPENDENCIES_ROOT=/app \
             minusops-native-sim-openrouter-deps:df3db64 \
-            node --test /sim-native/tests/overlay.test.mjs /sim-native/tests/completion.test.mjs /sim-native/tests/export-code.test.mjs
+            node --test /sim-native/tests/overlay.test.mjs /sim-native/tests/completion.test.mjs /sim-native/tests/native-editor.test.mjs /sim-native/tests/export-code.test.mjs
 
       - name: Apply owned overlays and build native bundles
         run: python3 app/sim-native/docker_build.py source

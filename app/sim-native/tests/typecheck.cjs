@@ -9,7 +9,7 @@ const root = process.env.SIM_NATIVE_APP_ROOT ?? '/app/apps/sim'
 const overlay = process.env.SIM_NATIVE_OVERLAY_ROOT ?? '/overlay'
 const manifest = JSON.parse(fs.readFileSync(path.join(overlay, 'patch-manifest.json'), 'utf8'))
 const nativeRoot = path.resolve(root, '../..')
-const files = manifest.files.filter((file) => file.path.startsWith('apps/sim/'))
+const files = manifest.files.filter((file) => file.path.startsWith('apps/sim/') || file.path.startsWith('packages/'))
   .map((file) => path.join(nativeRoot, file.path))
 const owned = new Set(files)
 const configPath = path.join(root, 'openrouter-overlay-tsconfig.json')

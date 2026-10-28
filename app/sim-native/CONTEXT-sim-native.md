@@ -222,4 +222,45 @@ creation, requirements, CLI cutover and production qualification remain pending.
 The workspace follow-up adds native library menus and per-run routes/cache keys. Server-side
 chat ownership and immutable run binding prevent cross-tab substitution. Source retrieval
 is bounded and question-specific; provider failures preserve only finite safe categories.
-Fresh CI/browser acceptance is required for this follow-up.
+CI40550973622, exact compiled image verification and actual browser acceptance passed for this follow-up; see ACCEPTANCE.md.
+
+The subsequent uninstalled editor source adds route-local
+[canvas-model.ts](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/canvas-model.ts)
+layout history and literal draft parsing,
+[native-interactions.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/native-interactions.tsx)
+native mode controls, scoped keyboard selection/focus and group-drag undo,
+[fields.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/fields.tsx)
+native typed configuration, and
+[context-status.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/context-status.tsx)
+collapsed citation/budget/provider-usage inspection. Field proposals use the persisted command
+journal; AI proposals use native tool events and require explicit retention. Chat history is
+filtered by owned run bindings. The maintained native block renderer adds `showErrorOutput`
+with a default of true; Architecture disables the workflow error footer. The type-check harness
+includes maintained package overlays. See the [implementation ledger](../../active/native-architecture-implementation-2026-10-28.md)
+for checks and remaining tickets. None of this paragraph establishes installed acceptance.
+
+[node-actions.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/node-actions.tsx)
+uses native menus/dialogs for bounded declaration duplication/removal.
+[composition-tools.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/composition-tools.tsx)
+uses source-bound catalogs for storage insertion and typed module connection review. Candidate
+graphs retain original card positions, expose source diffs and reload through the command journal.
+[host-review.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/host-review.tsx)
+separates queued/claimed/replied host status from observed publication and source refresh.
+The renderer's optional `connectionsEnabled` keeps static edge anchors while disabling unsupported
+editing handles; its native Workflow default is unchanged. Pending-source Chat integration,
+complete clipboard/presence/lifecycle parity and installed qualification remain separate work.
+
+Additional uninstalled leaves are
+[search.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/search.tsx) for scoped
+navigation and exact replacement previews,
+[annotations.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/annotations.tsx)
+for inert shared notes/display components/groups,
+[presence.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/presence.tsx)
+for expiring advisory cursors,
+[requirements.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/requirements.tsx)
+for fresh host intake, and
+[evidence.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/evidence.tsx)
+for qualified plan instances/actions and declared delivery/Helm/Argo sources. Clipboard payloads
+contain references only; the host resolves private copy-time commands. Pending Chat bindings
+now carry exact draft identity, validated against the trusted session actor. These source changes
+still require the qualified native type-check/build and installed-browser acceptance.

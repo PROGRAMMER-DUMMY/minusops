@@ -42,8 +42,53 @@
       "upstream_sha256": null
     },
     {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/annotations.tsx",
+      "sha256": "0cc85b4047896b082b7b022bb5864b6c3872cb5182809235258119471a2a96ec",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/canvas-model.ts",
+      "sha256": "6a3684e6e05681d42b017b3ca44266adf7d7e51b80a086a81e396b1cd9645775",
+      "upstream_sha256": null
+    },
+    {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/chat.tsx",
-      "sha256": "38d826ed365fbec958cae41bb11df2773ff9d6c7e4ec6b4a3586de06d5bf5922",
+      "sha256": "8e191fcb836530863c8a2604f7ec73566d872ea5553f005773ab7f07d63d2672",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/composition-tools.tsx",
+      "sha256": "818ba31db2767ef4f8935334217a520fddc15c1190e608ac6c35ae5c518f08fb",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/context-status.tsx",
+      "sha256": "171ed50f2f2f232e139b9ee3201cacd6fba6b527f420808282d15e8f7721a358",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/evidence.tsx",
+      "sha256": "498ecfe845ec8885f52dad064930ccadcbf18a3157fa0f5394c78bef30343e0c",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/fields.tsx",
+      "sha256": "9fa7c2eabc368dd7312d29047298e880f3a3f4a83275be576e3703a01e807292",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/host-review.tsx",
+      "sha256": "ad2c438d5b98a0ad548f09d37c7502939215204e541be28277b17d9768b12677",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/native-interactions.tsx",
+      "sha256": "cc5ec08bb7372c94be3e6a68030f280d09748b88b7a523f7dcf759a3515adf21",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/node-actions.tsx",
+      "sha256": "456b8d559974b1b1755b7a5c45ce717390b8d05545e2cc9ca59013e7c519da7c",
       "upstream_sha256": null
     },
     {
@@ -52,8 +97,23 @@
       "upstream_sha256": null
     },
     {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/presence.tsx",
+      "sha256": "4b19cc36965857dfaa17b9f91c8e6d35ff3dcabd72cb7dfacc88aad80b1934c6",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/requirements.tsx",
+      "sha256": "106657aabd9eb84fcd598d7004280c47e7c6c8367927e3cb5c5dfbfd1984eac2",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/architecture/search.tsx",
+      "sha256": "69524e0e743aea08137330e68e1356b385092fd9140d8430fe7265a69dcbd96b",
+      "upstream_sha256": null
+    },
+    {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx",
-      "sha256": "8bd85954def7d2529c9d567b2e7b5dcbaf21469b906b1bf1322b59258d12b665",
+      "sha256": "f2165e2bbadba41b8930054667c1e4954e0a17a26ccd9e3d8aaed244e42a797f",
       "upstream_sha256": null
     },
     {
@@ -123,12 +183,12 @@
     },
     {
       "path": "apps/sim/lib/api/contracts/minusops-architecture.ts",
-      "sha256": "239f7b7418b75ed2737bf64f71463842dc0fb687fe3a0cad90b88e3d330925de",
+      "sha256": "81fcfff8f447dfd9f9d8c6b16150d3b51c8b5d5ec49e0d1955a9760ade3a47ad",
       "upstream_sha256": null
     },
     {
       "path": "apps/sim/lib/api/contracts/openrouter-chat.ts",
-      "sha256": "d2f87dd1f7d911045fd45676a120bf482f6904c8cea57d398246426e9b9d29f5",
+      "sha256": "3b5fac991f90cc00f2eb45a15869d955579ecf2567d314cf438676a6dad46c4a",
       "upstream_sha256": null
     },
     {
@@ -138,7 +198,7 @@
     },
     {
       "path": "apps/sim/lib/openrouter-chat/server.ts",
-      "sha256": "e181a47962406392a10ebe15515f9da57960b26ee1a6b5db3ecb818c6491d1cd",
+      "sha256": "95a4c7520aa03204ea1d3896dfc8a8a1bffca36474c9ef42a5b193887cc76b85",
       "upstream_sha256": null
     },
     {
@@ -150,6 +210,11 @@
       "path": "apps/sim/stores/openrouter-chat/store.ts",
       "sha256": "7a596ec2e690900268657739754798abf0d1c8bd005466079d12c548d701b688",
       "upstream_sha256": null
+    },
+    {
+      "path": "packages/workflow-renderer/src/workflow-block/block-view.tsx",
+      "sha256": "e9f86125f65ead7e84acd50a3e643ed40a8d42ea9c00f16aa4e86e3b54695912",
+      "upstream_sha256": "32149a0e1fea62fbef2d36154d86d85b485cff8f6f48e2d2050f651e7dd2cc0d"
     }
   ],
   "interface": {

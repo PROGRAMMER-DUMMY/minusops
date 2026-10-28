@@ -1,5 +1,11 @@
 # Native Sim OpenRouter preview
 
+The subsequent Architecture editor work is currently source-only. Its command journal,
+pending-source Chat, native component menus/clipboard, admitted storage insertion/connections,
+notes, advisory presence and fresh host intake are tracked in the
+[implementation ledger](../../active/native-architecture-implementation-2026-10-28.md).
+Those fixture checks do not replace the running image or establish production qualification.
+
 The full native Sim application is running at `http://localhost:3010/workspace`,
 with its original controls and palette. Key entry, model/effort selection, two
 streamed Chat turns, history reload, canvas position persistence and model-directory
@@ -48,8 +54,8 @@ line references and explicit omissions. The16KiB context and32KiB history limits
 budgets, not measured tokenizer savings. References/defaults do not prove resolved
 instances or deployment; missing runtime, qualified plan and cost evidence stay UNKNOWN.
 Provider authentication, credit, access, rate-limit and timeout failures use fixed safe
-messages. Raw diagnostics are withheld. This follow-up requires fresh CI and browser
-acceptance before being described as installed.
+messages. Raw diagnostics are withheld. This follow-up passed remote native compilation,
+exact image verification and actual browser acceptance; see [acceptance](./ACCEPTANCE.md).
 
 This is an internal nonproduction integration pinned to the
 [Sim source at df3db64](https://github.com/simstudioai/sim/tree/df3db64ed17a5eb73fef8ccc95da180b0a1cf4b5).

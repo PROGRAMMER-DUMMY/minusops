@@ -145,7 +145,7 @@ export function assistantRoute(action: Action, method: Method) {
       if (method === 'GET' && action === 'architecture') {
         const parsed = architectureQuerySchema.safeParse(Object.fromEntries(entries))
         if (!parsed.success) return refused(400, 'invalid_request')
-        if (parsed.data.run_id) query = '?' + new URLSearchParams({ run_id: parsed.data.run_id })
+        query = '?' + new URLSearchParams({ ...(parsed.data.run_id ? { run_id: parsed.data.run_id } : {}), user_id: session.user.id })
       } else if (method === 'GET' && action === 'status') {
         const parsed = openRouterStatusQuerySchema.safeParse(Object.fromEntries(entries))
         if (!parsed.success) return refused(400, 'invalid_request')
@@ -184,16 +184,18 @@ export function assistantRoute(action: Action, method: Method) {
       }
       if (method !== 'GET' && permission !== 'admin') {
         const inspection = action === 'architecture' && architectureActionSchema.safeParse(body)
-        if (!inspection || !inspection.success || !['plan', 'delivery', 'export'].includes(inspection.data.operation)) {
+        if (!inspection || !inspection.success || !['plan', 'delivery', 'export', 'draft', 'catalog', 'presence', 'presentation', 'clipboard', 'host_status', 'host_change'].includes(inspection.data.operation)) {
           return refused(403, 'forbidden')
         }
       }
       if (action === 'architecture' && method === 'POST') {
         const parsed = architectureActionSchema.parse(body)
-        if (parsed.operation === 'bind_chat') {
+        if (parsed.operation === 'bind_chat' || parsed.operation === 'proposal') {
           if (!await ownsChat(workspaceId, session.user.id, parsed.chat_id)) return refused(403, 'forbidden')
           body = { ...parsed, user_id: session.user.id }
         }
+        if (parsed.operation === 'command' || parsed.operation === 'draft' || parsed.operation === 'catalog' || parsed.operation === 'presence' || parsed.operation === 'clipboard') body = { ...parsed, user_id: session.user.id }
+        if (parsed.operation === 'layout' && parsed.draft_revision !== undefined) body = { ...parsed, user_id: session.user.id }
       }
       if (action === 'preferences' && method === 'POST') {
         const preferences = openRouterPreferencesSchema.parse(body)

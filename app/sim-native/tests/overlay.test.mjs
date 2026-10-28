@@ -528,13 +528,13 @@ test('tilde aliases survive catalog validation and exact preference selection', 
 
 test('native architecture reads are scoped and writes require workspace admin', async () => {
   const workspace = { schema_version: 1, run_id: null, source_status: 'UNSELECTED', runs: [], architecture: null,
-    metadata: null, context_enabled: true, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+    metadata: null, context_enabled: true, chat_ids: [], draft: null, host_review: null, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
   fixture.permission = 'read'
   queue(json(workspace))
   const response = await call('architecture')
   assert.equal(response.status, 200)
   assert.deepEqual(await response.json(), workspace)
-  assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/architecture`)
+  assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/architecture?user_id=native-user`)
   await refused(await call('architecture', 'POST', { operation: 'select', run_id: 'source-test' }), 403)
   assert.equal(fixture.calls.length, 1)
   for (const operation of ['plan', 'delivery', 'export']) {
@@ -545,7 +545,7 @@ test('native architecture reads are scoped and writes require workspace admin', 
 
 test('native architecture admits only bounded inspection and proposal operations', async () => {
   const workspace = { schema_version: 1, run_id: null, source_status: 'UNSELECTED', runs: [], architecture: null,
-    metadata: null, context_enabled: true, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+    metadata: null, context_enabled: true, chat_ids: [], draft: null, host_review: null, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
   queue(json(workspace))
   assert.equal((await call('architecture', 'POST', { operation: 'select', run_id: 'source-test' })).status, 200)
   assert.deepEqual(JSON.parse(fixture.calls[0].options.body), { operation: 'select', run_id: 'source-test' })
@@ -560,13 +560,33 @@ test('native architecture admits only bounded inspection and proposal operations
   await refused(await call('architecture'), 502)
 })
 
+test('draft commands bind the trusted session actor and refuse reader or spoofed writes', async () => {
+  const body = { operation: 'command', run_id: 'source-test', revision: 'a'.repeat(64),
+    command_id: uuid, expected_draft_revision: 1, command: { type: 'undo' } }
+  fixture.permission = 'read'
+  await refused(await call('architecture', 'POST', body), 403)
+  assert.equal(fixture.calls.length, 0)
+  fixture.permission = 'admin'
+  const draft = { schema_version: 1, kind: 'minusops-architecture-proposal-draft', workspace_id: uuid,
+    run_id: 'source-test', revision: body.revision, draft_revision: 2, status: 'EMPTY', edits: [], change: null,
+    can_undo: false, can_redo: true, capabilities: { schema_version: 1, commands: ['field_edit', 'undo', 'redo', 'reset'],
+      max_commands: 128, max_edits: 32, publication: false, execution_authority: 'NONE' }, execution_authority: 'NONE',
+    receipt: { command_id: uuid, applied_draft_revision: 2, replayed: false } }
+  queue(json(draft))
+  assert.equal((await call('architecture', 'POST', body)).status, 200)
+  assert.deepEqual(JSON.parse(fixture.calls[0].options.body), { ...body, user_id: 'native-user' })
+  await refused(await call('architecture', 'POST', { ...body, user_id: 'forged-user' }), 400)
+  await refused(await call('architecture', 'GET', undefined, { query: '?run_id=source-test&user_id=forged-user' }), 400)
+  assert.equal(fixture.calls.length, 1)
+})
+
 test('architecture queries forward only one explicit validated run and never accept write queries', async () => {
   const workspace = { schema_version: 1, run_id: null, source_status: 'UNSELECTED', runs: [], architecture: null,
-    metadata: null, context_enabled: true, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+    metadata: null, context_enabled: true, chat_ids: [], draft: null, host_review: null, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
   fixture.permission = 'read'
   queue(json(workspace))
   assert.equal((await call('architecture', 'GET', undefined, { query: '?run_id=source-test' })).status, 200)
-  assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/architecture?run_id=source-test`)
+  assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/architecture?run_id=source-test&user_id=native-user`)
   for (const query of ['?run_id=source-test&run_id=other-run', '?run_id=source-test&run%5Fid=other-run',
     '?run_id=..%2Fprivate', '?run_id=', '?run_id=source-test&path=private', '?chat_id=source-test']) {
     await refused(await call('architecture', 'GET', undefined, { query }), 400)
@@ -577,6 +597,25 @@ test('architecture queries forward only one explicit validated run and never acc
   await refused(await call('models', 'GET', undefined, { query: '?run_id=source-test' }), 400)
   assert.equal(fixture.calls.length, 1)
   assert.equal(fixture.databaseCalls.length, 0)
+})
+
+test('composition catalog and pending layout use the session actor and separate reader permissions', async () => {
+  const common = { run_id: 'source-test', revision: 'a'.repeat(64), draft_revision: 0 }
+  const catalog = { operation: 'catalog', ...common }
+  const layout = { operation: 'layout', ...common, positions: [] }
+  fixture.permission = 'read'
+  queue(json({ kind: 'minusops-composition-catalog', ...common, modules: [], ports: [], execution_authority: 'NONE',
+    provider_support: 'AWS_ONLY', module_release_authority: 'UNVERIFIED' }))
+  assert.equal((await call('architecture', 'POST', catalog)).status, 200)
+  assert.deepEqual(JSON.parse(fixture.calls[0].options.body), { ...catalog, user_id: 'native-user' })
+  await refused(await call('architecture', 'POST', layout), 403)
+  fixture.permission = 'admin'
+  queue(json({ status: 'LAYOUT_SAVED', execution_authority: 'NONE' }))
+  assert.equal((await call('architecture', 'POST', layout)).status, 200)
+  assert.deepEqual(JSON.parse(fixture.calls[1].options.body), { ...layout, user_id: 'native-user' })
+  await refused(await call('architecture', 'POST', { ...catalog, user_id: 'forged' }), 400)
+  await refused(await call('architecture', 'POST', { ...layout, user_id: 'forged' }), 400)
+  assert.equal(fixture.calls.length, 2)
 })
 
 test('chat status and context binding require a live chat owned by the current user and workspace', async () => {
@@ -702,7 +741,7 @@ test('all overlay TypeScript/TSX parses and manifest exactly binds non-EE files'
   await walk(path.join(buildRoot, 'overlay'))
   assert.deepEqual(found.sort(), manifest.files.map((item) => item.path).sort())
   for (const file of manifest.files) {
-    assert.match(file.path, /^apps\/(sim|realtime)\//)
+    assert.match(file.path, /^(?:apps\/(sim|realtime)\/|packages\/workflow-renderer\/src\/workflow-block\/block-view\.tsx$)/)
     assert.doesNotMatch(file.path, /(^|\/)(ee|generated)(\/|$)|use-chat\./)
     const content = await readFile(path.join(buildRoot, 'overlay', file.path))
     assert.equal(createHash('sha256').update(content).digest('hex'), file.sha256, file.path)
@@ -729,18 +768,20 @@ test('architecture conversations require an explicit matching workspace/run and 
       builder.onResolve({ filter: /^(?:@|nuqs)/ }, ({ path: name }) => ({ path: name, namespace: 'boundary' }))
       builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path: name }) => {
         const values = {
-          '@sim/emcn': `import React from 'react'; export const Button=({children,onClick,disabled,...props})=>React.createElement('button',{'aria-label':props['aria-label'],disabled},children); export const ChipSelect=()=>null;`,
+          '@sim/emcn': `import React from 'react'; export const Button=({children,onClick,disabled,...props})=>React.createElement('button',{'aria-label':props['aria-label'],disabled},children); export const ChipSelect=()=>null; export const Popover=()=>null;export const PopoverTrigger=()=>null;export const PopoverContent=()=>null;`,
           '@sim/emcn/icons': 'export const Plus=()=>null;',
-          '@tanstack/react-query': 'export const useQueryClient=()=>({invalidateQueries:()=>Promise.resolve()});',
+          '@tanstack/react-query': 'export const useQueryClient=()=>({invalidateQueries:()=>Promise.resolve()});export const useQuery=()=>({});',
           nuqs: 'export const parseAsString={}; export const useQueryStates=()=>[fixture.selection,()=>Promise.resolve()];',
           '@/lib/api/client/request': 'export const requestJson=()=>{throw Error("Rendering must not create a chat")};',
           '@/lib/api/contracts/mothership-chats': 'export const createMothershipChatContract={};',
+          '@/lib/api/contracts/openrouter-chat': 'export const openRouterStatusContract={};',
           '@/lib/auth/client': 'export const useSession=()=>({data:{user:{id:"viewer"}}});',
           '@/app/workspace/[workspaceId]/home/components/mothership-chat': `import React from 'react'; export const MothershipChat=props=>{fixture.conversation=props;return React.createElement('div',{'data-chat':props.chatId})};`,
           '@/app/workspace/[workspaceId]/home/hooks': 'export const getWorkflowCopilotUseChatOptions=()=>({apiPath:"/api/mothership/chat"}); export const useChat=(...args)=>{fixture.calls.push(args);return {messages:[],isSending:false,isReconnecting:false,sendMessage:(...args)=>fixture.sent.push(args)}};',
           '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider': 'export const useUserPermissionsContext=()=>({canAdmin:true});',
           '@/hooks/queries/mothership-chats': 'export const mothershipChatKeys={list:()=>[]}; export const useMothershipChats=()=>({data:[]});',
           '@/hooks/queries/openrouter-chat': 'export const openRouterChatKeys={status:(id,chatId)=>["status",id,chatId]};',
+          '@/hooks/queries/minusops-architecture': 'export const architectureKeys={view:(id,run)=>["architecture",id,run]};',
         }
         assert.ok(name in values, name)
         return { contents: values[name], loader: 'js' }
@@ -753,15 +794,30 @@ test('architecture conversations require an explicit matching workspace/run and 
   const valid = { architectureChat: chatId, architectureChatRun: 'source-test', architectureChatWorkspace: uuid }
   for (const selection of [{}, { ...valid, architectureChatRun: 'other-run' },
     { ...valid, architectureChatWorkspace: 'other-workspace' }, { ...valid, architectureChat: '../bad' }, valid]) {
-    const state = { selection, calls: [], sent: [] }
+    const state = { selection, calls: [], sent: [], proposals: [] }
     const loaded = { exports: {} }
     new Function('require', 'module', 'exports', 'fixture', compiled.outputFiles[0].text)(require, loaded, loaded.exports, state)
     const html = renderToStaticMarkup(React.createElement(loaded.exports.ArchitectureChat,
       { workspaceId: uuid, runId: 'source-test', binding: { revision: 'a'.repeat(64), subject: null, enabled: true },
-        onBusyChange: () => {} }))
+        onBusyChange: () => {}, onProposal: value => state.proposals.push(value) }))
     if (selection === valid) {
       assert.match(html, new RegExp(`data-chat="${chatId}"`))
-      assert.deepEqual(state.calls, [[uuid, chatId, { apiPath: '/api/mothership/chat' }]])
+      assert.equal(state.calls.length, 1)
+      assert.deepEqual(state.calls[0].slice(0, 2), [uuid, chatId])
+      assert.equal(state.calls[0][2].apiPath, '/api/mothership/chat')
+      assert.equal(typeof state.calls[0][2].onToolResult, 'function')
+      const proposal = { kind: 'minusops-ai-source-proposal', message_id: uuid, tool_call_id: 'call_1',
+        run_id: 'source-test', revision: 'a'.repeat(64), edit_count: 1, change_hash: 'b'.repeat(64),
+        requires_review: true, source_written: false }
+      const receive = state.calls[0][2].onToolResult
+      receive('edit_workflow', true, proposal)
+      receive('propose_source_edits', false, proposal)
+      receive('propose_source_edits', true, { ...proposal, source_written: true })
+      receive('propose_source_edits', true, { ...proposal, run_id: 'other-run' })
+      receive('propose_source_edits', true, { ...proposal, revision: 'b'.repeat(64) })
+      assert.deepEqual(state.proposals, [])
+      receive('propose_source_edits', true, proposal)
+      assert.deepEqual(state.proposals, [{ chat_id: chatId, message_id: uuid, tool_call_id: 'call_1' }])
       assert.match(html, /inert=""/)
       assert.equal(state.conversation.draftScopeKey, `${uuid}:architecture:source-test:${chatId}`)
       await state.conversation.onSubmit('must wait for context binding')
@@ -816,7 +872,7 @@ test('architecture navigation isolates per-run queries and preserves cached view
   const selection = loaded.exports.useArchitectureAction(uuid)
   const metadata = { run_id: 'source-test', name: 'Source test', locked: false, metadata_revision: 0, design_status: 'SOURCE' }
   const workspace = { schema_version: 1, run_id: 'source-test', source_status: 'UNAVAILABLE', runs: [metadata], metadata,
-    context_enabled: true, architecture: null, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
+    context_enabled: true, chat_ids: [], draft: null, host_review: null, architecture: null, icons: {}, focus: null, layout: null, execution_authority: 'NONE' }
   const signal = new AbortController().signal
   pending.push(Response.json(workspace))
   assert.deepEqual(await query.queryFn({ signal }), workspace)

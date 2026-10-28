@@ -5,13 +5,59 @@ The user confirmed ordinary live OpenRouter Chat works. The architecture checks
 below made no provider inference calls and do not establish live model behavior
 with selected architecture context.
 
+## Architecture library and question-specific context
+
+Installed from [CI40550973622](https://github.com/PROGRAMMER-DUMMY/minusops/actions/runs/40550973622),
+source `eca69fc1891654c60ba9bcd9f126b01a8fc17c3c`. The current local image is
+`sha256:c96c0f6ffad4ec0d82a6281fc169c3407683165a8b4b4e43a741fbef5129a939`.
+All7,253 compiled files,28 overlays and runtime/dependency hashes match CI. The
+previous image remains `architecture-before-library-20261027`. All43 native contracts,
+27 owned TypeScript files with zero diagnostics, full compilation and3,813 generated
+server syntax checks passed.499 Python checks passed;3 checks were skipped because symlink
+privileges or POSIX permissions were unavailable on this host. The first build caught two TS narrowing errors; the accepted
+revision fixes them.
+
+The native Architectures **+** creates an empty independent run. Row menus provide
+open in a new tab, display rename, local editing lock/unlock, inert design duplicate,
+sanitized export and removal from the workspace library. Removal retains infrastructure,
+run files and history. Duplication remaps design IDs and preserves origin references;
+executable source, credentials, state, receipts, plans and authority are not copied.
+An unpublished design remains inspection-only until host source-authoring integration.
+
+Architecture routes and caches identify their run explicitly. Native chat ownership
+and server-side immutable run bindings prevent another tab from substituting its run.
+Each turn retrieves up to8 relevant excerpts from admitted source/locals, requirements,
+ADR and workflow documents, with stable source-bound IDs, original line ranges and
+explicit omissions. Optional plan/cost/delivery claims require current qualified evidence.
+Backend/provider blocks are withheld.16 KiB context and32 KiB history are byte budgets;
+five fixed actual-source questions used4.6-12.7 KB versus20.1 KB previously. This is
+not a tokenizer, live answer-quality, latency or billing result.
+
+Actual browser acceptance checked all six row actions, plus creation, server/UI locks,
+inert duplicate/export, retained files on removal, explicit new-tab URLs, two-run chat
+bindings, reload/history and a clear rate-limit message. Four synthetic provider turns
+passed the real request formatter; the first three contained actual fixture bucket
+configuration. No paid/live provider inference occurred. Two harness attempts stopped
+on native hidden row-action focus; focusing the owning row fixed the selector. Product
+source remained identical to CI. No browser errors or blocked requests in the accepted run.
+Screenshots were visually inspected, including the actual278-declaration user workspace.
+
+The validation profile/indexes were restored and marked fixtures archived outside the
+run catalog. Existing run hashes, source digest, user key and chat history were retained;
+only synthetic validation chats were added. The synthetic key is absent. The normal
+vault gateway is restored with the new code, and all native services are healthy.
+Task private CI/baseline drafts and temporary repository variables were removed.
+Evidence: `artifacts/reviews/sim-native-workspace-20261027/`. Live model answer quality,
+production host isolation, AI source-edit execution, composition and CLI cutover remain
+outside this acceptance.
+
 ## Composer bounds and architecture navigation
 
 The native composer and sidebar correction is installed from
 [CI40518622292](https://github.com/PROGRAMMER-DUMMY/minusops/actions/runs/40518622292),
 source `3fa34a5c9690beb47263fe0baeace69c6ca9c8a4`. All 39 native contracts,
 27 owned TypeScript files with zero diagnostics, full compilation and 3,813 server
-syntax checks passed. The current local image is
+syntax checks passed. The image at that acceptance was
 `sha256:1683ff910b698fa44319f81113f6e8da347f7bc7d2aec646745629d3c79c7951`.
 Its 7,253 compiled files, 28 overlays and runtime fingerprints match the admitted
 CI inventory. The previous image remains tagged `architecture-before-navigation-20261027`.

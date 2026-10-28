@@ -1,14 +1,14 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useIsMutating, useQueryClient } from '@tanstack/react-query'
-import { Button, Chip, ChipInput, ChipSelect, ChipTextarea, cn } from '@sim/emcn'
-import { Box, ChevronDown, Plus, Minus, Expand, X } from '@sim/emcn/icons'
-import { WorkflowBlockView, WorkflowEdgeView, useCanvasColorMode } from '@sim/workflow-renderer'
-import { ReactFlow, ReactFlowProvider, useNodesInitialized, useNodesState, useReactFlow,
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Button, Chip, ChipSelect, cn } from '@sim/emcn'
+import { Box, ChevronDown, X } from '@sim/emcn/icons'
+import { WorkflowBlockView, WorkflowEdgeView, SubBlockRowView, useCanvasColorMode } from '@sim/workflow-renderer'
+import { ReactFlow, ReactFlowProvider, SelectionMode, useNodesInitialized, useNodesState, useReactFlow,
   type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
-import { sourceChangeSchema, type ArchitectureSubject,
+import { architectureDraftSchema, compositionCatalogSchema, hostReviewSchema, sourceChangeSchema, sourceEditsSchema, type ArchitectureDraft, type ArchitectureSubject,
   type ArchitectureWorkspace as Workspace, type SourceChange, type SourceNode } from '@/lib/api/contracts/minusops-architecture'
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
 import { openRouterChatKeys } from '@/hooks/queries/openrouter-chat'
@@ -19,19 +19,33 @@ import { PANEL_WIDTH, TERMINAL_HEIGHT } from '@/stores/constants'
 import { usePanelResize } from '@/app/workspace/[workspaceId]/w/[workflowId]/components/panel/hooks/use-panel-resize'
 import { useTerminalResize } from '@/app/workspace/[workspaceId]/w/[workflowId]/components/terminal/hooks/use-terminal-resize'
 import { ArchitectureChat } from './chat'
+import { cardSummary, editorError, parseField } from './canvas-model'
+import { NativeCanvasControls, useNativeInteractions } from './native-interactions'
+import { ConfigurationField } from './fields'
+import { HostReviewStatus } from './host-review'
+import { NodeActions } from './node-actions'
+import { CompositionPalette, ConnectionDialog, MODULE_DRAG_TYPE, type ConnectionIntent } from './composition-tools'
+import { ArchitectureSearch } from './search'
+import { ArchitecturePresence } from './presence'
+import { ArchitectureAnnotations } from './annotations'
+import { ArchitectureEvidence } from './evidence'
+import { RequirementsIntake } from './requirements'
 import '@xyflow/react/dist/style.css'
 
-type Resource = Node<SourceNode & { icon?: string; collapsed: boolean; toggle: () => void }, 'resource'>
+type Resource = Node<SourceNode & { icon?: string; collapsed: boolean; childCount: number; canConnect?: boolean; toggle: () => void }, 'resource'>
 
 function ResourceBlock({ id, data, selected }: NodeProps<Resource>) {
   const Icon = data.icon ? ({ className }: { className?: string }) => <img src={data.icon} className={className} alt='' /> : Box
-  return <WorkflowBlockView id={id} type='infrastructure' name={data.address.split('.').at(-1) ?? data.address}
+  const rows = cardSummary(data, data.childCount)
+  return <div title={data.address}><WorkflowBlockView id={id} type='infrastructure' name={data.address.split('.').at(-1) ?? data.address}
     isEnabled isLocked={false} hasRing={!!selected} ringStyles='ring-1 ring-[var(--border)]'
     Icon={Icon} iconBgColor='var(--surface-5)' horizontalHandles shouldShowDefaultHandles
-    hasContentBelowHeader={false} conditionRows={[]} routerRows={[]} wouldCreateConnectionCycle={() => false}
+    hasContentBelowHeader={rows.length > 0} conditionRows={[]} routerRows={[]} wouldCreateConnectionCycle={() => false}
     cursorConnectionsEnabled={false} typeLabel={data.resource_type.replace(/^aws_/, '')}
-    rows={null}
-    actionBar={data.kind === 'module' ? <Chip onClick={data.toggle}>{data.collapsed ? 'Expand' : 'Collapse'}</Chip> : undefined} />
+    showErrorOutput={false}
+    connectionsEnabled={data.canConnect === true}
+    rows={rows.map(row => <SubBlockRowView key={row.label} title={row.label} displayValue={row.value} />)}
+    actionBar={data.kind === 'module' ? <Chip onClick={data.toggle}>{data.collapsed ? 'Expand' : 'Collapse'}</Chip> : undefined} /></div>
 }
 function ReferenceEdge(props: EdgeProps) {
   return <WorkflowEdgeView {...props} diffStatus={null} runStatus={undefined} isPreviewRun={false} />
@@ -39,21 +53,11 @@ function ReferenceEdge(props: EdgeProps) {
 const nodeTypes = { resource: ResourceBlock }
 const edgeTypes = { reference: ReferenceEdge }
 const format = (value: unknown) => JSON.stringify(value, null, 2)
-
-function Evidence({ value, kind }: { value: unknown; kind: string }) {
-  const record = value && typeof value === 'object' ? value as Record<string, unknown> : null
-  if (!record) return <p>No evidence loaded.</p>
-  if (record.status === 'UNKNOWN') return <p>{String(record.reason)}</p>
-  if (record.kind !== (kind === 'Plan' ? 'minusops-review-graph' : 'minusops-canvas-delivery')) return <p>No matching evidence loaded.</p>
-  const views = record.views as { workflow?: { execution_observed?: string }; delivery?: { route?: string; stage_mapping?: string } } | undefined
-  return <>
-    {kind === 'Plan' ? <p>{Array.isArray(record.nodes) ? record.nodes.length : 0} resources in the qualified saved plan.</p>
-      : <dl className='space-y-3'><div><dt className='text-xs'>Delivery route</dt><dd>{views?.delivery?.route ?? 'UNKNOWN'}</dd></div>
-        <div><dt className='text-xs'>Workflow execution</dt><dd>{views?.workflow?.execution_observed ?? 'UNKNOWN'}</dd></div>
-        <div><dt className='text-xs'>Stage mapping</dt><dd>{views?.delivery?.stage_mapping ?? 'UNKNOWN'}</dd></div></dl>}
-    <details className='mt-4'><summary className='cursor-pointer'>Evidence</summary>
-      <pre className='mt-3 whitespace-pre-wrap break-words text-xs'>{format(record)}</pre></details>
-  </>
+function candidateEdits(change: SourceChange) {
+  if (change.schema_version === 1) return change.edits.edits
+  const last = change.operations.operations.at(-1)
+  const parsed = last?.type === 'field_edit' ? sourceEditsSchema.safeParse(last.edits) : null
+  return parsed?.success ? parsed.data : null
 }
 
 export function ArchitectureWorkspace() {
@@ -76,11 +80,19 @@ function WorkspaceView() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Resource>([])
   const [collapsed, setCollapsed] = useState<string[]>([])
   const [subject, setSubject] = useState<ArchitectureSubject | null>(null)
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [draftsByNode, setDraftsByNode] = useState<Record<string, Record<string, string>>>({})
+  const [draftRevision, setDraftRevision] = useState<string | null>(null)
+  const [focusTarget, setFocusTarget] = useState<{ id: string; children: boolean } | null>(null)
   const [change, setChange] = useState<SourceChange | null>(null)
+  const [proposal, setProposal] = useState<ArchitectureDraft | null>(null)
+  const pendingCommand = useRef<{ key: string; body: Record<string, unknown> } | null>(null)
   const [editorTab, setEditorTab] = useState('Configuration')
   const [evidenceTab, setEvidenceTab] = useState('Changes')
-  const [search, setSearch] = useState('')
+  const [searchFocus, setSearchFocus] = useState(0)
+  const [connection, setConnection] = useState<ConnectionIntent | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; edgeId?: string } | null>(null)
+  const [drop, setDrop] = useState<{ id: string; x: number; y: number } | null>(null)
+  const pendingPlacement = useRef(new Map<string, { x: number; y: number }>())
   const [chatBusy, setChatBusy] = useState(false)
   const activeTab = usePanelStore((state) => state.activeTab)
   const setActiveTab = usePanelStore((state) => state.setActiveTab)
@@ -97,15 +109,34 @@ function WorkspaceView() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const fitted = useRef('')
+  const canvasRoot = useRef<HTMLElement>(null)
   const flow = useReactFlow<Resource>()
   const initialized = useNodesInitialized()
-  const graph = data?.architecture
+  const sourceGraph = data?.architecture
+  const graph = proposal?.revision === sourceGraph?.revision && proposal?.change?.schema_version === 2
+    ? proposal.change.proposal_graph : sourceGraph
+  const loadedSource = useRef('')
+  const loadedRun = useRef('')
   const selected = graph?.nodes.find((node) => subject?.kind === 'source_node' && node.id === subject.id)
   const edge = graph?.edges.find((item) => subject?.kind === 'source_edge' && item.id === subject.id)
+  const drafts = selected ? draftsByNode[selected.id] ?? {} : {}
+  const proposedFields = new Map((proposal?.revision === sourceGraph?.revision ? proposal?.edits ?? [] : [])
+    .filter(edit => edit.node_id === selected?.id).map(edit => [edit.field, 'expression' in edit ? edit.expression
+      : typeof edit.value === 'string' ? edit.value : format(edit.value)]))
+  const dirty = Object.values(draftsByNode).some(fields => Object.keys(fields).length > 0)
+  const staleDraft = dirty && draftRevision !== sourceGraph?.revision
+  const setDrafts = (update: (previous: Record<string, string>) => Record<string, string>) => {
+    if (!selected || staleDraft) return
+    setDraftRevision(sourceGraph?.revision ?? null)
+    setDraftsByNode(previous => ({ ...previous, [selected.id]: update(previous[selected.id] ?? {}) }))
+  }
   const canNavigate = permissions.canAdmin && !busy && !chatBusy && !selecting
   const canLayout = canNavigate && data?.metadata?.locked !== true
   const isDraft = data?.metadata?.design_status === 'DRAFT'
-  const editable = canLayout && !isDraft
+  const editable = canLayout && !isDraft && !staleDraft
+  const clearSelection = useCallback(() => setSubject(null), [])
+  const interactions = useNativeInteractions({ root: canvasRoot, revision: sourceGraph?.revision,
+    enabled: canLayout, setNodes, onClear: clearSelection })
   const loadError = workspace.isError ? 'Architecture unavailable. Check the local gateway and refresh.' : ''
 
   async function request(operation?: Record<string, unknown>, signal?: AbortSignal) {
@@ -116,50 +147,89 @@ function WorkspaceView() {
     if (!response.ok) throw new Error('Architecture unavailable or changed. Refresh and try again.')
     return response.json()
   }
+  const catalogQuery = useQuery({
+    queryKey: ['architecture-composition-catalog', workspaceId, data?.run_id, sourceGraph?.revision, proposal?.draft_revision ?? 0],
+    enabled: !!sourceGraph && !!data?.run_id && !isDraft && proposal?.revision === sourceGraph.revision,
+    queryFn: async ({ signal }) => {
+      const result = compositionCatalogSchema.parse(await request({ operation: 'catalog', run_id: data?.run_id,
+        revision: sourceGraph?.revision, draft_revision: proposal?.draft_revision ?? 0 }, signal))
+      if (result.run_id !== data?.run_id || result.revision !== sourceGraph?.revision
+        || result.draft_revision !== (proposal?.draft_revision ?? 0)) throw new Error('Composition catalog changed.')
+      return result
+    }, retry: false, staleTime: 30000,
+  })
+  const catalog = catalogQuery.data
   useEffect(() => {
     if (!graph) { setNodes([]); return }
-    const positions = new Map(data?.layout?.revision === graph.revision ? data.layout.positions.map((item) => [item.id, item]) : [])
+    const sourceChanged = loadedSource.current !== sourceGraph?.revision
+    const sameRun = loadedRun.current === graph.baseline.run_id
+    loadedRun.current = graph.baseline.run_id
+    if (!sameRun) { pendingPlacement.current.clear(); setDrop(null) }
+    loadedSource.current = sourceGraph?.revision ?? ''
+    const positions = new Map(data?.layout?.positions.map((item) => [item.id, item]) ?? [])
     const rows = new Map<string, number>()
     const offsets = new Map<string, number>([['', 0]])
-    let offset = Math.ceil(graph.nodes.filter((node) => !node.parent_id).length / 3) * 170 + 200
+    const primary = (node: SourceNode) => ['module', 'resource', 'data'].includes(node.kind)
+    let offset = Math.ceil(graph.nodes.filter(node => !node.parent_id && primary(node)).length / 3) * 220 + 120
     for (const module of graph.nodes.filter((node) => node.kind === 'module')) {
       offsets.set(module.id, offset)
-      offset += Math.ceil(graph.nodes.filter((node) => node.parent_id === module.id).length / 3) * 170 + 200
+      offset += Math.ceil(graph.nodes.filter(node => node.parent_id === module.id && primary(node)).length / 3) * 220 + 120
     }
-    setNodes(graph.nodes.map((node) => {
+    setNodes(previous => {
+      const occupied = sameRun ? previous.map(node => node.position) : []
+      return [...graph.nodes].sort((a, b) => Number(primary(b)) - Number(primary(a))).map((node) => {
       const row = rows.get(node.parent_id ?? '') ?? 0
       rows.set(node.parent_id ?? '', row + 1)
-      return { id: node.id, type: 'resource', deletable: false, position: positions.get(node.id) ?? {
-        x: (row % 3) * 380, y: (offsets.get(node.parent_id ?? '') ?? 0) + Math.floor(row / 3) * 170 },
-        data: { ...node, collapsed: false, toggle: () => {} } }
-    }))
-    setCollapsed(graph.nodes.filter((node) => node.kind === 'module').map((node) => node.id))
-    setSubject(null); setDrafts({}); setChange(null); setEditorTab('Configuration'); setEvidence(null)
-  }, [graph?.revision, graph?.baseline.run_id])
+      const existing = sameRun ? previous.find(item => item.id === node.id) : undefined
+      let position = existing?.position ?? pendingPlacement.current.get(node.address) ?? positions.get(node.id) ?? {
+        x: (row % 3) * 360, y: (offsets.get(node.parent_id ?? '') ?? 0) + Math.floor(row / 3) * 220 }
+      if (!sourceChanged && !existing && !pendingPlacement.current.has(node.address)) {
+        while (occupied.some(point => Math.abs(point.x - position.x) < 336 && Math.abs(point.y - position.y) < 180)) {
+          position = { ...position, y: position.y + 220 }
+        }
+        occupied.push(position)
+      }
+      return { id: node.id, type: 'resource', deletable: false, selected: existing?.selected ?? subject?.id === node.id,
+        position,
+        data: { ...node, collapsed: false, childCount: graph.nodes.filter(child => child.parent_id === node.id && primary(child)).length,
+          toggle: () => {} } }
+    }) })
+    const modules = graph.nodes.filter(node => node.kind === 'module').map(node => node.id)
+    setCollapsed(previous => sourceChanged ? modules : [...new Set([...previous,
+      ...modules.filter(id => !nodes.some(node => node.id === id))])])
+    if (sourceChanged) {
+      setSubject(null); setChange(null); setProposal(null); setConnection(null); setContextMenu(null); pendingCommand.current = null
+      setEditorTab('Configuration'); setEvidence(null); setFocusTarget(null)
+    } else if (subject && !graph.nodes.some(node => node.id === subject.id) && !graph.edges.some(edge => edge.id === subject.id)) setSubject(null)
+  }, [graph?.revision, sourceGraph?.revision, graph?.baseline.run_id])
+
+  useEffect(() => {
+    if (data?.draft && sourceGraph && data.draft.revision === sourceGraph.revision) {
+      setProposal(data.draft); setChange(data.draft.change)
+    }
+  }, [data?.draft, sourceGraph?.revision])
 
   async function perform(action: () => Promise<void>) {
     setBusy(true); setError(''); setNotice('')
-    try { await action() } catch { setError('Request unavailable. Refresh the source and check your configuration.') }
+    try { await action() } catch (error) { setError(editorError(error)) }
     finally { setBusy(false) }
   }
-  const binding = () => ({ run_id: data?.run_id, revision: graph?.revision })
+  const binding = () => ({ run_id: data?.run_id, revision: sourceGraph?.revision })
   function toggle(id: string) {
     const expanding = collapsed.includes(id)
     setCollapsed((value) => value.includes(id) ? value.filter((item) => item !== id) : [...value, id])
-    if (expanding) setTimeout(() => flow.fitView({ nodes: nodes.filter((node) => node.data.parent_id === id), padding: 0.2, duration: 200 }), 100)
+    if (expanding) setFocusTarget({ id, children: true })
   }
-  function select(value: ArchitectureSubject, focus = false) {
-    setSubject(value); setDrafts({}); setChange(null); setEditorTab('Configuration')
+  function select(value: ArchitectureSubject, focus = false, preserveSelection = false) {
+    setSubject(value); setEditorTab('Configuration')
+    if (!preserveSelection) setNodes(items => items.map(node => ({ ...node, selected: node.id === value.id })))
     setActiveTab('editor'); setMobileOpen(true)
     const node = graph?.nodes.find((item) => item.id === value.id)
     const parents = new Set<string>()
     let parent = node?.parent_id
     while (parent) { parents.add(parent); parent = graph?.nodes.find((item) => item.id === parent)?.parent_id }
     setCollapsed((items) => items.filter((id) => !parents.has(id)))
-    if (focus && node) {
-      const position = flow.getNode(node.id)?.position
-      if (position) setTimeout(() => flow.setCenter(position.x + 128, position.y + 60, { zoom: 0.9, duration: 200 }), 100)
-    }
+    if (focus && node) setFocusTarget({ id: node.id, children: false })
   }
   const displayed = useMemo(() => {
     const byId = new Map(nodes.map((node) => [node.id, node.data]))
@@ -167,35 +237,77 @@ function WorkspaceView() {
       let parent = node.data.parent_id
       let hidden = !['resource', 'data', 'module'].includes(node.data.kind) && subject?.id !== node.id
       while (parent) { hidden ||= collapsed.includes(parent); parent = byId.get(parent)?.parent_id ?? null }
-      return { ...node, hidden, selected: subject?.id === node.id, data: { ...node.data,
+      return { ...node, hidden, connectable: editable && !!catalog?.ports.some(port => port.node_id === node.id && port.ports.length > 0), data: { ...node.data,
+        canConnect: editable && !!catalog?.ports.some(port => port.node_id === node.id && port.ports.length > 0),
         icon: data?.icons[node.data.resource_type], collapsed: collapsed.includes(node.id), toggle: () => toggle(node.id) } }
     })
-  }, [nodes, collapsed, subject, data?.icons])
+  }, [nodes, collapsed, subject, data?.icons, catalog, editable])
   const edges = useMemo(() => {
     const shown = new Set(displayed.filter((node) => !node.hidden).map((node) => node.id))
     return (graph?.edges ?? []).filter((item) => shown.has(item.source) && shown.has(item.target)).map((item) => ({
       id: item.id, source: item.source, target: item.target, type: 'reference', sourceHandle: 'source', targetHandle: 'target',
+      reconnectable: editable && !!item.field && !!catalog?.ports.some(node => node.node_id === item.target
+        && node.ports.some(port => port.id === item.field && port.direction === 'input')),
       selected: subject?.id === item.id, deletable: false,
     }))
-  }, [graph?.edges, displayed, subject])
+  }, [graph?.edges, displayed, subject, catalog, editable])
 
   useEffect(() => {
-    if (!graph || !initialized || fitted.current === graph.revision) return
+    if (!focusTarget || !initialized) return
     const frame = requestAnimationFrame(() => {
-      void flow.fitView({ padding: 0.15, maxZoom: 1 })
-      fitted.current = graph.revision
+      const targets = flow.getNodes().filter(node => !node.hidden &&
+        (focusTarget.children ? node.data.parent_id === focusTarget.id : node.id === focusTarget.id))
+      if (targets.length) void flow.fitView({ nodes: targets, padding: 0.25, maxZoom: 1, duration: 200 })
+      setFocusTarget(null)
     })
     return () => cancelAnimationFrame(frame)
-  }, [graph?.revision, initialized, flow])
+  }, [focusTarget, initialized, flow, displayed])
 
+  useEffect(() => {
+    if (!sourceGraph || !initialized || fitted.current === sourceGraph.revision) return
+    const frame = requestAnimationFrame(() => {
+      void flow.fitView({ padding: 0.15, maxZoom: 1 })
+      fitted.current = sourceGraph.revision
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [sourceGraph?.revision, initialized, flow])
+
+  async function command(value: Record<string, unknown>) {
+    if (!sourceGraph || !data?.run_id) return
+    setBusy(true)
+    try {
+    const key = JSON.stringify({ run_id: data.run_id, revision: sourceGraph.revision, command: value })
+    if (pendingCommand.current?.key !== key) pendingCommand.current = { key, body: { operation: 'command',
+      ...binding(), expected_draft_revision: proposal?.draft_revision ?? 0,
+      command_id: typeof value.operation_id === 'string' ? value.operation_id : crypto.randomUUID(), command: value } }
+    const result = architectureDraftSchema.parse(await request(pendingCommand.current.body))
+    if (result.workspace_id !== workspaceId || result.run_id !== data.run_id || result.revision !== sourceGraph.revision
+      || result.receipt?.command_id !== pendingCommand.current.body.command_id) throw new Error('Draft receipt does not match this edit. Refresh before continuing.')
+    pendingCommand.current = null
+    setProposal(result); setChange(result.change)
+    if (result.change?.schema_version === 2) {
+      const added = result.change.proposal_graph.nodes.filter(node => !node.parent_id && !graph?.nodes.some(before => before.id === node.id))
+      if (added.length) {
+        setSubject({ kind: 'source_node', id: added[0].id }); setFocusTarget({ id: added[0].id, children: false })
+        setActiveTab('editor')
+      }
+    }
+    setData(previous => previous ? { ...previous, draft: result } : previous)
+    setDraftsByNode({}); setDraftRevision(null)
+    setEvidenceTab('Changes'); setTerminalHeight(Math.max(206, terminalHeight))
+    } finally { setBusy(false) }
+  }
   async function stage() {
-    if (!selected || !subject) return
-    const edits = Object.entries(drafts).map(([field, text]) => selected.fields[field].kind === 'reference'
-      ? { node_id: selected.id, field, expression: text }
-      : { node_id: selected.id, field, value: typeof selected.fields[field].value === 'string' ? text : JSON.parse(text) })
-    setChange(sourceChangeSchema.parse(await request({ operation: 'stage', ...binding(), subject, edits })))
-    setEvidenceTab('Changes')
-    setTerminalHeight(Math.max(206, terminalHeight))
+    if (staleDraft) throw new Error('Source changed; discard stale drafts before continuing.')
+    const edits = Object.entries(draftsByNode).flatMap(([id, fields]) => {
+      const node = graph?.nodes.find(item => item.id === id)
+      if (!node) throw new Error('The edited declaration is no longer available.')
+      return Object.entries(fields).map(([field, text]) => node.fields[field].kind === 'reference'
+        ? { node_id: id, field, expression: text }
+        : { node_id: id, field, value: parseField(node.fields[field], text) })
+    })
+    if (!edits.length) return
+    await command({ type: 'field_edit', subject: { kind: 'source_node', id: edits[0].node_id }, edits })
   }
   async function download() {
     const reviewed = sourceChangeSchema.parse(await request({ operation: 'review', ...binding(), change }))
@@ -215,15 +327,31 @@ function WorkspaceView() {
           await action.mutateAsync({ operation: 'select', run_id })
           router.push(`/workspace/${workspaceId}/architecture?run=${encodeURIComponent(run_id)}`)
         })} />
-      <span className='text-xs text-[var(--text-tertiary)]'>{graph ? `${graph.nodes.length} declarations · ${isDraft ? 'Unpublished design' : 'Source'}${graph.gaps.length ? ` · ${graph.gaps.length} gaps` : ''}` : ''}</span>
+      <span className='text-xs text-[var(--text-tertiary)]'>{graph ? `${graph.nodes.length} declarations · ${isDraft ? 'Unpublished design' : proposal?.change ? 'Proposed changes' : 'Source'}${graph.gaps.length ? ` · ${graph.gaps.length} gaps` : ''}` : ''}</span>
       {data?.metadata?.locked && <span className='text-xs text-[var(--text-muted)]'>Locked</span>}
+      {sourceGraph && data?.run_id && (isDraft || !sourceGraph.nodes.length) && <RequirementsIntake key={data.run_id}
+        workspaceId={workspaceId} runId={data.run_id} revision={sourceGraph.revision} disabled={!canLayout}
+        onQueued={value => { setData(previous => previous ? { ...previous, host_review: { request_id: value.request_id, revision: value.revision } } : previous)
+          setEvidenceTab('Changes'); setTerminalHeight(Math.max(206, terminalHeight)) }} />}
       <Chip disabled={busy || chatBusy || selecting} onClick={() => perform(async () => {
         const result = await workspace.refetch()
         if (result.error) throw result.error
       })}>Refresh</Chip>
       <Chip disabled={!graph || busy} onClick={() => flow.fitView({ padding: 0.15, duration: 200 })}>Fit</Chip>
+      {graph && <NodeActions graph={graph} selected={nodes.filter(node => node.selected).map(node => node.data)}
+        disabled={!editable || dirty} onCommand={command} context={contextMenu} onCloseContext={() => setContextMenu(null)}
+        workspaceId={workspaceId} runId={data?.run_id ?? ''} sourceRevision={sourceGraph?.revision ?? ''}
+        draftRevision={proposal?.draft_revision ?? 0} canvasRoot={canvasRoot}
+        onEdgeInspect={id => select({ kind: 'source_edge', id })}
+        canDisconnect={id => { const item = graph.edges.find(edge => edge.id === id); return !!item?.field && !!catalog?.ports.some(
+          node => node.node_id === item.target && node.ports.some(port => port.id === item.field && port.direction === 'input')) }}
+        onEdgeDisconnect={id => { const item = graph.edges.find(edge => edge.id === id); if (item?.field) setConnection({ target: item.target, field: item.field }) }} />}
       <Chip disabled={!graph || !canLayout} onClick={() => perform(async () => {
-        await request({ operation: 'layout', ...binding(), positions: flow.getNodes().map(({ id, position }) => ({ id, ...position })) })
+        const positions = flow.getNodes().map(({ id, position }) => ({ id, ...position }))
+        const result = await request({ operation: 'layout', ...binding(), draft_revision: proposal?.draft_revision ?? 0,
+          expected_layout_hash: data?.layout_hash, positions })
+        setData(previous => previous && sourceGraph ? { ...previous, layout: { revision: sourceGraph.revision, positions },
+          layout_hash: result.layout_hash } : previous)
         setNotice('Layout saved.')
       })}>Save layout</Chip>
       {data?.focus && <Chip disabled={!canNavigate} onClick={() => perform(async () => {
@@ -237,22 +365,70 @@ function WorkspaceView() {
       })}>Use architecture context</Chip>}
     </header>
     {(error || loadError || notice) && <div className='border-[var(--border)] border-b px-4 py-2 text-sm' role={error || loadError ? 'alert' : 'status'}>{error || loadError || notice}</div>}
-      <main className='relative min-h-0 min-w-0 flex-1' aria-label='Infrastructure architecture canvas'>
+    {staleDraft && <div role='alert' className='flex items-center gap-2 border-[var(--border)] border-b px-4 py-2 text-sm'>
+      Source changed. Unsaved fields need a fresh review.
+      <Chip onClick={() => { setDraftsByNode({}); setDraftRevision(null); setChange(null) }}>Discard stale fields</Chip>
+    </div>}
+      <main ref={canvasRoot} tabIndex={0} className='relative min-h-0 min-w-0 flex-1 outline-none' aria-label='Infrastructure architecture canvas'
+        onDragOver={event => { if (editable && !dirty && event.dataTransfer.types.includes(MODULE_DRAG_TYPE)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }}
+        onDrop={event => {
+          if (!editable || dirty || !catalog || !event.dataTransfer.types.includes(MODULE_DRAG_TYPE)) return
+          event.preventDefault()
+          try {
+            const raw = event.dataTransfer.getData(MODULE_DRAG_TYPE)
+            if (raw.length > 2048) throw new Error('Drag payload unavailable')
+            const value = JSON.parse(raw)
+            const module = catalog.modules.find(module => module.module_id === value.module_id)
+            if (!module || value.run_id !== data?.run_id || value.revision !== sourceGraph?.revision
+              || module.digest !== value.descriptor_digest || module.module_content_hash !== value.module_content_hash) throw new Error('Drag source changed')
+            const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+            setDrop({ id: crypto.randomUUID(), ...point }); setActiveTab('toolbar')
+          } catch (error) { setError(editorError(error)) }
+        }}
+        onKeyDown={event => {
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+            event.preventDefault(); setActiveTab('toolbar'); setSearchFocus(value => value + 1)
+          }
+          if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') {
+            event.preventDefault()
+            const bounds = event.currentTarget.getBoundingClientRect()
+            setContextMenu({ x: bounds.left + 32, y: bounds.top + 32 })
+          }
+        }}>
         {graph?.nodes.length ? <ReactFlow nodes={displayed} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
-          onNodesChange={onNodesChange} onNodeClick={(_, node) => select({ kind: 'source_node', id: node.id })}
+          onNodesChange={onNodesChange} onNodeClick={(_, node) => select({ kind: 'source_node', id: node.id }, false, true)}
+          onNodeContextMenu={(event, node) => {
+            event.preventDefault()
+            select({ kind: 'source_node', id: node.id }, false, !!node.selected)
+            setContextMenu({ x: event.clientX, y: event.clientY })
+          }}
+          onSelectionContextMenu={event => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY }) }}
+          onPaneContextMenu={event => { event.preventDefault(); setNodes(nodes => nodes.map(node => ({ ...node, selected: false })))
+            setSubject(null); setContextMenu({ x: event.clientX, y: event.clientY }) }}
+          onEdgeContextMenu={(event, edge) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, edgeId: edge.id }) }}
           onEdgeClick={(_, item) => select({ kind: 'source_edge', id: item.id })} colorMode={colorMode}
-          nodesConnectable={false} nodesDraggable={canLayout} edgesReconnectable={false}
-          deleteKeyCode={null} minZoom={0.08} maxZoom={2} onlyRenderVisibleElements
+          nodesConnectable={editable && !!catalog} nodesDraggable={canLayout} edgesReconnectable={editable}
+          onConnect={value => { if (value.source && value.target) setConnection({ source: value.source, target: value.target }) }}
+          onReconnect={(edge, value) => { if (value.source && value.target) setConnection({ source: value.source,
+            target: value.target, field: graph?.edges.find(item => item.id === edge.id)?.field }) }}
+          onPaneClick={clearSelection} panOnScroll selectionMode={SelectionMode.Partial}
+          selectionOnDrag={interactions.mode === 'cursor'} panOnDrag={interactions.mode === 'hand'}
+          multiSelectionKeyCode={['Meta', 'Control', 'Shift']} selectionKeyCode='Shift'
+          onNodeDragStart={interactions.begin} onNodeDragStop={interactions.finish}
+          onSelectionDragStart={interactions.begin} onSelectionDragStop={interactions.finish}
+          snapToGrid snapGrid={[16, 16]} autoPanOnNodeDrag={canLayout}
+          deleteKeyCode={null} minZoom={0.08} maxZoom={2}
           className='h-full bg-[var(--bg)] [--xy-background-color:var(--bg)]' />
           : <div className='flex h-full items-center justify-center text-sm text-[var(--text-tertiary)]'>
           {data?.source_status === 'UNAVAILABLE' ? 'Source unavailable. Clear AI context or select another run.'
             : data?.run_id ? 'No authored Terraform in this run.' : 'Select a run to view its architecture.'}</div>}
-        <div className='absolute bottom-3 left-3 flex gap-1 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-1'>
-          <Button variant='ghost' aria-label='Zoom in' onClick={() => void flow.zoomIn()}><Plus className='size-[14px]' /></Button>
-          <Button variant='ghost' aria-label='Zoom out' onClick={() => void flow.zoomOut()}><Minus className='size-[14px]' /></Button>
-          <Button variant='ghost' aria-label='Fit to View' onClick={() => void flow.fitView({ padding: 0.15, maxZoom: 1 })}><Expand className='size-[14px]' /></Button>
-        </div>
-        <Chip className='absolute top-3 right-3 md:hidden' onClick={() => setMobileOpen(true)}>Panel</Chip>
+        <NativeCanvasControls actions={interactions} />
+        {sourceGraph && data?.run_id && <ArchitectureAnnotations key={data.run_id} workspaceId={workspaceId}
+          runId={data.run_id} revision={sourceGraph.revision} disabled={!canLayout} />}
+        {sourceGraph && data?.run_id && <ArchitecturePresence key={`${data.run_id}:${sourceGraph.revision}`}
+          workspaceId={workspaceId} runId={data.run_id} revision={sourceGraph.revision}
+          selection={sourceGraph.nodes.some(node => node.id === subject?.id) ? subject!.id : null} />}
+        <Chip className='absolute top-14 right-3 md:hidden' onClick={() => setMobileOpen(true)}>Panel</Chip>
       </main>
 
       <section className='terminal-container relative flex shrink-0 flex-col overflow-hidden border-[var(--border)] border-t bg-[var(--bg)]'
@@ -272,7 +448,7 @@ function WorkspaceView() {
             className='h-[28px] rounded-md text-[12.5px]' disabled={busy || !graph} onClick={() => {
               setEvidenceTab(value); setEvidence(null)
               setTerminalHeight(Math.max(206, terminalHeight))
-              const target = graph && data?.run_id ? { tab: value, run_id: data.run_id, revision: graph.revision } : null
+              const target = sourceGraph && data?.run_id ? { tab: value, run_id: data.run_id, revision: sourceGraph.revision } : null
               if ((value === 'Plan' || value === 'Delivery') && target) void perform(async () => {
                 const result = await request({ operation: value.toLowerCase(), run_id: target.run_id, revision: target.revision })
                 setEvidence({ ...target, value: result })
@@ -282,12 +458,39 @@ function WorkspaceView() {
             ? TERMINAL_HEIGHT.MIN : 206)}><ChevronDown className={cn('size-[14px]', terminalHeight <= TERMINAL_HEIGHT.MIN && 'rotate-180')} /></Button>
         </div>
         <div className='min-h-0 flex-1 overflow-auto p-4 text-sm'>
+          {evidenceTab === 'Changes' && data?.host_review && data.run_id && <HostReviewStatus workspaceId={workspaceId}
+            runId={data.run_id} reference={data.host_review} canEdit={canNavigate} onChange={setChange}
+            onRefresh={() => void perform(async () => {
+              if (isDraft && data?.host_review) await request({ operation: 'adopt_authored', run_id: data.run_id,
+                ...data.host_review, metadata_revision: data.metadata?.metadata_revision })
+              await workspace.refetch()
+            })} />}
+          {evidenceTab === 'Changes' && <div className='mb-3 flex flex-wrap items-center gap-2'>
+            <Chip disabled={!editable || dirty || !proposal?.can_undo} onClick={() => perform(() => command({ type: 'undo' }))}>Undo edit</Chip>
+            <Chip disabled={!editable || dirty || !proposal?.can_redo} onClick={() => perform(() => command({ type: 'redo' }))}>Redo edit</Chip>
+            <Chip disabled={!editable || (!dirty && !proposal?.can_undo && !proposal?.can_redo)} onClick={() => perform(async () => {
+              if (proposal?.can_undo || proposal?.can_redo) await command({ type: 'reset' })
+              else { setDraftsByNode({}); setDraftRevision(null) }
+            })}>Discard edits</Chip>
+            {dirty && <Chip disabled={!editable} onClick={() => perform(stage)}>Review changes</Chip>}
+          </div>}
           {evidenceTab === 'Changes' && (change ? <>{change.files.map((item) => <section key={item.path} className='mb-4'>
             <p className='mb-2 font-medium'>{item.path}</p><pre className='whitespace-pre-wrap break-words text-xs'>{item.diff}</pre></section>)}
             <Chip disabled={!editable} onClick={() => perform(download)}>Download reviewed proposal</Chip>
-            <p className='mt-3 text-xs'>Proposed source only. A new plan and host review are required.</p></> : <p>No proposed changes.</p>)}
-          {(evidenceTab === 'Plan' || evidenceTab === 'Delivery') && (busy ? <p>Loading…</p> : <Evidence value={evidence?.tab === evidenceTab
-            && evidence.run_id === data?.run_id && evidence.revision === graph?.revision ? evidence.value : null} kind={evidenceTab} />)}
+            <Chip disabled={!editable || dirty} onClick={() => perform(async () => {
+              const queued = hostReviewSchema.parse(await request({ operation: 'queue_review', ...binding(), change }))
+              setData(previous => previous ? { ...previous, host_review: { request_id: queued.request_id, revision: queued.revision } } : previous)
+            })}>Send to host</Chip>
+            {candidateEdits(change) && change.change_hash !== proposal?.change?.change_hash && <>
+              <Chip disabled={!editable || dirty} onClick={() => perform(() => {
+                const edits = candidateEdits(change)!
+                return command({ type: 'field_edit', subject: { kind: 'source_node', id: edits[0].node_id }, edits })
+              })}>Keep proposed edits</Chip>
+              <Chip disabled={busy} onClick={() => setChange(proposal?.change ?? null)}>Dismiss proposal</Chip>
+            </>}
+            <p className='mt-3 text-xs'>Proposed source only. A new plan and host review are required.</p></> : <p role={busy ? 'status' : undefined}>{busy ? 'Checking source…' : 'No proposed changes.'}</p>)}
+          {(evidenceTab === 'Plan' || evidenceTab === 'Delivery') && (busy ? <p>Loading…</p> : <ArchitectureEvidence value={evidence?.tab === evidenceTab
+            && evidence.run_id === data?.run_id && evidence.revision === sourceGraph?.revision ? evidence.value : null} kind={evidenceTab} proposed={!!proposal?.change} />)}
         </div>
       </section>
     </div>
@@ -306,23 +509,27 @@ function WorkspaceView() {
         <Button variant='ghost' className='ml-auto md:hidden' aria-label='Close architecture panel' onClick={() => setMobileOpen(false)}><X className='size-4' /></Button>
       </div>
       <div data-tab-content='copilot' className={activeTab === 'copilot' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-        {data?.run_id && graph ? <ArchitectureChat key={`${workspaceId}:${data.run_id}`} workspaceId={workspaceId} runId={data.run_id}
-          binding={{ revision: graph.revision, subject: data.focus?.subject ?? null, enabled: data.context_enabled }} onBusyChange={setChatBusy} />
+        {data?.run_id && sourceGraph ? <><div className={proposal?.change ? 'px-3 pb-2 text-xs text-[var(--text-tertiary)]' : 'hidden'}>
+          Context includes unpublished changes.</div><ArchitectureChat key={`${workspaceId}:${data.run_id}`} workspaceId={workspaceId} runId={data.run_id} chatIds={data.chat_ids}
+          onProposal={reference => void perform(async () => {
+            const result = sourceChangeSchema.parse(await request({ operation: 'proposal', ...binding(), ...reference }))
+            setChange(result); setEvidenceTab('Changes'); setTerminalHeight(Math.max(206, terminalHeight))
+            const affected = new Set((candidateEdits(result) ?? []).map(edit => edit.node_id))
+            setNodes(nodes => nodes.map(node => ({ ...node, selected: affected.has(node.id) })))
+          })}
+          binding={{ revision: sourceGraph.revision, subject: subject ?? data.focus?.subject ?? null, enabled: data.context_enabled,
+            ...(proposal?.change ? { draft_revision: proposal.draft_revision, change_hash: proposal.change.change_hash } : {}) }} onBusyChange={setChatBusy} /></>
           : <p className='p-4 text-sm'>Select a run to start.</p>}
       </div>
       <div data-tab-content='toolbar' className={activeTab === 'toolbar' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+        {catalog && <CompositionPalette key={`${sourceGraph?.revision}:${catalog.draft_revision}`} catalog={catalog}
+          disabled={!editable || dirty} onCommand={command} drop={drop}
+          onPlacement={(address, point) => pendingPlacement.current.set(address, point)} onDropConsumed={() => setDrop(null)} />}
+        {catalogQuery.isError && <p role='status' className='p-3 text-xs text-[var(--text-tertiary)]'>Composition tools unavailable. Refresh to check source.</p>}
         <div className='border-[var(--border)] border-y bg-[var(--surface-4)] px-3 py-1.5 text-sm'>In this run</div>
-        <div className='p-3'><ChipInput aria-label='Search infrastructure' placeholder='Search components…' value={search} onChange={(event) => setSearch(event.target.value)} /></div>
-        <div className='min-h-0 flex-1 overflow-auto px-2 pb-3'>
-          {(graph?.nodes ?? []).filter((node) => ['resource', 'data', 'module'].includes(node.kind)
-            && node.address.toLowerCase().includes(search.trim().toLowerCase())).map((node) =>
-            <Button key={node.id} variant='ghost' className='flex w-full justify-start gap-2 text-left' title={node.address}
-              onClick={() => select({ kind: 'source_node', id: node.id }, true)}>
-              {data?.icons[node.resource_type] ? <img src={data.icons[node.resource_type]} alt='' className='size-4 shrink-0' /> : <Box className='size-4 shrink-0' />}
-              <span className='truncate text-sm'>{node.address}</span>
-            </Button>)}
-          {!graph && <p className='px-2 text-sm'>Select a run to inspect its components.</p>}
-        </div>
+        {graph ? <ArchitectureSearch graph={graph} icons={data?.icons ?? {}} disabled={!editable || dirty}
+          focusRequest={searchFocus} onSelect={id => select({ kind: 'source_node', id }, true)} onCommand={command} />
+          : <p className='px-2 text-sm'>Select a run to inspect its components.</p>}
       </div>
       <div data-tab-content='editor' className={activeTab === 'editor' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
         <div className='p-3'><ChipSelect aria-label='Find declaration' searchable placeholder='Find declaration'
@@ -338,21 +545,22 @@ function WorkspaceView() {
             {edge && <><p className='mb-2 font-medium'>Declared reference</p>
               <p className='mb-2 break-words text-xs'>{graph?.nodes.find((node) => node.id === edge.source)?.address}</p>
               <p className='mb-3 break-words text-xs'>→ {graph?.nodes.find((node) => node.id === edge.target)?.address}</p>
+              {edge.field && catalog?.ports.some(node => node.node_id === edge.target
+                && node.ports.some(port => port.id === edge.field && port.direction === 'input'))
+                && <Chip disabled={!editable || dirty} onClick={() => setConnection({ target: edge.target, field: edge.field! })}>Disconnect</Chip>}
               <details><summary>Evidence</summary><pre className='whitespace-pre-wrap break-words text-xs'>{format(edge)}</pre></details></>}
             {selected && <><p className='mb-3 break-words font-medium'>{selected.address}</p>
-              {Object.entries(selected.fields).map(([name, field]) => <div key={name} className='mb-3'>
-                <label htmlFor={`field-${name}`} className='mb-1 block text-xs'>{name}</label>
-                {typeof field.value === 'string' ? <ChipInput id={`field-${name}`} aria-label={name}
-                  value={drafts[name] ?? field.value} readOnly={!field.editable || !editable}
-                  onChange={(event) => { setDrafts((value) => ({ ...value, [name]: event.target.value })); setChange(null) }} />
-                  : <ChipTextarea id={`field-${name}`} aria-label={name} value={drafts[name] ?? format(field.value)}
-                    readOnly={!field.editable || !editable}
-                    onChange={(event) => { setDrafts((value) => ({ ...value, [name]: event.target.value })); setChange(null) }} />}
+              <p className='mb-3 text-xs text-[var(--text-tertiary)]'>{selected.source.path}:{selected.source.start_line}
+                {selected.kind === 'module' ? ' · Module inputs' : selected.parent_id ? ' · Shared module source' : ''}</p>
+              {Object.entries(selected.fields).map(([name, field]) => <div key={`${selected.id}:${name}`}><ConfigurationField
+                name={name} field={field} text={drafts[name] ?? proposedFields.get(name)} disabled={!editable}
+                onChange={text => setDrafts(value => ({ ...value, [name]: text }))} />
+                {field.overridden_by && <Chip onClick={() => select({ kind: 'source_node', id: field.overridden_by!.node_id }, true)}>Edit module input</Chip>}
               </div>)}
-              <Chip disabled={!editable || !Object.keys(drafts).length} onClick={() => perform(stage)}>Review changes</Chip>
+              <Chip disabled={!editable || !dirty} onClick={() => perform(stage)}>Review changes</Chip>
             </>}
             {subject && <Chip disabled={!canNavigate} onClick={() => perform(async () => {
-              await request({ operation: 'focus', ...binding(), subject })
+              if (!proposal?.change) await request({ operation: 'focus', ...binding(), subject })
               await queryClient.invalidateQueries({ queryKey: openRouterChatKeys.status(workspaceId) })
               setData((value) => value && graph ? { ...value, focus: { revision: graph.revision, subject,
                 label: selected?.address ?? 'Selected connection' }, context_enabled: true } : value)
@@ -373,5 +581,7 @@ function WorkspaceView() {
           }
         }} className='absolute inset-y-0 left-[-4px] z-20 hidden w-2 cursor-ew-resize focus-visible:outline focus-visible:outline-[var(--selection)] md:block' />
     </aside>
+    {connection && catalog && graph && <ConnectionDialog key={JSON.stringify(connection)} intent={connection}
+      catalog={catalog} graph={graph} disabled={!editable || dirty} onCommand={command} onClose={() => setConnection(null)} />}
   </div>
 }

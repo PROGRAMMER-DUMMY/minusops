@@ -28,6 +28,21 @@ const recordedSpend = z.object({
   pending_calls: z.number().int().nonnegative(), unknown_calls: z.number().int().nonnegative(),
   completed_calls: z.number().int().nonnegative(), provider_billing_cap: z.literal(false),
 })
+const count = z.number().int().nonnegative().max(1e12)
+const contextObservation = z.object({
+  binding: z.object({ run_id: z.string().max(200), revision: z.string().regex(/^[a-f0-9]{64}$/),
+    subject: z.object({ kind: z.enum(['source_node', 'source_edge']), id: z.string().regex(/^[a-f0-9]{32}$/) }).nullable(),
+    enabled: z.boolean(), draft_revision: z.number().int().min(0).max(128).optional(),
+    change_hash: z.string().regex(/^[a-f0-9]{64}$/).optional() }),
+  context_bytes: count, context_limit_bytes: count, history_bytes: count, history_limit_bytes: count,
+  estimated_payload_tokens: count, estimation: z.literal('UTF8_BYTES_DIV_4; EXCLUDES_PROVIDER_INSTRUCTIONS_AND_TOOL_ROUNDS'),
+  included: count, omitted: count, tool_response_usage: z.literal('NOT_OBSERVED'),
+  max_output_tokens_per_completion: count, output_bytes: count, output_limit_bytes: count,
+  citations: z.array(z.object({ id: z.string().max(40), path: z.string().max(1000), sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    start_line: count, end_line: count })).max(8), evidence_status: z.record(z.string().max(100), z.string().max(100)),
+  provider_usage: z.object({ input_tokens: count.optional(), output_tokens: count.optional(), total_tokens: count.optional(),
+    model: z.string().max(200).optional() }).nullable(),
+})
 export const openRouterStatusSchema = z.object({
   provider: z.literal('openrouter'),
   providers: z.object({ openrouter: providerStatus }),
@@ -35,6 +50,7 @@ export const openRouterStatusSchema = z.object({
   workflow_tools: z.literal(false), recorded_spend: recordedSpend.nullable().optional(),
   architecture_context: z.object({ run_id: z.string().max(200), revision: z.string().regex(/^[a-f0-9]{64}$/),
     label: z.string().min(1).max(200) }).nullable().optional(),
+  context_observation: contextObservation.nullable().optional(),
 })
 export type OpenRouterStatus = z.infer<typeof openRouterStatusSchema>
 
