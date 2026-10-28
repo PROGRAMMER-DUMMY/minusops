@@ -86,7 +86,7 @@ export function exportCode(root, output, baselinePath, revision, expectedBaselin
   const overlays = JSON.parse(fs.readFileSync(path.join(root, '../overlay/patch-manifest.json'), 'utf8'))
   assert.ok(Array.isArray(overlays.files) && overlays.files.length > 0 && overlays.files.length <= 128)
   for (const file of overlays.files) {
-    assert.match(file.path, /^apps\/(sim|realtime)\//)
+    assert.match(file.path, /^(apps\/(sim|realtime)\/|packages\/workflow-renderer\/src\/)/)
     assert.ok(!file.path.split('/').some((part) => part === '..' || part === '.' || part === 'ee'))
     assert.equal(fileHash(path.join(root, file.path)), file.sha256, 'Native overlay source changed')
   }

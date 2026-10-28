@@ -113,7 +113,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/workspace.tsx",
-      "sha256": "f2165e2bbadba41b8930054667c1e4954e0a17a26ccd9e3d8aaed244e42a797f",
+      "sha256": "e493ced034dc0906e0d5b4bb186c2c65b28fb1214f521f1e954ea84b3a4ccf1b",
       "upstream_sha256": null
     },
     {
@@ -213,7 +213,7 @@
     },
     {
       "path": "packages/workflow-renderer/src/workflow-block/block-view.tsx",
-      "sha256": "e9f86125f65ead7e84acd50a3e643ed40a8d42ea9c00f16aa4e86e3b54695912",
+      "sha256": "251270629a8bee0172f6b9ef9f2a92c3cb95aaf61a9a725ffff847d458e5a1f8",
       "upstream_sha256": "32149a0e1fea62fbef2d36154d86d85b485cff8f6f48e2d2050f651e7dd2cc0d"
     }
   ],

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Chip, ChipSelect, cn } from '@sim/emcn'
 import { Box, ChevronDown, X } from '@sim/emcn/icons'
-import { WorkflowBlockView, WorkflowEdgeView, SubBlockRowView, useCanvasColorMode } from '@sim/workflow-renderer'
+import { WorkflowBlockView, WorkflowEdgeView, SubBlockRowView, useCanvasColorMode, CONNECTION_PICKER_Z } from '@sim/workflow-renderer'
 import { ReactFlow, ReactFlowProvider, SelectionMode, useNodesInitialized, useNodesState, useReactFlow,
   type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
@@ -44,6 +44,7 @@ function ResourceBlock({ id, data, selected }: NodeProps<Resource>) {
     cursorConnectionsEnabled={false} typeLabel={data.resource_type.replace(/^aws_/, '')}
     showErrorOutput={false}
     connectionsEnabled={data.canConnect === true}
+    sourceReconnectEnabled={data.canConnect === true}
     rows={rows.map(row => <SubBlockRowView key={row.label} title={row.label} displayValue={row.value} />)}
     actionBar={data.kind === 'module' ? <Chip onClick={data.toggle}>{data.collapsed ? 'Expand' : 'Collapse'}</Chip> : undefined} /></div>
 }
@@ -176,18 +177,24 @@ function WorkspaceView() {
       offset += Math.ceil(graph.nodes.filter(node => node.parent_id === module.id && primary(node)).length / 3) * 220 + 120
     }
     setNodes(previous => {
-      const occupied = sameRun ? previous.map(node => node.position) : []
+      const occupied = new Map<string | null, { x: number; y: number }[]>()
+      for (const node of sameRun ? previous : []) {
+        if (!primary(node.data)) continue
+        const peers = occupied.get(node.data.parent_id) ?? []
+        peers.push(node.position); occupied.set(node.data.parent_id, peers)
+      }
       return [...graph.nodes].sort((a, b) => Number(primary(b)) - Number(primary(a))).map((node) => {
       const row = rows.get(node.parent_id ?? '') ?? 0
       rows.set(node.parent_id ?? '', row + 1)
       const existing = sameRun ? previous.find(item => item.id === node.id) : undefined
       let position = existing?.position ?? pendingPlacement.current.get(node.address) ?? positions.get(node.id) ?? {
         x: (row % 3) * 360, y: (offsets.get(node.parent_id ?? '') ?? 0) + Math.floor(row / 3) * 220 }
-      if (!sourceChanged && !existing && !pendingPlacement.current.has(node.address)) {
-        while (occupied.some(point => Math.abs(point.x - position.x) < 336 && Math.abs(point.y - position.y) < 180)) {
+      if (!sourceChanged && !existing && !pendingPlacement.current.has(node.address) && primary(node)) {
+        const peers = occupied.get(node.parent_id) ?? []
+        while (peers.some(point => Math.abs(point.x - position.x) < 336 && Math.abs(point.y - position.y) < 180)) {
           position = { ...position, y: position.y + 220 }
         }
-        occupied.push(position)
+        peers.push(position); occupied.set(node.parent_id, peers)
       }
       return { id: node.id, type: 'resource', deletable: false, selected: existing?.selected ?? subject?.id === node.id,
         position,
@@ -246,9 +253,11 @@ function WorkspaceView() {
     const shown = new Set(displayed.filter((node) => !node.hidden).map((node) => node.id))
     return (graph?.edges ?? []).filter((item) => shown.has(item.source) && shown.has(item.target)).map((item) => ({
       id: item.id, source: item.source, target: item.target, type: 'reference', sourceHandle: 'source', targetHandle: 'target',
+      // Moving a required input to another target needs an explicit disconnect replacement.
       reconnectable: editable && !!item.field && !!catalog?.ports.some(node => node.node_id === item.target
-        && node.ports.some(port => port.id === item.field && port.direction === 'input')),
-      selected: subject?.id === item.id, deletable: false,
+        && node.ports.some(port => port.id === item.field && port.direction === 'input')) ? 'source' as const : false,
+      // Reconnect anchors must receive the pointer above native card outline hit areas.
+      selected: subject?.id === item.id, zIndex: subject?.id === item.id ? CONNECTION_PICKER_Z : 0, deletable: false,
     }))
   }, [graph?.edges, displayed, subject, catalog, editable])
 
@@ -337,7 +346,9 @@ function WorkspaceView() {
         const result = await workspace.refetch()
         if (result.error) throw result.error
       })}>Refresh</Chip>
-      <Chip disabled={!graph || busy} onClick={() => flow.fitView({ padding: 0.15, duration: 200 })}>Fit</Chip>
+      <Chip disabled={!graph || busy || !initialized} onClick={() => {
+        setFocusTarget(null); void flow.fitView({ padding: 0.15, maxZoom: 1, duration: 200 })
+      }}>Fit</Chip>
       {graph && <NodeActions graph={graph} selected={nodes.filter(node => node.selected).map(node => node.data)}
         disabled={!editable || dirty} onCommand={command} context={contextMenu} onCloseContext={() => setContextMenu(null)}
         workspaceId={workspaceId} runId={data?.run_id ?? ''} sourceRevision={sourceGraph?.revision ?? ''}
@@ -409,7 +420,7 @@ function WorkspaceView() {
           onEdgeClick={(_, item) => select({ kind: 'source_edge', id: item.id })} colorMode={colorMode}
           nodesConnectable={editable && !!catalog} nodesDraggable={canLayout} edgesReconnectable={editable}
           onConnect={value => { if (value.source && value.target) setConnection({ source: value.source, target: value.target }) }}
-          onReconnect={(edge, value) => { if (value.source && value.target) setConnection({ source: value.source,
+          onReconnect={(edge, value) => { if (value.source && value.target === edge.target) setConnection({ source: value.source,
             target: value.target, field: graph?.edges.find(item => item.id === edge.id)?.field }) }}
           onPaneClick={clearSelection} panOnScroll selectionMode={SelectionMode.Partial}
           selectionOnDrag={interactions.mode === 'cursor'} panOnDrag={interactions.mode === 'hand'}

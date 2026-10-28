@@ -315,6 +315,7 @@ export interface WorkflowBlockViewProps {
   errorOutputEnabled?: boolean
   showErrorOutput?: boolean
   connectionsEnabled?: boolean
+  sourceReconnectEnabled?: boolean
   /** Toggles the error output from the card's error row. */
   onToggleErrorOutput?: (enabled: boolean) => void
   /**
@@ -386,6 +387,7 @@ export function WorkflowBlockView({
   errorOutputEnabled = false,
   showErrorOutput = true,
   connectionsEnabled = true,
+  sourceReconnectEnabled = false,
   onToggleErrorOutput,
   highlightedHandles,
 }: WorkflowBlockViewProps) {
@@ -1070,7 +1072,7 @@ export function WorkflowBlockView({
             data-handleid={WORKFLOW_SOURCE_HANDLE_ID}
             isConnectable={connectionsEnabled}
             isConnectableStart={connectionsEnabled}
-            isConnectableEnd={false}
+            isConnectableEnd={connectionsEnabled && sourceReconnectEnabled}
             isValidConnection={(connection) => {
               if (connection.target === id) return false
               return !wouldCreateConnectionCycle(connection.source, connection.target)
