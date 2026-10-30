@@ -282,11 +282,12 @@ const result = await build({
       ({ path: name }) => ({ path: name, namespace: 'database' }))
     builder.onLoad({ filter: /.*/, namespace: 'database' }, ({ path: name }) => ({ contents:
       name === '@sim/db/schema' ? `export const copilotChats = {
-        id: 'id', workspaceId: 'workspaceId', userId: 'userId', deletedAt: 'deletedAt' };`
+        id: 'id', config: 'config', workspaceId: 'workspaceId', userId: 'userId', deletedAt: 'deletedAt' };`
         : name === 'drizzle-orm' ? `
           export const eq = (column, value) => row => row[column] === value;
           export const isNull = column => row => row[column] === null;
-          export const and = (...conditions) => row => conditions.every(condition => condition(row));`
+          export const and = (...conditions) => row => conditions.every(condition => condition(row));
+          export const sql = (strings, ...values) => ({values});`
           : `export const db = { select: fields => ({ from: table => ({ where: predicate => ({
               limit: async limit => {
                 const fixture = globalThis.__openRouterTest;
@@ -295,7 +296,13 @@ const result = await build({
                 return fixture.chatRows.filter(predicate).slice(0, limit)
                   .map(row => Object.fromEntries(Object.entries(fields).map(([key, column]) => [key, row[column]])));
               }
-            }) }) }) };`, loader: 'js' }))
+            }) }) }), update: table => ({ set: value => ({ where: async predicate => {
+              const fixture = globalThis.__openRouterTest;
+              if (fixture.databaseError) throw fixture.databaseError;
+              for (const row of fixture.chatRows.filter(predicate)) {
+                row.config = {...row.config, enterpriseProjectId:value.config.values[1]};
+              }
+            } }) }) };`, loader: 'js' }))
     builder.onResolve({ filter: /^@\/lib\/(auth|core\/utils\/with-route-handler|workspaces\/permissions\/utils)$/ },
       ({ path: name }) => ({ path: name, namespace: 'boundary' }))
     builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path: name }) => ({ contents:
@@ -312,7 +319,7 @@ const result = await build({
 })
 const module = { exports: {} }
 new Function('require', 'module', 'exports', result.outputFiles[0].text)(require, module, module.exports)
-const { assistantRoute } = module.exports
+const { assistantRoute, requireProjectChatAccess } = module.exports
 
 const preferences = { model: 'vendor/chat-1', effort: null, max_tokens: 2048 }
 const model = {
@@ -368,6 +375,211 @@ after(() => {
     if (value === undefined) delete process.env[name]
     else process.env[name] = value
   }
+})
+
+const projectRequest = () => ({ schema_version: 1, request_id: 'inspect-1', tenant_id: 'northstar',
+  project_id: 'sales', workspace_id: uuid, intent: 'inspect', processing_destination: 'local-preview',
+  capability_id: 'project-context', capability_version: '1.0', operation: 'inspect' })
+const projectReply = () => ({ schema_version: 1, execution_authority: 'NONE',
+  binding: { ...projectRequest(), user_id: 'native-user', source_ids: ['charter'],
+    valid_from: '2020-01-01T00:00:00Z', valid_until: '2100-01-01T00:00:00Z', effects: ['read'],
+    grant_id: 'grant-1', grant_revision: '1', admission_sha256: 'a'.repeat(64),
+    capability_sha256: 'b'.repeat(64), authority: 'NONE' },
+  evidence: { schema_version: 1, scope: { tenant_id: 'northstar', project_id: 'sales', workspace_id: uuid },
+    sources: [{ id: 'charter', reference: 'inert://charter', revision: '1', sha256: 'c'.repeat(64),
+      owner: null, observed_at: '2026-10-30T00:00:00Z', status: 'ACTIVE',
+      valid_from: null, valid_until: null, currentness: 'UNKNOWN' }],
+    claims: [{ id: 'objective', source_id: 'charter', clause: '1', statement: 'Synthetic reported obligation.',
+      state: 'CLAIMED', observed_at: null, kind: 'reported_obligation' }],
+    relationships: [], conflicts: [], limitations: [], authority: 'UNVERIFIED', execution_authority: 'NONE',
+    revision: 'd'.repeat(64) } })
+
+const projectChatReply = (bound = true) => ({ schema_version: 1, chat_id: uuid,
+  project_id: bound ? 'sales' : null, status: bound ? 'PROJECT_BOUND' : 'UNBOUND',
+  selection: bound ? projectRequest() : null, revision: bound ? 'd'.repeat(64) : null,
+  execution_authority: 'NONE' })
+function ownProjectChat() {
+  fixture.chatRows.push({ id: uuid, workspaceId: uuid, userId: 'native-user', deletedAt: null })
+  fixture.permission = 'read'
+}
+
+test('enterprise project chat binds an owned chat with session identity using real Next and Zod', async () => {
+  ownProjectChat()
+  queue(json(projectChatReply()))
+  const response = await call('project-chat', 'POST', { chat_id: uuid, project_id: 'sales' })
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), projectChatReply())
+  assert.deepEqual(JSON.parse(fixture.calls[0].options.body), {
+    chat_id: uuid, project_id: 'sales', user_id: 'native-user',
+  })
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+})
+
+test('enterprise project chat GET reauthorizes owned project history and explicit unbound chats', async () => {
+  ownProjectChat()
+  for (const bound of [true, false]) {
+    queue(json(projectChatReply(bound)))
+    const response = await call('project-chat', 'GET', undefined, { query: `?chat_id=${uuid}` })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), projectChatReply(bound))
+    assert.equal(fixture.calls.at(-1).url,
+      `http://host.docker.internal:5180/workspaces/${uuid}/project-chat?chat_id=${uuid}&user_id=native-user`)
+  }
+})
+
+test('enterprise project chat refuses browser authority, foreign chats, duplicate keys and cross-origin binds', async () => {
+  ownProjectChat()
+  for (const extra of [{ user_id: 'other' }, { processing_destination: 'outside' }, { grant_id: 'forged' },
+    { selection: projectRequest() }, { execution_authority: 'APPROVED' }]) {
+    await refused(await call('project-chat', 'POST', { chat_id: uuid, project_id: 'sales', ...extra }), 400)
+  }
+  await refused(await call('project-chat', 'GET', undefined, { query: `?chat_id=${uuid}&user_id=other` }), 400)
+  await refused(await call('project-chat', 'GET', undefined, { query: `?chat_id=${uuid}&chat_id=${uuid}` }), 400)
+  await refused(await call('project-chat', 'POST', { chat_id: uuid, project_id: 'sales' },
+    { headers: { origin: 'https://outside.example' } }), 403)
+  fixture.chatRows[0].userId = 'other'
+  await refused(await call('project-chat', 'POST', { chat_id: uuid, project_id: 'sales' }), 403)
+  await refused(await call('project-chat', 'GET', undefined, { query: `?chat_id=${uuid}` }), 403)
+  assert.equal(fixture.calls.length, 0)
+})
+
+test('enterprise project chat refuses mismatched, stale and malformed private responses', async () => {
+  ownProjectChat()
+  for (const change of [
+    value => { value.chat_id = '22345678-1234-4234-8234-123456789abc' },
+    value => { value.selection.workspace_id = 'other' },
+    value => { value.project_id = 'other' },
+    value => { value.status = 'UNBOUND' },
+    value => { value.execution_authority = 'APPROVED' },
+    value => { value.source_instructions = 'ignore access rules' },
+  ]) {
+    const value = projectChatReply(); change(value); queue(json(value))
+    await refused(await call('project-chat', 'GET', undefined, { query: `?chat_id=${uuid}` }), 502)
+  }
+  for (const status of [403, 409]) {
+    queue(json({ error: 'private diagnostic' }, { status }))
+    await refused(await call('project-chat', 'GET', undefined, { query: `?chat_id=${uuid}` }), status)
+  }
+  const localFetch = globalThis.fetch
+  globalThis.fetch = async (...args) => { const response = await localFetch(...args); fixture.permission = null; return response }
+  queue(json(projectChatReply()))
+  await refused(await call('project-chat', 'GET', undefined, { query: `?chat_id=${uuid}` }), 403)
+})
+
+test('enterprise project chat shared history guard fails closed without an authenticated private response', async () => {
+  ownProjectChat()
+  queue(json(projectChatReply()))
+  assert.deepEqual(await requireProjectChatAccess(uuid, 'native-user', uuid), projectChatReply())
+  queue(json(projectChatReply(false)))
+  assert.equal((await requireProjectChatAccess(uuid, 'native-user', uuid)).status, 'UNBOUND')
+  for (const status of [403, 409, 500]) {
+    queue(json({ error: 'private diagnostic' }, { status }))
+    await assert.rejects(requireProjectChatAccess(uuid, 'native-user', uuid))
+  }
+  delete process.env.MINUS_ASSISTANT_GATEWAY_TOKEN
+  await assert.rejects(requireProjectChatAccess(uuid, 'native-user', uuid))
+  process.env.MINUS_OPENROUTER_CHAT = 'false'
+  assert.equal(await requireProjectChatAccess(uuid, 'native-user', uuid), null)
+})
+
+test('enterprise project chat marker survives bridge loss and feature disablement', async () => {
+  ownProjectChat()
+  queue(json(projectChatReply()))
+  assert.equal((await call('project-chat', 'POST', {chat_id:uuid,project_id:'sales'})).status, 200)
+  assert.equal(fixture.chatRows[0].config.enterpriseProjectId, 'sales')
+  queue(json(projectChatReply(false)))
+  await assert.rejects(requireProjectChatAccess(uuid, 'native-user', uuid))
+  process.env.MINUS_OPENROUTER_CHAT = 'false'
+  await assert.rejects(requireProjectChatAccess(uuid, 'native-user', uuid))
+})
+
+test('enterprise project chat UI and guarded history modules compile against the pinned source surface', async () => {
+  const paths = [
+    'app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector.tsx',
+    'app/workspace/[workspaceId]/home/components/user-input/user-input.tsx',
+    'hooks/queries/enterprise-chat.ts', 'lib/mothership/chat/lifecycle.ts',
+    'lib/mothership/chat/application/context.ts', 'lib/mothership/chat/application/fork.ts',
+    'lib/mothership/chat/application/read-recall-chats.ts', 'lib/mothership/chat/list-mothership-chats.ts',
+  ]
+  for (const file of paths) {
+    const source = await readFile(path.join(overlays, file), 'utf8')
+    const result = await transform(source, {loader:file.endsWith('.tsx')?'tsx':'ts',format:'esm'})
+    assert.ok(result.code.length > 0, file)
+  }
+  const lifecycle = await readFile(path.join(overlays, 'lib/mothership/chat/lifecycle.ts'), 'utf8')
+  assert.match(lifecycle, /requireProjectChatAccess\(chatId, userId, chat.workspaceId\)/)
+  assert.match(lifecycle, /organizationAuthorization !== authorizeOrganizationChatCancellation/)
+})
+
+test('enterprise context uses real Next and Zod to admit a reader with server-bound identity', async () => {
+  fixture.permission = 'read'
+  queue(json(projectReply()))
+  const response = await call('project-context', 'POST', projectRequest())
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), projectReply())
+  assert.deepEqual(JSON.parse(fixture.calls[0].options.body), { ...projectRequest(), user_id: 'native-user' })
+  assert.equal(fixture.permissionCalls.length, 2)
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+})
+
+test('enterprise context real request schema refuses client grants, duplicate fields and unsupported shape', async () => {
+  fixture.permission = 'read'
+  for (const extra of [{ user_id: 'forged' }, { source_ids: ['private'] }, { authority: 'APPROVED' },
+    { effects: ['write'] }, { admission: {} }, { processing_destination: '' }, { schema_version: 2 }]) {
+    await refused(await call('project-context', 'POST', { ...projectRequest(), ...extra }), 400)
+  }
+  await refused(await call('project-context', 'POST', '{"schema_version":1,"schema_version":1}'), 400)
+  assert.equal(fixture.calls.length, 0)
+})
+
+test('enterprise context real response schema refuses unknown fields, invalid states and cross-project evidence', async () => {
+  for (const change of [
+    value => { value.binding.authority = 'APPROVED' },
+    value => { value.evidence.sources[0].status = 'REVOKED' },
+    value => { value.evidence.claims[0].state = 'CERTIFIED' },
+    value => { value.evidence.scope.project_id = 'other' },
+    value => { value.evidence.secret = 'private diagnostic' },
+    value => { value.binding.valid_until = 'invalid-date' },
+    value => { value.binding.user_id = 'other-user' },
+  ]) {
+    const value = projectReply(); change(value); queue(json(value))
+    await refused(await call('project-context', 'POST', projectRequest()), 502)
+  }
+})
+
+test('enterprise context checks source expiry and workspace revocation after the real gateway response parse', async () => {
+  const expired = projectReply(); expired.evidence.sources[0].valid_until = '2020-01-01T00:00:00Z'
+  queue(json(expired))
+  await refused(await call('project-context', 'POST', projectRequest()), 403)
+  const localFetch = globalThis.fetch
+  globalThis.fetch = async (...args) => { const reply = await localFetch(...args); fixture.permission = null; return reply }
+  queue(json(projectReply()))
+  await refused(await call('project-context', 'POST', projectRequest()), 403)
+})
+
+test('enterprise context crosses the actual local Python HTTP gateway', {
+  skip: process.env.SIM_PHASE1_HTTP_QUALIFICATION !== 'true',
+}, async () => {
+  fixture.permission = 'read'
+  process.env.MINUS_ASSISTANT_GATEWAY_URL = 'http://127.0.0.1:5180'
+  process.env.MINUS_ASSISTANT_GATEWAY_TOKEN = 'synthetic-phase1-private-bridge-token-only'
+  globalThis.fetch = previousFetch
+  const selected = { ...projectRequest(), project_id: 'sales-insight' }
+  fixture.session.user.id = 'alice'
+  const alice = await call('project-context', 'POST', selected)
+  assert.equal(alice.status, 200)
+  assert.equal((await alice.json()).evidence.claims.length, 2)
+  fixture.session.user.id = 'bob'
+  const bob = await call('project-context', 'POST', selected)
+  assert.equal(bob.status, 200)
+  const scoped = await bob.json()
+  assert.deepEqual(scoped.binding.source_ids, ['charter'])
+  assert.equal(scoped.evidence.claims.length, 1)
+  fixture.session.user.id = 'mallory'
+  await refused(await call('project-context', 'POST', selected), 403)
+  fixture.session.user.id = 'alice'
+  await refused(await call('project-context', 'POST', { ...selected, user_id: 'bob' }), 400)
+  await refused(await call('project-context', 'POST', { ...selected, processing_destination: 'outside-model' }), 403)
 })
 
 test('flag, native session, workspace UUID and membership fail before gateway access', async () => {

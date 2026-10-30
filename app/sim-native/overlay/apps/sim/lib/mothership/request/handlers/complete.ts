@@ -21,6 +21,8 @@ const LOCAL_COMPLETION_ERRORS = new Map<string, string>([
   ["provider_unavailable", "The provider is temporarily unavailable. Try again later."],
   ["timeout", "The assistant request exceeded its time limit."],
   ["architecture_changed", "Architecture changed. Refresh the canvas before sending."],
+  ["project_context_unavailable", "Project context is unavailable, changed or no longer admitted. Check access or start a new chat."],
+  ["project_answer_invalid", "The answer did not satisfy the project evidence requirements. No project answer was saved."],
   ["provider_protocol", "The assistant returned an unsupported event."],
   ["response_limit", "The assistant response exceeded its limit."],
   ["execution_unknown", "The previous execution was interrupted; its outcome is unknown."],

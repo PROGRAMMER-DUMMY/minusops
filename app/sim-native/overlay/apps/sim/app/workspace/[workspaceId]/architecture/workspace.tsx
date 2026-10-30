@@ -47,7 +47,8 @@ function ResourceBlock({ id, data, selected }: NodeProps<Resource>) {
     sourceReconnectEnabled={data.canConnect === true}
     inputDragEnabled={data.canConnect === true}
     rows={rows.map(row => <SubBlockRowView key={row.label} title={row.label} displayValue={row.value} />)}
-    actionBar={data.kind === 'module' ? <Chip onClick={data.toggle}>{data.collapsed ? 'Expand' : 'Collapse'}</Chip> : undefined} /></div>
+    actionBar={data.kind === 'module' ? <Chip className='nodrag nopan relative z-[40]' aria-expanded={!data.collapsed}
+      onClick={data.toggle}>{data.collapsed ? 'Expand' : 'Collapse'}</Chip> : undefined} /></div>
 }
 function ReferenceEdge(props: EdgeProps) {
   return <WorkflowEdgeView {...props} diffStatus={null} runStatus={undefined} isPreviewRun={false} />
