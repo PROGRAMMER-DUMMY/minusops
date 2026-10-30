@@ -50,10 +50,10 @@ jobs:
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
             --title 'Private native Sim build export' --notes 'Internal evaluation image. Keep this release a draft; do not publish.'
           release_id=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
-          test "$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id" --jq .draft)" = true
+          test "$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id" --jq .draft)" = true || { echo "Draft state check refused"; exit 1; }
           status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
             "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id")
-          test "$status" = 404
+          test "$status" = 404 || { echo "Anonymous release asset download probe refused: HTTP $status"; exit 1; } || { echo "Anonymous release asset API probe refused: HTTP $status"; exit 1; } || { echo "Anonymous release metadata probe refused: HTTP $status"; exit 1; }
           printf 'Non-sensitive private transport check.\n' > "$RUNNER_TEMP/transport-probe.txt"
           gh release upload "$tag" "$RUNNER_TEMP/transport-probe.txt" --repo "$GITHUB_REPOSITORY"
           asset_id=$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq '.[0].id')
