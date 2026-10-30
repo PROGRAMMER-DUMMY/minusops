@@ -3,7 +3,7 @@ import { requestJson } from '@/lib/api/client/request'
 import { bindProjectChatContract, projectChatContract, projectCatalogContract } from '@/lib/api/contracts/enterprise-chat'
 import { useOpenRouterChatStore } from '@/stores/openrouter-chat/store'
 import { projectSetupContract, updateProjectSetupContract, type ProjectSetupAction } from '@/lib/api/contracts/project-setup'
-import { listOAuthCredentialsContract } from '@/lib/api/contracts/credentials'
+import { listWorkspaceCredentialsContract } from '@/lib/api/contracts/credentials'
 
 export const projectChatKeys = {
   chat: (workspaceId: string, userId: string | undefined, chatId: string | undefined, model?: string | null) =>
@@ -70,7 +70,7 @@ export function useProjectSetup(workspaceId: string, userId?: string) {
 
 export function useProjectConnections(workspaceId: string, userId?: string, enabled = true) {
   return useQuery({queryKey: ['project-connections', workspaceId, userId], enabled: !!userId && enabled,
-    queryFn: ({signal}) => requestJson(listOAuthCredentialsContract,
-      {query: {provider: 'confluence', workspaceId}, signal}), staleTime: 0, retry: false,
+    queryFn: ({signal}) => requestJson(listWorkspaceCredentialsContract,
+      {query: {workspaceId}, signal}), staleTime: 0, retry: false,
   })
 }

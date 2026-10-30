@@ -42,7 +42,7 @@ function browserOrigin(request: NextRequest) {
   return url.origin
 }
 
-async function boundedBody(stream: ReadableStream<Uint8Array> | null, maximum: number) {
+export async function boundedBody(stream: ReadableStream<Uint8Array> | null, maximum: number) {
   if (!stream) return ''
   const reader = stream.getReader()
   const parts: Uint8Array[] = []
@@ -107,7 +107,7 @@ async function projectMarker(workspaceId: string, userId: string, chatId: string
   return config?.enterpriseProjectId
 }
 
-async function gateway(workspaceId: string, action: Action, method: Method, body?: unknown, query = '') {
+export async function gateway(workspaceId: string, action: Action, method: Method, body?: unknown, query = '') {
   const origin = process.env.MINUS_ASSISTANT_GATEWAY_URL ?? GATEWAY
   const token = process.env.MINUS_ASSISTANT_GATEWAY_TOKEN ?? ''
   if (![GATEWAY, LOCAL_GATEWAY].includes(origin) || !/^[!-~]{16,512}$/.test(token)) throw new Error('Assistant gateway unavailable')
@@ -153,10 +153,8 @@ function checkedProjectChat(value: unknown, workspaceId: string, chatId: string)
 }
 
 async function usableProjectConnection(id: string, workspaceId: string, userId: string) {
-  const { getCredentialActorContext, canUseCredential } = await import('@/lib/credentials/access')
-  const access = await getCredentialActorContext(id, userId)
-  return access.credential?.workspaceId === workspaceId && access.credential.providerId === 'confluence'
-    && access.credential.type === 'oauth' && !!access.credential.accountId && canUseCredential(access)
+  const { projectConnection } = await import('@/lib/openrouter-chat/project-connection')
+  return !!await projectConnection(id, workspaceId, userId)
 }
 
 /** Recheck current source and grant revisions before exposing any local Chat transcript. */
@@ -266,6 +264,12 @@ export function assistantRoute(action: Action, method: Method) {
       }
       if (action === 'project-setup' && method === 'POST') {
         const setup = projectSetupActionSchema.parse(body)
+        if (setup.operation === 'save' && setup.chat_model) {
+          const preferences = await gateway(workspaceId, 'preferences', 'GET')
+          if (!preferences.ok || openRouterPreferencesSchema.parse(preferences.value).model !== setup.chat_model) {
+            return refused(409, 'model_changed')
+          }
+        }
         if (setup.operation === 'save' && setup.credential_id
             && !await usableProjectConnection(setup.credential_id, workspaceId, session.user.id)) {
           return refused(403, 'connection_unavailable')

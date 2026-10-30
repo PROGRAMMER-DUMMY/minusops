@@ -17,6 +17,11 @@
       "upstream_sha256": "ebf6a67006a2e7875928b3ab1904b19059c2ea095793d48a71ff394e920c48bd"
     },
     {
+      "path": "apps/sim/app/api/internal/minusops/project-sources/route.ts",
+      "sha256": "8a2c2730200bfaec65f5751b8fa5397e574403c84be1e1326d8e036c79cb2942",
+      "upstream_sha256": null
+    },
+    {
       "path": "apps/sim/app/api/workspaces/[id]/assistant/architecture/route.ts",
       "sha256": "de98aec523868819e524bf55b618167efc65db4342f70cb6689259eec780435d",
       "upstream_sha256": null
@@ -178,7 +183,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/projects/projects.tsx",
-      "sha256": "3bf8852270ebd84b67a7b878f5a24927ed8b63c7d1a22c96bbff1fc81cd21cf1",
+      "sha256": "d4521334beb6a8a85332529b6b002474b584c21f978f1e4a8d2d631bdec1516f",
       "upstream_sha256": null
     },
     {
@@ -218,7 +223,7 @@
     },
     {
       "path": "apps/sim/hooks/queries/enterprise-chat.ts",
-      "sha256": "7da3742d11a35f6b6408e16d683ec1a59dfa1daf448742735daf8f9a8cee8ff6",
+      "sha256": "4b53a8e7bce054273d331883710c08961127c1c47570cf0f8df7be8708a186ee",
       "upstream_sha256": null
     },
     {
@@ -253,7 +258,7 @@
     },
     {
       "path": "apps/sim/lib/api/contracts/project-setup.ts",
-      "sha256": "8df510c2080797a2788f303a7f404753c5f7e2bc127c5fc2e237b925ba62a8f6",
+      "sha256": "19adde52d20b21126506f8c5460925244964b9f73a3db0cffadc3d14b95068ec",
       "upstream_sha256": null
     },
     {
@@ -287,8 +292,23 @@
       "upstream_sha256": "7eddb65b3cc8e17cb7e56a4c9d1248649950222659f35ce82cc456a9ae5362f6"
     },
     {
+      "path": "apps/sim/lib/openrouter-chat/project-connection.ts",
+      "sha256": "3ed4efa9bb8f7cac22f58a99e9ba7a4f75ec7588441a7be745e4b68361a53566",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/lib/openrouter-chat/project-integrations.ts",
+      "sha256": "87efceca7d275bb070e0e7412ecbc6515046f8204c11702c5773e93bd49e124c",
+      "upstream_sha256": null
+    },
+    {
       "path": "apps/sim/lib/openrouter-chat/server.ts",
-      "sha256": "6cea6f1f69a4c081e2b930eeecce598455a07fd63e2a50dd026ffb489b890b54",
+      "sha256": "849f0f7b0deb0832b987b2871563e10669fe9578bb7290c2fbf89b051b3a5591",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/lib/project-integrations.ts",
+      "sha256": "e8791fe4fb44b9f45b131e08d0054cfb62271ccf178cbe7abed00ee586db6f7f",
       "upstream_sha256": null
     },
     {

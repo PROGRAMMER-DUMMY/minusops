@@ -9,6 +9,9 @@ import { useFeatureFlag } from '@/app/workspace/[workspaceId]/providers/feature-
 import { useUserPermissionsContext } from '@/app/workspace/[workspaceId]/providers/workspace-permissions-provider'
 import { useProjectCatalog, useProjectConnections, useProjectSetup } from '@/hooks/queries/enterprise-chat'
 import type { ProjectSetup, ProjectSetupAction } from '@/lib/api/contracts/project-setup'
+import { projectReaderForCredential } from '@/lib/project-integrations'
+import { useOpenRouterChatStore } from '@/stores/openrouter-chat/store'
+import { useOpenRouterChat } from '@/hooks/queries/openrouter-chat'
 
 const fieldClass = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-primary)]'
 const labels: Record<string, string> = {CONNECTION_REQUIRED: 'Connection required',
@@ -23,13 +26,15 @@ function ProjectForm({workspaceId, userId, project, mode, canAdmin, onSaved}: {
   const [description, setDescription] = useState(project?.description ?? '')
   const [urls, setUrls] = useState(project?.source_urls.join('\n') ?? '')
   const [credentialId, setCredentialId] = useState<string | null>(project?.credential_id ?? null)
+  const model = useOpenRouterChatStore(state => state.workspaces[workspaceId]?.preferences.model)
+  const [chatModel, setChatModel] = useState<string | null>(project?.chat_model ?? null)
   const [error, setError] = useState('')
   const pending = useRef<{payload: string; id: string} | null>(null)
   const {update} = useProjectSetup(workspaceId, userId)
   const connections = useProjectConnections(workspaceId, userId, canAdmin)
-  const accounts = !connections.isError && !connections.isFetching
-    ? connections.data?.credentials.filter(value => value.provider === 'confluence'
-      && (value.type === undefined || value.type === 'oauth')) ?? [] : []
+  const data = connections.data
+  const accounts = !connections.isError && !connections.isFetching && data && 'credentials' in data
+    ? data.credentials : []
   const selected = accounts.find(account => account.id === credentialId)
   const disabled = !canAdmin || update.isPending
 
@@ -55,7 +60,8 @@ function ProjectForm({workspaceId, userId, project, mode, canAdmin, onSaved}: {
     const values = {name: name.trim(), description: description.trim(), source_urls: sources}
     let body: ProjectSetupAction
     if (project) body = {operation: 'save', ...values, project_id: project.project_id,
-      revision: project.revision, credential_id: credentialId}
+      revision: project.revision, credential_id: credentialId,
+      chat_model: chatModel === model && credentialId && sources.length && model ? model : null}
     else {
       const payload = JSON.stringify({mode, ...values})
       const request = pending.current?.payload === payload ? pending.current : {payload, id: crypto.randomUUID()}
@@ -83,24 +89,27 @@ function ProjectForm({workspaceId, userId, project, mode, canAdmin, onSaved}: {
         placeholder='What should your team understand about this project?' />
     </div>
     {project && <div className='flex flex-col items-start gap-2'>
-      <span className='text-sm' id={`${fieldId}-account`}>Confluence account</span>
+      <span className='text-sm' id={`${fieldId}-account`}>Integration account</span>
       <DropdownMenu onOpenChange={open => {if (open) void connections.refetch()}}>
         <DropdownMenuTrigger asChild>
           <Button type='button' variant='default' disabled={disabled} aria-labelledby={`${fieldId}-account`}>
-            {connections.isFetching ? 'Checking accounts...' : selected?.name
+            {connections.isFetching ? 'Checking accounts...' : selected?.displayName
               ?? (credentialId ? 'Account unavailable' : 'Connect later')}
             <ChevronDown className='ml-2 size-3' aria-hidden='true' />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align='start'>
           <DropdownMenuItem onSelect={() => setCredentialId(null)}>Connect later</DropdownMenuItem>
-          {accounts.map(account => <DropdownMenuItem key={account.id}
-            onSelect={() => setCredentialId(account.id)}>{account.name}</DropdownMenuItem>)}
+          {accounts.map(account => <DropdownMenuItem key={account.id} disabled={!projectReaderForCredential(account)}
+            onSelect={() => setCredentialId(account.id)}>{account.displayName}
+            {!projectReaderForCredential(account) && <span className='ml-2 text-xs'>Project reader unavailable</span>}
+          </DropdownMenuItem>)}
         </DropdownMenuContent>
       </DropdownMenu>
       {connections.isError && <p role='status' className='text-sm text-[var(--text-muted)]'>Connected accounts could not be checked.</p>}
       {!connections.isFetching && !accounts.length && !connections.isError
-        && <p className='text-sm text-[var(--text-muted)]'>No Confluence accounts are connected yet.</p>}
+        && <p className='text-sm text-[var(--text-muted)]'>No integration accounts are connected yet.</p>}
+      <p className='text-sm text-[var(--text-muted)]'>Uses your existing Integrations accounts. Project reading currently supports Confluence pages.</p>
       <Link className='text-sm underline' href={`/workspace/${workspaceId}/integrations/confluence`}>Connect Confluence</Link>
     </div>}
     <div className='flex flex-col gap-2'>
@@ -110,6 +119,14 @@ function ProjectForm({workspaceId, userId, project, mode, canAdmin, onSaved}: {
         required={!project && mode === 'import'} placeholder='Paste one page link per line' />
       <p className='text-sm text-[var(--text-muted)]'>Links are saved for setup. Document contents are read only after the account and source access are configured.</p>
     </div>
+    {project && <div className='flex flex-col gap-2'>
+      <label className='flex items-start gap-2 text-sm' htmlFor={`${fieldId}-allow-chat`}>
+        <input type='checkbox' id={`${fieldId}-allow-chat`} className='mt-1' checked={!!model && chatModel === model}
+          onChange={event => setChatModel(event.target.checked ? model ?? null : null)} disabled={disabled || !model || !credentialId} />
+        <span>Allow my project chat to read these pages and send their contents to {model ?? 'the selected model'}.</span>
+      </label>
+      <p className='text-sm text-[var(--text-muted)]'>This project is private to its creator. Shared credentials use their own source permissions. Changing the model requires saving consent again.</p>
+    </div>}
     {error && <p role='alert' className='text-sm text-[var(--text-error)]'>{error}</p>}
     {!canAdmin && <p role='status' className='text-sm'>A workspace administrator can create and configure projects.</p>}
     <div><Button type='submit' variant='primary' disabled={disabled || !name.trim()}>
@@ -119,6 +136,7 @@ function ProjectForm({workspaceId, userId, project, mode, canAdmin, onSaved}: {
 }
 
 function Projects({workspaceId, selectedProjectId}: {workspaceId: string; selectedProjectId?: string}) {
+  useOpenRouterChat(workspaceId)
   const {data: session} = useSession()
   const userId = session?.user?.id
   const {canAdmin} = useUserPermissionsContext()

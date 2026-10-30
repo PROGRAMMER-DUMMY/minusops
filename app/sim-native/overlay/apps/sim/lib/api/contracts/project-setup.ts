@@ -11,12 +11,14 @@ const fields = {
 const create = z.object({ operation: z.enum(['create', 'import']), ...fields, request_id: z.uuid() }).strict()
   .refine(value => value.operation !== 'import' || value.source_urls.length > 0)
 const save = z.object({ operation: z.literal('save'), ...fields, project_id: z.uuid(),
-  revision: z.number().int().positive(), credential_id: actor.nullable() }).strict()
+  revision: z.number().int().positive(), credential_id: actor.nullable(),
+  chat_model: z.string().min(1).max(200).nullable().optional() }).strict()
 export const projectSetupActionSchema = z.union([create, save])
 export type ProjectSetupAction = z.input<typeof projectSetupActionSchema>
 
 export const projectSetupSchema = z.object({ project_id: z.uuid(), ...fields,
   credential_id: actor.nullable(), revision: z.number().int().positive(),
+  chat_model: z.string().min(1).max(200).nullable().optional(),
   created_at: z.iso.datetime({offset: true}), updated_at: z.iso.datetime({offset: true}),
 }).strict()
 export type ProjectSetup = z.output<typeof projectSetupSchema>

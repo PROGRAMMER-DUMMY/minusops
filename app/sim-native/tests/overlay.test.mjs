@@ -306,8 +306,12 @@ const result = await build({
     builder.onResolve({ filter: /^@\/lib\/(auth|core\/utils\/with-route-handler|workspaces\/permissions\/utils)$/ },
       ({ path: name }) => ({ path: name, namespace: 'boundary' }))
     builder.onResolve({filter: /^@\/lib\/credentials\/access$/}, () => ({path:'credential-access', namespace:'boundary'}))
+    builder.onResolve({filter: /^@\/lib\/oauth\/utils$/}, () => ({path:'provider-registry', namespace:'boundary'}))
     builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path: name }) => ({ contents:
-      name === 'marker' ? '' : name === 'credential-access'
+      name === 'marker' ? '' : name === 'provider-registry'
+        ? `export const getServiceConfigByServiceId = id => ({providerId:id,serviceAccountProviderId:'atlassian-service-account'});
+           export const credentialProviderMatchesService = (id,service) => id===service.providerId || id===service.serviceAccountProviderId;`
+        : name === 'credential-access'
         ? `export const getCredentialActorContext=async(id,user)=>{
             const state=globalThis.__openRouterTest;state.credentialCalls.push([id,user]);
             return state.credentialAccess;
@@ -627,7 +631,7 @@ test('enterprise project chat setup queries never cache another intended browser
           : name.endsWith('/store') ? 'export const useOpenRouterChatStore=select=>select({workspaces:{}});'
           : name.endsWith('/enterprise-chat') ? 'export const projectChatContract="chat",bindProjectChatContract="bind",projectCatalogContract="catalog";'
           : name.endsWith('/project-setup') ? 'export const projectSetupContract="setup",updateProjectSetupContract="update";'
-          : name.endsWith('/credentials') ? 'export const listOAuthCredentialsContract="credentials";' : null
+          : name.endsWith('/credentials') ? 'export const listWorkspaceCredentialsContract="credentials";' : null
         assert.notEqual(contents,null,name);return {contents,loader:'js'}
       })
     }}]})
@@ -1335,4 +1339,100 @@ test('native self-hosted BYOK navigation needs only the local flag, never enterp
   assert.equal(api.isSelfHostedOverrideEnabled('openrouter-chat', deployment, true), true)
   assert.equal(api.isSelfHostedOverrideEnabled('openrouter-chat', deployment, false), false)
   assert.equal(api.resolveWorkspaceNavigation({ ...options, openRouterChat: true }).some((item) => item.id === 'forks'), false)
+})
+
+const readerBuild = await build({entryPoints:[path.join(overlays,'lib/openrouter-chat/project-integrations.ts')],
+  bundle:true,write:false,platform:'node',format:'cjs',packages:'external',plugins:[{name:'native-reader-boundaries',setup(builder){
+    const boundaries = new Set(['@/lib/credentials/access','@/lib/oauth/utils','@/lib/oauth/credential-service',
+      '@/lib/oauth/token-resolution','@/lib/workspaces/permissions/utils','@/lib/openrouter-chat/server','@/tools/confluence/utils','server-only'])
+    builder.onResolve({filter:/.*/},({path:name})=>boundaries.has(name)?{path:name,namespace:'reader-boundary'}:undefined)
+    builder.onLoad({filter:/.*/,namespace:'reader-boundary'},({path:name})=>{
+      const state='globalThis.__projectReaderTest'
+      const contents=name==='server-only'?'':name.endsWith('/credentials/access')
+        ? `export const getCredentialActorContext=async(id,user)=>({credential:id===${state}.credential.id&&user===${state}.user?${state}.credential:null,allowed:!${state}.revoked});export const canUseCredential=value=>value.allowed;
+           export const resolveCredentialTokenIdentity=async()=>({kind:'oauth',userId:${state}.user});`
+        :name.endsWith('/oauth/utils')
+        ? `export const getServiceConfigByServiceId=id=>({providerId:id,serviceAccountProviderId:'atlassian-service-account'});export const credentialProviderMatchesService=(id,s)=>id===s.providerId||id===s.serviceAccountProviderId;`
+        :name.endsWith('/credential-service')
+        ? `export const resolveServiceAccountToken=async()=>{${state}.tokenReads++;return {accessToken:'synthetic-service-token',domain:${state}.domain,cloudId:'site-123'}};
+           export const resolveOAuthAccountId=async()=>({accountId:'account-1',workspaceId:${state}.workspace});
+           export const getCredential=async()=>({providerId:'confluence'});`
+        :name.endsWith('/token-resolution')
+        ? `export const recordCredentialAccess=()=>{${state}.audits++};export const completeOAuthCredentialToken=async()=>({ok:true,token:{accessToken:'synthetic-oauth-token'}});`
+        :name.endsWith('/permissions/utils')
+        ? `export const getUserEntityPermissions=async(user,_,workspace)=>user===${state}.user&&workspace===${state}.workspace&&!${state}.workspaceRevoked?'admin':null;`
+        :name.endsWith('/openrouter-chat/server')
+        ? `export const gateway=async(workspace,action,method,body,query)=>{if(action!=='project-setup'||method!=='GET')throw Error('Unexpected gateway action');return {ok:true,value:{schema_version:1,workspace_id:workspace,user_id:new URLSearchParams(query.slice(1)).get('user_id'),projects:[${state}.project],updated_project_id:null,execution_authority:'NONE'}}};
+           export const boundedBody=async(stream,max)=>{const text=await new Response(stream).text();if(Buffer.byteLength(text)>max)throw Error('Bounded');return text};`
+        :name.endsWith('/confluence/utils')
+        ? `export const getConfluenceCloudId=async()=> 'site-123';export const transformPageData=data=>({success:true,output:{ts:new Date().toISOString(),pageId:data.id,title:data.title,content:data.body.storage.value,status:data.status,version:data.version,body:data.body}});`:null
+      assert.notEqual(contents,null,name);return {contents,loader:'js'}
+    })
+    builder.onResolve({filter:/^@\//},({path:name})=>({path:path.join(name==='@/lib/api/contracts/types'?original:overlays,`${name.slice(2)}.ts`)}))
+  }}]})
+const readerModule={exports:{}}
+new Function('require','module','exports',readerBuild.outputFiles[0].text)(require,readerModule,readerModule.exports)
+async function nativeReader(check) {
+  const priorFetch=globalThis.fetch
+  const state={workspace:uuid,user:'native-user',revoked:false,workspaceRevoked:false,tokenReads:0,audits:0,calls:[],domain:'tenant.atlassian.net',
+    credential:{id:'connection-a',workspaceId:uuid,providerId:'atlassian-service-account',type:'service_account',accountId:null,updatedAt:'2026-10-30'},
+    project:setupProject({credential_id:'connection-a',source_urls:['https://tenant.atlassian.net/wiki/pages/101'],chat_model:'vendor/chat-1'}),
+    raw:{id:'101',title:'Project charter',status:'current',body:{storage:{value:'Documented daily sales pipeline'}},version:{number:2}},afterRead:null}
+  globalThis.__projectReaderTest=state
+  globalThis.fetch=async(url,options)=>{state.calls.push({url,options});if(state.afterRead)state.afterRead();return json(state.raw)}
+  const input={workspace_id:uuid,user_id:state.user,project_id:uuid,revision:1,model:'vendor/chat-1',operation:'read'}
+  async function callReader(change={},headers={}){
+    return readerModule.exports.projectSourcesRoute(new NextRequest(`${origin}/api/internal/minusops/project-sources`,{
+      method:'POST',headers:{'content-type':'application/json','X-Minus-Bridge-Token':token,...headers},body:JSON.stringify({...input,...change})}))
+  }
+  try {await check(state,callReader)}finally{globalThis.fetch=priorFetch;delete globalThis.__projectReaderTest}
+}
+
+test('enterprise project chat native reader reuses service credential and only reads selected pages',async()=>nativeReader(async(state,callReader)=>{
+  const inspect=await callReader({operation:'inspect'});assert.equal(inspect.status,200);assert.equal(state.tokenReads,0)
+  const response=await callReader();assert.equal(response.status,200)
+  const text=await response.text();assert.doesNotMatch(text,/synthetic-service-token/)
+  const reply=JSON.parse(text);assert.equal(reply.documents[0].observation.result.output.content,state.raw.body.storage.value)
+  assert.equal(reply.execution_authority,'NONE');assert.equal(state.audits,1)
+  assert.equal(state.calls.length,1);assert.equal(state.calls[0].url,'https://api.atlassian.com/ex/confluence/site-123/wiki/api/v2/pages/101?body-format=storage')
+  assert.equal(state.calls[0].options.method,'GET');assert.equal(state.calls[0].options.redirect,'error')
+  assert.equal(response.headers.get('cache-control'),'no-store')
+}))
+
+test('enterprise project chat native reader refuses browser requests and forged operation scope',async()=>nativeReader(async(state,callReader)=>{
+  for(const [change,headers] of [[{}, {'X-Minus-Bridge-Token':'wrong'}],[{}, {origin}], [{tool_id:'confluence_delete_page'},{}],
+    [{operation:'write'},{}],[{user_id:'other-user'},{}],[{workspace_id:'22345678-1234-4234-8234-123456789abc'},{}],
+    [{model:'unapproved/model'},{}],[{revision:2},{}]]){
+    const response=await callReader(change,headers);assert.equal(response.status,403);assert.doesNotMatch(await response.text(),/Project charter|Documented daily/)
+  }
+  assert.equal(state.tokenReads,0);assert.equal(state.calls.length,0)
+}))
+
+test('enterprise project chat native reader withholds revoked or cross-site credential results',async()=>nativeReader(async(state,callReader)=>{
+  state.domain='other.atlassian.net';assert.equal((await callReader()).status,403);assert.equal(state.calls.length,0)
+  state.domain='tenant.atlassian.net';state.afterRead=()=>{state.revoked=true}
+  const response=await callReader();assert.equal(response.status,403);assert.doesNotMatch(await response.text(),/Documented daily/)
+  state.revoked=false;state.afterRead=()=>{state.project.revision++}
+  assert.equal((await callReader()).status,403)
+}))
+
+test('enterprise project chat native reader rejects unsupported credentials unsafe URLs and oversized pages',async()=>nativeReader(async(state,callReader)=>{
+  state.credential.providerId='other-provider';assert.equal((await callReader()).status,403);assert.equal(state.tokenReads,0)
+  state.credential.providerId='atlassian-service-account'
+  for(const url of ['https://localhost/wiki/pages/101','https://tenant.atlassian.net/wiki/pages/101?token=secret','https://tenant.atlassian.net/wiki/pages/101/../../other']){
+    state.project.source_urls=[url];assert.equal((await callReader()).status,403)
+  }
+  assert.equal(state.calls.length,0)
+  state.project.source_urls=['https://tenant.atlassian.net/wiki/pages/101'];state.raw.body.storage.value='x'.repeat(132000)
+  assert.equal((await callReader()).status,403)
+}))
+
+test('enterprise project chat setup accepts native service accounts and pins explicit model consent',async()=>{
+  fixture.credentialAccess={allowed:true,credential:{workspaceId:uuid,providerId:'atlassian-service-account',type:'service_account',accountId:null}}
+  const body={operation:'save',project_id:uuid,revision:1,name:'Client project',description:'',source_urls:['https://tenant.atlassian.net/wiki/pages/101'],credential_id:'connection-a',chat_model:'vendor/chat-1'}
+  queue(json(preferences),json(setupReply({projects:[setupProject({credential_id:'connection-a',chat_model:'vendor/chat-1'})],updated_project_id:uuid})))
+  assert.equal((await call('project-setup','POST',body)).status,200)
+  assert.equal(JSON.parse(fixture.calls.at(-1).options.body).setup.chat_model,'vendor/chat-1')
+  queue(json({...preferences,model:'different/model'}))
+  await refused(await call('project-setup','POST',body),409)
 })

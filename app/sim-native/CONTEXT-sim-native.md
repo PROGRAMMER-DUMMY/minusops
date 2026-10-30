@@ -296,3 +296,21 @@ for qualified plan instances/actions and declared delivery/Helm/Argo sources. Cl
 contain references only; the host resolves private copy-time commands. Pending Chat bindings
 now carry exact draft identity, validated against the trusted session actor. These source changes
 still require the qualified native type-check/build and installed-browser acceptance.
+
+The project account picker now reuses the native workspace credential list,
+including ordinary OAuth and service accounts.
+[project-integrations.ts](./overlay/apps/sim/lib/project-integrations.ts) maps native
+provider families to tested project readers; other connected providers are disabled
+with an explicit unavailable-reader message.
+[project-connection.ts](./overlay/apps/sim/lib/openrouter-chat/project-connection.ts)
+reuses credential membership/workspace checks.
+[project-integrations.ts](./overlay/apps/sim/lib/openrouter-chat/project-integrations.ts)
+serves the private
+[project-sources route](./overlay/apps/sim/app/api/internal/minusops/project-sources/route.ts):
+fixed read-only operations on saved references, creator/model consent, provider
+token resolution/audit and pre/post access checks. Credential values stay native.
+The callback requires the fixed bridge secret, denies browser Origin and rejects
+unknown fields, unsupported readers, arbitrary hosts, redirects and oversized data.
+Project registration alone grants no source or infrastructure rights. Shared-account
+reads use that account's remote ACLs plus creator/credential access locally; they
+do not impersonate each viewer at the source. Live identity acceptance is separate.
