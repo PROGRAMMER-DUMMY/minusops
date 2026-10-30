@@ -13,14 +13,14 @@ import { withRouteHandler } from '@/lib/core/utils/with-route-handler'
 import { getUserEntityPermissions } from '@/lib/workspaces/permissions/utils'
 import { architectureActionSchema, architectureReplySchema, architectureQuerySchema } from '@/lib/api/contracts/minusops-architecture'
 import { enterpriseContextRequestSchema, enterpriseContextReplySchema } from '@/lib/api/contracts/enterprise-context'
-import { projectChatQuerySchema, projectChatRequestSchema, projectChatReplySchema } from '@/lib/api/contracts/enterprise-chat'
+import { projectChatQuerySchema, projectChatRequestSchema, projectChatReplySchema, projectCatalogReplySchema } from '@/lib/api/contracts/enterprise-chat'
 
 const GATEWAY = 'http://host.docker.internal:5180'
 const LOCAL_GATEWAY = 'http://127.0.0.1:5180'
 const MAX_BODY = 16384
 const MAX_RESPONSE = 4194304
 const HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
-type Action = 'status' | 'key' | 'models' | 'preferences' | 'architecture' | 'project-context' | 'project-chat'
+type Action = 'status' | 'key' | 'models' | 'preferences' | 'architecture' | 'project-context' | 'project-chat' | 'projects'
 type Method = 'GET' | 'POST' | 'DELETE'
 interface RouteContext { params: Promise<{ id: string }> }
 class BodyLimit extends Error {}
@@ -135,7 +135,8 @@ async function gateway(workspaceId: string, action: Action, method: Method, body
     : action === 'models' ? openRouterModelsSchema
       : action === 'architecture' ? architectureReplySchema
         : action === 'project-context' ? enterpriseContextReplySchema
-          : action === 'project-chat' ? projectChatReplySchema : openRouterPreferencesSchema
+          : action === 'project-chat' ? projectChatReplySchema
+            : action === 'projects' ? projectCatalogReplySchema : openRouterPreferencesSchema
   const value = schema.parse(strictJson(raw))
   if (JSON.stringify(value).includes(token)) throw new Error('Assistant response refused')
   return { ok: true as const, value }
@@ -195,6 +196,9 @@ export function assistantRoute(action: Action, method: Method) {
         const parsed = architectureQuerySchema.safeParse(Object.fromEntries(entries))
         if (!parsed.success) return refused(400, 'invalid_request')
         query = '?' + new URLSearchParams({ ...(parsed.data.run_id ? { run_id: parsed.data.run_id } : {}), user_id: session.user.id })
+      } else if (method === 'GET' && action === 'projects') {
+        if (entries.length) return refused(400, 'invalid_request')
+        query = '?' + new URLSearchParams({user_id: session.user.id})
       } else if (method === 'GET' && action === 'project-chat') {
         const parsed = projectChatQuerySchema.safeParse(Object.fromEntries(entries))
         if (!parsed.success) return refused(400, 'invalid_request')
@@ -286,6 +290,14 @@ export function assistantRoute(action: Action, method: Method) {
       }
       const reply = await gateway(workspaceId, action, method, body, query)
       if (!reply.ok) return refused(reply.status, 'assistant_refused')
+      if (action === 'projects') {
+        const value = projectCatalogReplySchema.parse(reply.value)
+        if (value.workspace_id !== workspaceId || value.user_id !== session.user.id) return refused(502, 'context_mismatch')
+        const current = await getSession()
+        if (current?.user?.id !== session.user.id
+            || !await getUserEntityPermissions(session.user.id, 'workspace', workspaceId)) return refused(403, 'forbidden')
+        return NextResponse.json(value, {headers: HEADERS})
+      }
       if (action === 'project-chat') {
         const chatId = method === 'GET' ? url.searchParams.get('chat_id')!
           : (body as { chat_id: string }).chat_id

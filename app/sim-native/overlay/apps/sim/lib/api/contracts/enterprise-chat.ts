@@ -31,3 +31,20 @@ export const bindProjectChatContract = defineRouteContract({
   body: projectChatRequestSchema,
   response: { mode: 'json', schema: projectChatReplySchema },
 })
+
+export const projectCatalogReplySchema = z.object({
+  schema_version: z.literal(1), workspace_id: z.uuid(),
+  user_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/),
+  status: z.enum(['AVAILABLE', 'UNAVAILABLE']),
+  projects: z.array(z.object({
+    project_id: enterpriseContextRequestSchema.shape.project_id,
+    name: z.string().trim().min(1).max(160),
+  }).strict()).max(64),
+  execution_authority: z.literal('NONE'),
+}).strict().refine(value => new Set(value.projects.map(item => item.project_id)).size === value.projects.length
+  && (value.status !== 'UNAVAILABLE' || value.projects.length === 0))
+
+export const projectCatalogContract = defineRouteContract({
+  method: 'GET', path: '/api/workspaces/[id]/assistant/projects', params: openRouterScopeSchema,
+  query: z.object({}).strict(), response: {mode: 'json', schema: projectCatalogReplySchema},
+})

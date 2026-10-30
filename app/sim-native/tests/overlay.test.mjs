@@ -498,6 +498,7 @@ test('enterprise project chat UI and guarded history modules compile against the
     'app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector.tsx',
     'app/workspace/[workspaceId]/home/components/user-input/user-input.tsx',
     'hooks/queries/enterprise-chat.ts', 'lib/mothership/chat/lifecycle.ts',
+    'app/workspace/[workspaceId]/home/home.tsx',
     'lib/mothership/chat/application/context.ts', 'lib/mothership/chat/application/fork.ts',
     'lib/mothership/chat/application/read-recall-chats.ts', 'lib/mothership/chat/list-mothership-chats.ts',
   ]
@@ -509,6 +510,38 @@ test('enterprise project chat UI and guarded history modules compile against the
   const lifecycle = await readFile(path.join(overlays, 'lib/mothership/chat/lifecycle.ts'), 'utf8')
   assert.match(lifecycle, /requireProjectChatAccess\(chatId, userId, chat.workspaceId\)/)
   assert.match(lifecycle, /organizationAuthorization !== authorizeOrganizationChatCancellation/)
+  const composer = await readFile(path.join(overlays, 'app/workspace/[workspaceId]/home/components/user-input/user-input.tsx'), 'utf8')
+  assert.doesNotMatch(composer, /ProjectChatSelector/)
+  const selector = await readFile(path.join(overlays, 'app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector.tsx'), 'utf8')
+  assert.match(selector, /<header /)
+  assert.match(selector, /Choose project/)
+  assert.doesNotMatch(selector, /<Input|Project ID/)
+})
+
+const catalogReply = () => ({schema_version:1,workspace_id:uuid,user_id:'native-user',status:'AVAILABLE',
+  projects:[{project_id:'sales',name:'Northstar Sales Insight'}],execution_authority:'NONE'})
+
+test('enterprise project chat catalog derives reader identity and returns current admitted names', async () => {
+  fixture.permission = 'read'
+  queue(json(catalogReply()))
+  const response = await call('projects', 'GET')
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), catalogReply())
+  assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/projects?user_id=native-user`)
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+})
+
+test('enterprise project chat catalog refuses forged scope, malformed names and revoked sessions', async () => {
+  await refused(await call('projects', 'GET', undefined, {query:'?user_id=other'}), 400)
+  for (const change of [value=>value.user_id='other',value=>value.workspace_id='22345678-1234-4234-8234-123456789abc',
+    value=>value.projects.push(value.projects[0]),value=>value.status='UNAVAILABLE']) {
+    const value=catalogReply();change(value);queue(json(value))
+    await refused(await call('projects','GET'),502)
+  }
+  const fetch = globalThis.fetch
+  globalThis.fetch = async (...args) => {const response=await fetch(...args);fixture.permission=null;return response}
+  queue(json(catalogReply()))
+  await refused(await call('projects','GET'),403)
 })
 
 test('enterprise context uses real Next and Zod to admit a reader with server-bound identity', async () => {

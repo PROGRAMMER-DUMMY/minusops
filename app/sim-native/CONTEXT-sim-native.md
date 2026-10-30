@@ -1,15 +1,36 @@
 # Native Sim overlay context
 
+Phase 2 adds `lib/api/contracts/enterprise-chat.ts`, the native
+`app/api/workspaces/[id]/assistant/project-chat/route.ts`,
+`hooks/queries/enterprise-chat.ts` and `project-chat-selector.tsx`, mounted in the
+Main Chat header by `home/home.tsx`. The shared message composer has no project
+field. The native `assistant/projects/route.ts` lists permitted names for the
+session actor; caches include workspace, user and model. Selecting another project
+creates a new Chat. They use strict read-only bindings and session identity.
+`lib/openrouter-chat/server.ts` guards history and writes a restrictive project
+marker in existing native Chat config. Shared lifecycle/older-message checks recheck
+the bridge; fork refuses project copies, recall excludes them and lists mask titles.
+The [project Chat contract](../../docs/enterprise_project_chat.md) records callable
+source admission, snapshot limits and pending installed qualification. Native
+`completion.test.mjs` retains runtime error messages; `overlay.test.mjs` checks the
+real Next/Zod boundary with controlled database/session substitutes.
+
 [README.md](./README.md) records the upstream pin, native UI ownership,
 vault credential path, transport configuration and internal nonproduction limits.
+The native Python gateway supplies bounded current operating knowledge to base and architecture
+Chat independently of image rebuilds. Its server-selected instruction excerpts and reference
+catalog grant no extra tools or execution/approval authority.
 [ACCEPTANCE.md](./ACCEPTANCE.md) separates passing contract/transport checks from
 the native browser and real-provider acceptance.
-[patch-manifest.json](./patch-manifest.json) lists exactly 28 overlay files with
+[patch-manifest.json](./patch-manifest.json) lists the admitted source overlay files with
 SHA256 hashes, original upstream hashes where applicable, and the gateway API.
 Paths are relative to the pinned source root; no upstream or EE tree is vendored.
 
-The app files below live under `overlay/apps/sim/`. Their hashes remain identical to
-the active artifact overlay; changes require updating the manifest explicitly.
+The app files below live under `overlay/apps/sim/`. Changes require updating the source
+manifest explicitly; matching it does not establish that the running UI image was upgraded.
+Module Expand/Collapse controls use the native action-bar layer above card-border hit areas,
+avoid starting canvas drags and expose `aria-expanded`. Controlled pointer/keyboard checks
+do not establish installation of that correction in the user preview.
 
 | Overlay file | Interface and role |
 | --- | --- |
@@ -24,7 +45,9 @@ the active artifact overlay; changes require updating the manifest explicitly.
 | [openrouter-model-selector.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/openrouter-model-selector.tsx) | `OpenRouterModelSelector()` searches raw catalog IDs/names and saves independent model/advertised effort preferences. Context uses a compact native chip, retaining the full run in its accessible description and title. Missing models have no silent fallback. |
 | [model-setting-trigger.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger.tsx) | `ModelSettingTrigger` bounds model/effort labels and collapses to native icons in narrow composers. Tooltips and accessible descriptions retain complete values. |
 | [openrouter-chat.ts contracts](./overlay/apps/sim/lib/api/contracts/openrouter-chat.ts) | Zod schemas and six native route contracts validate UUID scope, vault-only status, bounded account catalogs, key input and replacement preferences. |
-| [server.ts](./overlay/apps/sim/lib/openrouter-chat/server.ts) | `assistantRoute(action, method)` wraps native session/workspace permissions, admin/same-origin writes, duplicate/size refusal, fixed gateway origin, no redirects and bounded replies. Errors never forward gateway diagnostics. |
+| [server.ts](./overlay/apps/sim/lib/openrouter-chat/server.ts) | `assistantRoute(action, method)` wraps native session/workspace permissions, admin/same-origin writes, duplicate/size refusal, fixed gateway origin, no redirects and bounded replies. The read-only project-context POST permits readers, supplies the session actor and rechecks actor/workspace/expiry before return. Errors never forward gateway diagnostics. |
+| [enterprise-context.ts](./overlay/apps/sim/lib/api/contracts/enterprise-context.ts) | Strict browser selection, scoped binding and nested evidence/response contracts; user/grants cannot be supplied by the browser. No action authority. |
+| [project-context/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/project-context/route.ts) | POST delegates the session-checked read-only inspection to the shared private bridge; actual Next/Zod and controlled local HTTP qualification passed. Full preview-image and corporate identity qualification remain separate. |
 | [status/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/status/route.ts) | Exports GET for sanitized OpenRouter status. |
 | [key/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/key/route.ts) | Exports POST `{key}` and empty-body DELETE; successful replies normalize to `{success:true}`. |
 | [models/route.ts](./overlay/apps/sim/app/api/workspaces/[id]/assistant/models/route.ts) | Exports GET for the current account-filtered catalog; missing credentials refuse. |
@@ -247,8 +270,10 @@ graphs retain original card positions, expose source diffs and reload through th
 [host-review.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/host-review.tsx)
 separates queued/claimed/replied host status from observed publication and source refresh.
 The renderer's optional `connectionsEnabled` keeps static edge anchors while disabling unsupported
-editing handles; its native Workflow default is unchanged. Pending-source Chat integration,
-complete clipboard/presence/lifecycle parity and installed qualification remain separate work.
+editing handles. `sourceReconnectEnabled` defaults false for Workflows and permits Architecture
+origin reconnection on admitted ports. Native card geometry and interaction-layer constants are
+reused. Layout compares primary siblings so collapsed children cannot push a new root card far
+outside the fitted view. Installed qualification and remaining lifecycle parity stay separate.
 
 Additional uninstalled leaves are
 [search.tsx](./overlay/apps/sim/app/workspace/%5BworkspaceId%5D/architecture/search.tsx) for scoped

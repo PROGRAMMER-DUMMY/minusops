@@ -198,7 +198,7 @@
     },
     {
       "path": "apps/sim/lib/openrouter-chat/server.ts",
-      "sha256": "e815d868cab61a1f47896c7f9f75ddec9fabd99052ab1a7f30696a8b1da40ac6",
+      "sha256": "5436c5faef3c85e8939c83e390edf63d2c814037e5418cec5db39f0aad70a8c8",
       "upstream_sha256": null
     },
     {
@@ -253,27 +253,37 @@
     },
     {
       "path": "apps/sim/lib/api/contracts/enterprise-chat.ts",
-      "sha256": "ffc7df59efa9d70d1a50444cc907b576a28ad745619071958a9a1bea2eb9283c",
+      "sha256": "899b6e18d0dd25256c445940c41c9c71d35ad5fa80cd1f8d2bf565f4f8ef9756",
       "upstream_sha256": null
     },
     {
       "path": "apps/sim/hooks/queries/enterprise-chat.ts",
-      "sha256": "3e7178541d9d931da5b59f2d7f7df9533421ae7d48e64df6c45dbf31e0a2492f",
+      "sha256": "1279bc860df95e5c3cbc46cff7df6f6a931da162cd52fe18b8bce54bc3dfe0b2",
       "upstream_sha256": null
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/user-input.tsx",
-      "sha256": "a9464ade778ae3b1d7be44552bbf75def8810323c2c3642695c25bb909273b29",
+      "sha256": "62f32ef5f5a86682dfc4b5369a4415a43d171d227754d7db82aa0113111ad679",
       "upstream_sha256": "62f32ef5f5a86682dfc4b5369a4415a43d171d227754d7db82aa0113111ad679"
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector.tsx",
-      "sha256": "51ccb08fcd223a7477e607c2dade405595bc65ea9389522e004899909508b3e6",
+      "sha256": "e09cd9ea7231f8b5e86e22eb0b4df60dd96ca95d59f582b06a315efd0747113f",
       "upstream_sha256": null
     },
     {
       "path": "apps/sim/app/api/workspaces/[id]/assistant/project-chat/route.ts",
       "sha256": "d16f588042ce18e76cd0ab23b73df3429c441a4d84c00d2425f05f7a7e43a54a",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/home/home.tsx",
+      "sha256": "dc815457176d00b43dd0612a2db492b76e7750f432e8ccd5c2693076823abb6f",
+      "upstream_sha256": "186ab51a964086481cdfb92bea2f528d107df6eb43180a80591eab118ca85db1"
+    },
+    {
+      "path": "apps/sim/app/api/workspaces/[id]/assistant/projects/route.ts",
+      "sha256": "df63445fa8b87348c91e1ef62e63beabceb68f59256b71b3a3494ef934c65ea3",
       "upstream_sha256": null
     }
   ],

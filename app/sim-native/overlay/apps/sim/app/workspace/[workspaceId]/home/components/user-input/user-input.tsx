@@ -33,7 +33,6 @@ import {
 } from '@/app/workspace/[workspaceId]/home/components/user-input/components'
 import { ConversationModeSelector } from '@/app/workspace/[workspaceId]/home/components/user-input/components/conversation-mode-selector'
 import { InputToolbar } from '@/app/workspace/[workspaceId]/home/components/user-input/components/input-toolbar'
-import { ProjectChatSelector } from '@/app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector'
 import { useConversationModeShortcut } from '@/app/workspace/[workspaceId]/home/components/user-input/hooks/use-conversation-mode-shortcut'
 import { usePromptHistory } from '@/app/workspace/[workspaceId]/home/components/user-input/hooks/use-prompt-history'
 import { handleMothershipAddContextEvent } from '@/app/workspace/[workspaceId]/home/components/user-input/mothership-context-event'
@@ -601,7 +600,6 @@ const UserInputImpl = forwardRef<UserInputHandle, UserInputProps>(function UserI
       onDragOver={handleContainerDragOver}
       onDrop={handleContainerDrop}
     >
-      <ProjectChatSelector workspaceId={workspaceId} busy={isSending} />
       <AnimatedPlaceholderEffect textareaRef={textareaRef} isInitialView={isInitialView} />
 
       <AttachedFilesList
