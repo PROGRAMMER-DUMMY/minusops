@@ -14,13 +14,14 @@ import { getUserEntityPermissions } from '@/lib/workspaces/permissions/utils'
 import { architectureActionSchema, architectureReplySchema, architectureQuerySchema } from '@/lib/api/contracts/minusops-architecture'
 import { enterpriseContextRequestSchema, enterpriseContextReplySchema } from '@/lib/api/contracts/enterprise-context'
 import { projectChatQuerySchema, projectChatRequestSchema, projectChatReplySchema, projectCatalogReplySchema } from '@/lib/api/contracts/enterprise-chat'
+import { projectSetupActionSchema, projectSetupReplySchema } from '@/lib/api/contracts/project-setup'
 
 const GATEWAY = 'http://host.docker.internal:5180'
 const LOCAL_GATEWAY = 'http://127.0.0.1:5180'
 const MAX_BODY = 16384
 const MAX_RESPONSE = 4194304
 const HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
-type Action = 'status' | 'key' | 'models' | 'preferences' | 'architecture' | 'project-context' | 'project-chat' | 'projects'
+type Action = 'status' | 'key' | 'models' | 'preferences' | 'architecture' | 'project-context' | 'project-chat' | 'projects' | 'project-setup'
 type Method = 'GET' | 'POST' | 'DELETE'
 interface RouteContext { params: Promise<{ id: string }> }
 class BodyLimit extends Error {}
@@ -118,7 +119,7 @@ async function gateway(workspaceId: string, action: Action, method: Method, body
   })
   if (!response.ok) {
     await response.body?.cancel().catch(() => {})
-    return { ok: false as const, status: ['project-context', 'project-chat'].includes(action) && [400, 403, 409].includes(response.status)
+    return { ok: false as const, status: ['project-context', 'project-chat', 'project-setup'].includes(action) && [400, 403, 404, 409].includes(response.status)
       ? response.status : response.status === 400 ? 400 : 502 }
   }
   if (action === 'key') {
@@ -136,7 +137,8 @@ async function gateway(workspaceId: string, action: Action, method: Method, body
       : action === 'architecture' ? architectureReplySchema
         : action === 'project-context' ? enterpriseContextReplySchema
           : action === 'project-chat' ? projectChatReplySchema
-            : action === 'projects' ? projectCatalogReplySchema : openRouterPreferencesSchema
+            : action === 'projects' ? projectCatalogReplySchema
+              : action === 'project-setup' ? projectSetupReplySchema : openRouterPreferencesSchema
   const value = schema.parse(strictJson(raw))
   if (JSON.stringify(value).includes(token)) throw new Error('Assistant response refused')
   return { ok: true as const, value }
@@ -148,6 +150,13 @@ function checkedProjectChat(value: unknown, workspaceId: string, chatId: string)
     throw new Error('Project chat binding mismatch')
   }
   return parsed
+}
+
+async function usableProjectConnection(id: string, workspaceId: string, userId: string) {
+  const { getCredentialActorContext, canUseCredential } = await import('@/lib/credentials/access')
+  const access = await getCredentialActorContext(id, userId)
+  return access.credential?.workspaceId === workspaceId && access.credential.providerId === 'confluence'
+    && access.credential.type === 'oauth' && !!access.credential.accountId && canUseCredential(access)
 }
 
 /** Recheck current source and grant revisions before exposing any local Chat transcript. */
@@ -196,7 +205,7 @@ export function assistantRoute(action: Action, method: Method) {
         const parsed = architectureQuerySchema.safeParse(Object.fromEntries(entries))
         if (!parsed.success) return refused(400, 'invalid_request')
         query = '?' + new URLSearchParams({ ...(parsed.data.run_id ? { run_id: parsed.data.run_id } : {}), user_id: session.user.id })
-      } else if (method === 'GET' && action === 'projects') {
+      } else if (method === 'GET' && ['projects', 'project-setup'].includes(action)) {
         if (entries.length) return refused(400, 'invalid_request')
         query = '?' + new URLSearchParams({user_id: session.user.id})
       } else if (method === 'GET' && action === 'project-chat') {
@@ -234,7 +243,8 @@ export function assistantRoute(action: Action, method: Method) {
             const input = action === 'key' ? openRouterKeySchema
               : action === 'architecture' ? architectureActionSchema
                 : action === 'project-context' ? enterpriseContextRequestSchema
-                  : action === 'project-chat' ? projectChatRequestSchema : openRouterPreferencesSchema
+                  : action === 'project-chat' ? projectChatRequestSchema
+                    : action === 'project-setup' ? projectSetupActionSchema : openRouterPreferencesSchema
             const parsed = input.safeParse(strictJson(raw))
             if (!parsed.success) return refused(400, 'invalid_request')
             body = parsed.data
@@ -253,6 +263,14 @@ export function assistantRoute(action: Action, method: Method) {
         const selected = enterpriseContextRequestSchema.parse(body)
         if (selected.workspace_id !== workspaceId) return refused(400, 'invalid_request')
         body = { ...selected, user_id: session.user.id }
+      }
+      if (action === 'project-setup' && method === 'POST') {
+        const setup = projectSetupActionSchema.parse(body)
+        if (setup.operation === 'save' && setup.credential_id
+            && !await usableProjectConnection(setup.credential_id, workspaceId, session.user.id)) {
+          return refused(403, 'connection_unavailable')
+        }
+        body = {user_id: session.user.id, setup}
       }
       if (action === 'project-chat' && method === 'POST') {
         const selected = projectChatRequestSchema.parse(body)
@@ -290,12 +308,22 @@ export function assistantRoute(action: Action, method: Method) {
       }
       const reply = await gateway(workspaceId, action, method, body, query)
       if (!reply.ok) return refused(reply.status, 'assistant_refused')
-      if (action === 'projects') {
-        const value = projectCatalogReplySchema.parse(reply.value)
+      if (action === 'projects' || action === 'project-setup') {
+        const value = action === 'projects' ? projectCatalogReplySchema.parse(reply.value)
+          : projectSetupReplySchema.parse(reply.value)
         if (value.workspace_id !== workspaceId || value.user_id !== session.user.id) return refused(502, 'context_mismatch')
         const current = await getSession()
         if (current?.user?.id !== session.user.id
             || !await getUserEntityPermissions(session.user.id, 'workspace', workspaceId)) return refused(403, 'forbidden')
+        if (action === 'project-setup' && method === 'POST') {
+          if (await getUserEntityPermissions(session.user.id, 'workspace', workspaceId) !== 'admin') return refused(403, 'forbidden')
+          const setup = (body as {setup: unknown}).setup
+          const parsed = projectSetupActionSchema.parse(setup)
+          if (parsed.operation === 'save' && parsed.credential_id
+              && !await usableProjectConnection(parsed.credential_id, workspaceId, session.user.id)) {
+            return refused(403, 'connection_unavailable')
+          }
+        }
         return NextResponse.json(value, {headers: HEADERS})
       }
       if (action === 'project-chat') {

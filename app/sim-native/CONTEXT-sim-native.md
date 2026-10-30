@@ -5,8 +5,15 @@ Phase 2 adds `lib/api/contracts/enterprise-chat.ts`, the native
 `hooks/queries/enterprise-chat.ts` and `project-chat-selector.tsx`, mounted in the
 Main Chat header by `home/home.tsx`. The shared message composer has no project
 field. The native `assistant/projects/route.ts` lists permitted names for the
-session actor; caches include workspace, user and model. Selecting another project
-creates a new Chat. They use strict read-only bindings and session identity.
+session actor; caches include workspace, user and model. An admitted project opens
+a new Chat; a project still in setup opens its configuration instead.
+`app/workspace/[workspaceId]/projects/page.tsx` and `projects.tsx` provide reusable
+create/import and source-link setup, with existing native Confluence account
+selection. `lib/api/contracts/project-setup.ts` and native
+`assistant/project-setup/route.ts` bind metadata reads/writes to the session actor;
+writes require workspace administration and same-origin requests. Credential
+references are checked against native workspace/provider membership before and
+after saves. No token, source grant, model call or protected policy is created.
 `lib/openrouter-chat/server.ts` guards history and writes a restrictive project
 marker in existing native Chat config. Shared lifecycle/older-message checks recheck
 the bridge; fork refuses project copies, recall excludes them and lists mask titles.

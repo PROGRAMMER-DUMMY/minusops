@@ -39,7 +39,8 @@ export const projectCatalogReplySchema = z.object({
   projects: z.array(z.object({
     project_id: enterpriseContextRequestSchema.shape.project_id,
     name: z.string().trim().min(1).max(160),
-  }).strict()).max(64),
+    setup_status: z.enum(['CONNECTION_REQUIRED', 'SOURCES_REQUIRED', 'ACCESS_REQUIRED', 'ADMITTED']).optional(),
+  }).strict()).max(128),
   execution_authority: z.literal('NONE'),
 }).strict().refine(value => new Set(value.projects.map(item => item.project_id)).size === value.projects.length
   && (value.status !== 'UNAVAILABLE' || value.projects.length === 0))

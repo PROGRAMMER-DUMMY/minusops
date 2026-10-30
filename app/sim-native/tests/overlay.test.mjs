@@ -305,8 +305,14 @@ const result = await build({
             } }) }) };`, loader: 'js' }))
     builder.onResolve({ filter: /^@\/lib\/(auth|core\/utils\/with-route-handler|workspaces\/permissions\/utils)$/ },
       ({ path: name }) => ({ path: name, namespace: 'boundary' }))
+    builder.onResolve({filter: /^@\/lib\/credentials\/access$/}, () => ({path:'credential-access', namespace:'boundary'}))
     builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path: name }) => ({ contents:
-      name === 'marker' ? '' : name.endsWith('/auth')
+      name === 'marker' ? '' : name === 'credential-access'
+        ? `export const getCredentialActorContext=async(id,user)=>{
+            const state=globalThis.__openRouterTest;state.credentialCalls.push([id,user]);
+            return state.credentialAccess;
+          };export const canUseCredential=access=>access.allowed === true;`
+        : name.endsWith('/auth')
         ? 'export const getSession = async () => globalThis.__openRouterTest.session'
         : name.endsWith('/with-route-handler') ? 'export const withRouteHandler = handler => handler'
           : `export const getUserEntityPermissions = async (user, type, id) => {
@@ -354,7 +360,7 @@ async function refused(response, expected) {
 }
 beforeEach(() => {
   fixture = { session: { user: { id: 'native-user' } }, permission: 'admin', permissionCalls: [], calls: [], responses: [],
-    chatRows: [], databaseCalls: [], databaseError: null }
+    chatRows: [], databaseCalls: [], databaseError: null, credentialAccess: {}, credentialCalls: [] }
   globalThis.__openRouterTest = fixture
   process.env.MINUS_OPENROUTER_CHAT = 'true'
   process.env.MINUS_ASSISTANT_GATEWAY_URL = 'http://host.docker.internal:5180'
@@ -499,6 +505,7 @@ test('enterprise project chat UI and guarded history modules compile against the
     'app/workspace/[workspaceId]/home/components/user-input/user-input.tsx',
     'hooks/queries/enterprise-chat.ts', 'lib/mothership/chat/lifecycle.ts',
     'app/workspace/[workspaceId]/home/home.tsx',
+    'app/workspace/[workspaceId]/projects/page.tsx', 'app/workspace/[workspaceId]/projects/projects.tsx',
     'lib/mothership/chat/application/context.ts', 'lib/mothership/chat/application/fork.ts',
     'lib/mothership/chat/application/read-recall-chats.ts', 'lib/mothership/chat/list-mothership-chats.ts',
   ]
@@ -542,6 +549,71 @@ test('enterprise project chat catalog refuses forged scope, malformed names and 
   globalThis.fetch = async (...args) => {const response=await fetch(...args);fixture.permission=null;return response}
   queue(json(catalogReply()))
   await refused(await call('projects','GET'),403)
+})
+
+const setupProject = (change = {}) => ({project_id: uuid, name: 'Client analytics', description: '', source_urls: [],
+  credential_id: null, revision: 1, created_at: '2026-10-31T00:00:00+00:00', updated_at: '2026-10-31T00:00:00+00:00', ...change})
+const setupReply = (change = {}) => ({schema_version: 1, workspace_id: uuid, user_id: 'native-user',
+  projects: [setupProject()], updated_project_id: null, execution_authority: 'NONE', ...change})
+const setupCreate = () => ({operation: 'create', name: 'Client analytics', description: '', source_urls: [], request_id: uuid})
+
+test('enterprise project chat setup derives actor and supports creating metadata before connection', async () => {
+  fixture.permission = 'read'
+  queue(json(setupReply()))
+  const listed = await call('project-setup', 'GET')
+  assert.equal(listed.status, 200)
+  assert.equal(fixture.calls[0].url, `http://host.docker.internal:5180/workspaces/${uuid}/project-setup?user_id=native-user`)
+  fixture.permission = 'admin'
+  const response = setupReply({updated_project_id: uuid})
+  queue(json(response))
+  const created = await call('project-setup', 'POST', setupCreate())
+  assert.equal(created.status, 200)
+  assert.deepEqual(await created.json(), response)
+  assert.deepEqual(JSON.parse(fixture.calls[1].options.body), {user_id: 'native-user', setup: setupCreate()})
+  assert.equal(fixture.credentialCalls.length, 0)
+})
+
+test('enterprise project chat setup rejects forged authority and non-admin or cross-origin writes', async () => {
+  fixture.permission = 'read'
+  await refused(await call('project-setup', 'POST', setupCreate()), 403)
+  fixture.permission = 'admin'
+  await refused(await call('project-setup', 'GET', undefined, {query:'?user_id=forged'}), 400)
+  await refused(await call('project-setup', 'POST', setupCreate(), {headers:{origin:'https://other.example'}}), 403)
+  for (const extra of [{user_id:'other'}, {workspace_id:uuid}, {grant:'approved'}, {project_id:uuid}, {credential_id:'unverified'}]) {
+    await refused(await call('project-setup', 'POST', {...setupCreate(), ...extra}), 400)
+  }
+  assert.equal(fixture.calls.length, 0)
+})
+
+test('enterprise project chat setup checks connection provider membership workspace and revocation', async () => {
+  const body = {operation:'save',project_id:uuid,revision:1,name:'Client analytics',description:'',source_urls:[],credential_id:'connection-a'}
+  const allowed = {allowed:true,credential:{workspaceId:uuid,providerId:'confluence',type:'oauth',accountId:'provider-account'}}
+  for (const access of [{}, {...allowed,allowed:false}, {...allowed,credential:{...allowed.credential,workspaceId:'other'}},
+    {...allowed,credential:{...allowed.credential,providerId:'other'}}, {...allowed,credential:{...allowed.credential,type:'managed_oauth'}}]) {
+    fixture.credentialAccess = access
+    await refused(await call('project-setup','POST',body),403)
+  }
+  assert.equal(fixture.calls.length,0)
+  fixture.credentialAccess=allowed
+  queue(json(setupReply({projects:[setupProject({credential_id:'connection-a'})],updated_project_id:uuid})))
+  assert.equal((await call('project-setup','POST',body)).status,200)
+  assert.deepEqual(fixture.credentialCalls.at(-1),['connection-a','native-user'])
+  const fetch=globalThis.fetch
+  globalThis.fetch=async(...args)=>{const response=await fetch(...args);fixture.credentialAccess={};return response}
+  queue(json(setupReply({updated_project_id:uuid})))
+  await refused(await call('project-setup','POST',body),403)
+})
+
+test('enterprise project chat setup rejects mismatched replies and rechecks workspace access', async () => {
+  for (const change of [{user_id:'other'},{workspace_id:'22345678-1234-4234-8234-123456789abc'},
+    {updated_project_id:'22345678-1234-4234-8234-123456789abc'},{authority:'approved'}]) {
+    queue(json(setupReply(change)))
+    await refused(await call('project-setup','GET'),502)
+  }
+  const fetch=globalThis.fetch
+  globalThis.fetch=async(...args)=>{const response=await fetch(...args);fixture.permission=null;return response}
+  queue(json(setupReply()))
+  await refused(await call('project-setup','GET'),403)
 })
 
 test('enterprise context uses real Next and Zod to admit a reader with server-bound identity', async () => {

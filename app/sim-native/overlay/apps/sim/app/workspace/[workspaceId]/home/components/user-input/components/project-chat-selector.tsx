@@ -74,14 +74,22 @@ function LocalProjectChatSelector({ workspaceId, userId, chatId, busy }: Project
             : projects.length ? projects.map(project => (
               <DropdownMenuItem key={project.project_id}
                 disabled={saving || busy || (bound && project.project_id === binding.data?.project_id)}
-                onSelect={event => {event.preventDefault(); void choose(project.project_id)}}>
+                onSelect={event => {
+                  event.preventDefault()
+                  if (project.setup_status && project.setup_status !== 'ADMITTED') {
+                    router.push(`/workspace/${workspaceId}/projects?project=${encodeURIComponent(project.project_id)}`)
+                  } else void choose(project.project_id)
+                }}>
                 <span className='truncate'>{project.name}</span>
+                {project.setup_status && project.setup_status !== 'ADMITTED'
+                  && <span className='ml-auto text-xs text-[var(--text-muted)]'>Continue setup</span>}
               </DropdownMenuItem>
             )) : <p className='px-2 py-2 text-sm text-[var(--text-muted)]' role='status'>
-              {catalog.isError ? 'Project access could not be checked.' : 'No projects available. Ask your workspace administrator to connect a project.'}
+              {catalog.isError ? 'Project access could not be checked.' : 'No projects yet. Create or import a project to get started.'}
             </p>}
           {chatId && <p className='px-2 py-2 text-xs text-[var(--text-muted)]'>Choosing another project starts a new chat.</p>}
           {failed && <p role='alert' className='px-2 py-2 text-xs'>The project could not be opened. Check access and try again.</p>}
+          <DropdownMenuItem asChild><Link href={`/workspace/${workspaceId}/projects`}>Create or manage projects</Link></DropdownMenuItem>
           <DropdownMenuItem asChild><Link href={`/workspace/${workspaceId}/integrations`}>Integrations</Link></DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

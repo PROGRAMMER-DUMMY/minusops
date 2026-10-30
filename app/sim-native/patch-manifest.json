@@ -37,6 +37,26 @@
       "upstream_sha256": null
     },
     {
+      "path": "apps/sim/app/api/workspaces/[id]/assistant/project-chat/route.ts",
+      "sha256": "d16f588042ce18e76cd0ab23b73df3429c441a4d84c00d2425f05f7a7e43a54a",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/api/workspaces/[id]/assistant/project-context/route.ts",
+      "sha256": "15d08f1cb5759f56896cd4aea9846a4f469e4c2ee394f8fb2ea41990070f2100",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/api/workspaces/[id]/assistant/project-setup/route.ts",
+      "sha256": "82fea8893711824a7a25ba158a827bf6bd21ff6adb59e9509ac53b239d9f7f61",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/api/workspaces/[id]/assistant/projects/route.ts",
+      "sha256": "df63445fa8b87348c91e1ef62e63beabceb68f59256b71b3a3494ef934c65ea3",
+      "upstream_sha256": null
+    },
+    {
       "path": "apps/sim/app/api/workspaces/[id]/assistant/status/route.ts",
       "sha256": "ee8b1c12b11628f6c262c7516dcfbd7835bb613ea5b2943936866e0c8e11e5d6",
       "upstream_sha256": null
@@ -132,9 +152,34 @@
       "upstream_sha256": null
     },
     {
+      "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector.tsx",
+      "sha256": "5133488592f671d828b5df5b2d129337e281b1eb712a206a6a2f1d9db2c3c2c3",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/user-input.tsx",
+      "sha256": "62f32ef5f5a86682dfc4b5369a4415a43d171d227754d7db82aa0113111ad679",
+      "upstream_sha256": "62f32ef5f5a86682dfc4b5369a4415a43d171d227754d7db82aa0113111ad679"
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/home/home.tsx",
+      "sha256": "dc815457176d00b43dd0612a2db492b76e7750f432e8ccd5c2693076823abb6f",
+      "upstream_sha256": "186ab51a964086481cdfb92bea2f528d107df6eb43180a80591eab118ca85db1"
+    },
+    {
       "path": "apps/sim/app/workspace/[workspaceId]/layout.tsx",
       "sha256": "cd64831e468078c37220aedc237f57fad9d8c7e32a884d2ed35e6a67a3f90167",
       "upstream_sha256": "fe03f3413961a1b1221eaff7f6618084a77c5366884b5196da67c8ce11ad58aa"
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/projects/page.tsx",
+      "sha256": "87bea74553615f5c927f06caf5d29fddf0b503162164b999bc810a0d77bbe011",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/projects/projects.tsx",
+      "sha256": "3bf8852270ebd84b67a7b878f5a24927ed8b63c7d1a22c96bbff1fc81cd21cf1",
+      "upstream_sha256": null
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/providers/feature-flags-provider.tsx",
@@ -172,6 +217,11 @@
       "upstream_sha256": "0cda4fa911dc8b86361db47b66673238727a1973fec61c2ae964ecd29ee2ec49"
     },
     {
+      "path": "apps/sim/hooks/queries/enterprise-chat.ts",
+      "sha256": "f8a235cf0acb4fb49b62babfe6064043e79a3ef9f8231b6a4a91fba00f52ee4b",
+      "upstream_sha256": null
+    },
+    {
       "path": "apps/sim/hooks/queries/minusops-architecture.ts",
       "sha256": "0d7eaf61eb98b73b5d12587c6cf0cc5f9cf72709defdba99f0603b1ae907b758",
       "upstream_sha256": null
@@ -179,6 +229,16 @@
     {
       "path": "apps/sim/hooks/queries/openrouter-chat.ts",
       "sha256": "4d67f2a104380d3280773a49036db66f74b86e84cac0b2f6680d57732b9507a6",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/lib/api/contracts/enterprise-chat.ts",
+      "sha256": "1a674474cd20fdb3c276a4f8450bd4f44f89110691a7db88155544f3d7969a36",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/lib/api/contracts/enterprise-context.ts",
+      "sha256": "dae99e7c4fd1ca3bf149809c6a296122547c9c34dfd352a2ddd5849fbbf8fa4f",
       "upstream_sha256": null
     },
     {
@@ -192,49 +252,9 @@
       "upstream_sha256": null
     },
     {
-      "path": "apps/sim/lib/mothership/request/handlers/complete.ts",
-      "sha256": "f702e57dd8239f6a030576616b401705f3f8119603bae16d222c0f5a63aa19cc",
-      "upstream_sha256": "7eddb65b3cc8e17cb7e56a4c9d1248649950222659f35ce82cc456a9ae5362f6"
-    },
-    {
-      "path": "apps/sim/lib/openrouter-chat/server.ts",
-      "sha256": "5436c5faef3c85e8939c83e390edf63d2c814037e5418cec5db39f0aad70a8c8",
+      "path": "apps/sim/lib/api/contracts/project-setup.ts",
+      "sha256": "8df510c2080797a2788f303a7f404753c5f7e2bc127c5fc2e237b925ba62a8f6",
       "upstream_sha256": null
-    },
-    {
-      "path": "apps/sim/lib/settings/application/workspace-section-access.ts",
-      "sha256": "e92de530bbaaa307c7fcb60e515b31ebfbd74fcc87aa4961c196788c91838a75",
-      "upstream_sha256": "56cd503b03675ed46725fdda04b9459b43a3535de2276b5953570c9ae1f02bc5"
-    },
-    {
-      "path": "apps/sim/stores/openrouter-chat/store.ts",
-      "sha256": "7a596ec2e690900268657739754798abf0d1c8bd005466079d12c548d701b688",
-      "upstream_sha256": null
-    },
-    {
-      "path": "packages/workflow-renderer/src/workflow-block/block-view.tsx",
-      "sha256": "344aa7038089f747289e466fe9a54113ca50e494dd7db511eda7633f16755e3c",
-      "upstream_sha256": "32149a0e1fea62fbef2d36154d86d85b485cff8f6f48e2d2050f651e7dd2cc0d"
-    },
-    {
-      "path": "apps/sim/lib/api/contracts/enterprise-context.ts",
-      "sha256": "dae99e7c4fd1ca3bf149809c6a296122547c9c34dfd352a2ddd5849fbbf8fa4f",
-      "upstream_sha256": null
-    },
-    {
-      "path": "apps/sim/app/api/workspaces/[id]/assistant/project-context/route.ts",
-      "sha256": "15d08f1cb5759f56896cd4aea9846a4f469e4c2ee394f8fb2ea41990070f2100",
-      "upstream_sha256": null
-    },
-    {
-      "path": "apps/sim/lib/mothership/chat/lifecycle.ts",
-      "sha256": "169d0b1948b7fde211b7fa882f200c860c191971adaf47f174794e239ac1d638",
-      "upstream_sha256": "cd0c7ae6464984a539bd524aac6646b9f4f0050babe05fa31cf8fd3c61c40257"
-    },
-    {
-      "path": "apps/sim/lib/mothership/chat/list-mothership-chats.ts",
-      "sha256": "c1acef890b64449d232da4a98c4d65e2950cc78cb62f29e964e3ff3e40a19edb",
-      "upstream_sha256": "8eb2d02cac2e9932d384795c85adcf3ed0e42a2dfc92fd7b89edde895676708f"
     },
     {
       "path": "apps/sim/lib/mothership/chat/application/context.ts",
@@ -252,39 +272,39 @@
       "upstream_sha256": "069aa0ae9679e1cd71c9df7bd04577bf067335678f19f0f9b3c25b7df3040013"
     },
     {
-      "path": "apps/sim/lib/api/contracts/enterprise-chat.ts",
-      "sha256": "899b6e18d0dd25256c445940c41c9c71d35ad5fa80cd1f8d2bf565f4f8ef9756",
+      "path": "apps/sim/lib/mothership/chat/lifecycle.ts",
+      "sha256": "169d0b1948b7fde211b7fa882f200c860c191971adaf47f174794e239ac1d638",
+      "upstream_sha256": "cd0c7ae6464984a539bd524aac6646b9f4f0050babe05fa31cf8fd3c61c40257"
+    },
+    {
+      "path": "apps/sim/lib/mothership/chat/list-mothership-chats.ts",
+      "sha256": "c1acef890b64449d232da4a98c4d65e2950cc78cb62f29e964e3ff3e40a19edb",
+      "upstream_sha256": "8eb2d02cac2e9932d384795c85adcf3ed0e42a2dfc92fd7b89edde895676708f"
+    },
+    {
+      "path": "apps/sim/lib/mothership/request/handlers/complete.ts",
+      "sha256": "f702e57dd8239f6a030576616b401705f3f8119603bae16d222c0f5a63aa19cc",
+      "upstream_sha256": "7eddb65b3cc8e17cb7e56a4c9d1248649950222659f35ce82cc456a9ae5362f6"
+    },
+    {
+      "path": "apps/sim/lib/openrouter-chat/server.ts",
+      "sha256": "6cea6f1f69a4c081e2b930eeecce598455a07fd63e2a50dd026ffb489b890b54",
       "upstream_sha256": null
     },
     {
-      "path": "apps/sim/hooks/queries/enterprise-chat.ts",
-      "sha256": "1279bc860df95e5c3cbc46cff7df6f6a931da162cd52fe18b8bce54bc3dfe0b2",
+      "path": "apps/sim/lib/settings/application/workspace-section-access.ts",
+      "sha256": "e92de530bbaaa307c7fcb60e515b31ebfbd74fcc87aa4961c196788c91838a75",
+      "upstream_sha256": "56cd503b03675ed46725fdda04b9459b43a3535de2276b5953570c9ae1f02bc5"
+    },
+    {
+      "path": "apps/sim/stores/openrouter-chat/store.ts",
+      "sha256": "7a596ec2e690900268657739754798abf0d1c8bd005466079d12c548d701b688",
       "upstream_sha256": null
     },
     {
-      "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/user-input.tsx",
-      "sha256": "62f32ef5f5a86682dfc4b5369a4415a43d171d227754d7db82aa0113111ad679",
-      "upstream_sha256": "62f32ef5f5a86682dfc4b5369a4415a43d171d227754d7db82aa0113111ad679"
-    },
-    {
-      "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector.tsx",
-      "sha256": "5d7acdfda8a4a742bbb99f0c4e2f658d5fb82bdc2063f2c5af2d49dc09f9d4af",
-      "upstream_sha256": null
-    },
-    {
-      "path": "apps/sim/app/api/workspaces/[id]/assistant/project-chat/route.ts",
-      "sha256": "d16f588042ce18e76cd0ab23b73df3429c441a4d84c00d2425f05f7a7e43a54a",
-      "upstream_sha256": null
-    },
-    {
-      "path": "apps/sim/app/workspace/[workspaceId]/home/home.tsx",
-      "sha256": "dc815457176d00b43dd0612a2db492b76e7750f432e8ccd5c2693076823abb6f",
-      "upstream_sha256": "186ab51a964086481cdfb92bea2f528d107df6eb43180a80591eab118ca85db1"
-    },
-    {
-      "path": "apps/sim/app/api/workspaces/[id]/assistant/projects/route.ts",
-      "sha256": "df63445fa8b87348c91e1ef62e63beabceb68f59256b71b3a3494ef934c65ea3",
-      "upstream_sha256": null
+      "path": "packages/workflow-renderer/src/workflow-block/block-view.tsx",
+      "sha256": "344aa7038089f747289e466fe9a54113ca50e494dd7db511eda7633f16755e3c",
+      "upstream_sha256": "32149a0e1fea62fbef2d36154d86d85b485cff8f6f48e2d2050f651e7dd2cc0d"
     }
   ],
   "interface": {
