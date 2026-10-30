@@ -218,7 +218,7 @@
     },
     {
       "path": "apps/sim/hooks/queries/enterprise-chat.ts",
-      "sha256": "f8a235cf0acb4fb49b62babfe6064043e79a3ef9f8231b6a4a91fba00f52ee4b",
+      "sha256": "7da3742d11a35f6b6408e16d683ec1a59dfa1daf448742735daf8f9a8cee8ff6",
       "upstream_sha256": null
     },
     {

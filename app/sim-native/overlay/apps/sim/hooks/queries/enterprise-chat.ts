@@ -34,7 +34,11 @@ export function useProjectCatalog(workspaceId: string, userId?: string) {
   const model = useOpenRouterChatStore(state => state.workspaces[workspaceId]?.preferences.model)
   return useQuery({
     queryKey: ['enterprise-project-catalog', workspaceId, userId, model],
-    queryFn: ({signal}) => requestJson(projectCatalogContract, {params: {id: workspaceId}, query: {}, signal}),
+    queryFn: async ({signal}) => {
+      const value = await requestJson(projectCatalogContract, {params: {id: workspaceId}, query: {}, signal})
+      if (value.workspace_id !== workspaceId || value.user_id !== userId) throw new Error('Project session changed')
+      return value
+    },
     enabled: !!workspaceId && !!userId, staleTime: 0, retry: false,
   })
 }
@@ -43,12 +47,19 @@ export function useProjectSetup(workspaceId: string, userId?: string) {
   const client = useQueryClient()
   const key = ['project-setup', workspaceId, userId] as const
   const setup = useQuery({queryKey: key, enabled: !!userId,
-    queryFn: ({signal}) => requestJson(projectSetupContract, {params: {id: workspaceId}, query: {}, signal}),
+    queryFn: async ({signal}) => {
+      const value = await requestJson(projectSetupContract, {params: {id: workspaceId}, query: {}, signal})
+      if (value.workspace_id !== workspaceId || value.user_id !== userId) throw new Error('Project session changed')
+      return value
+    },
     staleTime: 0, retry: false,
   })
   const update = useMutation({
-    mutationFn: (body: ProjectSetupAction) => requestJson(updateProjectSetupContract,
-      {params: {id: workspaceId}, query: {}, body}), retry: false,
+    mutationFn: async (body: ProjectSetupAction) => {
+      const value = await requestJson(updateProjectSetupContract, {params: {id: workspaceId}, query: {}, body})
+      if (value.workspace_id !== workspaceId || value.user_id !== userId) throw new Error('Project session changed')
+      return value
+    }, retry: false,
     onSuccess: async value => {
       client.setQueryData(key, value)
       await client.invalidateQueries({queryKey: ['enterprise-project-catalog', workspaceId, userId]})

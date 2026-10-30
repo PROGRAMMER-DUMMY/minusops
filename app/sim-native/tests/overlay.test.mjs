@@ -616,6 +616,42 @@ test('enterprise project chat setup rejects mismatched replies and rechecks work
   await refused(await call('project-setup','GET'),403)
 })
 
+test('enterprise project chat setup queries never cache another intended browser actor', async () => {
+  const compiled=await build({entryPoints:[path.join(overlays,'hooks/queries/enterprise-chat.ts')],
+    bundle:true,write:false,platform:'node',format:'cjs',packages:'external',plugins:[{name:'setup-query-boundaries',setup(builder){
+      builder.onResolve({filter:/^(?:@tanstack\/react-query|@\/)/},({path:name})=>({path:name,namespace:'setup-query'}))
+      builder.onLoad({filter:/.*/,namespace:'setup-query'},({path:name})=>{
+        const contents=name==='@tanstack/react-query'
+          ? 'export const useQuery=value=>value;export const useMutation=value=>value;export const useQueryClient=()=>fixture.client;'
+          : name.endsWith('/request') ? 'export const requestJson=async()=>fixture.responses.shift();'
+          : name.endsWith('/store') ? 'export const useOpenRouterChatStore=select=>select({workspaces:{}});'
+          : name.endsWith('/enterprise-chat') ? 'export const projectChatContract="chat",bindProjectChatContract="bind",projectCatalogContract="catalog";'
+          : name.endsWith('/project-setup') ? 'export const projectSetupContract="setup",updateProjectSetupContract="update";'
+          : name.endsWith('/credentials') ? 'export const listOAuthCredentialsContract="credentials";' : null
+        assert.notEqual(contents,null,name);return {contents,loader:'js'}
+      })
+    }}]})
+  const saved=[];const invalidated=[]
+  const state={responses:[],client:{setQueryData:(...args)=>saved.push(args),invalidateQueries:async value=>invalidated.push(value)}}
+  const loaded={exports:{}}
+  new Function('require','module','exports','fixture',compiled.outputFiles[0].text)(require,loaded,loaded.exports,state)
+  const first=loaded.exports.useProjectSetup(uuid,'reader-a')
+  const other=loaded.exports.useProjectSetup(uuid,'reader-b')
+  const catalog=loaded.exports.useProjectCatalog(uuid,'reader-a')
+  assert.notDeepEqual(first.setup.queryKey,other.setup.queryKey)
+  for (const operation of [()=>first.setup.queryFn({}),()=>first.update.mutationFn(setupCreate()),()=>catalog.queryFn({})]) {
+    state.responses.push({workspace_id:uuid,user_id:'reader-b',projects:[{name:'Other client private project'}]})
+    await assert.rejects(operation(),/session changed/)
+  }
+  assert.deepEqual(saved,[])
+  const value={workspace_id:uuid,user_id:'reader-a',projects:[]}
+  state.responses.push(value)
+  const accepted=await first.update.mutationFn(setupCreate())
+  await first.update.onSuccess(accepted)
+  assert.deepEqual(saved,[[['project-setup',uuid,'reader-a'],value]])
+  assert.deepEqual(invalidated,[{queryKey:['enterprise-project-catalog',uuid,'reader-a']}])
+})
+
 test('enterprise context uses real Next and Zod to admit a reader with server-bound identity', async () => {
   fixture.permission = 'read'
   queue(json(projectReply()))
