@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react'
 import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@sim/emcn'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown } from '@sim/emcn/icons'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { requestJson } from '@/lib/api/client/request'

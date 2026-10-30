@@ -268,7 +268,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector.tsx",
-      "sha256": "e09cd9ea7231f8b5e86e22eb0b4df60dd96ca95d59f582b06a315efd0747113f",
+      "sha256": "5d7acdfda8a4a742bbb99f0c4e2f658d5fb82bdc2063f2c5af2d49dc09f9d4af",
       "upstream_sha256": null
     },
     {
