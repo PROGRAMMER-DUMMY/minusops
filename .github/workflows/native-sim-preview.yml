@@ -51,18 +51,22 @@ jobs:
             --title 'Private native Sim build export' --notes 'Internal evaluation image. Keep this release a draft; do not publish.'
           release_id=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
           test "$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id" --jq .draft)" = true || { echo "Draft state check refused"; exit 1; }
-          status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
+          status=$(curl --silent --show-error --max-time 20 --output "$RUNNER_TEMP/privacy-probe.json" --dump-header "$RUNNER_TEMP/privacy-probe.headers" --write-out '%{http_code}' \
             "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id")
-          test "$status" = 404 || { echo "Anonymous release asset download probe refused: HTTP $status"; exit 1; } || { echo "Anonymous release asset API probe refused: HTTP $status"; exit 1; } || { echo "Anonymous release metadata probe refused: HTTP $status"; exit 1; }
+          if [ "$status" != 404 ]; then
+            python3 -c 'import json,sys; print("Anonymous API diagnostic:", json.load(open(sys.argv[1])).get("message", "No message"))' "$RUNNER_TEMP/privacy-probe.json"
+            sed -n '/^[Xx]-[Rr]ate[Ll]imit-/p' "$RUNNER_TEMP/privacy-probe.headers"
+          fi
+          test "$status" = 404 || { echo "Anonymous release metadata probe refused: HTTP $status"; exit 1; }
           printf 'Non-sensitive private transport check.\n' > "$RUNNER_TEMP/transport-probe.txt"
           gh release upload "$tag" "$RUNNER_TEMP/transport-probe.txt" --repo "$GITHUB_REPOSITORY"
           asset_id=$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq '.[0].id')
           asset_url=$(gh api "/repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq '.[0].browser_download_url')
           status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
             "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/$asset_id")
-          test "$status" = 404
+          test "$status" = 404 || { echo "Anonymous release asset API probe refused: HTTP $status"; exit 1; }
           status=$(curl --silent --show-error --head --location --max-time 20 --output /dev/null --write-out '%{http_code}' "$asset_url")
-          test "$status" = 404
+          test "$status" = 404 || { echo "Anonymous release asset download probe refused: HTTP $status"; exit 1; }
           printf 'tag=%s\nrelease_id=%s\n' "$tag" "$release_id" >> "$GITHUB_OUTPUT"
 
       - name: Reclaim unused SDKs on this disposable runner
