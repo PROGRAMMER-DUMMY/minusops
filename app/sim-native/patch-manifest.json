@@ -67,6 +67,11 @@
       "upstream_sha256": null
     },
     {
+      "path": "apps/sim/app/o/[organizationId]/home/organization-home.tsx",
+      "sha256": "73a3761dfb906c4b98882e37246fbdc5f4cefd1bc12a6384295f7276019205b0",
+      "upstream_sha256": "fa95a7877aa619fc47d8199c1f1f2e560382154b5cf44b743fc90afe58d507aa"
+    },
+    {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/annotations.tsx",
       "sha256": "0cc85b4047896b082b7b022bb5864b6c3872cb5182809235258119471a2a96ec",
       "upstream_sha256": null
@@ -78,7 +83,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/architecture/chat.tsx",
-      "sha256": "8e191fcb836530863c8a2604f7ec73566d872ea5553f005773ab7f07d63d2672",
+      "sha256": "2c0dec1d5c97ae694ee0b4eb9311aba5073f9d3bd8db111d7c5177ba99e1c858",
       "upstream_sha256": null
     },
     {
@@ -142,6 +147,21 @@
       "upstream_sha256": null
     },
     {
+      "path": "apps/sim/app/workspace/[workspaceId]/components/sent-message-actions.tsx",
+      "sha256": "7b1fb4bba2346e2060a048f04f065320d70f4524215a31c6f5b6a92eb8d14ee5",
+      "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/home/components/mothership-chat/mothership-chat.tsx",
+      "sha256": "d5917aa7a990bd9ca16ee060c8ddf614fcc26e3b4a3374e0866ac0ab5e3d61b7",
+      "upstream_sha256": "a33c98e209608c3c9996cd615704a3d0bf239f0e709130e63e9e7fef904a79e9"
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/home/components/mothership-chat/resend-message.ts",
+      "sha256": "c41ae397af1fa409afa6df803b6a6f845430dc9cf9617d29266c53943e62bb94",
+      "upstream_sha256": null
+    },
+    {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-selector.tsx",
       "sha256": "0752cd6293df19278452fa678d86242b760a2f314ec8fa5feb905116da1d3f74",
       "upstream_sha256": "fb7033b1ebac14bfd8eaafb027fdbb528acccbfdd157673fe7db7c4e73343c41"
@@ -168,7 +188,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/home/home.tsx",
-      "sha256": "dc815457176d00b43dd0612a2db492b76e7750f432e8ccd5c2693076823abb6f",
+      "sha256": "4cc1d81117094f26b3823dc2e96c6197d614e383f4e2747fbd59b4504130237c",
       "upstream_sha256": "186ab51a964086481cdfb92bea2f528d107df6eb43180a80591eab118ca85db1"
     },
     {
@@ -200,6 +220,21 @@
       "path": "apps/sim/app/workspace/[workspaceId]/settings/components/byok/openrouter-chat-settings.tsx",
       "sha256": "27ec1d276037270a62ab6e43f28a605a83f14f0360eb5d847698a0b0436200a4",
       "upstream_sha256": null
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/w/[workflowId]/components/chat/chat.tsx",
+      "sha256": "bc429f823a54ea1b52913e550a2ee343f7e3fc861155d56a61f6a78fd4948e77",
+      "upstream_sha256": "7dff3c6fbe2ee7ac4ee2a9a759cc4a7c970a8a15db7559c6b77fbca8e425a262"
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/w/[workflowId]/components/chat/components/chat-message/chat-message.tsx",
+      "sha256": "7f36c0d8c419c3317ed398dce4131618c7a9a9e18fd038ea8d1be485e546174c",
+      "upstream_sha256": "792b32e6578e026eec8d3b79b47dffc2dfa8394e269cea4e2207175adf237ac9"
+    },
+    {
+      "path": "apps/sim/app/workspace/[workspaceId]/w/[workflowId]/components/panel/panel.tsx",
+      "sha256": "5380a30d3a3118524923c11785f26d4c0369082b53237254c8e7fedaf510ad4f",
+      "upstream_sha256": "6948aad91f0c0e5d4772506f5e07251f090322d6e9122a3e94d318985d7a9afc"
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/w/components/sidebar/components/architecture-list.tsx",

@@ -1,5 +1,32 @@
 # Native Sim overlay context
 
+Sent user questions now use the native-styled
+[`SentMessageActions`](./overlay/apps/sim/app/workspace/[workspaceId]/components/sent-message-actions.tsx)
+for Edit, Cancel, Send again and Retry. The shared
+[`MothershipChat`](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/mothership-chat/mothership-chat.tsx)
+mounts these in main, project, architecture, workflow copilot and organization
+conversations. Their existing surface callbacks forward the original request mode
+through native `useChat`, which generates a fresh turn id. These actions append a
+new question and keep earlier messages; they do not rewind the transcript or undo
+tool effects. Controls pause during sending, reconnecting, history loading or a
+queued turn. Keyboard editing supports Escape and Ctrl/Cmd+Enter, with a local
+submission latch and explicit errors.
+[`resendMessagePayload`](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/mothership-chat/resend-message.ts)
+reuses the native `isChatContext` guard and retained file references. Missing
+attachments or incomplete saved selections require reattachment, preventing
+silent context loss. Task and credential interaction messages are not exposed as
+ordinary replayable questions. Native authorization is rechecked by the unchanged
+send transport; no additional connector or execution authority is granted.
+The separate workflow runner's
+[`Chat`](./overlay/apps/sim/app/workspace/[workspaceId]/w/[workflowId]/components/chat/chat.tsx)
+and [`ChatMessage`](./overlay/apps/sim/app/workspace/[workspaceId]/w/[workflowId]/components/chat/components/chat-message/chat-message.tsx)
+reuse the same controls. Retrying runs the workflow again with the selected
+configuration; execution attachments must be reattached. Retrying preserves an
+unsent composer draft. Organization rendering shares the controls, but the local
+worker still refuses organization requests; UI coverage does not add backend
+support. Contract tests cover complete and incomplete resend payloads; installed
+browser acceptance is recorded separately.
+
 Phase 2 adds `lib/api/contracts/enterprise-chat.ts`, the native
 `app/api/workspaces/[id]/assistant/project-chat/route.ts`,
 `hooks/queries/enterprise-chat.ts` and `project-chat-selector.tsx`, mounted in the

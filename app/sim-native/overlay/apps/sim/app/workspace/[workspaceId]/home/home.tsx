@@ -26,6 +26,7 @@ import { ProjectChatSelector } from '@/app/workspace/[workspaceId]/home/componen
 import { RESOURCE_HEADER_CLASSES } from '@/app/workspace/[workspaceId]/home/components/mothership-view/components/resource-tabs/resource-tab-controls'
 import { SuggestedActions } from '@/app/workspace/[workspaceId]/home/components/suggested-actions'
 import { HomeFallback } from '@/app/workspace/[workspaceId]/home/home-fallback'
+import type { SendMessageOptions } from '@/app/workspace/[workspaceId]/home/hooks/use-chat'
 import { sendPayload } from '@/app/workspace/[workspaceId]/home/hooks/send-queue-policy'
 import {
   useChatResourcePanel,
@@ -210,7 +211,7 @@ function HomeContent({ chatId, userName, userId }: HomeProps) {
   }, [workspaceId, getCurrentRequestId, stopGeneration])
 
   const handleSubmit = useCallback(
-    async (text: string, fileAttachments?: FileAttachmentForApi[], contexts?: ChatContext[]) => {
+    async (text: string, fileAttachments?: FileAttachmentForApi[], contexts?: ChatContext[], options?: SendMessageOptions) => {
       const trimmed = text.trim()
       if (!trimmed && !(fileAttachments && fileAttachments.length > 0)) return
 
@@ -226,7 +227,7 @@ function HomeContent({ chatId, userName, userId }: HomeProps) {
       }
 
       prepareResourceViewForAgentTurn()
-      sendMessage(trimmed || 'Analyze the attached file(s).', fileAttachments, contexts)
+      await sendMessage(trimmed || 'Analyze the attached file(s).', fileAttachments, contexts, options)
     },
     [workspaceId, chatId, prepareResourceViewForAgentTurn, sendMessage]
   )
@@ -455,6 +456,7 @@ function HomeContent({ chatId, userName, userId }: HomeProps) {
                     defaultValue={initialPrompt}
                     draftScopeKey={draftScopeKey}
                     onSubmit={handleSubmit}
+                  onResend={handleSubmit}
                     isSending={isSending}
                     onStopGeneration={handleStopGeneration}
                   />

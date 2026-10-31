@@ -1159,6 +1159,45 @@ test('upstream redirects, content types, duplicate JSON and oversized replies re
   }
 })
 
+test('sent message resend preserves files and context and refuses incomplete saved selections', async () => {
+  const filename = path.join(overlays, 'app/workspace/[workspaceId]/home/components/mothership-chat/resend-message.ts')
+  const compiled = await build({ entryPoints: [filename], bundle: true, write: false, platform: 'node', format: 'cjs',
+    packages: 'external', external: ['zod'], tsconfigRaw: {}, plugins: [{ name: 'native-resend-context', setup(builder) {
+      builder.onResolve({ filter: /^@\/lib\/api\/contracts\/mothership-resources$/ }, () => ({ path: 'resources', namespace: 'resend-resources' }))
+      builder.onLoad({ filter: /.*/, namespace: 'resend-resources' }, () => ({ contents: `import {z} from 'zod';
+        export const mothershipResourceSchema=z.object({viewId:z.string().optional()});
+        export const mothershipTableViewContextSchema=z.object({});` }))
+      builder.onResolve({ filter: /^@sim\/logger$/ }, () => ({ path: 'logger', namespace: 'resend-log' }))
+      builder.onLoad({ filter: /.*/, namespace: 'resend-log' }, () => ({ contents: 'export const createLogger=()=>({warn(){}})' }))
+      builder.onResolve({ filter: /^@\// }, async ({ path: name }) => {
+        const relative = name.slice(2) + '.ts'
+        try { await readFile(path.join(overlays, relative)); return { path: path.join(overlays, relative) } }
+        catch { return { path: path.join(original, relative) } }
+      })
+      builder.onResolve({ filter: /^@sim\/utils\// }, ({ path: name }) => ({
+        path: path.join(nativeSource, 'packages/utils/src', name.slice('@sim/utils/'.length) + '.ts'),
+      }))
+    } }] })
+  const loaded = { exports: {} }
+  new Function('require', 'module', 'exports', compiled.outputFiles[0].text)(require, loaded, loaded.exports)
+  const resend = loaded.exports.resendMessagePayload
+  const file = { id: uuid, key: 'workspace/synthetic-file', filename: 'orders.csv', media_type: 'text/csv', size: 30 }
+  const contexts = [{ kind: 'file', label: 'Orders', fileId: uuid, workspaceId: uuid },
+    { kind: 'mcp', label: 'Selected server', serverId: uuid }]
+  const message = { role: 'user', id: uuid, content: 'What changed?', requestMode: 'plan',
+    attachments: [file], fileAttachments: [file], contexts }
+  assert.deepEqual(resend(message), { files: [file], contexts, options: { requestMode: 'plan' } })
+  assert.deepEqual(resend({ ...message, contexts: [] }).contexts, [])
+  assert.match(resend({ ...message, fileAttachments: [] }).error, /Reattach/)
+  for (const context of [{ kind: 'file_selection', label: 'Lost passage', fileId: uuid, fileName: 'notes.md' },
+    { kind: 'table_selection', label: 'Lost rows', tableId: uuid, tableName: 'orders' },
+    { kind: 'project', label: 'Lost project' }]) {
+    assert.match(resend({ ...message, contexts: [context] }).error, /Reattach/)
+  }
+  assert.match(resend({ ...message, origin: 'task' }).error, /Only questions/)
+  assert.match(resend({ ...message, role: 'assistant' }).error, /Only questions/)
+})
+
 test('all overlay TypeScript/TSX parses and manifest exactly binds non-EE files', async () => {
   const manifest = JSON.parse(await readFile(path.join(buildRoot, 'patch-manifest.json'), 'utf8'))
   const found = []

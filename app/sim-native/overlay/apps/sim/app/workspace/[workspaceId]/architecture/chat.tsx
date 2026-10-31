@@ -125,7 +125,7 @@ function Conversation({ workspaceId, chatId, runId, binding, onBusyChange, onPro
     <div className='flex min-h-0 flex-1 flex-col' inert={!ready && !chat.isSending && !chat.isReconnecting}>
   <MothershipChat className='min-h-0 flex-1' workspaceId={workspaceId}
     messages={chat.messages} isSending={chat.isSending} isReconnecting={chat.isReconnecting}
-    isLoading={chat.isChatHistoryPending} onSubmit={submit} onStopGeneration={chat.stopGeneration}
+    isLoading={chat.isChatHistoryPending} onSubmit={submit} onResend={submit} onStopGeneration={chat.stopGeneration}
     messageQueue={chat.messageQueue} editingQueuedId={chat.editingQueuedId} dispatchingHeadId={chat.dispatchingHeadId}
     onRemoveQueuedMessage={chat.removeFromQueue} onSendQueuedMessage={chat.sendNow}
     onEditQueuedMessage={chat.editQueuedMessage} onCancelQueueEdit={chat.cancelQueueEdit}
