@@ -6,7 +6,11 @@ Phase 2 adds `lib/api/contracts/enterprise-chat.ts`, the native
 Main Chat header by `home/home.tsx`. The shared message composer has no project
 field. The native `assistant/projects/route.ts` lists permitted names for the
 session actor; caches include workspace, user and model. An admitted project opens
-a new Chat; a project still in setup opens its configuration instead.
+a new Chat; a project still in setup stays in the picker with an access explanation.
+Each row uses the existing `RowActionsMenu` for Configure and Delete. Deletion uses
+the native `ChipConfirmModal`, scoped metadata revision and administrator checks;
+connected accounts and remote pages are retained. Removed registrations invalidate
+project reads, and a delayed create retry cannot recreate them.
 `app/workspace/[workspaceId]/projects/page.tsx` and `projects.tsx` provide reusable
 create/import and source-link setup, with existing native Confluence account
 selection. `lib/api/contracts/project-setup.ts` and native
@@ -50,7 +54,7 @@ do not establish installation of that correction in the user preview.
 | [openrouter-chat-settings.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/settings/components/byok/openrouter-chat-settings.tsx) | `OpenRouterChatSettings({workspaceId, canManage})` reuses native single-key BYOK callbacks and sanitized fixed errors. |
 | [model-selector.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-selector.tsx) | `ModelSelector({plan})` selects the isolated local control under the flag; the hosted implementation remains intact. |
 | [openrouter-model-selector.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/openrouter-model-selector.tsx) | `OpenRouterModelSelector()` searches raw catalog IDs/names and saves independent model/advertised effort preferences. Context uses a compact native chip, retaining the full run in its accessible description and title. Missing models have no silent fallback. |
-| [model-setting-trigger.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger.tsx) | `ModelSettingTrigger` bounds model/effort labels and collapses to native icons in narrow composers. Tooltips and accessible descriptions retain complete values. |
+| [model-setting-trigger.tsx](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger.tsx) | `ModelSettingTrigger` bounds model/effort labels and collapses to native icons in narrow composers. Its single native tooltip and accessible description retain the full value; the nested `OverflowText` tooltip is disabled while clipping/fade remains. |
 | [openrouter-chat.ts contracts](./overlay/apps/sim/lib/api/contracts/openrouter-chat.ts) | Zod schemas and six native route contracts validate UUID scope, vault-only status, bounded account catalogs, key input and replacement preferences. |
 | [server.ts](./overlay/apps/sim/lib/openrouter-chat/server.ts) | `assistantRoute(action, method)` wraps native session/workspace permissions, admin/same-origin writes, duplicate/size refusal, fixed gateway origin, no redirects and bounded replies. The read-only project-context POST permits readers, supplies the session actor and rechecks actor/workspace/expiry before return. Errors never forward gateway diagnostics. |
 | [enterprise-context.ts](./overlay/apps/sim/lib/api/contracts/enterprise-context.ts) | Strict browser selection, scoped binding and nested evidence/response contracts; user/grants cannot be supplied by the browser. No action authority. |

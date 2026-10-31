@@ -13,7 +13,9 @@ const create = z.object({ operation: z.enum(['create', 'import']), ...fields, re
 const save = z.object({ operation: z.literal('save'), ...fields, project_id: z.uuid(),
   revision: z.number().int().positive(), credential_id: actor.nullable(),
   chat_model: z.string().min(1).max(200).nullable().optional() }).strict()
-export const projectSetupActionSchema = z.union([create, save])
+const remove = z.object({operation: z.literal('delete'), project_id: z.uuid(),
+  revision: z.number().int().positive()}).strict()
+export const projectSetupActionSchema = z.union([create, save, remove])
 export type ProjectSetupAction = z.input<typeof projectSetupActionSchema>
 
 export const projectSetupSchema = z.object({ project_id: z.uuid(), ...fields,

@@ -33,6 +33,7 @@ export function ModelSettingTrigger({
                     label={valueLabel}
                     className='text-[var(--text-icon)] text-sm'
                     focusTarget='nearest-interactive'
+                    tooltipEnabled={false}
                   />
                   {showChevron && (
                     <ChevronDown className='size-[14px] shrink-0 text-[var(--text-icon)]' />

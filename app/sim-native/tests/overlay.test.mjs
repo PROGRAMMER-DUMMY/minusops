@@ -589,6 +589,73 @@ test('enterprise project chat setup rejects forged authority and non-admin or cr
   assert.equal(fixture.calls.length, 0)
 })
 
+test('enterprise project chat deletion uses strict admin same-origin requests and current owner revisions', async () => {
+  const body = {operation:'delete',project_id:uuid,revision:1}
+  fixture.permission='read'
+  await refused(await call('project-setup','POST',body),403)
+  fixture.permission='admin'
+  await refused(await call('project-setup','POST',body,{headers:{origin:'https://other.example'}}),403)
+  for (const extra of [{user_id:'other'},{credential_id:'connection-a'},{revision:0},{revision:true}]) {
+    await refused(await call('project-setup','POST',{...body,...extra}),400)
+  }
+  assert.equal(fixture.calls.length,0)
+  queue(json(setupReply({projects:[]})))
+  assert.equal((await call('project-setup','POST',body)).status,200)
+  assert.deepEqual(JSON.parse(fixture.calls[0].options.body),{user_id:'native-user',setup:body})
+  assert.equal(fixture.credentialCalls.length,0)
+  queue(json({error:'Project changed'},{status:409}))
+  await refused(await call('project-setup','POST',body),409)
+})
+
+test('enterprise project chat picker separates selection, configuration and confirmed deletion', async () => {
+  const state={states:[],index:0,created:[],bound:[],routes:[],deleted:[],project:setupProject(),ready:false}
+  const compiled=await build({entryPoints:[path.join(overlays,'app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector.tsx')],
+    bundle:true,write:false,platform:'node',format:'cjs',jsx:'automatic',packages:'external',plugins:[{name:'picker-boundaries',setup(builder){
+      builder.onResolve({filter:/^(?:react$|next\/|@sim\/|@\/)/},({path:name})=>({path:name,namespace:'picker'}))
+      builder.onLoad({filter:/.*/,namespace:'picker'},({path:name})=>{
+        const contents=name==='react' ? `export const useState=value=>{const index=fixture.index++;if(!(index in fixture.states))fixture.states[index]=value;return [fixture.states[index],value=>fixture.states[index]=value]};export const useRef=()=>fixture.ref??=( {current:null} );`
+          : name==='@sim/emcn' ? 'export const Button="button",DropdownMenu="menu",DropdownMenuContent="content",DropdownMenuItem="item",DropdownMenuTrigger="trigger",ChipConfirmModal="confirm";'
+          : name==='@sim/emcn/icons' ? 'export const ChevronDown="chevron";'
+          : name==='next/link' ? 'export default "link";'
+          : name==='next/navigation' ? 'export const useRouter=()=>({push:value=>fixture.routes.push(value)});'
+          : name.endsWith('feature-flags-provider') ? 'export const useFeatureFlag=()=>true;'
+          : name.endsWith('workspace-permissions-provider') ? 'export const useUserPermissionsContext=()=>({canAdmin:true});'
+          : name.endsWith('row-actions-menu/row-actions-menu') ? 'export const RowActionsMenu="actions";'
+          : name.endsWith('/request') ? 'export const requestJson=async(contract,options)=>{fixture.created.push(options);return {id:"new-chat"}};'
+          : name.endsWith('/mothership-chats') ? 'export const createMothershipChatContract="create";'
+          : name.endsWith('/enterprise-chat') ? `export const useProjectChat=()=>({binding:{data:{status:'UNBOUND'},refetch:async()=>{}},bind:{mutateAsync:async value=>fixture.bound.push(value)}});
+              export const useProjectCatalog=()=>({data:{projects:[{...fixture.project,setup_status:fixture.ready?'ADMITTED':'ACCESS_REQUIRED'}]},refetch:async()=>{}});
+              export const useProjectSetup=()=>({setup:{data:{projects:[fixture.project]}},update:{isPending:false,mutateAsync:async value=>fixture.deleted.push(value)}});` : null
+        assert.notEqual(contents,null,name);return {contents,loader:'js'}
+      })
+    }}]})
+  const loaded={exports:{}}
+  new Function('require','module','exports','fixture',compiled.outputFiles[0].text)(require,loaded,loaded.exports,state)
+  const render=()=>{state.index=0;const root=loaded.exports.ProjectChatSelector({workspaceId:uuid,userId:'native-user',busy:false});return root.type(root.props)}
+  const find=(root,type)=>{if(Array.isArray(root))return root.flatMap(node=>find(node,type));if(!root||typeof root!=='object')return [];return [...(root.type===type?[root]:[]),...find(root.props?.children,type)]}
+  const text=node=>Array.isArray(node)?node.map(text).join(''):typeof node==='string'?node:node?.props?text(node.props.children):''
+  const tick=()=>new Promise(resolve=>setImmediate(resolve))
+  let tree=render();let item=find(tree,'item').find(node=>text(node).includes('Client analytics'))
+  item.props.onSelect({preventDefault(){}});await tick()
+  assert.deepEqual(state.routes,[]);assert.deepEqual(state.created,[])
+  assert.match(text(render()),/selected model/)
+  let actions=find(render(),'actions')[0].props.actions
+  actions.find(action=>action.label==='Configure').onSelect()
+  assert.deepEqual(state.routes,[`/workspace/${uuid}/projects?project=${uuid}`]);assert.deepEqual(state.created,[])
+  actions.find(action=>action.label==='Delete').onSelect()
+  let modal=find(render(),'confirm')[0]
+  assert.equal(modal.props.open,true);assert.deepEqual(state.deleted,[])
+  modal.props.onOpenChange(false)
+  assert.equal(find(render(),'confirm')[0].props.open,false);assert.deepEqual(state.deleted,[])
+  find(render(),'actions')[0].props.actions.find(action=>action.label==='Delete').onSelect()
+  find(render(),'confirm')[0].props.confirm.onClick();await tick()
+  assert.deepEqual(state.deleted,[{operation:'delete',project_id:uuid,revision:1}])
+  state.ready=true;tree=render();item=find(tree,'item').find(node=>text(node).includes('Client analytics'))
+  item.props.onSelect({preventDefault(){}});await tick()
+  assert.equal(state.created.length,1);assert.deepEqual(state.bound,[{chat_id:'new-chat',project_id:uuid}])
+  assert.equal(state.routes.at(-1),`/workspace/${uuid}/chat/new-chat`)
+})
+
 test('enterprise project chat setup checks connection provider membership workspace and revocation', async () => {
   const body = {operation:'save',project_id:uuid,revision:1,name:'Client analytics',description:'',source_urls:[],credential_id:'connection-a'}
   const allowed = {allowed:true,credential:{workspaceId:uuid,providerId:'confluence',type:'oauth',accountId:'provider-account'}}

@@ -148,7 +148,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/model-setting-trigger.tsx",
-      "sha256": "d818ead2d42f4d7ac8d384300d9fd2316e16cfbf8136c62d7dffbb826ee38928",
+      "sha256": "850e214adda6f89b3848a961d881c9b674a00afb371d4047ea5d4ed481eb01a1",
       "upstream_sha256": "7abebad446094bc31f5b22695a418352d36756ded5127e42371de2469878733c"
     },
     {
@@ -158,7 +158,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/user-input/components/project-chat-selector.tsx",
-      "sha256": "5133488592f671d828b5df5b2d129337e281b1eb712a206a6a2f1d9db2c3c2c3",
+      "sha256": "869322fce57ac1d5f9527c0a628cb38e1a304edccdb1c987574a97475303aca8",
       "upstream_sha256": null
     },
     {
@@ -223,7 +223,7 @@
     },
     {
       "path": "apps/sim/hooks/queries/enterprise-chat.ts",
-      "sha256": "4b53a8e7bce054273d331883710c08961127c1c47570cf0f8df7be8708a186ee",
+      "sha256": "cbc99f388796e8246060432c6d7833e9518d917a44b42c6c27636d6f561a4edc",
       "upstream_sha256": null
     },
     {
@@ -258,7 +258,7 @@
     },
     {
       "path": "apps/sim/lib/api/contracts/project-setup.ts",
-      "sha256": "19adde52d20b21126506f8c5460925244964b9f73a3db0cffadc3d14b95068ec",
+      "sha256": "1cb2034b9f1634506868ded082420132c898dfedc37fe5f5fdc0679c6f9dee99",
       "upstream_sha256": null
     },
     {

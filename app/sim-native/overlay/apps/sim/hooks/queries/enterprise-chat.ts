@@ -43,10 +43,10 @@ export function useProjectCatalog(workspaceId: string, userId?: string) {
   })
 }
 
-export function useProjectSetup(workspaceId: string, userId?: string) {
+export function useProjectSetup(workspaceId: string, userId?: string, enabled = true) {
   const client = useQueryClient()
   const key = ['project-setup', workspaceId, userId] as const
-  const setup = useQuery({queryKey: key, enabled: !!userId,
+  const setup = useQuery({queryKey: key, enabled: !!userId && enabled,
     queryFn: async ({signal}) => {
       const value = await requestJson(projectSetupContract, {params: {id: workspaceId}, query: {}, signal})
       if (value.workspace_id !== workspaceId || value.user_id !== userId) throw new Error('Project session changed')
