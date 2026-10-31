@@ -11,6 +11,11 @@ new question and keep earlier messages; they do not rewind the transcript or und
 tool effects. Controls pause during sending, reconnecting, history loading or a
 queued turn. Keyboard editing supports Escape and Ctrl/Cmd+Enter, with a local
 submission latch and explicit errors.
+[`home.tsx`](./overlay/apps/sim/app/workspace/[workspaceId]/home/home.tsx),
+[`architecture/chat.tsx`](./overlay/apps/sim/app/workspace/[workspaceId]/architecture/chat.tsx),
+[`workflow panel`](./overlay/apps/sim/app/workspace/[workspaceId]/w/[workflowId]/components/panel/panel.tsx)
+and [`organization home`](./overlay/apps/sim/app/o/[organizationId]/home/organization-home.tsx)
+keep their existing send callbacks and scope checks when forwarding resend options.
 [`resendMessagePayload`](./overlay/apps/sim/app/workspace/[workspaceId]/home/components/mothership-chat/resend-message.ts)
 reuses the native `isChatContext` guard and retained file references. Missing
 attachments or incomplete saved selections require reattachment, preventing

@@ -456,7 +456,6 @@ function HomeContent({ chatId, userName, userId }: HomeProps) {
                     defaultValue={initialPrompt}
                     draftScopeKey={draftScopeKey}
                     onSubmit={handleSubmit}
-                  onResend={handleSubmit}
                     isSending={isSending}
                     onStopGeneration={handleStopGeneration}
                   />
@@ -488,6 +487,7 @@ function HomeContent({ chatId, userName, userId }: HomeProps) {
             isReconnecting={isReconnecting}
             isLoading={showChatSkeleton}
             onSubmit={handleSubmit}
+            onResend={handleSubmit}
             onStopGeneration={handleStopGeneration}
             messageQueue={messageQueue}
             editingQueuedId={editingQueuedId}
