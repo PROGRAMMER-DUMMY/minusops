@@ -148,7 +148,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/components/sent-message-actions.tsx",
-      "sha256": "7b1fb4bba2346e2060a048f04f065320d70f4524215a31c6f5b6a92eb8d14ee5",
+      "sha256": "f7c4725aebc9b73028fd4b48c5782f911c2940a8e31b418852ee3310bd7d6ba1",
       "upstream_sha256": null
     },
     {

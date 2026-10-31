@@ -22,7 +22,10 @@ export function SentMessageActions({ content, disabled, onResend,
   const sending = useRef(false)
   const editButton = useRef<HTMLButtonElement>(null)
   const blocked = disabled || pending
-  const cancel = () => { setEditing(false); setError(''); editButton.current?.focus() }
+  const cancel = () => {
+    setEditing(false); setError('')
+    requestAnimationFrame(() => editButton.current?.focus())
+  }
   const resend = async (text: string) => {
     if (blocked || sending.current || !text.trim()) return
     sending.current = true
