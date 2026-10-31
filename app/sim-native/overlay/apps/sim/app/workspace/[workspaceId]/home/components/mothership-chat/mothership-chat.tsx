@@ -119,8 +119,8 @@ interface MothershipChatProps {
 
 /**
  * Per-role row-height estimates seed the virtualizer before each row is measured.
- * They only size the scrollbar for not-yet-rendered rows â€” every visible row is
- * measured precisely via `measureElement` â€” so approximate values suffice. Split
+ * They only size the scrollbar for not-yet-rendered rows — every visible row is
+ * measured precisely via `measureElement` — so approximate values suffice. Split
  * by role because user bubbles are short and assistant turns are tall; a single
  * blended number would over/under-shoot both and drift the scrollbar more.
  */
@@ -143,8 +143,8 @@ const OVERSCAN = 6
  */
 const PIN_THRESHOLD = 2
 /**
- * Initial-scroll sentinel. Distinct from every real `chatId` value â€” including
- * `undefined` (a not-yet-persisted chat) â€” so the first scroll-to-bottom fires
+ * Initial-scroll sentinel. Distinct from every real `chatId` value — including
+ * `undefined` (a not-yet-persisted chat) — so the first scroll-to-bottom fires
  * even before a chat has an id, instead of treating `undefined` as "already
  * scrolled this chat".
  */
@@ -194,7 +194,7 @@ interface UserMessageRowProps {
 
 /**
  * A background-task notification that opened a turn (mothership 21-background-tasks.md
- * Â§6.4): a muted system chip, never a user bubble â€” the user did not type it. Shows the
+ * §6.4): a muted system chip, never a user bubble — the user did not type it. Shows the
  * outcome line; the provenance header and the agent's own note stay out of the way.
  */
 const TaskNotificationRow = memo(function TaskNotificationRow({
@@ -458,7 +458,7 @@ export function MothershipChat({
    * Release is DRAINED, not cliffed: while active the floor forbids
    * scrollHeight from dropping, so permanent shrinks over the turn accrue as
    * phantom space (debt). Clearing min-height in one commit released that
-   * whole debt as a single clamp â€” the end-of-turn downward jump. Instead the
+   * whole debt as a single clamp — the end-of-turn downward jump. Instead the
    * floor glides down to the natural size at the chase's rate; the browser's
    * clamp follows a few px per frame, which reads as the same eased settle as
    * the rest of the stream. Instant-clears when the debt is sub-pixel or the
@@ -470,7 +470,7 @@ export function MothershipChat({
     const el = scrollElementRef.current
     if (!sizer || !el) return
     // A chat switch replaces the entire transcript, so a floor held for the
-    // previous one is meaningless â€” and its high-water mark would otherwise
+    // previous one is meaningless — and its high-water mark would otherwise
     // hand a short chat the tall chat's space for as long as the outgoing
     // turn's `lastRowAnimating` keeps the floor engaged. Released outright
     // rather than drained: the switch re-lands the viewport anyway, so there
@@ -490,7 +490,7 @@ export function MothershipChat({
     if (!floorActive) {
       heldHighWaterRef.current = 0
       if (sizerFloorAppliedRef.current === 0) return
-      // A drain already in flight keeps its own rAF cadence â€” settle-burst
+      // A drain already in flight keeps its own rAF cadence — settle-burst
       // commits re-enter this branch and must not add extra steps in layout,
       // which would accelerate the release past the eased rate.
       if (floorDrainRafRef.current !== 0) return
@@ -503,7 +503,7 @@ export function MothershipChat({
           return
         }
         // Instant-clear only when the whole remaining debt sits BELOW the
-        // viewport (debt â‰¤ distance-from-bottom) â€” then the shrink is
+        // viewport (debt ≤ distance-from-bottom) — then the shrink is
         // invisible. A merely-unpinned viewport with debt larger than its
         // slack would still clamp, so it keeps the eased drain instead.
         const distance = el.scrollHeight - el.scrollTop - el.clientHeight
@@ -544,7 +544,7 @@ export function MothershipChat({
     heldHighWaterRef.current = highWater
     // Dead-band: the floor feeds back into its own inputs (a floored value can
     // land a fraction BELOW the extent, the browser clamps scrollTop, and the
-    // next commit re-derives from the clamped position â€” a visible ~1pxÃ—N
+    // next commit re-derives from the clamped position — a visible ~1px×N
     // downward cascade on fractional-scrollTop displays). Sub-pixel deltas are
     // rounding noise from that loop, never real growth; only apply real moves.
     if (Math.abs(floor - sizerFloorAppliedRef.current) <= 1) return
@@ -562,7 +562,7 @@ export function MothershipChat({
    * Keep a bottom-pinned transcript pinned when the scroll container resizes.
    * Growing or shrinking the multi-line input (or resizing the panel/window)
    * changes the container height while `scrollTop` stays put, which silently
-   * unpins the chat from the bottom â€” the last message slides behind the
+   * unpins the chat from the bottom — the last message slides behind the
    * input. Pinned-ness is sampled on every scroll (before the resize lands),
    * so a user who scrolled up is never yanked back down.
    */
@@ -588,7 +588,7 @@ export function MothershipChat({
    * Stable per-row identity for virtualizer measurement caching and React
    * reconciliation. User rows key on their message id; assistant rows key on
    * their turn position (`assistant:<userId>:<ordinal>`) so a streaming
-   * placeholder keeps the same element â€” and its smooth-text state â€” when the
+   * placeholder keeps the same element — and its smooth-text state — when the
    * persisted message arrives with a new id.
    */
   const rowKeyByIndex = useMemo(() => {
@@ -619,8 +619,8 @@ export function MothershipChat({
 
   /**
    * Pairs each assistant question/credential card with the user message that
-   * completed it. The paired user message is hidden â€” the answered card IS the
-   * user turn â€” and the assistant row renders a recap both live and on reload.
+   * completed it. The paired user message is hidden — the answered card IS the
+   * user turn — and the assistant row renders a recap both live and on reload.
    *
    * A credential card the user talked past instead of submitting is marked
    * abandoned: the turn is over, so it collapses to the same recap (every row
@@ -712,8 +712,8 @@ export function MothershipChat({
     rangeExtractor,
     // Measure in a rAF instead of synchronously inside ResizeObserver delivery.
     // A window resize re-wraps every row once the chat column falls under the
-    // 48rem cap â€” which is exactly what happens while the resource panel is
-    // open â€” and each synchronous re-measure writes scrollTop and copies the
+    // 48rem cap — which is exactly what happens while the resource panel is
+    // open — and each synchronous re-measure writes scrollTop and copies the
     // size cache mid-callback, so the frame re-lays-out once per visible row.
     useAnimationFrameWithResizeObserver: true,
   })
@@ -736,7 +736,7 @@ export function MothershipChat({
   )
 
   /**
-   * Instance property â€” silently ignored if passed as a `useVirtualizer`
+   * Instance property — silently ignored if passed as a `useVirtualizer`
    * option. Skips scroll compensation for the streaming last row: it starts
    * above the viewport but grows at its bottom edge, so the default dragged
    * the viewport down in lockstep with growth even after the user scrolled
@@ -810,7 +810,7 @@ export function MothershipChat({
   /**
    * A drag-selection that overshoots a message's last line crosses the row
    * wrappers' block boundaries, which the clipboard serializer renders as
-   * trailing newlines â€” every copied response pasted with blank lines
+   * trailing newlines — every copied response pasted with blank lines
    * appended. Rewrite the plain-text flavor trimmed; the rich flavor is
    * re-serialized from the selection so formatted pastes keep working.
    */
@@ -830,12 +830,12 @@ export function MothershipChat({
   }, [])
 
   /**
-   * Land at the most recent message once per chat â€” on open and when switching
+   * Land at the most recent message once per chat — on open and when switching
    * chats. The ref tracks which `chatId` we last scrolled for (seeded with
    * {@link UNSCROLLED} so a pending, id-less chat still scrolls on first mount),
    * so it re-fires on a genuine chat switch, including between chats of equal
-   * length. A pending chat persisting its id (`undefined` â†’ string) is the SAME
-   * conversation, so adopt the id without re-scrolling â€” otherwise the viewport
+   * length. A pending chat persisting its id (`undefined` → string) is the SAME
+   * conversation, so adopt the id without re-scrolling — otherwise the viewport
    * would snap back to the bottom after the user scrolled up mid-stream. Runs
    * before paint so a long transcript never flashes at the top. Subsequent
    * growth within the same chat is handled by {@link useAutoScroll}'s streaming
@@ -853,11 +853,11 @@ export function MothershipChat({
   /**
    * With find closed, the user's own send snaps the viewport to their message: sending is the intent
    * to watch the reply, and the streaming sticky-scroll only engages when already pinned
-   * to the bottom â€” from a scrolled-up position a fresh turn would stream out of view
+   * to the bottom — from a scrolled-up position a fresh turn would stream out of view
    * (verified live, three-for-three, during the revamp browser pass).
    */
   // The send commit appends the user message AND the live-assistant placeholder together,
-  // so the LAST row is never the user's â€” track the newest user message wherever it sits.
+  // so the LAST row is never the user's — track the newest user message wherever it sits.
   const lastUserMessageId = messages[lastUserIndex]?.id
   const scrolledForUserMsgRef = useRef<string | undefined>(undefined)
   useLayoutEffect(() => {
@@ -935,7 +935,7 @@ export function MothershipChat({
                        text selection maps a drag's start point to a text
                        position via the rows' LAYOUT boxes, and with every row
                        laid out at y=0 a drag starting in the gutter anchors in
-                       the wrong row â€” selections ran upward from a downward
+                       the wrong row — selections ran upward from a downward
                        drag. Transforms move paint and hit-testing but not the
                        layout box that mapping falls back to. */
                     className='absolute left-0 w-full'

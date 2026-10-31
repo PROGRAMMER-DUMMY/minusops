@@ -153,7 +153,7 @@
     },
     {
       "path": "apps/sim/app/workspace/[workspaceId]/home/components/mothership-chat/mothership-chat.tsx",
-      "sha256": "d5917aa7a990bd9ca16ee060c8ddf614fcc26e3b4a3374e0866ac0ab5e3d61b7",
+      "sha256": "88d8505858ab075af52793181d656765a07aabcb6ce6ea930bfe056c47465bae",
       "upstream_sha256": "a33c98e209608c3c9996cd615704a3d0bf239f0e709130e63e9e7fef904a79e9"
     },
     {
