@@ -7,7 +7,9 @@ Main Chat header by `home/home.tsx`. The shared message composer has no project
 field. The native `assistant/projects/route.ts` lists permitted names for the
 session actor; caches include workspace, user and model. An admitted project opens
 a new Chat; a project still in setup stays in the picker with an access explanation.
-Each row uses the existing `RowActionsMenu` for Configure and Delete. Deletion uses
+Each row places the existing `RowActionsMenu` in the native menu item's action slot
+for ArrowRight/ArrowLeft navigation. The current project stays focusable without
+starting another chat, and project actions stay visible. Deletion uses
 the native `ChipConfirmModal`, scoped metadata revision and administrator checks;
 connected accounts and remote pages are retained. Removed registrations invalidate
 project reads, and a delayed create retry cannot recreate them.

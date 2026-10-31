@@ -623,7 +623,7 @@ test('enterprise project chat picker separates selection, configuration and conf
           : name.endsWith('row-actions-menu/row-actions-menu') ? 'export const RowActionsMenu="actions";'
           : name.endsWith('/request') ? 'export const requestJson=async(contract,options)=>{fixture.created.push(options);return {id:"new-chat"}};'
           : name.endsWith('/mothership-chats') ? 'export const createMothershipChatContract="create";'
-          : name.endsWith('/enterprise-chat') ? `export const useProjectChat=()=>({binding:{data:{status:'UNBOUND'},refetch:async()=>{}},bind:{mutateAsync:async value=>fixture.bound.push(value)}});
+          : name.endsWith('/enterprise-chat') ? `export const useProjectChat=()=>({binding:{data:fixture.binding??{status:'UNBOUND'},refetch:async()=>{}},bind:{mutateAsync:async value=>fixture.bound.push(value)}});
               export const useProjectCatalog=()=>({data:{projects:[{...fixture.project,setup_status:fixture.ready?'ADMITTED':'ACCESS_REQUIRED'}]},refetch:async()=>{}});
               export const useProjectSetup=()=>({setup:{data:{projects:[fixture.project]}},update:{isPending:false,mutateAsync:async value=>fixture.deleted.push(value)}});` : null
         assert.notEqual(contents,null,name);return {contents,loader:'js'}
@@ -632,7 +632,7 @@ test('enterprise project chat picker separates selection, configuration and conf
   const loaded={exports:{}}
   new Function('require','module','exports','fixture',compiled.outputFiles[0].text)(require,loaded,loaded.exports,state)
   const render=()=>{state.index=0;const root=loaded.exports.ProjectChatSelector({workspaceId:uuid,userId:'native-user',busy:false});return root.type(root.props)}
-  const find=(root,type)=>{if(Array.isArray(root))return root.flatMap(node=>find(node,type));if(!root||typeof root!=='object')return [];return [...(root.type===type?[root]:[]),...find(root.props?.children,type)]}
+  const find=(root,type)=>{if(Array.isArray(root))return root.flatMap(node=>find(node,type));if(!root||typeof root!=='object')return [];return [...(root.type===type?[root]:[]),...find(root.props?.children,type),...find(root.props?.action,type)]}
   const text=node=>Array.isArray(node)?node.map(text).join(''):typeof node==='string'?node:node?.props?text(node.props.children):''
   const tick=()=>new Promise(resolve=>setImmediate(resolve))
   let tree=render();let item=find(tree,'item').find(node=>text(node).includes('Client analytics'))
@@ -654,6 +654,13 @@ test('enterprise project chat picker separates selection, configuration and conf
   item.props.onSelect({preventDefault(){}});await tick()
   assert.equal(state.created.length,1);assert.deepEqual(state.bound,[{chat_id:'new-chat',project_id:uuid}])
   assert.equal(state.routes.at(-1),`/workspace/${uuid}/chat/new-chat`)
+  state.binding={status:'PROJECT_BOUND',project_id:uuid}
+  item=find(render(),'item').find(node=>text(node).includes('Client analytics'))
+  assert.equal(item.props.disabled,false)
+  assert.equal(item.props.active,true)
+  assert.equal(item.props.actionOpen,true)
+  item.props.onSelect({preventDefault(){}});await tick()
+  assert.equal(state.created.length,1)
 })
 
 test('enterprise project chat setup checks connection provider membership workspace and revocation', async () => {

@@ -93,11 +93,26 @@ function LocalProjectChatSelector({ workspaceId, userId, chatId, busy }: Project
         <DropdownMenuContent align='start' className='w-72 max-w-[calc(100vw-2rem)]'>
           {catalog.isFetching ? <DropdownMenuItem disabled>Checking project access...</DropdownMenuItem>
             : projects.length ? projects.map(project => (
-              <div key={project.project_id} className='flex min-w-0 items-center gap-1'>
-              <DropdownMenuItem className='min-w-0 flex-1' aria-label={project.name} title={project.name}
-                disabled={saving || busy || (bound && project.project_id === binding.data?.project_id)}
+              <DropdownMenuItem key={project.project_id} aria-label={project.name}
+                active={bound && project.project_id === binding.data?.project_id}
+                disabled={saving || busy}
+                actionOpen
+                action={<RowActionsMenu label={`Actions for ${project.name}`}
+                  actions={[
+                    {label: 'Configure', onSelect: () => {
+                      setOpen(false)
+                      router.push(`/workspace/${workspaceId}/projects?project=${encodeURIComponent(project.project_id)}`)
+                    }},
+                    {label: 'Delete', destructive: true,
+                      disabled: !canAdmin || saving || busy || update.isPending || !setup.data?.projects.some(row => row.project_id === project.project_id),
+                      onSelect: () => {
+                        const row = setup.data?.projects.find(row => row.project_id === project.project_id)
+                        if (row) {setDeleting(row); setOpen(false)}
+                      }},
+                  ]} />}
                 onSelect={event => {
                   event.preventDefault()
+                  if (bound && project.project_id === binding.data?.project_id) {setOpen(false); return}
                   if (project.setup_status && project.setup_status !== 'ADMITTED') {
                     setError('This project needs source access and consent for the selected model. Open its actions menu and choose Configure.')
                   } else void choose(project.project_id)
@@ -106,20 +121,6 @@ function LocalProjectChatSelector({ workspaceId, userId, chatId, busy }: Project
                 {project.setup_status && project.setup_status !== 'ADMITTED'
                   && <span className='ml-auto shrink-0 text-xs text-[var(--text-muted)]'>Needs setup</span>}
               </DropdownMenuItem>
-              <RowActionsMenu label={`Actions for ${project.name}`} triggerClassName='shrink-0'
-                actions={[
-                  {label: 'Configure', onSelect: () => {
-                    setOpen(false)
-                    router.push(`/workspace/${workspaceId}/projects?project=${encodeURIComponent(project.project_id)}`)
-                  }},
-                  {label: 'Delete', destructive: true,
-                    disabled: !canAdmin || saving || busy || update.isPending || !setup.data?.projects.some(row => row.project_id === project.project_id),
-                    onSelect: () => {
-                      const row = setup.data?.projects.find(row => row.project_id === project.project_id)
-                      if (row) {setDeleting(row); setOpen(false)}
-                    }},
-                ]} />
-              </div>
             )) : <p className='px-2 py-2 text-sm text-[var(--text-muted)]' role='status'>
               {catalog.isError ? 'Project access could not be checked.' : 'No projects yet. Create or import a project to get started.'}
             </p>}
